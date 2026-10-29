@@ -167,3 +167,104 @@ fn large_event_pages_are_byte_bounded_and_cursor_replay_is_lossless() {
     assert!(pages > 1);
     assert_eq!(seen, (0..24).collect::<Vec<_>>());
 }
+
+#[test]
+fn delegation_budget_and_child_ownership_survive_restart_and_ambiguous_submissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delegation.sqlite3");
+    let store = Store::open(&path).unwrap();
+    let parent = store.admit(Uuid::new_v4(), &request(), false, 20).unwrap();
+    store.claim_next().unwrap().unwrap();
+    let peer = Uuid::new_v4();
+    let id = Uuid::new_v4();
+    let mut child = TaskSubmit::new(Uuid::new_v4(), "test", "fixture");
+    child.task_id = id;
+    store
+        .reserve_tool_submission(parent.task_id, id, peer, &child, 1)
+        .unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    store
+        .reserve_tool_submission(parent.task_id, id, peer, &child, 1)
+        .unwrap();
+    assert!(store.tool_child_allowed(parent.task_id, id).unwrap());
+    assert!(!store.tool_child_allowed(Uuid::new_v4(), id).unwrap());
+    assert_eq!(
+        store
+            .tool_child_target(parent.task_id, id)
+            .unwrap()
+            .unwrap()
+            .peer_id,
+        peer
+    );
+    let mut conflict = child.clone();
+    conflict.goal = "different".into();
+    assert_eq!(
+        store
+            .reserve_tool_submission(parent.task_id, id, peer, &conflict, 1)
+            .unwrap_err()
+            .code,
+        ErrorCode::TaskConflict
+    );
+    let other = TaskSubmit::new(Uuid::new_v4(), "test", "second");
+    assert_eq!(
+        store
+            .reserve_tool_submission(parent.task_id, Uuid::new_v4(), peer, &other, 1)
+            .unwrap_err()
+            .code,
+        ErrorCode::RateLimited
+    );
+    store
+        .transition(parent.task_id, TaskStatus::Failed, None)
+        .unwrap();
+    assert_eq!(
+        store
+            .reserve_tool_submission(parent.task_id, id, peer, &child, 1)
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+}
+
+#[test]
+fn schema_two_upgrade_preserves_historical_task_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(include_str!("../migrations/001_initial.sql"))
+        .unwrap();
+    db.execute_batch(include_str!("../migrations/002_outbound.sql"))
+        .unwrap();
+    let request = request();
+    let old = TaskRecord {
+        task_id: request.payload.task_id,
+        origin_node_id: request.sender_node_id,
+        target_node_id: Uuid::new_v4(),
+        agent_id: request.payload.target_agent_id,
+        project_id: request.payload.project_id.clone(),
+        status: TaskStatus::Failed,
+        created_at: now(),
+        updated_at: now(),
+        last_attempt_id: None,
+        request: request.payload,
+        error: None,
+    };
+    let text = serde_json::to_string(&old).unwrap();
+    db.execute(
+        "INSERT INTO tasks VALUES(?1,'FAILED',?2,?3)",
+        rusqlite::params![old.task_id.to_string(), old.created_at, text],
+    )
+    .unwrap();
+    drop(db);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        serde_json::to_string(&store.task(old.task_id).unwrap()).unwrap(),
+        text
+    );
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+}

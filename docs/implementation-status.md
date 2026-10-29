@@ -8,6 +8,8 @@ SSH 应用检查点也已验收：`examples/ssh-todo` 的 Orion Pi/Flash 服务�
 
 ## 验收映射
 
+2026-10-29 SSH/MCP 检查点：两个方向的 Pi/DSH 真实任务、执行中断开 SSH、发起端正常重启、事件补读和相同请求去重均已通过。新增 hmesh-mcp 和 schema 3 委派绑定，真实 Pi 1.4.0 原生 MCP 发现并提交 Windows DSH，子任务先无 attempt 等待独立批准，父子任务最终均 SUCCEEDED，nonce/hash 核验一致。最终 Windows 46 项、Orion/Linux 45 项 Rust 测试通过。配置见 [MCP](mcp.md)，过程偏差与完整证据见 [双向与 MCP 验收](ssh-bidirectional-mcp.md)。Tailscale、Codex、受管服务和完整 V0.1 仍未完成。
+
 2026-10-29 大输出回归：已分离原生消息和内部事件限额，长正文脱敏后分段、事件按字节分页，`task watch` 补读到最后一页才退出。新的 Orion Pi/Flash 任务 `c2c13fd7-eae0-42e4-8945-99c6784129ba` 为 SUCCEEDED，实测最大原生消息 375,131 字节，累计 8,758,986 字节；新生成服务端 14 项测试通过，原应用 10+4 项测试与 HTTP/持久化复测通过。见 [独立回归报告](evidence/latest-pi-output-regression.json) 和 [ADR 0003](adr/0003-native-output-limits.md)。历史失败记录保持不变，最终 Rust 测试数量记录在该新报告中。
 
 | 工作包 | 已交付内容 | 证据 |
@@ -34,7 +36,7 @@ SSH 应用检查点也已验收：`examples/ssh-todo` 的 Orion Pi/Flash 服务�
 
 - 三平台编译/检查 CI 已配置，当前只执行了本机 Windows 检查；没有远端 CI 成功记录。
 - 真实 Harness 的正常 managed-run/原生 JSON 事件已通过；原生 abort、已有 Session 注入或恢复未验证。取消机制为受控进程树终止；Probe 对未验证项仍标 not_checked。
-- Windows Job Object 的进程树回收已测试。Unix 专用进程组为 best-effort，不保证清理脱离进程组的子进程；未宣称本次已通过 Unix 真实运行。
+- Windows Job Object 的进程树回收已测试。Linux 正常结束与受控进程回收已有 SSH 实证；Unix 专用进程组为 best-effort，脱离进程组的子进程和 Unix 硬崩溃清理仍未验收。
 - 工作目录和工具限制不构成 OS 文件系统沙箱。只登记独立测试项目；工件仅发布 owner 授权相对路径的 hash/大小/断言。
 - V0 基线使用显式环境 allowlist。后续 SSH 试验新增 Pi/DeepSeek 的 owner 显式只读认证引用，密钥仅在执行端内存注入子进程；细节见 ADR 0002。DSH 仍仅支持已验证的 read/write/edit 工具组合。
 - V0 CLI 显式使用 Node/Agent UUID；协议轮询采用持久 seq 游标。具体设计决定见 docs/adr/0001-v0-rust-boundaries.md。

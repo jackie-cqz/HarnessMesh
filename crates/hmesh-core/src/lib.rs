@@ -516,11 +516,54 @@ pub struct AdapterOptions {
     pub credential_source: Option<PathBuf>,
     #[serde(default)]
     pub env_allowlist: Vec<String>,
+    #[serde(default)]
+    pub mesh_server: Option<PathBuf>,
+    #[serde(default)]
+    pub mesh_scope: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeshTarget {
+    pub peer_id: Uuid,
+    pub agent_id: Uuid,
+    pub project_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeshToolScope {
+    pub targets: Vec<MeshTarget>,
+    pub max_submissions: usize,
+    pub max_timeout_seconds: u64,
+    pub max_output_bytes: usize,
+}
+impl MeshToolScope {
+    pub fn validate(&self) -> Result<()> {
+        if self.targets.is_empty()
+            || self.targets.len() > 16
+            || !(1..=4).contains(&self.max_submissions)
+            || !(1..=600).contains(&self.max_timeout_seconds)
+            || !(1..=MAX_RUN_OUTPUT_BYTES).contains(&self.max_output_bytes)
+        {
+            return Err(MeshError::input("invalid owner-selected Mesh tool scope"));
+        }
+        for target in &self.targets {
+            validate_name(&target.project_id)?;
+        }
+        Ok(())
+    }
 }
 impl AgentConfig {
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.agent.name)?;
         validate_name(&self.agent.project_id)?;
+        if self.adapter.mesh_server.is_some() != self.adapter.mesh_scope.is_some()
+            || (self.adapter.mesh_server.is_some() && self.agent.harness != HarnessKind::Pi)
+        {
+            return Err(MeshError::input(
+                "Mesh tools require both owner-selected paths and the Pi adapter",
+            ));
+        }
         if self.agent.mode != "managed"
             || !self.project.root.is_absolute()
             || !self.adapter.executable.is_absolute()
@@ -536,6 +579,8 @@ impl AgentConfig {
             &self.adapter.node_executable,
             &self.adapter.models_file,
             &self.adapter.credential_source,
+            &self.adapter.mesh_server,
+            &self.adapter.mesh_scope,
         ]
         .into_iter()
         .flatten()

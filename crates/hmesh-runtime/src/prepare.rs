@@ -179,8 +179,27 @@ pub fn prepare(config: &AgentConfig, task: &TaskRecord, directory: &Path) -> Res
                     "--model",
                     model,
                     "--tools",
-                    &config.project.allowed_tools.join(","),
+                    &if config.adapter.mesh_server.is_some() {
+                        format!(
+                            "{},mcp__harnessmesh__*",
+                            config.project.allowed_tools.join(",")
+                        )
+                    } else {
+                        config.project.allowed_tools.join(",")
+                    },
                 ]);
+            if let Some(server) = &config.adapter.mesh_server {
+                let data_dir = directory
+                    .parent()
+                    .and_then(Path::parent)
+                    .context("managed node directory unavailable")?;
+                let registration = json!({"command":native_path(server),"args":["--data-dir",native_path(data_dir),"--parent-task",task.task_id.to_string()],"env":{"DEEPSEEK_API_KEY":""},"exposure":"direct","timeout":45});
+                let extension = root.join("harnessmesh.mjs");
+                hmesh_security::atomic_write(&extension,format!("export default function(pi) {{ pi.registerMcpServer('harnessmesh', {}); }}\n",serde_json::to_string(&registration)?).as_bytes())?;
+                command
+                    .args(["--extension", "builtin:mcp", "--extension"])
+                    .arg(extension);
+            }
             let mut bytes =
                 serde_json::to_vec(&json!({"id":task.task_id,"type":"prompt","message":prompt}))?;
             bytes.push(b'\n');

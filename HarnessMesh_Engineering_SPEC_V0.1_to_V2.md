@@ -2,7 +2,7 @@
 
 > **Engineering Specification / 可交给 Coding Agent 实施的工程规格**  
 > 工作名称：`HarnessMesh`（暂定，不代表已核验名称可用性）  
-> 文档版本：`SPEC 1.6` · 2026-10-29  
+> 文档版本：`SPEC 1.7` · 2026-10-29  
 > 覆盖发布：**V0 → V0.1 → V0.2 → V0.3 → V1 → V2**  
 > 实现语言：Rust 为主；Harness 专用桥接层可选 TypeScript / Python  
 > 项目定位：**独立开源项目**；不依赖 AgentMeld，也不复制 AgentMeld 的团队工作台。  
@@ -640,6 +640,20 @@ Pi 实际 write/read `out/health.json`，独立 JSON 断言与 Windows 通过 SS
 
 修复不改写第 7.11 节历史 FAILED，也没有用新生成代码覆盖正在试用的原服务端。隔离生成文件按 SHA-256 核验并保存在私有运行记录。实现决策见 ADR 0003；执行入口为 `scripts/retest-pi-output.ps1`，脱敏结果见 `docs/evidence/latest-pi-output-regression.json`。最终两端回归数量见该报告；原应用继续通过专用 SSH 应用隧道运行。
 
+### 7.13 SSH 双向与断线恢复（2026-10-29）
+
+Windows→Orion Pi/Flash 与 Orion→Windows DSH/Pro 的真实任务均已通过。反向 DSH 在 RUNNING 时切断专用 Mesh 隧道，并正常停止 Orion 发起端 Daemon；Windows 执行继续，断线期间完成。发起端沿用原身份和数据库重启、恢复隧道后，观察到相同 task/attempt，补读 10 条后续事件且与执行端 seq 序列一致。重复相同 request_id/正文没有新增 attempt 或运行事件，工件 hash 不变。该结果覆盖 SSH 中断与发起端正常重启，执行端硬崩溃/脱离进程组的子进程仍另行验收。
+
+正常正向任务为 `3f090707-fcd3-46da-8f8e-7bd0162387dd`，反向任务为 `35c153a8-07e8-4b8d-88cf-8716f5212e72`，均 SUCCEEDED 并通过独立 JSON/hash 断言。首条正向任务因同机 Daemon 停止被取消、DSH 首次产物路径不符等过程事实均保留，详见 `docs/ssh-bidirectional-mcp.md`。这些检查点继续使用 SSH，不勾选完整 Tailnet/Codex/Mac↔Windows 的 V0.1 发布门禁。
+
+### 7.14 Managed Pi 原生 MCP 主动委派（2026-10-29）
+
+新增 Rust `hmesh-mcp`，提供五个 stdio 工具，固定连接本机 owner RPC。Pi 1.4.0 的 owner Agent 配置可显式选择 `mesh_server` 和 `mesh_scope`；Runtime 只额外加载原生 `builtin:mcp` 和本次生成的注册扩展，不导入用户 MCP 配置。工具限制到精确 peer/Agent/project 和有限次数，提交仍需执行端独立批准，模型没有 approve/policy 接口。
+
+真实 Orion Pi/Flash 父任务 `6b268118-6f6c-4b24-99cd-89248653b523` 亲自调用发现节点、发现 Agent、提交和查询工具，创建 Windows DSH 子任务 `15536b80-bf73-44fc-bb8c-e51a828a51fc`。runner 观察到子任务 PENDING_APPROVAL 且无 attempt，再从 Windows owner CLI 批准。父子任务都 SUCCEEDED，nonce 和回传 artifact SHA-256 与两端实际文件一致。取消工具的真实模型调用、DSH 作为 MCP caller 尚未计入通过范围。
+
+SQLite schema 3 原子保存 parent/request/child 绑定和额度，跨进程重启仍生效；父任务结束、目标越界、其他父任务的 child_id、未知执行参数和超限输入均拒绝。断线不释放额度、不自动换 UUID 重跑。普通测试使用合成身份/任务和真实 stdio/TLS 进程，真实模型证据单独记录。配置与边界见 `docs/mcp.md`，结果见 `docs/evidence/latest-ssh-mcp-smoke.json`。
+
 ## 8. CLI 与 MCP Tool 规范
 
 ### 8.1 命令列表（拟定 CLI）
@@ -690,8 +704,8 @@ CLI 输出两种模式：人类可读表格和 `--json` 稳定机器格式。`--
 ```text
 mesh_list_peers()
 mesh_list_agents(peer_id?)
-mesh_get_task(task_id)
-mesh_submit_task(agent_id, project_id, goal, acceptance?)
+mesh_get_task(task_id, after?, wait_seconds?)
+mesh_submit_task(peer_id, agent_id, project_id, request_id, goal, timeout_seconds?, max_output_bytes?)
 mesh_cancel_task(task_id)
 ```
 
@@ -709,6 +723,8 @@ mesh_request_retest(task_id, test_contract_id)
 - MCP 模型调用不会自动获得 approval token；用户批准应经过本机 CLI/GUI 或受信任的本机授权策略。
 - 对远端对象列表/日志/工件中的文本执行**不可信输入处理**；MCP 工具结果不能作为扩大权限的指令。
 - 最新 MCP 协议有不同 SDK 主版本。应在实现时锁定经过集成测试的 SDK 版本，并记录兼容矩阵。
+
+当前实现锁定 MCP 2025-11-25 stdio/tools 子集，复用现有 Rust 依赖而未引入额外 SDK。Pi 1.4.0 原生客户端互操作已实测。服务器要求正在运行且由 owner 启用 Mesh scope 的 Managed Parent；精确参数、权限和部署入口以 `docs/mcp.md` 为准。acceptance/test-contract 工具参数留待 V0.2。
 
 ---
 
@@ -1042,7 +1058,7 @@ max_service_lease_seconds = 3600
 #### W08 — CLI + MCP 最小集
 
 - [ ] `peers`, `agents`, `task send/show/watch/cancel`。
-- [ ] 本地 stdio MCP Server 工具与 schema，支持一条从 Harness tool 发起的远端任务。
+- [x] 本地 stdio MCP Server 工具与 schema，支持一条从 Harness tool 发起的远端任务（Pi 1.4.0 → DSH，SSH 检查点）
 - **验收**：Codex/Pi 中调用 `mesh_submit_task` 可触发经批准的远端真实 Run。
 
 #### W09 — V0.1 E2E 与文档

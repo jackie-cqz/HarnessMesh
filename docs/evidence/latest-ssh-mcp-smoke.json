@@ -1,0 +1,337 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-29T12:08:01.0307014Z",
+  "local_date": "2026-10-29",
+  "status": "passed",
+  "baseline_commit": "db8fa7a695716e22b58c9c3516e4354d3171222c",
+  "scope": "SSH bidirectional tasks, in-flight tunnel cut with origin graceful restart, event replay/deduplication, and Pi native MCP delegation",
+  "nodes": {
+    "windows": "542d4e55-667d-4704-8413-a5cf88c200f3",
+    "orion": "f2515a0a-2901-4636-9cb8-816aa0b553a3"
+  },
+  "transport": "SSH forwards over existing cqz_Orion; independent Node HTTPS/mTLS identities and per-project grants",
+  "forward": {
+    "harness": "Pi 1.4.0",
+    "task": {
+      "task_id": "3f090707-fcd3-46da-8f8e-7bd0162387dd",
+      "status": "SUCCEEDED",
+      "attempt_id": "5ec8e5e4-d7a3-42b5-bccd-b9050e054e08",
+      "origin_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+      "target_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+      "agent_id": "e4d66d8e-1547-4883-a339-5a0a4a961dc7",
+      "project_id": "phase12-worker-d717d5d06f2846a4b41c51c79d7e53a9",
+      "error": null
+    },
+    "model": "deepseek/deepseek-v4-flash",
+    "verification": {
+      "artifact": {
+        "name": "out/forward.json",
+        "sha256": "54969d7cb238435c71a2007a83f229f822c8db21d2fe145d1b872b17282f0d24",
+        "size_bytes": 93
+      },
+      "assertions": [
+        {
+          "field": "direction",
+          "passed": true
+        },
+        {
+          "field": "nonce",
+          "passed": true
+        },
+        {
+          "field": "status",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "verifier": "deterministic-json-subset-v1"
+    },
+    "artifact": {
+      "json": {
+        "status": "ok",
+        "direction": "windows-to-orion",
+        "nonce": "43b657fd-ffde-4dd9-95de-e13ceeec68ce"
+      },
+      "sha256": "54969d7cb238435c71a2007a83f229f822c8db21d2fe145d1b872b17282f0d24",
+      "bytes": 93
+    }
+  },
+  "reverse": {
+    "artifact_path": "reverse.json",
+    "artifact": {
+      "bytes": 93,
+      "sha256": "2311db9f117fae0ed01bd6ff30989620c5edef3e9abbb6dca1f7d84eccc83c95",
+      "json": {
+        "status": "ok",
+        "direction": "orion-to-windows",
+        "nonce": "67e900d1-4151-4d49-b7e9-a6b526a7c8ac"
+      }
+    },
+    "model": "deepseek-official/deepseek-v4-pro",
+    "verification": {
+      "artifact": {
+        "name": "reverse.json",
+        "sha256": "2311db9f117fae0ed01bd6ff30989620c5edef3e9abbb6dca1f7d84eccc83c95",
+        "size_bytes": 93
+      },
+      "assertions": [
+        {
+          "field": "direction",
+          "passed": true
+        },
+        {
+          "field": "nonce",
+          "passed": true
+        },
+        {
+          "field": "status",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "verifier": "deterministic-json-subset-v1"
+    },
+    "harness": "DSH 0.2.0-rc.2",
+    "task": {
+      "task_id": "35c153a8-07e8-4b8d-88cf-8716f5212e72",
+      "status": "SUCCEEDED",
+      "attempt_id": "42e0b2b0-3926-4761-8743-cd40991afd7b",
+      "origin_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+      "target_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+      "agent_id": "a3f4f4a6-dca3-4e11-8925-f1db8fbd479f",
+      "project_id": "phase12-dsh-d717d5d06f2846a4b41c51c79d7e53a9",
+      "error": null
+    }
+  },
+  "fault": {
+    "complete_event_sequences_equal": true,
+    "origin_reused_same_identity_and_database": true,
+    "execution_terminal_utc": "2026-10-29T11:41:12.0000000+00:00",
+    "artifact_sha256_before_duplicate": "2311db9f117fae0ed01bd6ff30989620c5edef3e9abbb6dca1f7d84eccc83c95",
+    "execution_finished_offline": {
+      "task_id": "35c153a8-07e8-4b8d-88cf-8716f5212e72",
+      "status": "SUCCEEDED",
+      "attempt_id": "42e0b2b0-3926-4761-8743-cd40991afd7b",
+      "origin_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+      "target_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+      "agent_id": "a3f4f4a6-dca3-4e11-8925-f1db8fbd479f",
+      "project_id": "phase12-dsh-d717d5d06f2846a4b41c51c79d7e53a9",
+      "error": null
+    },
+    "origin_restored_utc": "2026-10-29T11:44:45.7271206Z",
+    "event_cursor_before_cut": 3,
+    "compared_event_count": 13,
+    "replay_record_sha256": "0dbe57f5a10cd5a0f68aa8395ac905a5de7bde8d4daa0915f2a7d6ed3795b959",
+    "artifact_sha256_after_duplicate": "2311db9f117fae0ed01bd6ff30989620c5edef3e9abbb6dca1f7d84eccc83c95",
+    "first_seq": 1,
+    "last_seq": 13,
+    "duplicate_request_kept_same_task_attempt_and_event_count": true,
+    "origin_daemon_stopped": true,
+    "cut_and_origin_stop_utc": "2026-10-29T11:41:07.4307958Z",
+    "replayed_events_after_cursor": 10,
+    "observed_running_before_cut": {
+      "task_id": "35c153a8-07e8-4b8d-88cf-8716f5212e72",
+      "status": "RUNNING",
+      "attempt_id": "42e0b2b0-3926-4761-8743-cd40991afd7b",
+      "origin_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+      "target_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+      "agent_id": "a3f4f4a6-dca3-4e11-8925-f1db8fbd479f",
+      "project_id": "phase12-dsh-d717d5d06f2846a4b41c51c79d7e53a9",
+      "error": null
+    }
+  },
+  "native_mcp": {
+    "client": "Pi 1.4.0 built-in MCP",
+    "child_artifact": {
+      "json": {
+        "status": "ok",
+        "origin": "pi-native-mcp",
+        "nonce": "41a7eebf-bea0-4f6b-9205-8798fcdc574b"
+      },
+      "bytes": 87,
+      "sha256": "f5b6560b496da622985143e6f3dd4a170cea1e6a42ba17e4f43dd6c572697b96"
+    },
+    "parent_artifact": {
+      "json": {
+        "child_task_id": "15536b80-bf73-44fc-bb8c-e51a828a51fc",
+        "child_status": "SUCCEEDED",
+        "nonce": "41a7eebf-bea0-4f6b-9205-8798fcdc574b",
+        "child_sha256": "f5b6560b496da622985143e6f3dd4a170cea1e6a42ba17e4f43dd6c572697b96"
+      },
+      "sha256": "8873b0f8b731d4e71bf4645544f8668342d046d4755903cadcee1db48dd8adca",
+      "bytes": 230
+    },
+    "child_model": "deepseek-v4-pro",
+    "parent_task": {
+      "task_id": "6b268118-6f6c-4b24-99cd-89248653b523",
+      "status": "SUCCEEDED",
+      "attempt_id": "1c3bdb8c-7ff1-48b1-a09d-3f41c1468993",
+      "origin_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+      "target_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+      "agent_id": "f46b9461-eab9-4665-be92-7ffc015b4a49",
+      "project_id": "phase12-parent-d717d5d06f2846a4b41c51c79d7e53a9",
+      "error": null
+    },
+    "child_task": {
+      "task_id": "15536b80-bf73-44fc-bb8c-e51a828a51fc",
+      "status": "SUCCEEDED",
+      "attempt_id": "e17e5921-2f41-47f5-866a-e130f6dd1d50",
+      "origin_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+      "target_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+      "agent_id": "a3f4f4a6-dca3-4e11-8925-f1db8fbd479f",
+      "project_id": "phase12-dsh-d717d5d06f2846a4b41c51c79d7e53a9",
+      "error": null
+    },
+    "owner_scope": {
+      "targets": [
+        {
+          "peer_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+          "agent_id": "a3f4f4a6-dca3-4e11-8925-f1db8fbd479f",
+          "project_id": "phase12-dsh-d717d5d06f2846a4b41c51c79d7e53a9"
+        }
+      ],
+      "max_submissions": 1,
+      "max_timeout_seconds": 300,
+      "max_output_bytes": 1048576
+    },
+    "persistent_parent_child_budget_table": "tool_submissions",
+    "child_verification": {
+      "artifact": {
+        "name": "child.json",
+        "sha256": "f5b6560b496da622985143e6f3dd4a170cea1e6a42ba17e4f43dd6c572697b96",
+        "size_bytes": 87
+      },
+      "assertions": [
+        {
+          "field": "nonce",
+          "passed": true
+        },
+        {
+          "field": "origin",
+          "passed": true
+        },
+        {
+          "field": "status",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "verifier": "deterministic-json-subset-v1"
+    },
+    "raw_owner_tokens_or_model_keys_in_tools": false,
+    "child_before_independent_approval": {
+      "task_id": "15536b80-bf73-44fc-bb8c-e51a828a51fc",
+      "status": "PENDING_APPROVAL",
+      "attempt_id": null,
+      "origin_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+      "target_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+      "agent_id": "a3f4f4a6-dca3-4e11-8925-f1db8fbd479f",
+      "project_id": "phase12-dsh-d717d5d06f2846a4b41c51c79d7e53a9",
+      "error": null
+    },
+    "parent_event_record_sha256": "113e59bff23730bedba266a7212fa3f517dd095a2d47a756692190e9dcec7b39",
+    "approval_method": "User-authorized runner used Windows owner CLI; the model had no approve tool",
+    "server": "Rust hmesh-mcp",
+    "parent_child_nonce_and_hash_match": true,
+    "caller_model": "deepseek-v4-flash",
+    "normalized_parent_event_count": 238,
+    "protocol": "2025-11-25 stdio tools subset",
+    "actual_native_tool_names": [
+      "mcp__harnessmesh__mesh_get_task",
+      "mcp__harnessmesh__mesh_list_agents",
+      "mcp__harnessmesh__mesh_list_peers",
+      "mcp__harnessmesh__mesh_submit_task"
+    ]
+  },
+  "validation": {
+    "linux_test_exit": 0,
+    "windows_fmt": "passed",
+    "database_schema": 3,
+    "third_party_package_count": 232,
+    "linux_report_sha256": "6897a675d90cd2aecf33576ed0c29eeec4881bedaeb76728ab9802dc7ce23150",
+    "windows_clippy_warnings_denied": "passed",
+    "windows_workspace_build": "passed",
+    "linux_build_exit": 0,
+    "windows_tests_failed": 0,
+    "linux_tests_passed": 45,
+    "runtime_fixture_tests_separate_from_real_models": true,
+    "stdio_handshake_framing_scope_and_budget_process_tests": "passed",
+    "third_party_package_versions_and_checksums_unchanged": true,
+    "linux_tests_failed": 0,
+    "schema2_historical_task_preservation_test": "passed",
+    "windows_tests_passed": 46,
+    "final_cargo_lock_sha256": "5686e4393a5cdf1ea976f236ff9e3bfe3fdc2ab5ec5abf5c5293a740b8a6782c"
+  },
+  "builds": {
+    "final_linux_binaries": {
+      "mcp": "1632213f15a394925b81f035b5a7dd7da80c2ad26edb599b452515e004c9b405",
+      "hmesh": "eb0c0b639c792f14dd8e50a305df1d2abae30b471136e599a94bd843c2415a7f"
+    },
+    "note": "After real smoke, explicit tool timeout validation was tightened and stdio/schema-migration regression tests added; allowed real task parameters and runtime/delegation paths are unchanged. Executing and final hashes are separate.",
+    "executing_source_snapshot_sha256": "0260e29ab35aabe337109865e6d77a3c6e98209b730dd29689cc8f76c2ddb41f",
+    "executing_linux_binaries": {
+      "hmesh": "eb0c0b639c792f14dd8e50a305df1d2abae30b471136e599a94bd843c2415a7f",
+      "hmesh-mcp": "9bfc77aa61e36cf3664a66e0a45bcf4fc79356a981e019d2d000e0c4213eb363"
+    },
+    "final_source_hashes": {
+      "crates/hmesh-core/src/lib.rs": "02c479b8946f8e866387a04823e86e3e547e23214fed48da60e4a60ce5c5fd28",
+      "crates/hmesh-store/src/lib.rs": "107d86889bd34cbb937588c4e14251f5598240c33da4a529901a5b5ea364dfef",
+      "crates/hmesh-store/migrations/003_tool_submissions.sql": "7e65eb8d653ac97efe46160cf9bfa4dac8e8b62a51d72307f7903916b99ff61d",
+      "crates/hmesh-mcp/src/lib.rs": "ee03cc580fa18284c1278abb2402a77c5088cfca378ee6d25566114c56eadbca",
+      "crates/hmesh-mcp/src/main.rs": "8392706dd1b591dfebfe1a650d14b7c66313938ae15ea880e87b9ef0166fdf11",
+      "crates/hmesh-runtime/src/prepare.rs": "0a090d371ea465277b56758289b67a97b79cee7fe3772590132e53de6f7a423b",
+      "crates/hmesh-daemon/src/lib.rs": "82017ce3bbb59f00e39884293b3e5ad1e258d3ffb8dab85b8d0b095c9b297924",
+      "scripts/phase12-session.ps1": "c76869a78d7817d4d967a1fade60cd1a4bdf36b5ac53bc06cbbb193303789f00",
+      "scripts/phase12-remote.py": "4f6d5bc088d5a378cbb6364d919a7d98bbb3cdfc996908139d87d22d69bb1c06"
+    },
+    "final_windows_binaries": {
+      "mcp": "73d765e39f1ac0d3a14594f4328f397e47121dee3e493ab1a246c5f66525e863",
+      "hmesh": "5e05d5bb22ce7b31bff8f1f7de31ddf6ca1d2c055d47d5922b64ba6d88649e6c"
+    }
+  },
+  "retained_deviations": {
+    "owner_granted_actual_path_and_verified_content": true,
+    "original_missing_artifact_event_retained": true,
+    "actual_file_moved_or_rewritten_by_runner": false,
+    "initial_windows_policy_empty_grant_parse_error": "Retained operational observation; grant=[] removed before adding array entries; existing model verifications were reused",
+    "reverse_actual_path": "reverse.json",
+    "cancellation_reason": "Orion graceful stop during reverse fault injection also stopped the concurrent forward task; an inspected known terminal cancellation was followed by a separate normal forward smoke with a new nonce/request",
+    "cancelled_initial_forward": [
+      {
+        "task_id": "603c1ca9-3c28-447f-b4a9-62681f0dc1d0",
+        "status": "CANCELLED",
+        "attempt_id": "abab2306-06bf-4cde-97db-815af620f2bd",
+        "origin_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+        "target_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+        "agent_id": "e4d66d8e-1547-4883-a339-5a0a4a961dc7",
+        "project_id": "phase12-worker-d717d5d06f2846a4b41c51c79d7e53a9",
+        "error": null
+      }
+    ],
+    "reverse_requested_path": "out/reverse.json"
+  },
+  "cleanup": {
+    "original_todo_health": {
+      "status": "ok",
+      "service": "orion-todo-api",
+      "node": "Orion"
+    },
+    "policies_restored": true,
+    "authoring_daemons_and_mesh_tunnel_stopped": true,
+    "original_7892_listener_present": true,
+    "database_backed_up_before_schema_change": true,
+    "application_left_running": true
+  },
+  "limitations": [
+    "Real MCP caller verified for managed Pi 1.4.0; DSH is the target, not a verified MCP caller.",
+    "Native model smoke exercised discovery, submission and query; MCP cancellation has automated boundary coverage, not a claimed real model call.",
+    "Fault smoke covers tunnel disconnection and origin graceful restart; execution-side hard crash/detached-process cleanup, Tailscale, Codex and full V0.1 are separate.",
+    "Owner scope and tool restrictions do not provide OS user isolation. Parent completion does not implicitly cancel independently approved child tasks."
+  ],
+  "references": [
+    "docs/ssh-bidirectional-mcp.md",
+    "docs/mcp.md",
+    "scripts/phase12-session.ps1",
+    "scripts/phase12-remote.py"
+  ]
+}

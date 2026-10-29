@@ -16,7 +16,13 @@ Adapter 采用参数数组直接启动本机 owner 指定的实际 Node/原生�
 
 SSH 试验新增 owner 显式的 `node_executable`、`models_file` 和 `credential_source` 引用。认证文件引用只支持 Pi/DeepSeek 的 api_key：在执行端内存中读取后注入受控子进程，加入日志脱敏，不复制原文件、不修改认证内容、不传给发起端。模型引用只复制所选模型的非认证元数据，限制到官方 HTTPS API origin，丢弃 provider key/header 并拒绝模型内嵌认证字段。其他 provider/OAuth 认证导入仍不支持。未配置引用时不读取个人认证文件。
 
-Pi 关闭扩展、skills、上下文自动加载和交互审批；DSH 使用验证过的只读写编辑工具集和拒绝提权的 headless 策略；OpenCode 使用 pure 模式、隔离配置、显式 deny 默认权限和允许工具。原生权限策略仍是 Harness 自身的一部分。**固定工作目录和工具 allowlist 不构成 OS 文件系统沙箱**；本机进程拥有当前 Windows 用户的底层权限，只应登记用于测试的独立项目。凭据只在受控子进程环境中使用，不在注册配置保存值。
+Pi 默认关闭扩展、skills、上下文自动加载和交互审批；DSH 使用验证过的只读写编辑工具集和拒绝提权的 headless 策略；OpenCode 使用 pure 模式、隔离配置、显式 deny 默认权限和允许工具。owner 显式启用 Mesh 工具时，仅 Pi 1.4.0 额外加载 `builtin:mcp` 与当前 attempt 生成的固定注册扩展。原生权限策略仍是 Harness 自身的一部分。**固定工作目录和工具 allowlist 不构成 OS 文件系统沙箱**；本机进程拥有当前 Windows 用户的底层权限，只应登记用于测试的独立项目。凭据只在受控子进程环境中使用，不在注册配置保存值。
+
+## Managed Parent 的 MCP 权限
+
+`hmesh-mcp` 是 owner 选择的本机程序，持有 Node 本机 RPC 客户端身份；模型只看到五个固定工具，不得到私有 token、任意路径读取、策略修改或 approve 接口。scope 文件由 owner 指定，限制精确 peer/Agent/project、单父任务 1–4 次提交和子任务限额。目标还需通过原有 mTLS、当前信任、项目 grant 与独立执行端审批。
+
+父任务必须仍为 RUNNING，每次调用检查当前 scope；get/cancel 还验证持久化 parent→child 归属及当前目标绑定。schema 3 原子预留提交额度，失联仍占额度，同一 UUID 只能重发相同 payload。工具结果保留不可信数据语义；未知参数、跨父任务读取和未授权目标均拒绝。模型不能靠工具自行批准子任务。MCP 子进程的 DEEPSEEK_API_KEY 被置空，模型供应商凭据不通过工具协议传送。scope 不构成 OS 沙箱；信任本机 MCP 程序及其进程权限仍是 owner 的责任。详见 `docs/mcp.md`。
 
 已知凭据值在 text delta（包括跨 delta 的值）、工具事件文本和 stderr 中脱敏。原生工具参数和输出不作为公共事件转发。不要主动把密钥放入任务正文、工件或输出；任务正文和运行历史是需要私有保存的数据。未承诺对任意编码/变换后的秘密进行识别。
 
@@ -34,4 +40,4 @@ SQLite 去重避免同一请求创建第二次尝试，不承诺跨外部副作�
 
 `cargo run --locked -p xtask -- audit` 通过官方 OSV querybatch 查询整个锁文件（包含其他目标平台），处理分页且遇到不完整结果直接失败。报告含时间和锁文件 hash。安全数据库随时间变化，需要在发布前重新执行；最近一次报告位于 `docs/evidence/dependency-audit.json`。
 
-真实验收已覆盖 V0 本机 Windows，以及一次 Windows→Orion/Linux 的 SSH/mTLS/Pi Flash 任务。后者的运行完成和受控进程清理已验证；Unix 硬崩溃时对 detached 子进程的清理仍不在已验证能力内。CI 已配置 Windows/macOS/Linux，尚无远端 CI 执行证据；完整 V0.1 的其他跨设备链路仍需独立验收。见 `docs/ssh-first-smoke.md`。
+真实验收已覆盖 V0 本机 Windows、SSH 双向 Pi/DSH、断线与发起端重启后的补读/去重，以及 Pi 1.4.0 原生 MCP 委派 DSH 的独立审批和父子产物核验。Unix 硬崩溃时对 detached 子进程的清理仍不在已验证能力内。Windows 和 Orion/Linux 本地回归已执行；CI 已配置三平台，尚无远端 CI 执行证据。完整 V0.1 的 Tailscale、Codex/Mac↔Windows 链路仍需验收。见 `docs/ssh-bidirectional-mcp.md`。

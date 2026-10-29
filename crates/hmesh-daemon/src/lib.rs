@@ -616,6 +616,12 @@ async fn register_agent(
     )
     .await
     .map_err(internal)?;
+    if config.adapter.mesh_server.is_some() && probe.version.as_deref() != Some("1.4.0") {
+        return Err(ApiError(MeshError::new(
+            ErrorCode::AdapterNotSupported,
+            "native MCP registration is verified only for Pi 1.4.0",
+        )));
+    }
     let card = AgentCard {
         agent_id: Uuid::new_v4(),
         node_id: s.instance.card.node_id,

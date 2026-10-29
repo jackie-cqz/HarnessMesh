@@ -47,6 +47,8 @@ impl Fixture {
                 model: Some("fixture".into()),
                 credential_source: None,
                 env_allowlist,
+                mesh_server: None,
+                mesh_scope: None,
             },
         };
         let agent = AgentCard {
