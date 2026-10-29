@@ -1,0 +1,5 @@
+{"type":"session","sessionId":"fixture-session"}
+{"type":"tool_call","callId":"fixture-call","tool":"write","input":{}}
+{"type":"tool_result","callId":"fixture-call","status":"completed","result":"fixture result"}
+{"type":"status","phase":"turn_end","reason":"completed"}
+{"type":"final","text":"fixture complete"}

@@ -1,0 +1,7 @@
+{"type":"response","command":"prompt","success":true}
+{"type":"agent_start"}
+{"type":"tool_execution_start","toolName":"write"}
+{"type":"tool_execution_end","toolName":"write"}
+{"type":"message_end","message":{"role":"assistant","stopReason":"stop"}}
+{"type":"agent_end"}
+{"type":"agent_settled"}

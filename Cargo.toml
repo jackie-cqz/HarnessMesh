@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = ["crates/hmesh-core", "crates/hmesh-store", "crates/hmesh-security", "crates/hmesh-transport", "crates/hmesh-adapters", "crates/hmesh-runtime", "crates/hmesh-daemon", "crates/hmesh-cli", "test-support/hmesh-fixture", "xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "=1.0.104"
+async-trait = "=0.1.92"
+axum = "=0.8.9"
+base64 = "=0.22.1"
+bytes = "=1.12.1"
+clap = { version = "=4.5.57", features = ["derive", "env"] }
+hex = "=0.4.3"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.11.1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "=0.1.20", features = ["server-auto", "tokio", "service"] }
+rcgen = "=0.14.8"
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "json", "stream"] }
+ring = "=0.17.14"
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.151"
+subtle = "=2.6.1"
+tempfile = "=3.27.0"
+time = { version = "=0.3.47", features = ["serde", "formatting", "parsing"] }
+tokio = { version = "=1.53.3", features = ["full"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring"] }
+toml = "=0.9.12"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
+url = "=2.5.8"
+uuid = { version = "=1.22.0", features = ["v4", "serde"] }
+x509-parser = "=0.18.1"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+

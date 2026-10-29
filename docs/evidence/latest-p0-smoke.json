@@ -1,0 +1,805 @@
+{
+  "schema_version": 2,
+  "date": "2026-10-28",
+  "scope": "V0 Windows two-node real Harness smoke",
+  "status": "passed",
+  "os": "Microsoft Windows NT 10.0.19045.0",
+  "arch": "AMD64",
+  "rust": "rustc 1.90.0 (1159e78c4 2025-09-14)",
+  "binary_sha256": "aa624a14c07b9a8de671848ea9ce198ccba3e517ce3e699bc99b0c987e2c13c7",
+  "cargo_lock_sha256": "0ab5f209aabb44cb146478a49ab522851d7bea71625824123bafbf5ad2d53a58",
+  "harnesses": {
+    "pi": {
+      "package": "@earendil-works/pi-coding-agent",
+      "version": "0.84.2",
+      "configured_shim": "C:/Users/jackie/AppData/Roaming/npm/pi.cmd",
+      "actual_entry": "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
+      "entry_sha256": "840d1e8e689ed9e4937bcb00b9a810e02a8567d9afb10a47097f11ca93ea1521",
+      "program": "C:\\Program Files\\nodejs\\node.exe",
+      "argument_template": [
+        "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
+        "--mode",
+        "rpc",
+        "--offline",
+        "--no-session",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-context-files",
+        "--no-themes",
+        "--no-approve",
+        "--provider",
+        "deepseek",
+        "--model",
+        "deepseek-v4-pro",
+        "--tools",
+        "read,write,edit"
+      ],
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "input": "JSON RPC prompt on stdin; EOF after agent_settled"
+    },
+    "opencode": {
+      "package": "opencode-ai",
+      "version": "1.18.20",
+      "configured_shim": "C:/Users/jackie/AppData/Roaming/npm/opencode.cmd",
+      "actual_entry": "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
+      "entry_sha256": "f2a2d233656b2bece64415169926d62bc335bfdfdda0842b763bf766a708b14e",
+      "program": "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
+      "argument_template": [
+        "run",
+        "--pure",
+        "--format",
+        "json",
+        "--dir",
+        "C:\\github works\\HarnessMesh\\.hmesh-v0\\acceptance-9369313213414b0e851e5f6bbce6992d\\project-opencode",
+        "--model",
+        "deepseek/deepseek-v4-pro",
+        "--",
+        "<task prompt>"
+      ],
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "input": "literal argv after --"
+    },
+    "dsh": {
+      "package": "@deepseek-ai/dsh",
+      "version": "0.2.0-rc.2",
+      "configured_shim": "C:/Users/jackie/AppData/Roaming/npm/dsh.cmd",
+      "actual_entry": "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
+      "entry_sha256": "1a03dee18683483ff6a1b27b2a1e650230da6bcca9a0f55f7d81b3308c3f307f",
+      "program": "C:\\Program Files\\nodejs\\node.exe",
+      "argument_template": [
+        "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
+        "--profile",
+        "headless",
+        "--patch",
+        "<per-attempt managed.patch.yml>",
+        "--json"
+      ],
+      "provider": "deepseek-official",
+      "model": "deepseek-v4-pro",
+      "input": "prompt on stdin"
+    }
+  },
+  "nodes": [
+    {
+      "node_id": "41bfab9d-bbf8-489e-b399-6b80c6478048",
+      "endpoint": "https://127.0.0.1:51978",
+      "fingerprint": "b7d40b1303c5b88e06744c2d958e2f729dda3eb2968cbd9ca38de39ada757291"
+    },
+    {
+      "node_id": "f75beede-e3f5-4fdb-97bd-80e69c19b0a5",
+      "endpoint": "https://127.0.0.1:51980",
+      "fingerprint": "c0fdccdc08bee56c518c77c17328aa53b87eb93ceeeccc7ebc642817047bb4de"
+    }
+  ],
+  "model": "deepseek-v4-pro",
+  "local_runs": [
+    {
+      "harness": "pi",
+      "task_id": "febf370c-3b7f-4c6e-9822-7a95e221ded0",
+      "attempt_id": "34961a54-564a-4a44-bf99-fb2d5149f23a",
+      "verification": {
+        "artifact": {
+          "name": "out/health.json",
+          "sha256": "2353e599d3788e32e4b76f48307fc34c880aad17382e6095285b9abb8e15af67",
+          "size_bytes": 81
+        },
+        "assertions": [
+          {
+            "field": "harness",
+            "passed": true
+          },
+          {
+            "field": "request_id",
+            "passed": true
+          },
+          {
+            "field": "status",
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "verifier": "deterministic-json-subset-v1"
+      }
+    },
+    {
+      "harness": "dsh",
+      "task_id": "ae14c4ff-51ec-4e3a-927e-845a6a397545",
+      "attempt_id": "4cd2b86b-4bd8-4251-b750-465e58590bda",
+      "verification": {
+        "artifact": {
+          "name": "out/health.json",
+          "sha256": "512e610aebd12e39543d097b277bed2234c396fd7e66ec463572e055e24dcef3",
+          "size_bytes": 83
+        },
+        "assertions": [
+          {
+            "field": "harness",
+            "passed": true
+          },
+          {
+            "field": "request_id",
+            "passed": true
+          },
+          {
+            "field": "status",
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "verifier": "deterministic-json-subset-v1"
+      }
+    },
+    {
+      "harness": "opencode",
+      "task_id": "6758e808-582e-4b77-ad5a-3badde2afe6a",
+      "attempt_id": "b1ff861d-b206-43f0-b5fb-aa98a5dfa725",
+      "verification": {
+        "artifact": {
+          "name": "out/health.json",
+          "sha256": "dee98282e4c4d323ec92b79c11a8f4f66ea01ac9b8d455bdeb0048c3133dedbc",
+          "size_bytes": 93
+        },
+        "assertions": [
+          {
+            "field": "harness",
+            "passed": true
+          },
+          {
+            "field": "request_id",
+            "passed": true
+          },
+          {
+            "field": "status",
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "verifier": "deterministic-json-subset-v1"
+      }
+    }
+  ],
+  "remote_runs": [
+    {
+      "harness": "dsh",
+      "origin_node_id": "41bfab9d-bbf8-489e-b399-6b80c6478048",
+      "execution_node_id": "f75beede-e3f5-4fdb-97bd-80e69c19b0a5",
+      "request_id": "c3054a57-81ea-4010-8aa9-0aec68f8ed92",
+      "task_id": "c3054a57-81ea-4010-8aa9-0aec68f8ed92",
+      "attempt_id": "fef146c1-33bf-4aaa-8852-c7131719e41f",
+      "status": "SUCCEEDED",
+      "verification": {
+        "artifact": {
+          "name": "out/health.json",
+          "sha256": "58c49c9203fe04f6c229ca06c5aee3ae3d14a608b8f97a6d039589b522528113",
+          "size_bytes": 97
+        },
+        "assertions": [
+          {
+            "field": "harness",
+            "passed": true
+          },
+          {
+            "field": "request_id",
+            "passed": true
+          },
+          {
+            "field": "status",
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "verifier": "deterministic-json-subset-v1"
+      },
+      "event_count": 17,
+      "event_trace": [
+        {
+          "seq": 1,
+          "event_type": "status",
+          "kind": null,
+          "status": "PENDING_APPROVAL",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 2,
+          "event_type": "status",
+          "kind": null,
+          "status": "QUEUED",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 3,
+          "event_type": "status",
+          "kind": null,
+          "status": "RUNNING",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 4,
+          "event_type": "run",
+          "kind": "started",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 5,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "write",
+          "phase": "started",
+          "sha256": null
+        },
+        {
+          "seq": 6,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "write",
+          "phase": "error",
+          "sha256": null
+        },
+        {
+          "seq": 7,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "read",
+          "phase": "started",
+          "sha256": null
+        },
+        {
+          "seq": 8,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "read",
+          "phase": "completed",
+          "sha256": null
+        },
+        {
+          "seq": 9,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "write",
+          "phase": "started",
+          "sha256": null
+        },
+        {
+          "seq": 10,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "write",
+          "phase": "completed",
+          "sha256": null
+        },
+        {
+          "seq": 11,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "read",
+          "phase": "started",
+          "sha256": null
+        },
+        {
+          "seq": 12,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "read",
+          "phase": "completed",
+          "sha256": null
+        },
+        {
+          "seq": 13,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 14,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 15,
+          "event_type": "artifact",
+          "kind": null,
+          "status": null,
+          "tool": "out/health.json",
+          "phase": null,
+          "sha256": "58c49c9203fe04f6c229ca06c5aee3ae3d14a608b8f97a6d039589b522528113"
+        },
+        {
+          "seq": 16,
+          "event_type": "status",
+          "kind": null,
+          "status": "SUCCEEDED",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 17,
+          "event_type": "verification",
+          "kind": null,
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        }
+      ],
+      "replay_passed": true,
+      "dedup_passed": true
+    },
+    {
+      "harness": "pi",
+      "origin_node_id": "f75beede-e3f5-4fdb-97bd-80e69c19b0a5",
+      "execution_node_id": "41bfab9d-bbf8-489e-b399-6b80c6478048",
+      "request_id": "fe27e683-e646-4f15-b19b-1228eaaf44a2",
+      "task_id": "fe27e683-e646-4f15-b19b-1228eaaf44a2",
+      "attempt_id": "1afbe0a0-2970-4e16-b683-759ab549a9ef",
+      "status": "SUCCEEDED",
+      "verification": {
+        "artifact": {
+          "name": "out/health.json",
+          "sha256": "9bdbbc0a018fc6882de3fbdca950fea5af3d0d21b3284c5a89999cbca05d7f38",
+          "size_bytes": 96
+        },
+        "assertions": [
+          {
+            "field": "harness",
+            "passed": true
+          },
+          {
+            "field": "request_id",
+            "passed": true
+          },
+          {
+            "field": "status",
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "verifier": "deterministic-json-subset-v1"
+      },
+      "event_count": 26,
+      "event_trace": [
+        {
+          "seq": 1,
+          "event_type": "status",
+          "kind": null,
+          "status": "PENDING_APPROVAL",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 2,
+          "event_type": "status",
+          "kind": null,
+          "status": "QUEUED",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 3,
+          "event_type": "status",
+          "kind": null,
+          "status": "RUNNING",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 4,
+          "event_type": "run",
+          "kind": "started",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 5,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "write",
+          "phase": "tool_execution_start",
+          "sha256": null
+        },
+        {
+          "seq": 6,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "write",
+          "phase": "tool_execution_end",
+          "sha256": null
+        },
+        {
+          "seq": 7,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "read",
+          "phase": "tool_execution_start",
+          "sha256": null
+        },
+        {
+          "seq": 8,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "read",
+          "phase": "tool_execution_end",
+          "sha256": null
+        },
+        {
+          "seq": 9,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 10,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 11,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 12,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 13,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 14,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 15,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 16,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 17,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 18,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 19,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 20,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 21,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 22,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 23,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 24,
+          "event_type": "artifact",
+          "kind": null,
+          "status": null,
+          "tool": "out/health.json",
+          "phase": null,
+          "sha256": "9bdbbc0a018fc6882de3fbdca950fea5af3d0d21b3284c5a89999cbca05d7f38"
+        },
+        {
+          "seq": 25,
+          "event_type": "status",
+          "kind": null,
+          "status": "SUCCEEDED",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 26,
+          "event_type": "verification",
+          "kind": null,
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        }
+      ],
+      "replay_passed": true,
+      "dedup_passed": true
+    },
+    {
+      "harness": "opencode",
+      "origin_node_id": "41bfab9d-bbf8-489e-b399-6b80c6478048",
+      "execution_node_id": "f75beede-e3f5-4fdb-97bd-80e69c19b0a5",
+      "request_id": "3cde36c1-8a75-4107-afa1-64c7fe527f69",
+      "task_id": "3cde36c1-8a75-4107-afa1-64c7fe527f69",
+      "attempt_id": "e84495ce-ccd7-4ac2-b680-383389f3854f",
+      "status": "SUCCEEDED",
+      "verification": {
+        "artifact": {
+          "name": "out/health.json",
+          "sha256": "791978839daaf9b216340157e4281b9de347441b981c08a4e55a3771f3be2879",
+          "size_bytes": 102
+        },
+        "assertions": [
+          {
+            "field": "harness",
+            "passed": true
+          },
+          {
+            "field": "request_id",
+            "passed": true
+          },
+          {
+            "field": "status",
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "verifier": "deterministic-json-subset-v1"
+      },
+      "event_count": 12,
+      "event_trace": [
+        {
+          "seq": 1,
+          "event_type": "status",
+          "kind": null,
+          "status": "PENDING_APPROVAL",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 2,
+          "event_type": "status",
+          "kind": null,
+          "status": "QUEUED",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 3,
+          "event_type": "status",
+          "kind": null,
+          "status": "RUNNING",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 4,
+          "event_type": "run",
+          "kind": "started",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 5,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "write",
+          "phase": "completed",
+          "sha256": null
+        },
+        {
+          "seq": 6,
+          "event_type": "run",
+          "kind": "started",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 7,
+          "event_type": "run",
+          "kind": "tool_event",
+          "status": null,
+          "tool": "read",
+          "phase": "completed",
+          "sha256": null
+        },
+        {
+          "seq": 8,
+          "event_type": "run",
+          "kind": "started",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 9,
+          "event_type": "run",
+          "kind": "text_delta",
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 10,
+          "event_type": "artifact",
+          "kind": null,
+          "status": null,
+          "tool": "out/health.json",
+          "phase": null,
+          "sha256": "791978839daaf9b216340157e4281b9de347441b981c08a4e55a3771f3be2879"
+        },
+        {
+          "seq": 11,
+          "event_type": "status",
+          "kind": null,
+          "status": "SUCCEEDED",
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        },
+        {
+          "seq": 12,
+          "event_type": "verification",
+          "kind": null,
+          "status": null,
+          "tool": null,
+          "phase": null,
+          "sha256": null
+        }
+      ],
+      "replay_passed": true,
+      "dedup_passed": true
+    }
+  ],
+  "negative_checks": {
+    "prestart_cancel_no_attempt": true,
+    "approval_rejection_no_attempt": true,
+    "default_deny": true
+  },
+  "restart_query_task_ids": [
+    "c3054a57-81ea-4010-8aa9-0aec68f8ed92",
+    "fe27e683-e646-4f15-b19b-1228eaaf44a2",
+    "3cde36c1-8a75-4107-afa1-64c7fe527f69"
+  ],
+  "ordinary_checks": "fmt, clippy -D warnings, workspace tests",
+  "running_cancel": "controlled Rust process-tree tests; native Harness abort protocols not claimed",
+  "cross_device_or_cross_os": "not_tested"
+}

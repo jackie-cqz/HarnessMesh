@@ -1,0 +1,5 @@
+{"type":"step_start","part":{"type":"step-start"}}
+{"type":"tool_use","part":{"tool":"write","state":{"status":"completed"}}}
+{"type":"step_finish","part":{"reason":"tool-calls"}}
+{"type":"text","part":{"text":"fixture complete"}}
+{"type":"step_finish","part":{"reason":"stop"}}

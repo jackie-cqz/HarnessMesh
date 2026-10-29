@@ -1,0 +1,18 @@
+# ADR 0001: V0 implementation boundaries
+
+Accepted for the current V0 implementation.
+
+- Keep a single product binary, `hmesh`; `daemon start` runs the Rust Daemon in the foreground. `hmesh-daemon` is a Rust library crate, not another resident service.
+- Keep the three pinned adapters in `hmesh-adapters` modules, with shared process lifecycle in `hmesh-runtime`. The SPEC repository tree and trait signatures are reference designs; separate adapter crates/SDK integrations are not required to prove the V0 behavior. The runtime never depends on Hub, Tailscale, SSH or MCP.
+- Use TLS 1.3 for every Node/owner connection. A custom **pin-checking verifier** compares the expected SHA-256 certificate digest and then delegates certificate validity, hostname, purpose and signatures to WebPKI/rustls. It is not an accept-all TLS verifier.
+- Before pairing, only hello, challenge and pairing-request routes are anonymous. Pairing proves possession of the certificate's Ed25519 key over a target-bound, expiring, one-use challenge. Owner approval pins the peer's certificate at each end. Data requests require a verified client certificate plus a current trust lookup; owner routes additionally require that instance's certificate and private owner token.
+- V0 uses cursor-based JSON event polling. The database is the source of truth; a cursor query returns only committed increasing sequence numbers. SSE is a later compatible transport option, not a separate event state machine.
+- `timestamp` and persisted timestamps use Unix seconds in the initial Rust contract. They are diagnostic fields; certificate identity, UUIDs, one-use nonces and durable dedup establish trust and replay behavior.
+- Cancellation of a never-started `PENDING_APPROVAL`/`QUEUED` task can directly enter `CANCELLED`, since no process was started. A running task enters `CANCELLING`; only confirmed process-tree shutdown enters `CANCELLED`, otherwise `UNKNOWN`.
+- A real successful local owner verification is required before an Agent accepts peer tasks. Version/help probes cannot set `available`.
+- Windows Managed Runs use a separate kill-on-close Job Object, attached before a prompt is delivered. Unix runs use dedicated process groups and may return `UNKNOWN` if group cleanup is not provable. Neither mechanism is a filesystem sandbox.
+- Model credentials are inherited only from an explicitly configured environment allowlist. V0 currently rejects credential-file import. DSH supports the verified read/write/edit bundle; other tool combinations fail explicitly rather than weakening policy. DSH's native `approval: never` means deny requests needing escalation, not auto-approve them.
+- Artifact access is an explicit local-owner relative-path allowlist. Only hashes, sizes and deterministic assertion results are shared; raw artifact download remains outside V0.
+- V0 task routing uses explicit Agent/Node UUIDs (`task send AGENT --peer NODE`). Human-friendly names and automatic routing are later ergonomics; explicit routing avoids ambiguous cross-Node names. `agents list` is supported, with `agents` retained as shorthand.
+- `pair show` displays the Node Card. The signed one-use invitation is obtained automatically during `pair request`, bound to its target and persisted before owner approval, rather than a reusable manually copied secret.
+- `doctor` reports instance/network/Daemon status; `agent register` probes versions without credentials, and `agents list` reports each verification field. Real account availability requires the explicit `agent verify --allow-model` task. These phases are deliberately separate.

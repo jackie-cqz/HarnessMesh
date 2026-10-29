@@ -1,0 +1,17 @@
+[agent]
+name = "opencode-local"
+harness = "opencode"
+mode = "managed"
+project_id = "opencode-project"
+
+[project]
+root = "C:/absolute/project-opencode"
+allowed_tools = ["read", "write", "edit"]
+artifact_paths = ["out/health.json"]
+require_remote_task_approval = true
+
+[adapter]
+executable = "C:/absolute/npm/opencode.cmd"
+provider = "deepseek"
+model = "deepseek-v4-pro"
+env_allowlist = ["DEEPSEEK_API_KEY"]

@@ -1,0 +1,26 @@
+[package]
+name = "hmesh-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+hmesh-core = { path = "../hmesh-core" }
+hmesh-store = { path = "../hmesh-store" }
+hmesh-security = { path = "../hmesh-security" }
+hmesh-transport = { path = "../hmesh-transport" }
+hmesh-adapters = { path = "../hmesh-adapters" }
+hmesh-runtime = { path = "../hmesh-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+

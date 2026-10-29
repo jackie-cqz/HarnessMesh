@@ -1,0 +1,42 @@
+# V0 P0 实施与验收状态
+
+2026-10-28：SPEC 1.3 的 **V0 L01-L05 / E2E-00 在当前 Windows x64 电脑通过**。实现语言为 Rust，测试脚本为 PowerShell 7。没有使用第二台电脑、Tailscale、Codex、MCP、Hub 或服务代理。本结论不替代后续 V0.1 的跨设备/跨 OS 门禁。
+
+后续 SSH 检查点已完成：Windows→Orion/Linux、Pi 1.4.0、`deepseek-v4-flash` 的真实任务、mTLS/审批、write/read、独立 JSON/hash、去重与事件补读通过，测试进程已停止，原认证文件未变。见 `docs/ssh-first-smoke.md` 和 `docs/evidence/latest-ssh-smoke.json`。本机适配后 fmt/Clippy/32 项测试通过，Linux CLI 本机构建通过；整个锁文件 232 个公开依赖的审计仍为零命中。下方 V0 证据与 30 项测试数量保留为该原始版本的历史记录，完整 V0.1 尚未完成。
+
+SSH 应用检查点也已验收：`examples/ssh-todo` 的 Orion Pi/Flash 服务端与 Windows DSH/Pro 客户端，通过服务端 10 项、客户端 4 项测试、独立跨机 HTTP、浏览器新增/完成/刷新，以及真实后端重启后的数据保留。代码生成 Daemon/Mesh 隧道已停止，应用服务保留供试用。DSH 任务成功；Pi 写出完整文件但触发输出保护，任务仍为 FAILED，产物独立验收通过。显式累计输出额度选项及边界回归加入后，Rust fmt/Clippy/33 项测试与两端构建通过。见 [示例说明](../examples/ssh-todo/README.md)、[实际证据](evidence/latest-todo-integration.json) 及 SPEC 1.5 第 7.11 节；没有完成受管 Service/Gateway 或 Tailscale。
+
+## 验收映射
+
+2026-10-29 大输出回归：已分离原生消息和内部事件限额，长正文脱敏后分段、事件按字节分页，`task watch` 补读到最后一页才退出。新的 Orion Pi/Flash 任务 `c2c13fd7-eae0-42e4-8945-99c6784129ba` 为 SUCCEEDED，实测最大原生消息 375,131 字节，累计 8,758,986 字节；新生成服务端 14 项测试通过，原应用 10+4 项测试与 HTTP/持久化复测通过。见 [独立回归报告](evidence/latest-pi-output-regression.json) 和 [ADR 0003](adr/0003-native-output-limits.md)。历史失败记录保持不变，最终 Rust 测试数量记录在该新报告中。
+
+| 工作包 | 已交付内容 | 证据 |
+|---|---|---|
+| L01 | Workspace、类型/配置、SQLite migrations、幂等 init、独立 data-dir、owner 凭据、目录锁、CLI/前台 Daemon | core/store/security 测试，CLI 两进程测试（同目录与端口冲突明确失败），真实 smoke 两实例 |
+| L02 | 回环 TLS 1.3、证书 pin + WebPKI、mTLS、签名单次配对、双端批准/撤销、owner/peer 分界、项目/Agent 默认拒绝 | transport TLS、CLI 双节点配对、daemon authorization 测试；真实默认拒绝/审批拒绝 |
+| L03 | Pi RPC、DSH headless JSON、OpenCode run JSON、版本锁定、配置隔离、显式凭据/工具 | 三种本机实际版本、三个 owner 真实模型任务、原生 JSON 事件和文件断言；协议 fixture 单独标识 |
+| L04 | 持久 task/attempt/events、原子去重/claim、审批/取消、发起端路由、事件补读、重启查询与 UNKNOWN | 三条真实跨 Node 任务：A→B/DSH、B→A/Pi、A→B/OpenCode；原 request 重发、hash/mtime/attempt 不变；受控故障进程测试 |
+| L05 | 可重复脚本、示例、quickstart、协议/安全文档、ADR、显式模型 opt-in、只停止自己启动的进程 | scripts/e2e-local.ps1、examples/single-machine-task/、docs/quickstart-v0.md、docs/protocol.md、docs/security.md |
+
+## 最终验证
+
+- `cargo +stable fmt --all --check`、Clippy `--workspace --all-targets -- -D warnings`、workspace tests 和 CLI build 通过；当前共有 30 个非忽略测试。普通检查不调用模型。
+- `pwsh -NoProfile -File scripts/e2e-local.ps1 -RunRealHarnesses` 完整执行退出 0。Pi 0.84.2、DSH 0.2.0-rc.2、OpenCode 1.18.20 使用授权 DeepSeek 环境凭据和 `deepseek-v4-pro`，本机验证与两个方向的实际委派通过。
+- `docs/evidence/latest-p0-smoke.json` 为完整最终证据（schema 2），绑定 binary/Cargo.lock SHA-256，记录包与入口、模型标识、节点/task/attempt、事件轨迹、文件 hash、确定性断言、去重和重启查询；不含密钥或个人 Session 历史。
+- `cargo +stable run --locked -p xtask -- audit` 通过官方 OSV API 检查锁文件的全部目标：232 个公开 crate，零漏洞命中。已升级命中的 TLS/异步及传递依赖，复用 ring SHA-256 移除旧 block-buffer 链。结果和锁文件 hash 在 `docs/evidence/dependency-audit.json`。
+- 初次接入证据 `docs/evidence/2026-10-28-real-harnesses.json` 仅保留各自 managed-run 历史；完整双节点结论以上述最新报告为准。
+
+授权负例经真实 TLS/API 验证：错误 pin、未配对访问、签名重放、owner API 不向 peer 开放、伪造 sender、未知项目/远端 cwd、跨 origin 读取/取消、审批拒绝、预启动取消、策略/信任撤销。拒绝任务没有执行 attempt 或工件。无效策略热更新保留最后有效策略；有效撤销立即生效。
+
+受控 Rust 进程独立验证非交互输入失败、缺失凭据、执行前再授权、畸形/过大输出、超时、运行中取消和子进程清理；Windows 硬杀 Daemon 后保留原 attempt 并恢复 UNKNOWN，不自动重跑。Fixture 没有模型/账户访问，不能当作真实 Harness 执行证据。
+
+## 已验证边界
+
+- 三平台编译/检查 CI 已配置，当前只执行了本机 Windows 检查；没有远端 CI 成功记录。
+- 真实 Harness 的正常 managed-run/原生 JSON 事件已通过；原生 abort、已有 Session 注入或恢复未验证。取消机制为受控进程树终止；Probe 对未验证项仍标 not_checked。
+- Windows Job Object 的进程树回收已测试。Unix 专用进程组为 best-effort，不保证清理脱离进程组的子进程；未宣称本次已通过 Unix 真实运行。
+- 工作目录和工具限制不构成 OS 文件系统沙箱。只登记独立测试项目；工件仅发布 owner 授权相对路径的 hash/大小/断言。
+- V0 基线使用显式环境 allowlist。后续 SSH 试验新增 Pi/DeepSeek 的 owner 显式只读认证引用，密钥仅在执行端内存注入子进程；细节见 ADR 0002。DSH 仍仅支持已验证的 read/write/edit 工具组合。
+- V0 CLI 显式使用 Node/Agent UUID；协议轮询采用持久 seq 游标。具体设计决定见 docs/adr/0001-v0-rust-boundaries.md。
+
+本次测试只停止它自己启动的进程。私有实例/运行诊断保存在被忽略的 `.hmesh-v0/acceptance-9369313213414b0e851e5f6bbce6992d/`；两个 Daemon 已正常停止。实例属于初始化它的 Windows 账户，工具沙箱账户与桌面用户不得通过放宽 ACL 混用这些目录。

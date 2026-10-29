@@ -1,0 +1,31 @@
+{
+  "Date": "2026-10-28",
+  "Scope": "Local managed-run verification only; cross-node P0 acceptance still pending",
+  "Os": "Windows x86_64",
+  "Runs": [
+    {
+      "Harness": "pi",
+      "TaskId": "7eda52ef-99c0-454c-85f3-3ea97b84dc9c",
+      "AttemptId": "21600fe6-2b43-454e-982a-0dd0dbfe1e34",
+      "RunStatus": "SUCCEEDED",
+      "Verification": "passed",
+      "ArtifactSha256": "357c8a5659ebec64b8879838ff079a718a4d03f41f4ac52c0df8fbfa1b224448"
+    },
+    {
+      "Harness": "dsh",
+      "TaskId": "2781296f-0a66-4621-a068-ae7506154cbd",
+      "AttemptId": "2dbe8238-5209-4447-bb8d-bbc7e9b4997c",
+      "RunStatus": "SUCCEEDED",
+      "Verification": "passed",
+      "ArtifactSha256": "010bf23d928a3ae0698e588d8b2a9c4b20d116fcf68eaf8109fd3746ac18098d"
+    },
+    {
+      "Harness": "opencode",
+      "TaskId": "2d447153-7939-439f-93b4-3f9db09cd188",
+      "AttemptId": "efff5ca4-caa5-419a-b6a8-91218dd367d0",
+      "RunStatus": "SUCCEEDED",
+      "Verification": "passed",
+      "ArtifactSha256": "784424c6436a5d3af2e4ba530b475a19c57df4531e31405ae4a39289dd028b6b"
+    }
+  ]
+}

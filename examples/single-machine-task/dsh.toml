@@ -1,0 +1,17 @@
+[agent]
+name = "dsh-local"
+harness = "dsh"
+mode = "managed"
+project_id = "dsh-project"
+
+[project]
+root = "C:/absolute/project-dsh"
+allowed_tools = ["read", "write", "edit"]
+artifact_paths = ["out/health.json"]
+require_remote_task_approval = true
+
+[adapter]
+executable = "C:/absolute/npm/dsh.cmd"
+provider = "deepseek-official"
+model = "deepseek-v4-pro"
+env_allowlist = ["DEEPSEEK_API_KEY"]

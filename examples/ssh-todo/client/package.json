@@ -1,0 +1,14 @@
+{
+  "name": "harnessmesh-ssh-todo-client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser client and local static/proxy server for the HarnessMesh SSH Todo example.",
+  "scripts": {
+    "start": "node serve.mjs",
+    "test": "node --test client.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

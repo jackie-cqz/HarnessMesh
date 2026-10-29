@@ -1,0 +1,396 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-28T15:44:13.3472681Z",
+  "scope": "Manual SSH cross-machine Todo application acceptance",
+  "application_status": "passed",
+  "all_authoring_tasks_succeeded": false,
+  "roles": {
+    "backend": {
+      "model": "deepseek-v4-flash",
+      "task": {
+        "task_id": "c5e3ecaf-87b6-4393-bec3-cb906b9a621b",
+        "attempt_id": "08ce015f-abd3-4a93-b3c5-3d5a2e37b3f3",
+        "status": "FAILED",
+        "error": {
+          "code": "INVALID_INPUT",
+          "message": "harness JSONL record exceeds configured bound",
+          "retryable": false,
+          "trace_id": "950dd16c-a207-4579-89af-42b89e45a0b6"
+        },
+        "origin_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+        "target_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+        "project_id": "todo-backend",
+        "requires_approval": true,
+        "limits": {
+          "max_output_bytes": 33554432,
+          "timeout_seconds": 600
+        }
+      },
+      "harness": "Pi",
+      "machine": "Orion / Linux x86_64",
+      "previous_tasks": [
+        {
+          "task_id": "5eb67a30-42da-4f0f-a989-14b6fd787bb9",
+          "attempt_id": "f5d816c9-a7d8-430e-a85f-c78905bcfa66",
+          "status": "FAILED",
+          "error": {
+            "code": "RATE_LIMITED",
+            "message": "managed stdout exceeded output limit",
+            "retryable": false,
+            "trace_id": "ff9732fe-baaf-4e2a-bd9f-ad584077bdb7"
+          },
+          "origin_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+          "target_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+          "project_id": "todo-backend",
+          "requires_approval": true,
+          "limits": {
+            "max_output_bytes": 1048576,
+            "timeout_seconds": 600
+          }
+        }
+      ],
+      "provider": "deepseek",
+      "node_runtime": "24.20.0",
+      "harness_version": "1.4.0"
+    },
+    "frontend": {
+      "harness_version": "0.2.0-rc.2",
+      "provider": "deepseek-official",
+      "machine": "Windows x64",
+      "task": {
+        "task_id": "29fa9a8e-f879-4ef6-a985-38c4a420f383",
+        "attempt_id": "afaa2994-e018-4f80-bb73-4dda760991cd",
+        "status": "SUCCEEDED",
+        "error": null,
+        "origin_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+        "target_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+        "project_id": "todo-client",
+        "requires_approval": false,
+        "limits": {
+          "max_output_bytes": 1048576,
+          "timeout_seconds": 600
+        }
+      },
+      "harness": "DSH",
+      "model": "deepseek-v4-pro"
+    }
+  },
+  "transport": {
+    "ssh_alias": "cqz_Orion",
+    "host_key_checking": "strict",
+    "tailscale_tested": false,
+    "application": "Browser -> Windows 127.0.0.1:5173 -> 127.0.0.1:18080 -> SSH LocalForward -> Orion 127.0.0.1:8000",
+    "authoring": "Independent HarnessMesh identities, HTTPS/mTLS inside SSH, project grants and Orion owner approval"
+  },
+  "contract_sha256": "c8e420333c2ae81773c77e6a8d1dea3d363fb18223939dcaf55b55ababf37f96",
+  "tests": {
+    "backend": {
+      "exit": 0,
+      "passed": 10,
+      "output": "✔ GET /api/health reports the default service and node label (1716.975893ms)\n✔ health honours a custom node label (471.380289ms)\n✔ empty list returns { todos: [] } (1308.632549ms)\n✔ create, list and complete a todo over real HTTP (1600.289966ms)\n✔ invalid create and patch payloads are rejected with safe JSON errors (10279.400755ms)\n✔ oversized request bodies return 413 (626.86918ms)\n✔ unknown routes and unknown IDs return 404 (1176.413239ms)\n✔ todos persist as JSON across a server restart (935.371421ms)\n✔ concurrent creates do not lose writes (428.642806ms)\n[orion-todo-api] refusing to use corrupt data file: data file is not valid JSON\n[orion-todo-api] refusing to use corrupt data file: data file is not valid JSON\n✔ a corrupt data file is never silently overwritten (450.742075ms)\nℹ tests 10\nℹ suites 0\nℹ pass 10\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 19218.408329\n",
+      "executed_on": "Orion",
+      "failed": 0
+    },
+    "persistence": {
+      "api_todo": {
+        "date": "2026-10-28T15:41:05.359Z",
+        "base": "http://127.0.0.1:5173",
+        "status": "passed",
+        "phase": "persistence-after-backend-restart",
+        "health": {
+          "status": "ok",
+          "service": "orion-todo-api",
+          "node": "Orion"
+        },
+        "todo": {
+          "id": "472da4a0-6fe2-45f1-9eef-257e80b2ce38",
+          "title": "跨机 API 验收 2026-10-28T15:38:29.399Z",
+          "completed": true,
+          "created_at": "2026-10-28T15:38:29.992Z"
+        },
+        "checks": [
+          {
+            "method": "GET",
+            "path": "/api/health",
+            "status": 200,
+            "passed": true
+          },
+          {
+            "method": "GET",
+            "path": "/api/todos",
+            "status": 200,
+            "passed": true
+          }
+        ]
+      },
+      "browser_todo": {
+        "date": "2026-10-28T15:41:04.994Z",
+        "base": "http://127.0.0.1:5173",
+        "status": "passed",
+        "phase": "persistence-after-backend-restart",
+        "health": {
+          "status": "ok",
+          "service": "orion-todo-api",
+          "node": "Orion"
+        },
+        "todo": {
+          "id": "041b7b5d-1e1f-42b5-97fc-1d3cc3624e33",
+          "title": "浏览器验收：Windows → SSH → Orion",
+          "completed": true,
+          "created_at": "2026-10-28T15:40:08.135Z"
+        },
+        "checks": [
+          {
+            "method": "GET",
+            "path": "/api/health",
+            "status": 200,
+            "passed": true
+          },
+          {
+            "method": "GET",
+            "path": "/api/todos",
+            "status": 200,
+            "passed": true
+          }
+        ]
+      },
+      "after_real_backend_restart": true
+    },
+    "frontend": {
+      "exit": 0,
+      "passed": 4,
+      "output": "✔ serves declared static assets only (22.9756ms)\n✔ rejects traversal, hidden files and unrelated files (6.1954ms)\n✔ proxies /api/* to upstream preserving method, path and body (7.8825ms)\n✔ returns safe JSON 502 when upstream is unavailable (3.7153ms)\nℹ tests 4\nℹ suites 0\nℹ pass 4\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 109.0508\n",
+      "executed_on": "Windows",
+      "failed": 0
+    },
+    "http": {
+      "date": "2026-10-28T15:38:31.441Z",
+      "base": "http://127.0.0.1:5173",
+      "status": "passed",
+      "phase": "real-cross-machine-http",
+      "health": {
+        "status": "ok",
+        "service": "orion-todo-api",
+        "node": "Orion"
+      },
+      "todo": {
+        "id": "472da4a0-6fe2-45f1-9eef-257e80b2ce38",
+        "title": "跨机 API 验收 2026-10-28T15:38:29.399Z",
+        "completed": true,
+        "created_at": "2026-10-28T15:38:29.992Z"
+      },
+      "checks": [
+        {
+          "method": "GET",
+          "path": "/api/health",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 201,
+          "passed": true
+        },
+        {
+          "method": "PATCH",
+          "path": "/api/todos/472da4a0-6fe2-45f1-9eef-257e80b2ce38",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/todos",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 400,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 400,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 400,
+          "passed": true
+        },
+        {
+          "method": "PATCH",
+          "path": "/api/todos/472da4a0-6fe2-45f1-9eef-257e80b2ce38",
+          "status": 400,
+          "passed": true
+        },
+        {
+          "method": "PATCH",
+          "path": "/api/todos/7aebedbf-38cd-4550-8570-d307fc0fa859",
+          "status": 404,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 413,
+          "passed": true
+        }
+      ]
+    }
+  },
+  "browser": {
+    "observed_completed": 2,
+    "added": true,
+    "url": "http://127.0.0.1:5173/",
+    "final_observation": "Orion online; both todo checkboxes checked; controls enabled",
+    "refresh_button": true,
+    "page_reload_after_backend_restart": true,
+    "added_todo": {
+      "id": "041b7b5d-1e1f-42b5-97fc-1d3cc3624e33",
+      "title": "浏览器验收：Windows → SSH → Orion",
+      "completed": true,
+      "created_at": "2026-10-28T15:40:08.135Z"
+    },
+    "screenshot": "docs/evidence/ssh-todo.png",
+    "checked_completed": true,
+    "method": "Real in-app browser controls through computer-use",
+    "observed_count": 2
+  },
+  "artifacts": {
+    "examples/ssh-todo/server/api-contract.json": {
+      "bytes": 1183,
+      "sha256": "c8e420333c2ae81773c77e6a8d1dea3d363fb18223939dcaf55b55ababf37f96",
+      "origin": "Runner-supplied shared API contract, unchanged by either harness"
+    },
+    "examples/ssh-todo/server/package.json": {
+      "bytes": 312,
+      "sha256": "cd052e3b44874574a6820c24ce84b9ea8e7def563f0f2602d82eb80f2c7d8fed",
+      "origin": "Exported unchanged from Orion Pi project; independently hash checked"
+    },
+    "examples/ssh-todo/server/README.md": {
+      "bytes": 1932,
+      "sha256": "b314db17b790a7d083a59187e3bbe1f2f8568699e0a5a094f663702d21a58a21",
+      "origin": "Exported unchanged from Orion Pi project; independently hash checked"
+    },
+    "examples/ssh-todo/server/server.mjs": {
+      "bytes": 10462,
+      "sha256": "c633e8b3bac76b577d9f86e35217196522753d1fdf2c4a64ee87d5babbfc6b40",
+      "origin": "Exported unchanged from Orion Pi project; independently hash checked"
+    },
+    "examples/ssh-todo/server/server.test.mjs": {
+      "bytes": 11207,
+      "sha256": "7af2bcba45a68dc6bea9597b478021252c62a91881327463a7badaf2e7e10b33",
+      "origin": "Exported unchanged from Orion Pi project; independently hash checked"
+    },
+    "examples/ssh-todo/client/api-contract.json": {
+      "bytes": 1183,
+      "sha256": "c8e420333c2ae81773c77e6a8d1dea3d363fb18223939dcaf55b55ababf37f96",
+      "origin": "Runner-supplied shared API contract, unchanged by either harness"
+    },
+    "examples/ssh-todo/client/app.js": {
+      "bytes": 6722,
+      "sha256": "be8e47e7329c7990880568e96e2f0b98fa59e6fcb38a0fac7348e206e6d5923b",
+      "origin": "Generated in local DSH project"
+    },
+    "examples/ssh-todo/client/client.test.mjs": {
+      "bytes": 7185,
+      "sha256": "af2b319d5b92280752efef405de73c1bbcff82a518330b0017a01690368908b1",
+      "origin": "Generated in local DSH project"
+    },
+    "examples/ssh-todo/client/index.html": {
+      "bytes": 2247,
+      "sha256": "e68fd1a99fed04975ba6fb19b672dc9532c57af125bd546e93768bebee2c76af",
+      "origin": "Generated in local DSH project"
+    },
+    "examples/ssh-todo/client/package.json": {
+      "bytes": 340,
+      "sha256": "2be0fc9bbe04e70466543fd6dd1af6e1d9d5e17af4461963d6b5b556cfae74de",
+      "origin": "Generated in local DSH project"
+    },
+    "examples/ssh-todo/client/README.md": {
+      "bytes": 963,
+      "sha256": "62202c63cbbecf6a7531192fe7088802264a0bdc4b4386dee9149ac27a1900cd",
+      "origin": "Generated in local DSH project"
+    },
+    "examples/ssh-todo/client/serve.mjs": {
+      "bytes": 7803,
+      "sha256": "f860b0401cc940b1ba95df2aa644de64736972b4b61ab22139a4ca5bb9e9decd",
+      "origin": "Generated in local DSH project"
+    },
+    "examples/ssh-todo/client/styles.css": {
+      "bytes": 5328,
+      "sha256": "8de392030f64f7124d02d56cdd0fec0cafd65ffa9feca306b8ba34c09a74c353",
+      "origin": "Generated in local DSH project"
+    }
+  },
+  "events": {
+    "frontend": {
+      "first_seq": 1,
+      "types": [
+        {
+          "Name": "artifact",
+          "Count": 7
+        },
+        {
+          "Name": "run",
+          "Count": 42
+        },
+        {
+          "Name": "status",
+          "Count": 3
+        }
+      ],
+      "last_seq": 52,
+      "count": 52,
+      "private_record_sha256": "a23c4b6548003c9bd6a215bb7b3fbfd507e91a996c835084ace25fe045ac03d6"
+    },
+    "backend": {
+      "first_seq": 1,
+      "types": [
+        {
+          "Name": "run",
+          "Count": 378
+        },
+        {
+          "Name": "status",
+          "Count": 4
+        }
+      ],
+      "last_seq": 382,
+      "count": 382,
+      "private_record_sha256": "a50b456131556adaedc04bc15c820f7137283e948e47a2aaf5e7ecdc82367d99"
+    }
+  },
+  "rust_validation": {
+    "default_stdout_bytes": 1048576,
+    "cargo_lock_sha256": "fdfb6723f424573017986439323bd1e3d267fce305ca1e1641868533f840ed69",
+    "jsonl_record_bytes": 65536,
+    "maximum_explicit_stdout_bytes": 33554432,
+    "fmt": "passed",
+    "windows_cli_build": "passed",
+    "orion_offline_locked_cli_build": "passed",
+    "workspace_tests_passed": 33,
+    "clippy_warnings_denied": "passed"
+  },
+  "known_limitations": [
+    "Pi authoring tasks remain FAILED due to output guards. Application acceptance is independent; no task state was rewritten.",
+    "The explicit 32 MiB stdout option does not raise the 64 KiB JSONL single-record bound.",
+    "No automatic Service/Gateway, Tailscale, full V0.1/V0.2 acceptance, SSH fault recovery or Codex/MCP is claimed."
+  ],
+  "runtime": {
+    "stop": "pwsh -NoProfile -File .\\examples\\ssh-todo\\stop.ps1",
+    "orion_data_sha256_before_restart": "925ca2eef61af20a7f1ede328dd69837d661b36b31587853b4e4642f9f06a948",
+    "authoring_daemons_stopped": true,
+    "orion_data_path": "/mnt/data2/home/cqz/.harnessmesh-smoke/todo-236c6e591a924b569f42a832c49ebb91/data/todos.json",
+    "start": "pwsh -NoProfile -File .\\examples\\ssh-todo\\start.ps1",
+    "application_left_running": true,
+    "original_7892_listener_present": true,
+    "frontend_url": "http://127.0.0.1:5173",
+    "mesh_tunnel_stopped": true
+  }
+}

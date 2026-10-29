@@ -1,0 +1,18 @@
+[default]
+action = "deny"
+
+[[grant]]
+# Replace with Node A and B's DSH agent IDs.
+peer = "00000000-0000-4000-8000-000000000001"
+agent = "00000000-0000-4000-8000-000000000002"
+project = "dsh-project"
+actions = ["agent.read", "task.submit"]
+require_approval = true
+
+[[grant]]
+# Replace with Node A and B's OpenCode agent IDs.
+peer = "00000000-0000-4000-8000-000000000001"
+agent = "00000000-0000-4000-8000-000000000003"
+project = "opencode-project"
+actions = ["agent.read", "task.submit"]
+require_approval = true

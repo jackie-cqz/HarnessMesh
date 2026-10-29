@@ -1,0 +1,11 @@
+{
+  "all_lockfile_targets": true,
+  "cargo_lock_sha256": "fdfb6723f424573017986439323bd1e3d267fce305ca1e1641868533f840ed69",
+  "complete": true,
+  "findings": [],
+  "provider": "https://api.osv.dev/v1/querybatch",
+  "queried_at_unix_seconds": 1793195958,
+  "registry_packages_checked": 232,
+  "schema_version": 1,
+  "status": "passed"
+}

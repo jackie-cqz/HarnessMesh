@@ -1,0 +1,15 @@
+{
+  "name": "orion-todo-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Small Node.js built-ins-only Todo HTTP API",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test server.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

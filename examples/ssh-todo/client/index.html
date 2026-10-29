@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mesh Tasks · 待办事项</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <svg class="brand-mark" width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
+        <defs>
+          <linearGradient id="brand-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#2563eb"></stop>
+            <stop offset="1" stop-color="#7c3aed"></stop>
+          </linearGradient>
+        </defs>
+        <rect width="34" height="34" rx="9" fill="url(#brand-grad)"></rect>
+        <path d="M10 17l7 7 7-7-7-7z" fill="#fff"></path>
+      </svg>
+      <div class="brand">
+        <span class="brand-name">Mesh Tasks</span>
+        <p class="provenance">客户端：Windows · API：Orion</p>
+      </div>
+      <div class="status" id="connection-status" data-state="connecting" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text">正在连接 Orion…</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <h1>待办事项</h1>
+
+    <form id="todo-form" class="todo-form" novalidate>
+      <label for="todo-input">新待办</label>
+      <div class="form-row">
+        <input id="todo-input" name="title" type="text" maxlength="200" autocomplete="off"
+               placeholder="例如：给 Orion 部署新版本" required>
+        <button type="submit" id="add-button">添加</button>
+      </div>
+    </form>
+
+    <section class="toolbar" aria-label="待办操作">
+      <button type="button" id="refresh-button">刷新</button>
+      <p class="counts" id="counts" role="status" aria-live="polite"></p>
+    </section>
+
+    <p id="state-banner" class="state-banner" data-kind="info" role="status" aria-live="polite" hidden></p>
+
+    <ul id="todo-list" class="todo-list" aria-label="待办事项列表"></ul>
+  </main>
+
+  <footer class="footer">
+    <p>Mesh Tasks · HarnessMesh SSH Todo · 客户端运行于 Windows，API 运行于 Orion</p>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

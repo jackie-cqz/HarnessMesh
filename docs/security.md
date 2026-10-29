@@ -1,0 +1,37 @@
+# V0 安全与能力边界
+
+V0 只在本机回环网运行，但每次操作仍经过证书、当前信任、项目 grant 和审批。数据目录内私钥、证书、owner token、数据库、配置和每次运行数据各自独立。Windows 使用仅当前用户可访问的 ACL，Unix 使用 0700/0600；init 拒绝覆盖未完成身份或非空的无关目录。相同 data-dir 的第二个 Daemon 因目录锁失败。
+
+## 认证和授权
+
+TLS 只允许 1.3。客户端先核对明确的 SHA-256 证书 pin，再由 rustls/WebPKI 验证有效期、主机名、用途与握手签名，不存在接受所有证书的模式。匿名入口仅用于 hello、单次 challenge 和签名配对申请；challenge 有目标绑定、过期和使用一次的约束，两端 owner 分别批准。
+
+已配对不代表可以执行任务。policy 的默认行为必须是 deny；grant 绑定 peer、project、可选 Agent 和动作。登记 Agent 只能由本机 owner 完成。只通过版本探测的 Agent 保持 unverified，真实 owner 验证成功后才能接收 peer 任务。任务在出队前重新检查信任与 grant。撤销也在每次 HTTP 请求中重查，因此连接复用不会保留旧授权。
+
+owner API 必须同时具备自己的客户端证书、该实例的私有 token 和回环来源；信任的 peer 无法操作它。任务读、事件、核验结果和取消仅对原发起 Node 或执行端 owner 开放。审计记录授权决定、task/attempt/trace，以及审批、拒绝、取消、策略更新和信任撤销；不会把模型账户密钥当作审计字段。
+
+## Harness 运行
+
+Adapter 采用参数数组直接启动本机 owner 指定的实际 Node/原生入口，不拼 shell 命令。远端不能改变 executable、cwd、环境或工具配置。每次 attempt 使用新的配置/会话目录，清空环境后仅保留运行所需 OS 变量和 owner 显式列出的凭据环境变量；配置中的凭据变量缺失时在启动前失败。不接管已有 Session。
+
+SSH 试验新增 owner 显式的 `node_executable`、`models_file` 和 `credential_source` 引用。认证文件引用只支持 Pi/DeepSeek 的 api_key：在执行端内存中读取后注入受控子进程，加入日志脱敏，不复制原文件、不修改认证内容、不传给发起端。模型引用只复制所选模型的非认证元数据，限制到官方 HTTPS API origin，丢弃 provider key/header 并拒绝模型内嵌认证字段。其他 provider/OAuth 认证导入仍不支持。未配置引用时不读取个人认证文件。
+
+Pi 关闭扩展、skills、上下文自动加载和交互审批；DSH 使用验证过的只读写编辑工具集和拒绝提权的 headless 策略；OpenCode 使用 pure 模式、隔离配置、显式 deny 默认权限和允许工具。原生权限策略仍是 Harness 自身的一部分。**固定工作目录和工具 allowlist 不构成 OS 文件系统沙箱**；本机进程拥有当前 Windows 用户的底层权限，只应登记用于测试的独立项目。凭据只在受控子进程环境中使用，不在注册配置保存值。
+
+已知凭据值在 text delta（包括跨 delta 的值）、工具事件文本和 stderr 中脱敏。原生工具参数和输出不作为公共事件转发。不要主动把密钥放入任务正文、工件或输出；任务正文和运行历史是需要私有保存的数据。未承诺对任意编码/变换后的秘密进行识别。
+
+## 取消、崩溃和恢复
+
+Windows 在发送 prompt 前将进程放入 kill-on-close Job Object，终止时确认 Job 中活跃进程为零；只追踪当前 attempt 的进程。Unix 使用专用进程组，无法保证已脱离进程组的子进程被包含。无法证明退出时返回 UNKNOWN。它们均不是通用进程沙箱。
+
+受控 Rust 测试进程已覆盖运行中取消、超时、子进程清理、异常输出和 Windows Daemon 硬退出恢复。真实 Pi/DSH/OpenCode 的正常任务已验证；本次没有声称验证过它们各自的原生 abort 协议或交互 Session 恢复。Managed Run 采用进程树终止；Probe 中未测试的取消/恢复项保持明确标记。
+
+SQLite 去重避免同一请求创建第二次尝试，不承诺跨外部副作用的 exactly-once。Daemon 崩溃后的运行结果归 UNKNOWN，需要用户检查副作用；不得自动重试。
+
+## 验证范围
+
+本机测试覆盖错误 pin、匿名/未配对访问、owner 凭据分离、发送方伪造、未知项目/远端 cwd、跨 origin 读取、未批准拒绝、去重、签名重放、策略热更新和信任撤销。测试进程和协议 fixture 与真实模型证据分开。
+
+`cargo run --locked -p xtask -- audit` 通过官方 OSV querybatch 查询整个锁文件（包含其他目标平台），处理分页且遇到不完整结果直接失败。报告含时间和锁文件 hash。安全数据库随时间变化，需要在发布前重新执行；最近一次报告位于 `docs/evidence/dependency-audit.json`。
+
+真实验收已覆盖 V0 本机 Windows，以及一次 Windows→Orion/Linux 的 SSH/mTLS/Pi Flash 任务。后者的运行完成和受控进程清理已验证；Unix 硬崩溃时对 detached 子进程的清理仍不在已验证能力内。CI 已配置 Windows/macOS/Linux，尚无远端 CI 执行证据；完整 V0.1 的其他跨设备链路仍需独立验收。见 `docs/ssh-first-smoke.md`。

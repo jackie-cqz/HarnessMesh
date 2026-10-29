@@ -1,0 +1,247 @@
+{
+  "schema": 1,
+  "date_utc": "2026-10-29T08:02:43.7167356Z",
+  "local_date": "2026-10-29",
+  "status": "passed",
+  "issue": "Normal Pi native JSONL messages larger than 64 KiB aborted code generation",
+  "resolution": "Separate bounded native messages from normalized Mesh events, redact and split text, byte-bound event pages and drain all watch pages",
+  "limits": {
+    "stdout_max_explicit_bytes": 33554432,
+    "text_chunk_utf8_bytes": 8192,
+    "effective_native_limit": "min(adapter native limit, task stdout budget)",
+    "dsh_opencode_native_record_bytes": 1048576,
+    "previous_native_record_bytes": 65536,
+    "normalized_event_payload_bytes": 65536,
+    "event_page_json_bytes": 524288,
+    "pi_native_record_bytes": 4194304,
+    "stdout_default_bytes": 1048576
+  },
+  "real_model": {
+    "generated_server_tests": {
+      "exit": 0,
+      "output": "✔ factory returns an http.Server without listening (7.705967ms)\n✔ health reports the service and the default node label (517.448743ms)\n✔ health honours a custom node label (1693.100156ms)\n✔ empty store lists no todos (1046.902281ms)\n✔ create, list and complete a real todo over HTTP (3220.564567ms)\n✔ rejects invalid create payloads with 400 and stores nothing (4169.240445ms)\n✔ accepts a 200-character title but not 201 characters (837.221453ms)\n✔ rejects invalid completed payloads with 400 (3787.532162ms)\n✔ unknown todos and unknown routes return 404 JSON (1810.770804ms)\n✔ request bodies larger than 64 KiB are rejected with 413 (461.798608ms)\n✔ todos survive a server restart and are persisted atomically (1508.337714ms)\n✔ concurrent creates are all persisted without lost writes (2157.423797ms)\n✔ a corrupt data file is reported safely and never overwritten (2097.375109ms)\n✔ a valid-looking but malformed store is treated as corrupt (1937.277472ms)\nℹ tests 14\nℹ suites 0\nℹ pass 14\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 25474.039404\n"
+    },
+    "transport": "Windows -> SSH -> Orion HTTPS/mTLS -> Pi",
+    "machine": "Orion Linux x86_64",
+    "generated_server_artifacts_sha256": {
+      "README.md": "9cd01466541d2a8f140843960cc23d3da3ce9d75864e7a12dabd08d0a696e77f",
+      "server.test.mjs": "657af35ccb35d47e4b9c37534f4e3ce58318dc18066f8154375fcd80855f8787",
+      "api-contract.json": "c8e420333c2ae81773c77e6a8d1dea3d363fb18223939dcaf55b55ababf37f96",
+      "server.mjs": "4b983f85690b097c752cbf6084aa582451e5f3a3743341b24be143a601a4e831",
+      "package.json": "c0e50ea40f3ad8a3bd1d35236d956f1f41be01ce891859d54fc7ab4853e82c41"
+    },
+    "synthetic_input": {
+      "sha256": "5bcce237caaebdb1500b376985c7b2175497e2592f1a18b13a7f1016ff17a4ae",
+      "contains_credentials": false,
+      "purpose": "Pi read-tool response with quotes and backslashes exercises large native messages",
+      "bytes": 262656
+    },
+    "status": "SUCCEEDED",
+    "origin_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
+    "private_events_sha256": "2c205d49b0848b01188921df949f547eae9fb8e2e2c63ce9efc58be641a1cd66",
+    "executing_binary_sha256": {
+      "orion": "14418f1c6303876388f85fa829ff6d314dd8641d4cb323d3a6dcad86f4ca7953",
+      "windows": "6b2a50de745600339649c1e83f115f7239e36d1d4cee823e83b2842930ac66e3"
+    },
+    "verified_before_submission": "SUCCEEDED",
+    "owner_approval_observed": true,
+    "output_summary": {
+      "complete_records": 27157,
+      "largest_complete_record_bytes": 375131,
+      "native_record_limit_bytes": 4194304,
+      "stdout_bytes": 8758986,
+      "stdout_limit_bytes": 33554432
+    },
+    "normalized_events": 476,
+    "node_runtime": "24.20.0",
+    "error": null,
+    "task_id": "c2c13fd7-eae0-42e4-8945-99c6784129ba",
+    "target_node_id": "f2515a0a-2901-4636-9cb8-816aa0b553a3",
+    "model": "deepseek-v4-flash",
+    "maximum_normalized_payload_bytes_observed": 154,
+    "project": "todo-output-0bca2c96b0c64fbc837dcef3e974cc7b",
+    "harness": "Pi",
+    "provider": "deepseek",
+    "attempt_id": "bbbd331b-e878-4621-941e-cc30f326b4ac",
+    "version": "1.4.0"
+  },
+  "final_checks": {
+    "windows_rust_tests_passed": 39,
+    "build_note": "After the real model run, CLI watch pagination draining was added and rebuilt/tested on both systems; the native runtime source is unchanged. Task execution and final binary hashes are distinct.",
+    "windows_cli_build": "passed",
+    "linux_cli_build_exit": 0,
+    "linux_test_report_sha256": "c6f1b56ca8cf8bb305ff106aced72070ad80eb559f8b1290a362df576039f5ea",
+    "third_party_package_count": 232,
+    "linux_final_binary_sha256": "5d6b25bf274eaecbaa16e4420f6c1c2a2b73e25b17c44cefca3b3dcf3f154be0",
+    "third_party_package_versions_and_checksums_unchanged": true,
+    "windows_rust_tests_failed": 0,
+    "windows_fmt": "passed",
+    "new_dependency": "Existing local workspace hmesh-store added only as CLI dev-dependency",
+    "linux_rust_tests_passed": 38,
+    "runtime_source_hashes": {
+      "crates/hmesh-core/src/lib.rs": "c3574653f4974e6a17ecb2500bca7fcfd7deab552afb54862fcd0586b96d0a6e",
+      "crates/hmesh-adapters/src/framing.rs": "0fe446ee45a579d09796edbf63cbfdfa71bdf5d101df39eece357943debfbded",
+      "crates/hmesh-adapters/src/lib.rs": "07ea307605b28c21bdeafc1e17d01274b67c1f01544b8300fc2ff32fae25cc9f",
+      "crates/hmesh-runtime/src/lib.rs": "7f918af71d8233a45526c8123956dc58aa18f4a173b03c6397f66f1ade2d735b",
+      "crates/hmesh-runtime/src/prepare.rs": "88e6d604569dcb1855a1ff3b221ec4cb84a002ddd45d5018130bf3438beab6b2",
+      "crates/hmesh-store/src/lib.rs": "e58c7bdf181e90376768c5853219ca0736ef70f55eaf338661ce59baf9d0a504"
+    },
+    "windows_clippy_warnings_denied": "passed",
+    "windows_final_binary_sha256": "62a4d21ffd09a5a92b29e40583caeafb7b6631f7949704fdee58d881713db6e4",
+    "linux_workspace_test_exit": 0,
+    "linux_rust_tests_failed": 0,
+    "final_cargo_lock_sha256": "b2d61346c920a1d9f5cde58a353f919cfa81c302f17bb306b39065b4b556e5d9"
+  },
+  "application_regression": {
+    "prior_browser_todo_survived_service_restart": {
+      "date": "2026-10-29T07:53:25.265Z",
+      "base": "http://127.0.0.1:5173",
+      "status": "passed",
+      "phase": "persistence-after-backend-restart",
+      "health": {
+        "status": "ok",
+        "service": "orion-todo-api",
+        "node": "Orion"
+      },
+      "todo": {
+        "id": "041b7b5d-1e1f-42b5-97fc-1d3cc3624e33",
+        "title": "浏览器验收：Windows → SSH → Orion",
+        "completed": true,
+        "created_at": "2026-10-28T15:40:08.135Z"
+      },
+      "checks": [
+        {
+          "method": "GET",
+          "path": "/api/health",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/todos",
+          "status": 200,
+          "passed": true
+        }
+      ]
+    },
+    "cross_machine_http": {
+      "date": "2026-10-29T07:53:24.965Z",
+      "base": "http://127.0.0.1:5173",
+      "status": "passed",
+      "phase": "real-cross-machine-http",
+      "health": {
+        "status": "ok",
+        "service": "orion-todo-api",
+        "node": "Orion"
+      },
+      "todo": {
+        "id": "f1b600e3-70cf-4c92-8f11-dc551903ab06",
+        "title": "跨机 API 验收 2026-10-29T07:53:23.649Z",
+        "completed": true,
+        "created_at": "2026-10-29T07:53:24.007Z"
+      },
+      "checks": [
+        {
+          "method": "GET",
+          "path": "/api/health",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 201,
+          "passed": true
+        },
+        {
+          "method": "PATCH",
+          "path": "/api/todos/f1b600e3-70cf-4c92-8f11-dc551903ab06",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/todos",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 400,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 400,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 400,
+          "passed": true
+        },
+        {
+          "method": "PATCH",
+          "path": "/api/todos/f1b600e3-70cf-4c92-8f11-dc551903ab06",
+          "status": 400,
+          "passed": true
+        },
+        {
+          "method": "PATCH",
+          "path": "/api/todos/c5adea86-a430-4301-8318-282c7f5e44e0",
+          "status": 404,
+          "passed": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/todos",
+          "status": 413,
+          "passed": true
+        }
+      ]
+    },
+    "original_server_tests_passed": 10,
+    "original_client_test_output": "✔ serves declared static assets only (23.9853ms)\n✔ rejects traversal, hidden files and unrelated files (5.7386ms)\n✔ proxies /api/* to upstream preserving method, path and body (9.5364ms)\n✔ returns safe JSON 502 when upstream is unavailable (3.8124ms)\nℹ tests 4\nℹ suites 0\nℹ pass 4\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 112.825\n",
+    "original_server_test_output": "✔ GET /api/health reports the default service and node label (334.228692ms)\n✔ health honours a custom node label (266.547188ms)\n✔ empty list returns { todos: [] } (211.287428ms)\n✔ create, list and complete a todo over real HTTP (2839.994895ms)\n✔ invalid create and patch payloads are rejected with safe JSON errors (4040.058405ms)\n✔ oversized request bodies return 413 (607.336537ms)\n✔ unknown routes and unknown IDs return 404 (3294.66261ms)\n✔ todos persist as JSON across a server restart (2621.064382ms)\n✔ concurrent creates do not lose writes (341.201904ms)\n[orion-todo-api] refusing to use corrupt data file: data file is not valid JSON\n[orion-todo-api] refusing to use corrupt data file: data file is not valid JSON\n✔ a corrupt data file is never silently overwritten (804.902712ms)\nℹ tests 10\nℹ suites 0\nℹ pass 10\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 15596.864281\n",
+    "original_client_tests_passed": 4,
+    "regenerated_backend_replaced_running_application": false
+  },
+  "cleanup": {
+    "original_7892_listener_present": true,
+    "url": "http://127.0.0.1:5173/",
+    "original_scoped_policy_restored": true,
+    "application_left_running": true,
+    "final_health": {
+      "status": "ok",
+      "service": "orion-todo-api",
+      "node": "Orion"
+    },
+    "authoring_daemons_and_mesh_tunnel_stopped": true
+  },
+  "history": {
+    "no_automatic_retry": true,
+    "previous_evidence": "docs/evidence/latest-todo-integration.json",
+    "previous_task_statuses_unchanged": true,
+    "previous_failed_tasks": [
+      "5eb67a30-42da-4f0f-a989-14b6fd787bb9",
+      "c5e3ecaf-87b6-4393-bec3-cb906b9a621b"
+    ]
+  },
+  "reproduction": {
+    "guard": "Existing records and submitted tasks are never silently overwritten or resubmitted",
+    "actions": [
+      "prepare",
+      "status",
+      "submit",
+      "status",
+      "collect",
+      "cleanup"
+    ],
+    "remote_helper": "scripts/pi-output-retest.py",
+    "script": "scripts/retest-pi-output.ps1",
+    "requires": "Previously prepared Orion Todo session, explicit real model authorization, and restarted authoring Mesh"
+  }
+}

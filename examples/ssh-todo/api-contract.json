@@ -1,0 +1,13 @@
+{
+  "version": "1",
+  "application": "HarnessMesh SSH Todo",
+  "todo": { "id": "UUID string", "title": "trimmed text, 1..200 characters", "completed": "boolean", "created_at": "ISO 8601 string" },
+  "endpoints": [
+    { "method": "GET", "path": "/api/health", "status": 200, "response": { "status": "ok", "service": "orion-todo-api", "node": "Orion" } },
+    { "method": "GET", "path": "/api/todos", "status": 200, "response": { "todos": [] } },
+    { "method": "POST", "path": "/api/todos", "request": { "title": "Example" }, "status": 201, "response": { "todo": "Todo object" } },
+    { "method": "PATCH", "path": "/api/todos/:id", "request": { "completed": true }, "status": 200, "response": { "todo": "updated Todo object" } }
+  ],
+  "errors": { "shape": { "error": "human-readable string" }, "invalid_input": 400, "unknown_todo_or_route": 404, "body_too_large": 413, "internal_error": 500 },
+  "runtime": { "backend_host": "127.0.0.1", "backend_port": 8000, "ssh_local_port": 18080, "frontend_host": "127.0.0.1", "frontend_port": 5173, "frontend_proxy": "/api/* to configured UPSTREAM", "storage": "JSON file selected by DATA_FILE", "dependencies": "Node.js built-ins only" }
+}
