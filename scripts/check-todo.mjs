@@ -6,11 +6,13 @@ import { writeFile } from 'node:fs/promises';
 const base = process.argv[2] || 'http://127.0.0.1:5173';
 const output = process.argv[3];
 const persistedId = process.argv[4];
+const requestTimeoutMs = Number(process.argv[5] || 10000);
+assert.ok(Number.isInteger(requestTimeoutMs) && requestTimeoutMs >= 1000 && requestTimeoutMs <= 45000, 'request timeout must be 1000..45000 ms');
 const checks = [];
 async function request(path, method = 'GET', body, expected = 200) {
   const response = await fetch(new URL(path, base), {
     method, headers: body === undefined ? {} : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10000),
+    body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(requestTimeoutMs),
   });
   assert.equal(response.status, expected, `${method} ${path}`);
   const result = await response.json();

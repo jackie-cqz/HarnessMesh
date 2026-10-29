@@ -1,0 +1,774 @@
+{
+  "schema": 1,
+  "date": "2026-10-29T15:13:42.704422+00:00",
+  "status": "passed",
+  "scope": "two-node SSH / bounded HTTP service checkpoint; full V0.1/V0.2 remain incomplete",
+  "harnesses": [
+    {
+      "kind": "pi",
+      "version": "1.4.0",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "task": {
+        "task_id": "a4cb31b8-88c7-4b4c-b099-599e40dcee99",
+        "status": "SUCCEEDED",
+        "last_attempt_id": "a7fb92a3-fae0-4db0-8744-4c1eef326252",
+        "created_at": 1793282716,
+        "updated_at": 1793282718,
+        "error": null
+      }
+    },
+    {
+      "kind": "dsh",
+      "version": "0.2.0-rc.2",
+      "provider": "deepseek-official",
+      "model": "deepseek-v4-pro",
+      "task": {
+        "task_id": "55f15e7a-2d63-4cc6-b0c6-11907cbb6389",
+        "status": "SUCCEEDED",
+        "last_attempt_id": "5535dd82-06f7-4ea2-bf89-f611bf1a42e4",
+        "created_at": 1793285159,
+        "updated_at": 1793285167,
+        "error": null
+      }
+    }
+  ],
+  "nodes": {
+    "windows": "6ac51158-0178-42f1-b5c4-a60f15524645",
+    "orion": "7bd8af0a-2d2b-4591-ad83-6fd8677b3ffb"
+  },
+  "resources": {
+    "service_id": "c9cf6d1e-3141-495d-8ac0-f9fdfa7e1fa4",
+    "frontend_service_id": "f5b2ec6b-be1f-46ca-a641-7d91d700d0d0",
+    "connection_id": "ee879994-5d78-4b0c-a227-8edbe1240ef1",
+    "tunnel_id": "bdf17e32-2725-4b80-9b67-10d1b90e5943",
+    "endpoint": "http://127.0.0.1:18081",
+    "lease_seconds": 3600,
+    "tunnel_before": {
+      "endpoint": null,
+      "error": null,
+      "http_health": "not_checked",
+      "pid": 42508,
+      "process": "running",
+      "revision": 1,
+      "starts": 1,
+      "state": "active",
+      "tunnel": "ssh_process_running"
+    },
+    "tunnel_after": {
+      "endpoint": null,
+      "error": null,
+      "http_health": "not_checked",
+      "pid": 10016,
+      "process": "running",
+      "revision": 1,
+      "starts": 2,
+      "state": "active",
+      "tunnel": "ssh_process_running"
+    },
+    "offline_request_failed": true,
+    "restored_utc": "2026-10-29T15:08:23.6036006Z",
+    "revoked_access_closed": true
+  },
+  "integration": {
+    "id": "ed972039-357c-4f3d-a989-7df388f9bdc6",
+    "state": "verified",
+    "cycles": 1,
+    "max_fix_cycles": 2,
+    "contract_revision": 1,
+    "contract_sha256": "c8e420333c2ae81773c77e6a8d1dea3d363fb18223939dcaf55b55ababf37f96",
+    "reports": [
+      {
+        "at": 1793285944,
+        "contract_revision": 1,
+        "contract_sha256": "c8e420333c2ae81773c77e6a8d1dea3d363fb18223939dcaf55b55ababf37f96",
+        "cycle": 0,
+        "passed": false,
+        "test_plan_sha256": "ac4d5aa67f4d8217728c2840d4dff685971952bc78b5123b55b250eee9516155",
+        "tests": [
+          {
+            "assertions": [
+              {
+                "passed": false,
+                "pointer": "/node"
+              },
+              {
+                "passed": true,
+                "pointer": "/service"
+              },
+              {
+                "passed": true,
+                "pointer": "/status"
+              }
+            ],
+            "expected_status": 200,
+            "method": "GET",
+            "name": "health-fields",
+            "passed": false,
+            "path": "/api/health",
+            "response_bytes": 42,
+            "response_sha256": "cd98fecb8b6dae2bb0e04291dd3ba2f7c605ced1b8fdb4a0c36e5e7a900351ec",
+            "status": 200
+          },
+          {
+            "assertions": [
+              {
+                "passed": true,
+                "pointer": "/todos"
+              }
+            ],
+            "expected_status": 200,
+            "method": "GET",
+            "name": "initial-todos",
+            "passed": true,
+            "path": "/api/todos",
+            "response_bytes": 12,
+            "response_sha256": "54896c0c191395e8a2b68fead3b241ffc26beb7a7a813ce00fe6af622ac90add",
+            "status": 200
+          }
+        ]
+      },
+      {
+        "at": 1793285967,
+        "contract_revision": 1,
+        "contract_sha256": "c8e420333c2ae81773c77e6a8d1dea3d363fb18223939dcaf55b55ababf37f96",
+        "cycle": 1,
+        "passed": true,
+        "test_plan_sha256": "ac4d5aa67f4d8217728c2840d4dff685971952bc78b5123b55b250eee9516155",
+        "tests": [
+          {
+            "assertions": [
+              {
+                "passed": true,
+                "pointer": "/node"
+              },
+              {
+                "passed": true,
+                "pointer": "/service"
+              },
+              {
+                "passed": true,
+                "pointer": "/status"
+              }
+            ],
+            "expected_status": 200,
+            "method": "GET",
+            "name": "health-fields",
+            "passed": true,
+            "path": "/api/health",
+            "response_bytes": 57,
+            "response_sha256": "084eb035073194842fdb3f818456de53ccc15e2359d609f5dfb7e0d7cb3a3dd9",
+            "status": 200
+          },
+          {
+            "assertions": [
+              {
+                "passed": true,
+                "pointer": "/todos"
+              }
+            ],
+            "expected_status": 200,
+            "method": "GET",
+            "name": "initial-todos",
+            "passed": true,
+            "path": "/api/todos",
+            "response_bytes": 12,
+            "response_sha256": "54896c0c191395e8a2b68fead3b241ffc26beb7a7a813ce00fe6af622ac90add",
+            "status": 200
+          }
+        ]
+      }
+    ],
+    "repairs": [
+      {
+        "task_id": "00d63a84-8d6a-46a4-8771-a1c42d884062",
+        "status": "SUCCEEDED",
+        "last_attempt_id": "e612f5dd-9eca-45b4-b1b8-dd0223099989",
+        "created_at": 1793285946,
+        "updated_at": 1793285959,
+        "error": null
+      }
+    ]
+  },
+  "client": {
+    "before": {
+      "script_sha256": "78178429a83e8b9f7b283ebc4512fadc4c0aa0dcf9cde4dbcaf5153b34d23c57",
+      "exit": 1
+    },
+    "after": {
+      "exit": 0,
+      "script_sha256": "78178429a83e8b9f7b283ebc4512fadc4c0aa0dcf9cde4dbcaf5153b34d23c57"
+    },
+    "existing_ui_files_unchanged": true,
+    "budget_only_changes_verified": true,
+    "authoring_task_id": "482afed1-e859-4c42-93f0-5eac465a6b8e",
+    "attempts": [
+      {
+        "at": "2026-10-29T13:49:52.080445+00:00",
+        "exit": 1,
+        "outcome": "injected_missing_field"
+      },
+      {
+        "at": "2026-10-29T14:15:00.234190+00:00",
+        "exit": 1,
+        "outcome": "prior_http_503"
+      },
+      {
+        "at": "2026-10-29T14:20:26.406973+00:00",
+        "exit": -1073740791,
+        "outcome": "prior_http_503"
+      },
+      {
+        "at": "2026-10-29T14:48:17.003520+00:00",
+        "exit": 1,
+        "outcome": "injected_missing_field"
+      },
+      {
+        "at": "2026-10-29T14:58:54.173467+00:00",
+        "exit": 1,
+        "outcome": "injected_missing_field"
+      },
+      {
+        "at": "2026-10-29T15:05:47.358788+00:00",
+        "exit": 0,
+        "outcome": "passed"
+      }
+    ]
+  },
+  "artifacts": {
+    "backend_before": {
+      "source_sha256": "26c216e2502f8508378fbd822883fcea00c6b174b344d63f133bbff47e242029",
+      "original_source_sha256": "65afe9c12203085a50da5d941dc6b2c4199d4f74c220f28ec77860a5c89406c2",
+      "contract_sha256": "c8e420333c2ae81773c77e6a8d1dea3d363fb18223939dcaf55b55ababf37f96"
+    },
+    "backend_after": {
+      "server.mjs": {
+        "sha256": "65afe9c12203085a50da5d941dc6b2c4199d4f74c220f28ec77860a5c89406c2",
+        "bytes": 10501
+      },
+      "api-contract.json": {
+        "sha256": "c8e420333c2ae81773c77e6a8d1dea3d363fb18223939dcaf55b55ababf37f96",
+        "bytes": 1183
+      },
+      "server.test.mjs": {
+        "sha256": "7af2bcba45a68dc6bea9597b478021252c62a91881327463a7badaf2e7e10b33",
+        "bytes": 11207
+      },
+      "data": {
+        "sha256": "0910c933efa79b834007f8598323f9de6dd50919d273ae01f194392827952b4d",
+        "name": "final-todos.json"
+      }
+    },
+    "final_data": {
+      "name": "final-todos.json",
+      "sha256": "6cd1f0fb5342a918f7817ee649bab88a6712add8c144e25f116db925b4ec23f7",
+      "bytes": 414,
+      "at": 1793286403.6478262
+    }
+  },
+  "verification": {
+    "windows": {
+      "checks": [
+        {
+          "exit": 0,
+          "arguments": [
+            "fmt",
+            "--all",
+            "--check"
+          ]
+        },
+        {
+          "exit": 0,
+          "arguments": [
+            "clippy",
+            "--offline",
+            "--locked",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings"
+          ]
+        },
+        {
+          "exit": 0,
+          "arguments": [
+            "test",
+            "--offline",
+            "--locked",
+            "--workspace"
+          ]
+        },
+        {
+          "exit": 0,
+          "arguments": [
+            "build",
+            "--offline",
+            "--locked",
+            "-p",
+            "hmesh-cli",
+            "-p",
+            "hmesh-mcp"
+          ]
+        }
+      ],
+      "passed": 52
+    },
+    "linux": {
+      "checks": [
+        {
+          "arguments": [
+            "test",
+            "--offline",
+            "--locked",
+            "--workspace"
+          ],
+          "exit": 0,
+          "passed": 51
+        },
+        {
+          "arguments": [
+            "build",
+            "--offline",
+            "--locked",
+            "-p",
+            "hmesh-cli",
+            "-p",
+            "hmesh-mcp"
+          ],
+          "exit": 0,
+          "passed": 0
+        }
+      ],
+      "passed": 51,
+      "rustfmt_clippy": "not installed in portable toolchain; ran on Windows"
+    },
+    "backend_unit_tests_passed": 10,
+    "client_unit_tests_exit": 0,
+    "independent_frontend_http_checks": 10,
+    "managed_restart_persistence_passed": true,
+    "credential_files_unchanged": true,
+    "known_hosts_unchanged": true
+  },
+  "binaries": {
+    "windows_hmesh_sha256": "c22531fd87a81d3b0746f4ee4192d0d1cdd355c0ec79ef8205325cefe50da931",
+    "linux_hmesh_sha256": "981e5943f892b686451e87045107ee1a50d7e1f83ef9a8775321b126aefad516"
+  },
+  "source_hashes": {
+    "crates/hmesh-core/src/managed.rs": "5501dcc8c0607242cefa98bd9f47a970b9fe5f146c8d4f0f5283284577ebee20",
+    "crates/hmesh-core/tests/managed.rs": "84b71376b991ab6626ce560178982260c31fff7c7dbfa57343f7040742a09fa0",
+    "crates/hmesh-daemon/src/integration.rs": "1f873dfcbb54eeefdf98a2939fd2551a1a3d7e6297534fd85a5905f05f0ac11a",
+    "crates/hmesh-daemon/src/services.rs": "ce7af14f5e8d50d91e08c1735c2bd9b4a59508626eaa77ba534dea9e8f85c663",
+    "crates/hmesh-store/migrations/004_managed.sql": "f196e1bf1e3fd12cc870ac8867fe07d33972e2a55619f3a6b073da00b5fafaa6",
+    "test-support/hmesh-fixture/tests/services.rs": "f203a2c478e18552bf162b438a02e8c777e28ac5c42aec81729f6d78648e12d0",
+    "Cargo.lock": "0bcb798293d6ad8d99719cbb834576a421ecc1c0fb0cd3498f61951e4a6eff23",
+    "Cargo.toml": "4e21bce40a04a753f4107a7f7d44e71bb0b1f1186e5ed78c0d8dff4d73459853",
+    "crates/hmesh-adapters/Cargo.toml": "1035637c46fdd2a5d46fcb13773f01253347578433cdb91311381076f06afb92",
+    "crates/hmesh-adapters/src/executable.rs": "1cbcb65f83da7fe70e947cf9b3a773a74ee6acb444b99fca174455e14fc77f6b",
+    "crates/hmesh-adapters/src/framing.rs": "0fe446ee45a579d09796edbf63cbfdfa71bdf5d101df39eece357943debfbded",
+    "crates/hmesh-adapters/src/lib.rs": "07ea307605b28c21bdeafc1e17d01274b67c1f01544b8300fc2ff32fae25cc9f",
+    "crates/hmesh-adapters/src/protocol.rs": "19a7cb8217eb05ee45b9a9e0bde2ce53d5f920b29837fab2c1dd2ad438606530",
+    "crates/hmesh-adapters/tests/contracts.rs": "76806efc4c1c28cfad877a21a7cb674ecf6ab4d54385bb0e4566a556fe579e85",
+    "crates/hmesh-cli/Cargo.toml": "ba22e8f83e20e55f7f2cbdaa3f6137589a8b5679bb91d7f54a7e2a6437abba9d",
+    "crates/hmesh-cli/src/main.rs": "148707c82cf1a5922910c5d91c06590a7676662ef8efa81fa1a345c66f439849",
+    "crates/hmesh-cli/tests/two_nodes.rs": "8a7fa83a4b8a45b0ee679507f2d1b9dd1cc18be728d870bec7943f523325c838",
+    "crates/hmesh-core/Cargo.toml": "f1b8bbbf69a47f43d9c1cee0fdf4b809f3ec39e40fd7f6c954e0fecb18977009",
+    "crates/hmesh-core/src/lib.rs": "1de414517f84419da3f09f90498ace48c5112daa7e53f424233f76549bcb8446",
+    "crates/hmesh-core/tests/contracts.rs": "7f2e56ab577d572573b09fb7799f8d208c11cea3372cd475b72a4d9b9cf20e66",
+    "crates/hmesh-daemon/Cargo.toml": "cb2eaba306c7a8312a853426500b7bc5f3c52955a878a2c9dafe7689ff318bcc",
+    "crates/hmesh-daemon/src/lib.rs": "bd71594146809426416b02583037523e1ec772d24a6f5657a6a1c2f311a91c15",
+    "crates/hmesh-daemon/tests/authorization.rs": "441257f5f3c5aa4eb7aed273dce6524814d3989fd9b139fd37ca2a7d889cf6ba",
+    "crates/hmesh-mcp/Cargo.toml": "7261b0c130bcaa1fa80eb8ad93b4359b139b81397bfecab114aa9035a58c0551",
+    "crates/hmesh-mcp/src/lib.rs": "ee03cc580fa18284c1278abb2402a77c5088cfca378ee6d25566114c56eadbca",
+    "crates/hmesh-mcp/src/main.rs": "8392706dd1b591dfebfe1a650d14b7c66313938ae15ea880e87b9ef0166fdf11",
+    "crates/hmesh-mcp/tests/protocol.rs": "689d57f2042117ff2b600a7c63de94d7a824bea7565ad2bf499aa2378b415b75",
+    "crates/hmesh-mcp/tests/stdio.rs": "8aab9484b52da88080f37bb4a3f377a8506cf9222ab4e2d1586dd8ad78c51fda",
+    "crates/hmesh-runtime/Cargo.toml": "31dd656ae619d04fb00639c99402a481528dae34278c8454c44c8591f155694b",
+    "crates/hmesh-runtime/src/lib.rs": "560d77ad24861cd29133df1d888302c9afde355ef8d269d846574a710c457372",
+    "crates/hmesh-runtime/src/prepare.rs": "0a090d371ea465277b56758289b67a97b79cee7fe3772590132e53de6f7a423b",
+    "crates/hmesh-runtime/src/process_tree.rs": "ec37c6a51171307c009df1ff89aa90143e67e280b7afc5e87da6dd6042208118",
+    "crates/hmesh-runtime/src/verification.rs": "329e0c131085ac9be915f1d2815e94fc844195af526c94f65ff48fc2b51fd753",
+    "crates/hmesh-security/Cargo.toml": "1a1130a5debf1f36f049be41398281690402a702a6c06c8b204f62cce4d2fc33",
+    "crates/hmesh-security/src/lib.rs": "3038525dbe78178160f1980c9da962e350e909c6efa8547e38275c864e4e4546",
+    "crates/hmesh-security/tests/identity.rs": "0f38f4ac20ce4736adb7ee568924f45c13e8807000bed8500d39465f4eee1231",
+    "crates/hmesh-store/Cargo.toml": "5efcde4a5e36bbaea7a921a50f92c2abce06c4aeea7ce8ed8198919cd742efc2",
+    "crates/hmesh-store/migrations/001_initial.sql": "d38704371480c9315a84ac72aa00b515c7d2cea11fe1ddd72a2b5ec447c02a4d",
+    "crates/hmesh-store/migrations/002_outbound.sql": "5f2c2429c365d85c9eabaf792fe85d78ef55cd6dc274f09379a557501e920e18",
+    "crates/hmesh-store/migrations/003_tool_submissions.sql": "7e65eb8d653ac97efe46160cf9bfa4dac8e8b62a51d72307f7903916b99ff61d",
+    "crates/hmesh-store/src/lib.rs": "89be1130522ab94041dd5204b4cf3069ce7d80c9c139e7bfda68ebbabcbe19a7",
+    "crates/hmesh-store/tests/persistence.rs": "2f8fd31012c18f4f65a51aa02a83c5e030594408a873cb611ac8822ee1191c01",
+    "crates/hmesh-transport/Cargo.toml": "3a69c3e4035e555f4276bc65f324e43b5e106bbe1e24149e3ce4831998853bee",
+    "crates/hmesh-transport/src/lib.rs": "a5df53b32eeae4e076f74dd9de05825a918e765d2bf9c39613efc06b9418dc5e",
+    "crates/hmesh-transport/tests/tls.rs": "377260063f95e6e0c48d62b8a0e209b133015d801604410f0bae07d0cef39b03",
+    "test-support/hmesh-fixture/Cargo.toml": "e391bdac79ee2ffc1f50fdf5d4f360520507935e4fead1a59e5e3b0788d03256",
+    "test-support/hmesh-fixture/src/main.rs": "47237b888179e3757813262c7ae8ff9b523366cedd23c48a11663b62510ad409",
+    "test-support/hmesh-fixture/tests/executor.rs": "37e963e5cb29fdbdc0e93169bbebe50f25967c60ae15eb36cbbe53abc0d777a5",
+    "xtask/Cargo.toml": "de86a68e4b12b5c2807e05967902d39512233d745dff4e43cd8692708eb343c1",
+    "xtask/src/main.rs": "23cbb5efde6e6f72e5c2f28b9510527efd68ed8428e5e9b748b967eb12cbe3bf"
+  },
+  "prior_runs": [
+    {
+      "id": "a0258f94-35ac-46a3-91d7-a8b67a2ff252",
+      "state": "needs_input",
+      "cycles": 1,
+      "repair_task_ids": [
+        "be9a9ba1-de28-4e4c-9910-5eb60864b267"
+      ],
+      "error": "FailedNeedsInput: repair task did not succeed; inspect its original record"
+    },
+    {
+      "id": "3f0dc6d2-8e7d-4df6-b736-9d9b5bffac51",
+      "state": "verified",
+      "cycles": 1,
+      "repair_task_ids": [
+        "324d38ba-8c5e-4e5b-b6ea-0fc076b215af"
+      ],
+      "error": null
+    }
+  ],
+  "prior_repairs": [
+    {
+      "task_id": "be9a9ba1-de28-4e4c-9910-5eb60864b267",
+      "status": "FAILED",
+      "last_attempt_id": "987ea9df-5806-42e5-bed5-faf873f6b25b",
+      "created_at": 1793281877,
+      "updated_at": 1793282178,
+      "error": {
+        "code": "AGENT_UNAVAILABLE",
+        "message": "managed run deadline exceeded",
+        "retryable": false,
+        "trace_id": "12742b66-6566-455e-9fe9-c2996b81d6b0"
+      }
+    },
+    {
+      "task_id": "324d38ba-8c5e-4e5b-b6ea-0fc076b215af",
+      "status": "SUCCEEDED",
+      "last_attempt_id": "db993047-7466-40f6-90eb-5197d0605f09",
+      "created_at": 1793282830,
+      "updated_at": 1793282839,
+      "error": null
+    }
+  ],
+  "network_diagnostic": {
+    "direct": {
+      "status": 200,
+      "elapsed": 0.505
+    },
+    "original_proxy": {
+      "error_type": "URLError",
+      "reason": "timed out",
+      "elapsed": 9.617
+    },
+    "proxy_tcp": "connected"
+  },
+  "deviations": [
+    "Initial repair hit its explicit 300-second deadline without editing source and stopped as FAILED / needs_input. An owner diagnostic found original-proxy GET /models timed out while direct official API returned 200. A separate direct-route Agent/run passed the fixed contract; original failure retained.",
+    "Independent CRUD then exposed HTTP 503 on writes: measured durable fsync samples were 2.463, 1.662, 8.339 and 10.184 seconds, exceeding the initial five-second bridge deadline. HTTP operation timeout is now owner-configured up to 30 seconds; Mesh RPC adds five seconds, demo clients use 45 seconds. DSH changed only timeout literals; assertions/contract remained identical. A new missing-field acceptance after this implementation fix is reported as the final run. Prior run/client failures remain recorded."
+  ],
+  "http_budgets": {
+    "service_seconds": 30,
+    "mesh_rpc_seconds": 35,
+    "client_frontend_seconds": 45,
+    "observed_initial_fsync_seconds": [
+      2.463,
+      1.662,
+      8.339,
+      10.184
+    ],
+    "automatic_write_retry": false
+  },
+  "repair_events": {
+    "324d38ba-8c5e-4e5b-b6ea-0fc076b215af": [
+      {
+        "seq": 6,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 7,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 8,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 9,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 10,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 11,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 12,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 13,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 24,
+        "event_type": "run",
+        "payload": {
+          "name": "edit",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 25,
+        "event_type": "run",
+        "payload": {
+          "name": "edit",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 26,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 27,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 75,
+        "event_type": "output_summary",
+        "payload": {
+          "complete_records": 456,
+          "largest_complete_record_bytes": 31591,
+          "native_record_limit_bytes": 4194304,
+          "stdout_bytes": 253740,
+          "stdout_limit_bytes": 8388608
+        }
+      }
+    ],
+    "00d63a84-8d6a-46a4-8771-a1c42d884062": [
+      {
+        "seq": 6,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 7,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 8,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 9,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 10,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 11,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 12,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 13,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 14,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 15,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 16,
+        "event_type": "run",
+        "payload": {
+          "name": "edit",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 17,
+        "event_type": "run",
+        "payload": {
+          "name": "edit",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 18,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_start",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 19,
+        "event_type": "run",
+        "payload": {
+          "name": "read",
+          "phase": "tool_execution_end",
+          "type": "tool_event"
+        }
+      },
+      {
+        "seq": 113,
+        "event_type": "output_summary",
+        "payload": {
+          "complete_records": 907,
+          "largest_complete_record_bytes": 41185,
+          "native_record_limit_bytes": 4194304,
+          "stdout_bytes": 418897,
+          "stdout_limit_bytes": 8388608
+        }
+      }
+    ],
+    "be9a9ba1-de28-4e4c-9910-5eb60864b267": [
+      {
+        "seq": 4,
+        "event_type": "output_summary",
+        "payload": {
+          "complete_records": 7,
+          "largest_complete_record_bytes": 5283,
+          "native_record_limit_bytes": 4194304,
+          "stdout_bytes": 17238,
+          "stdout_limit_bytes": 8388608
+        }
+      }
+    ]
+  },
+  "cleanup": {
+    "remote": {
+      "owned_daemon_alive": false,
+      "listener_file": false,
+      "enabled_resources": 0
+    },
+    "local_daemon_alive": false
+  },
+  "cleanup_utc": "2026-10-29T15:08:30.6493325Z",
+  "original_application_healthy": true,
+  "not_verified": [
+    "three-machine Mac/Windows/Linux gateway",
+    "Tailscale",
+    "Codex",
+    "generic TCP/WebSocket/SSE",
+    "OS startup installation",
+    "Unix SIGKILL orphan adoption",
+    "automatic resumption of old leases/runs"
+  ]
+}

@@ -1,6 +1,6 @@
 //! Persistent queue executor and bounded, individually tracked managed runs.
 mod prepare;
-mod process_tree;
+pub mod process_tree;
 pub mod verification;
 use hmesh_adapters::{JsonlDecoder, ObservedEvent, ProtocolObserver, native_record_limit};
 use hmesh_core::*;

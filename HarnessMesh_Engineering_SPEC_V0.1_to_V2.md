@@ -2,7 +2,7 @@
 
 > **Engineering Specification / 可交给 Coding Agent 实施的工程规格**  
 > 工作名称：`HarnessMesh`（暂定，不代表已核验名称可用性）  
-> 文档版本：`SPEC 1.7` · 2026-10-29  
+> 文档版本：`SPEC 1.8` · 2026-10-29  
 > 覆盖发布：**V0 → V0.1 → V0.2 → V0.3 → V1 → V2**  
 > 实现语言：Rust 为主；Harness 专用桥接层可选 TypeScript / Python  
 > 项目定位：**独立开源项目**；不依赖 AgentMeld，也不复制 AgentMeld 的团队工作台。  
@@ -654,6 +654,20 @@ Windows→Orion Pi/Flash 与 Orion→Windows DSH/Pro 的真实任务均已通过
 
 SQLite schema 3 原子保存 parent/request/child 绑定和额度，跨进程重启仍生效；父任务结束、目标越界、其他父任务的 child_id、未知执行参数和超限输入均拒绝。断线不释放额度、不自动换 UUID 重跑。普通测试使用合成身份/任务和真实 stdio/TLS 进程，真实模型证据单独记录。配置与边界见 `docs/mcp.md`，结果见 `docs/evidence/latest-ssh-mcp-smoke.json`。
 
+### 7.15 受管 HTTP 服务、SSH 隧道与有限修复（2026-10-29）
+
+在既有 Windows ↔ Orion/Linux 的授权 SSH 路径上实现单独检查点，不将其计为完整 V0.1/V0.2 或 Mac 三机 Gateway 验收。实际 CLI/JSON 入口见 [受管服务说明](docs/managed-services.md)，SQLite schema 4 新增服务、隧道、连接租约与 IntegrationRun；旧任务和委派记录保留。
+
+- Daemon 负责自己启动的进程树、租约回收及初启后三次有退避的重试；进程、SSH、HTTP 健康分别报告。owner 明确项目、可执行文件、端口和 peer，拒绝接管占用端口/历史 PID。
+- 服务通道为具名服务的 mTLS HTTP 桥接，两侧正文各限 256 KiB，只在本机回环建立入口；不携带 Cookie/Authorization，不跟随重定向，不自动重放写请求。HTTP 总预算由 owner 设为 1..30 秒，Mesh 另留 5 秒；示例前端/客户端为 45 秒。此项不宣称通用 TCP、WebSocket 或 SSE。
+- SSH 使用显式身份与 known_hosts、strict host key、专用空配置及最多两个精确回环转发；保留用户原 SSH 配置与 7892 转发。三机 route/Gateway 仍另行验收。
+- IntegrationRun 冻结 API JSON 原文/hash/revision 与 GET/JSON Pointer 断言；失败后复用原任务引擎向确定的后端 Agent 交付最多两次修复，远端审批继续生效。任务成功后仅可重启 owner 已委派的固定服务，再运行原契约。测试报告保留响应 hash/长度与断言，不存响应正文。
+- Daemon 重启不复活旧租约或重放中断联调；保留配置/证据并将未完成运行置为 needs_input。OS 常驻安装、Unix SIGKILL 后孤儿进程接管、通用 Artifact 获取和 MCP 服务管理工具未交付。
+
+真实验收过程与已知失败须一起保留于 `docs/evidence/latest-managed-services.json`；不得把代理/超时失败重写为模型修复成功。最终检查点以独立客户端、后端单测、固定契约、隧道恢复与撤销访问的实际结果为准。
+
+最终真实运行 `ed972039-357c-4f3d-a989-7df388f9bdc6` 已一轮修复后 verified，Orion Pi 修复任务 `00d63a84-8d6a-46a4-8771-a1c42d884062` 为 SUCCEEDED；同一版本 DSH 客户端在修复前失败、修复后通过。后端 10 项、客户端 4 项测试、独立前端 HTTP、受管重启后数据保留、SSH 子进程停止后的自动恢复与远端撤销关闭本地入口均通过。最终 Windows 52 / Linux 51 项 Rust 测试通过；格式与 Clippy 在 Windows 通过，Orion 便携工具链无对应组件，仅独立运行 Linux 构建/测试。最初代理超时与固定 5 秒/1 秒限制导致的失败保留在报告中；操作预算与调用方余量已明确化，没有自动重放旧写请求。
+
 ## 8. CLI 与 MCP Tool 规范
 
 ### 8.1 命令列表（拟定 CLI）
@@ -1071,14 +1085,14 @@ max_service_lease_seconds = 3600
 
 #### W10 — Service Registry / Lease
 
-- [ ] `service publish/list/connect/revoke`，仅允许具体项目、具体 port。
+- [x] `service publish/list/connect/revoke`，仅允许具体项目、具体 port（当前为有界 HTTP 检查点，实际参数见 docs/managed-services.md）。
 - [ ] TCP proxy（Mac 本机 loopback → peer）和 lease 到期/断开清理。
 - **验收**：A 通过 `127.0.0.1:18000` 调到 B 的 `127.0.0.1:8000`；未经批准节点失败，撤销后连接断开。
 
 #### W11 — SSH Gateway
 
 - [ ] Windows 上 `gateway add`，SSH host key strict、用户名与 SSH config、转发白名单。
-- [ ] Linux `hmesh-daemon` 通过 Windows `ssh -L` 隧道可达，逻辑节点有独立身份。
+- [x] Linux `hmesh-daemon` 通过 Windows `ssh -L` 隧道可达，逻辑节点有独立身份；当前由 owner 的 `tunnel add/list/restart/revoke` 管理。
 - [ ] Gateway 的 node route 记录、健康检查、转发重建和回收。
 - **验收**：Linux 完全不装 Tailscale，Mac 仍能通过 Windows Gateway 向 Linux Pi 派任务。
 
@@ -1086,13 +1100,13 @@ max_service_lease_seconds = 3600
 
 - [ ] Linux 服务发布后，Mac 能经过两跳建立临时本地 endpoint。
 - [ ] 禁止端口扫描、通用 SOCKS、向任意内网 IP 开洞。
-- [ ] HTTP health/test contracts 与代理连接证据。
+- [x] HTTP health/test contracts 与代理连接证据（Windows ↔ Orion 两机检查点；三机验收保持未完成）。
 - **验收**：Mac 访问 Linux FastAPI，Windows Gateway 不开放公网端口，不配置校园网段路由。
 
 #### W13 — IntegrationRun / Artifact
 
 - [ ] OpenAPI 文件及 sha256 版本、测试计划、失败报告与验收结果。
-- [ ] 1–2 次受控修复循环，超限需人工接管。
+- [x] 1–2 次受控修复循环，超限需人工接管；未知结果停止、不换 UUID 自动重跑，当前测试契约为固定 GET/JSON 断言。
 - [ ] 限流分块 artifact 获取，防敏感信息泄漏。
 - **验收**：固定缺字段测试可复现失败→后端修复→前端重测成功，记录全部工件和依据。
 

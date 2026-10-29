@@ -1,4 +1,5 @@
 //! Harness-independent contracts. No network, process or credential access.
+pub mod managed;
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,

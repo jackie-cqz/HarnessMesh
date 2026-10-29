@@ -1,5 +1,7 @@
 # V0 P0 实施与验收状态
 
+2026-10-29 受管 HTTP/SSH 检查点：Daemon 已管理限定项目/peer 的服务租约、精确 SSH 转发、本地 mTLS HTTP 连接、进程树与有限重启。真实 Pi/Flash 一轮修复缺失字段，受管服务自动重启，原 GET 契约 verified；DSH/Pro 的同版本客户端修复前失败、修复后 CRUD 通过。后端 10 项与客户端 4 项测试、受管重启后数据保留、断 SSH 子进程自动恢复、撤销关闭入口通过。最终 Windows 52 / Linux 51 项 Rust 测试通过；Windows fmt/Clippy 通过。验收曾发现原 7892 代理请求超时及固定 5 秒/1 秒 HTTP 限制，历史失败保留，现使用独立 Agent 的已验证直连、owner 总预算与调用方余量，写请求不自动重放。见 [配置与限制](managed-services.md)、[最终证据](evidence/latest-managed-services.json)。验收进程已清理，原 Todo 应用保留；完整 V0.1/V0.2、Tailscale、Codex、三机 Gateway 与 OS 开机常驻仍未完成。
+
 2026-10-28：SPEC 1.3 的 **V0 L01-L05 / E2E-00 在当前 Windows x64 电脑通过**。实现语言为 Rust，测试脚本为 PowerShell 7。没有使用第二台电脑、Tailscale、Codex、MCP、Hub 或服务代理。本结论不替代后续 V0.1 的跨设备/跨 OS 门禁。
 
 后续 SSH 检查点已完成：Windows→Orion/Linux、Pi 1.4.0、`deepseek-v4-flash` 的真实任务、mTLS/审批、write/read、独立 JSON/hash、去重与事件补读通过，测试进程已停止，原认证文件未变。见 `docs/ssh-first-smoke.md` 和 `docs/evidence/latest-ssh-smoke.json`。本机适配后 fmt/Clippy/32 项测试通过，Linux CLI 本机构建通过；整个锁文件 232 个公开依赖的审计仍为零命中。下方 V0 证据与 30 项测试数量保留为该原始版本的历史记录，完整 V0.1 尚未完成。

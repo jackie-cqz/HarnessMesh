@@ -265,6 +265,35 @@ fn schema_two_upgrade_preserves_historical_task_records() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        3
+        4
+    );
+}
+
+#[test]
+fn stopped_integration_is_durable_and_cannot_be_overwritten_by_a_late_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("managed.sqlite3");
+    let store = Store::open(&path).unwrap();
+    let id = Uuid::new_v4();
+    let running = serde_json::json!({"state":"repair_running","repair_task_ids":[Uuid::new_v4()]});
+    store.managed_create("integration", id, &running).unwrap();
+    assert_eq!(
+        store
+            .managed_create("integration", id, &running)
+            .unwrap_err()
+            .code,
+        ErrorCode::TaskConflict
+    );
+    let mut cancelled = running.clone();
+    cancelled["state"] = serde_json::json!("cancelled");
+    assert!(store.integration_save(id, &cancelled).unwrap());
+    assert!(!store.integration_save(id, &running).unwrap());
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store
+            .managed_get::<serde_json::Value>("integration", id)
+            .unwrap(),
+        cancelled
     );
 }

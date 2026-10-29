@@ -1,6 +1,6 @@
-# V0 实际协议
+# 当前实际协议
 
-本文件描述当前 Rust 实现；规格中后续版本的服务/MCP/跨设备接口尚未交付。核心类型在 `crates/hmesh-core/src/lib.rs`，所有 endpoint 只接受回环地址的 TLS 1.3。JSON 未知字段被拒绝。
+本文件描述当前 Rust 实现：V0 任务核心、SSH 检查点、原生 MCP 子集及受管 HTTP 服务。核心类型在 `crates/hmesh-core/src/lib.rs` 和 `managed.rs`；节点 endpoint 只接受回环地址的 TLS 1.3，跨机复用受控 SSH 路径。JSON 配置未知字段被拒绝。完整 V0.1/V0.2 的后续接口仍以真实实现和验收为准。
 
 ## 请求和身份
 
@@ -43,15 +43,22 @@ TaskSubmit 的 goal 上限 65536 UTF-8 字节；超时 1–1800 秒；stdout 默
 | 入站提交 | POST `/hmesh/v1/tasks` | 当前信任、项目/Agent 的 task.submit grant、可运行验证和本机审批 |
 | 任务读取 | GET `/hmesh/v1/tasks/{id}`, `/events?after=N`, `/verification` | 原始发起 Node 或执行端 owner |
 | 任务取消 | POST `/hmesh/v1/tasks/{id}/cancel` | 同上；必须证实停止才确认取消 |
+| 服务卡 | GET `/hmesh/v1/services`, `/{id}` | 当前信任的 mTLS 身份及服务 owner 的精确 peer 白名单 |
+| HTTP 服务调用 | POST `/hmesh/v1/services/{id}/http` | 同上，调用前及释放缓冲响应前重查租约/授权 |
+| 固定服务重启 | POST `/hmesh/v1/services/{id}/restart` | 额外 allowed_restart_peer_ids；不接受启动参数或 cwd |
 | owner API | `/local/*` | 自己的证书、私有 Bearer token、回环来源三项同时成立 |
 
 owner API 包含配对批准/撤销、登记/验证 Agent、更新策略、任务批准/拒绝、artifact grant、确定性验证、审计与 Daemon 停止。CLI 使用选定 data-dir 的身份连接自己的 API；它不会把 owner token 发送给 peer。
+
+受管资源 owner 路由包括 GET/POST `/local/services`、`/local/tunnels`、`/local/connections`，指定 id 的 revoke/restart，以及 `/local/services/remote/{peer}`。联调为 GET/POST `/local/integrations`、GET `/{id}`、POST `/{id}/cancel`。HTTP 数据包为 method/path/content_type/body_base64 和 status/content_type/body_base64，每边正文最多 256 KiB；连接是本机回环 HTTP 到 peer mTLS RPC 的受控桥接，不是通用 TCP。参数、授权和恢复规则见 [受管服务说明](managed-services.md)。
 
 `hmesh-mcp` 使用同一本机认证路径，但只暴露五个固定的、绑定 RUNNING parent 的工具；owner scope 再限制目标、子任务次数与限额。子任务稳定 UUID、完整请求与 parent 绑定保存到 schema 3 的 tool_submissions 表。失联不自动释放额度，不把重试解释为新授权。MCP 对话不暴露 approve、policy 或通用 owner API 调用，详见 `docs/mcp.md`。
 
 ## 持久化和状态
 
 SQLite 使用 WAL、完整同步和 schema migration。入站以 `(sender_node_id, request_id)` 原子去重；相同 payload 返回已有 task，冲突 payload 拒绝。claim、attempt 和状态事件在一个事务中建立；终态不会重新入队。发起端也保存原始 envelope 和执行 Node 的路由，所以重启后仍可以查询远端任务。
+
+schema 4 新增 managed_records 保存服务、SSH、连接租约和 IntegrationRun，不改写 schema 3 的历史任务/委派。repair UUID 在发送前持久化，失联不换 UUID 重跑；已终止联调通过数据库条件更新阻止迟到 worker 覆盖。Daemon 重启将旧资源 disabled、未结束的联调 needs_input；旧配置/报告保留查询，操作不自动恢复。
 
 ```mermaid
 stateDiagram-v2

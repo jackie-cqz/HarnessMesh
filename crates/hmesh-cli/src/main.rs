@@ -67,7 +67,82 @@ enum Commands {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
+    Tunnel {
+        #[command(subcommand)]
+        command: TunnelCommand,
+    },
+    Connection {
+        #[command(subcommand)]
+        command: ConnectionCommand,
+    },
+    Integration {
+        #[command(subcommand)]
+        command: IntegrationCommand,
+    },
     Audit,
+}
+#[derive(Subcommand)]
+enum ServiceCommand {
+    Publish {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    List {
+        #[arg(long)]
+        peer: Option<Uuid>,
+    },
+    Connect {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    Revoke {
+        id: Uuid,
+    },
+    Restart {
+        id: Uuid,
+    },
+}
+#[derive(Subcommand)]
+enum TunnelCommand {
+    Add {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    List,
+    Restart {
+        id: Uuid,
+    },
+    Revoke {
+        id: Uuid,
+    },
+}
+#[derive(Subcommand)]
+enum ConnectionCommand {
+    List,
+    Revoke { id: Uuid },
+}
+#[derive(Subcommand)]
+enum IntegrationCommand {
+    Start {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        allow_model: bool,
+    },
+    List,
+    Show {
+        id: Uuid,
+    },
+    Watch {
+        id: Uuid,
+    },
+    Cancel {
+        id: Uuid,
+    },
 }
 #[derive(Subcommand)]
 enum NodeCommand {
@@ -186,6 +261,8 @@ async fn main() -> ExitCode {
         &cli.command,
         Commands::Task {
             command: TaskCommand::Watch { .. } | TaskCommand::Verify { .. }
+        } | Commands::Integration {
+            command: IntegrationCommand::Watch { .. }
         }
     );
     let result = execute(cli).await;
@@ -198,6 +275,12 @@ async fn main() -> ExitCode {
                     println!("{}", human_output(&value));
                 }
                 if report_execution {
+                    if matches!(
+                        value.get("state").and_then(Value::as_str),
+                        Some("needs_input" | "cancelled")
+                    ) {
+                        return ExitCode::from(5);
+                    }
                     if value.get("passed") == Some(&Value::Bool(false)) {
                         return ExitCode::from(5);
                     }
@@ -491,12 +574,106 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 }
             },
         },
+        Commands::Service { command } => match command {
+            ServiceCommand::Publish { config } => {
+                client.post("/local/services", &read_json(&config)?).await?
+            }
+            ServiceCommand::List { peer } => {
+                client
+                    .get(
+                        &peer
+                            .map(|p| format!("/local/services/remote/{p}"))
+                            .unwrap_or_else(|| "/local/services".into()),
+                    )
+                    .await?
+            }
+            ServiceCommand::Connect { config } => {
+                client
+                    .post("/local/connections", &read_json(&config)?)
+                    .await?
+            }
+            ServiceCommand::Revoke { id } => {
+                client
+                    .post(&format!("/local/services/{id}/revoke"), &json!({}))
+                    .await?
+            }
+            ServiceCommand::Restart { id } => {
+                client
+                    .post(&format!("/local/services/{id}/restart"), &json!({}))
+                    .await?
+            }
+        },
+        Commands::Tunnel { command } => match command {
+            TunnelCommand::Add { config } => {
+                client.post("/local/tunnels", &read_json(&config)?).await?
+            }
+            TunnelCommand::List => client.get("/local/tunnels").await?,
+            TunnelCommand::Restart { id } => {
+                client
+                    .post(&format!("/local/tunnels/{id}/restart"), &json!({}))
+                    .await?
+            }
+            TunnelCommand::Revoke { id } => {
+                client
+                    .post(&format!("/local/tunnels/{id}/revoke"), &json!({}))
+                    .await?
+            }
+        },
+        Commands::Connection { command } => match command {
+            ConnectionCommand::List => client.get("/local/connections").await?,
+            ConnectionCommand::Revoke { id } => {
+                client
+                    .post(&format!("/local/connections/{id}/revoke"), &json!({}))
+                    .await?
+            }
+        },
+        Commands::Integration { command } => match command {
+            IntegrationCommand::Start {
+                config,
+                allow_model,
+            } => {
+                let spec = read_json(&config)?;
+                if spec["max_fix_cycles"].as_u64().is_some_and(|v| v > 0) && !allow_model {
+                    return Err(MeshError::input(
+                        "pass --allow-model to authorize at most the configured repair budget",
+                    )
+                    .into());
+                }
+                client.post("/local/integrations", &spec).await?
+            }
+            IntegrationCommand::List => client.get("/local/integrations").await?,
+            IntegrationCommand::Show { id } => {
+                client.get(&format!("/local/integrations/{id}")).await?
+            }
+            IntegrationCommand::Cancel { id } => {
+                client
+                    .post(&format!("/local/integrations/{id}/cancel"), &json!({}))
+                    .await?
+            }
+            IntegrationCommand::Watch { id } => loop {
+                let run: Value = client.get(&format!("/local/integrations/{id}")).await?;
+                if matches!(
+                    run["state"].as_str(),
+                    Some("verified" | "needs_input" | "cancelled")
+                ) {
+                    break run;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            },
+        },
         Commands::Audit => client.get("/local/audit").await?,
         _ => anyhow::bail!("command not valid in this context"),
     };
     Ok(Some(value))
 }
 
+fn read_json(path: &std::path::Path) -> Result<Value> {
+    let bytes = fs::read(path)?;
+    if bytes.len() > 1048576 {
+        return Err(MeshError::input("owner configuration exceeds 1 MiB").into());
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
 fn human_output(value: &Value) -> String {
     fn cell(v: &Value, key: &str) -> String {
         v.get(key)
@@ -520,6 +697,30 @@ fn human_output(value: &Value) -> String {
             "ID                                    NAME                 STATE               DETAILS\n",
         );
         for row in rows {
+            if row.get("id").is_some() {
+                let status = &row["status"];
+                output.push_str(&format!(
+                    "{:<38}{:<21}{:<20}process={} tunnel={} http={} endpoint={}\n",
+                    cell(row, "id"),
+                    cell(row, "name"),
+                    cell(status, "state"),
+                    cell(status, "process"),
+                    cell(status, "tunnel"),
+                    cell(status, "http_health"),
+                    cell(status, "endpoint")
+                ));
+                continue;
+            }
+            if row.get("spec").is_some() && row.get("state").is_some() {
+                output.push_str(&format!(
+                    "{:<38}{:<21}{:<20}cycles={}\n",
+                    cell(&row["spec"], "id"),
+                    "integration",
+                    cell(row, "state"),
+                    cell(row, "cycles")
+                ));
+                continue;
+            }
             let card = row.get("card").unwrap_or(row);
             let id = if card.get("agent_id").is_some() {
                 cell(card, "agent_id")

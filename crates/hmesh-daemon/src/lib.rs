@@ -1,4 +1,6 @@
 //! Owner and peer RPC boundaries. Every request rechecks current trust/policy.
+mod integration;
+mod services;
 use anyhow::Context;
 use axum::{
     Json, Router,
@@ -28,6 +30,8 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
+    managed: services::Manager,
+    integration_slots: Arc<tokio::sync::Semaphore>,
     pub instance: Arc<Instance>,
     pub store: Store,
     policy: Arc<RwLock<Policy>>,
@@ -50,9 +54,11 @@ impl IntoResponse for ApiError {
             ErrorCode::TaskConflict => StatusCode::CONFLICT,
             ErrorCode::TaskUnknown | ErrorCode::ProjectNotFound => StatusCode::NOT_FOUND,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            ErrorCode::AgentUnavailable | ErrorCode::PeerUnreachable => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            ErrorCode::ServiceExpired => StatusCode::GONE,
+            ErrorCode::FailedNeedsInput => StatusCode::CONFLICT,
+            ErrorCode::AgentUnavailable
+            | ErrorCode::PeerUnreachable
+            | ErrorCode::ServiceUnhealthy => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({"error":self.0}))).into_response()
@@ -78,6 +84,8 @@ impl AppState {
         let policy: Policy = toml::from_str(&fs::read_to_string(path)?)?;
         policy.validate()?;
         Ok(Self {
+            managed: services::Manager::default(),
+            integration_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             instance,
             store,
             policy: Arc::new(RwLock::new(policy)),
@@ -243,6 +251,8 @@ fn policy_path(instance: &Instance) -> std::path::PathBuf {
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .merge(services::routes())
+        .merge(integration::routes())
         .route("/hmesh/v1/hello", get(hello))
         .route("/hmesh/v1/pair/challenge", get(challenge))
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
@@ -312,6 +322,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let recovered = store.recover_interrupted()?;
     let (shutdown, receiver) = watch::channel(false);
     let state = AppState::load(instance.clone(), store.clone(), shutdown.clone())?;
+    services::recover(&state)?;
     atomic_write(
         &instance.dir.join("daemon.json"),
         &serde_json::to_vec(&instance.card)?,
@@ -332,6 +343,8 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
         Arc::new(move |task| execution_state.authorize_execution(task)),
         shutdown.subscribe(),
     ));
+    let managed = tokio::spawn(services::run(state.clone(), shutdown.subscribe()));
+    let state_for_cleanup = state.clone();
     let result = hmesh_transport::serve(
         listener,
         router(state),
@@ -341,6 +354,8 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     .await;
     let _ = shutdown.send(true);
     let _ = runtime.await;
+    let _ = managed.await;
+    services::recover(&state_for_cleanup)?;
     signal.abort();
     let _ = fs::remove_file(instance.dir.join("daemon.json"));
     result

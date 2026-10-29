@@ -108,20 +108,40 @@ impl Client {
         })
     }
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> hmesh_core::Result<T> {
-        self.send::<(), T>(reqwest::Method::GET, path, None).await
+        self.send::<(), T>(reqwest::Method::GET, path, None, None)
+            .await
     }
     pub async fn post<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
         body: &B,
     ) -> hmesh_core::Result<T> {
-        self.send(reqwest::Method::POST, path, Some(body)).await
+        self.send(reqwest::Method::POST, path, Some(body), None)
+            .await
+    }
+    pub async fn post_with_timeout<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+        seconds: u64,
+    ) -> hmesh_core::Result<T> {
+        if !(1..=40).contains(&seconds) {
+            return Err(MeshError::input("RPC deadline must be 1..40 seconds"));
+        }
+        self.send(
+            reqwest::Method::POST,
+            path,
+            Some(body),
+            Some(Duration::from_secs(seconds)),
+        )
+        .await
     }
     async fn send<B: Serialize, T: DeserializeOwned>(
         &self,
         method: reqwest::Method,
         path: &str,
         body: Option<&B>,
+        timeout: Option<Duration>,
     ) -> hmesh_core::Result<T> {
         if !path.starts_with('/') || path.starts_with("//") || path.contains(['\r', '\n']) {
             return Err(MeshError::input("invalid RPC path"));
@@ -134,6 +154,9 @@ impl Client {
         }
         if let Some(body) = body {
             request = request.json(body);
+        }
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
         }
         let mut response = request.send().await.map_err(transport_error)?;
         let status = response.status();

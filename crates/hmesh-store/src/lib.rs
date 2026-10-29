@@ -1,7 +1,7 @@
 //! Versioned SQLite state. Admission, state changes and events commit atomically.
 use hmesh_core::*;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -39,7 +39,7 @@ impl Store {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(internal)?;
-        if version > 3 {
+        if version > 4 {
             return Err(MeshError::new(
                 ErrorCode::UnsupportedVersion,
                 "database is newer than this binary; refusing to alter it",
@@ -69,6 +69,14 @@ impl Store {
                 .map_err(internal)?;
             tx.commit().map_err(internal)?;
         }
+        if version < 4 {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(internal)?;
+            tx.execute_batch(include_str!("../migrations/004_managed.sql"))
+                .map_err(internal)?;
+            tx.commit().map_err(internal)?;
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(conn)),
         })
@@ -91,6 +99,77 @@ impl Store {
         let result = f(&tx)?;
         tx.commit().map_err(internal)?;
         Ok(result)
+    }
+    pub fn managed_create<T: Serialize>(&self, kind: &str, id: Uuid, record: &T) -> Result<()> {
+        self.transaction(|tx| {
+            let count: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM managed_records WHERE kind=?1",
+                    [kind],
+                    |r| r.get(0),
+                )
+                .map_err(internal)?;
+            if count >= 64 {
+                return Err(MeshError::new(
+                    ErrorCode::RateLimited,
+                    "managed record limit reached",
+                ));
+            }
+            let inserted = tx
+                .execute(
+                    "INSERT OR IGNORE INTO managed_records VALUES(?1,?2,?3)",
+                    params![kind, id.to_string(), encode(record)?],
+                )
+                .map_err(internal)?;
+            if inserted != 1 {
+                return Err(MeshError::new(
+                    ErrorCode::TaskConflict,
+                    "managed id already exists; query its existing state",
+                ));
+            }
+            Ok(())
+        })
+    }
+    pub fn managed_put<T: Serialize>(&self, kind: &str, id: Uuid, record: &T) -> Result<()> {
+        self.read(|c| {
+            let changed = c
+                .execute(
+                    "UPDATE managed_records SET record_json=?3 WHERE kind=?1 AND id=?2",
+                    params![kind, id.to_string(), encode(record)?],
+                )
+                .map_err(internal)?;
+            if changed != 1 {
+                return Err(MeshError::input("managed record not found"));
+            }
+            Ok(())
+        })
+    }
+    pub fn integration_save(&self, id: Uuid, record: &impl Serialize) -> Result<bool> {
+        self.read(|c| Ok(c.execute("UPDATE managed_records SET record_json=?2 WHERE kind='integration' AND id=?1 AND json_extract(record_json,'$.state') NOT IN ('verified','needs_input','cancelled')",params![id.to_string(),encode(record)?]).map_err(internal)?==1))
+    }
+    pub fn managed_get<T: DeserializeOwned>(&self, kind: &str, id: Uuid) -> Result<T> {
+        self.read(|c| {
+            let value: Option<String> = c
+                .query_row(
+                    "SELECT record_json FROM managed_records WHERE kind=?1 AND id=?2",
+                    params![kind, id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(internal)?;
+            decode(&value.ok_or_else(|| MeshError::input("managed record not found"))?)
+        })
+    }
+    pub fn managed_list<T: DeserializeOwned>(&self, kind: &str) -> Result<Vec<T>> {
+        self.read(|c| {
+            let mut q = c
+                .prepare("SELECT record_json FROM managed_records WHERE kind=?1 ORDER BY id")
+                .map_err(internal)?;
+            q.query_map([kind], |r| r.get::<_, String>(0))
+                .map_err(internal)?
+                .map(|r| decode(&r.map_err(internal)?))
+                .collect()
+        })
     }
     pub fn set_node(&self, card: &NodeCard) -> Result<()> {
         self.read(|c| { c.execute("INSERT INTO nodes VALUES(?1,?2) ON CONFLICT(node_id) DO UPDATE SET card_json=excluded.card_json", params![card.node_id.to_string(), encode(card)?]).map_err(internal)?; Ok(()) })
