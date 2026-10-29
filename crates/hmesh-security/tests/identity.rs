@@ -3,6 +3,25 @@ use hmesh_security::*;
 use uuid::Uuid;
 
 #[test]
+fn tailnet_identity_has_exact_ip_san_without_rekeying_existing_instances() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = NodeConfig::default();
+    config.node.network = "tailscale".into();
+    config.node.expose_to_tailnet = true;
+    config.node.listen_address = "100.99.145.22".parse().unwrap();
+    let instance = Instance::init(&root.path().join("tailnet"), config).unwrap();
+    validate_card(&instance.card).unwrap();
+    let der = certificate_der(&instance.card.certificate_pem).unwrap();
+    let (_, certificate) = x509_parser::parse_x509_certificate(der.as_ref()).unwrap();
+    let san = certificate.subject_alternative_name().unwrap().unwrap();
+    assert!(san.value.general_names.iter().any(|name| matches!(name,
+        x509_parser::extensions::GeneralName::IPAddress(bytes) if *bytes == [100, 99, 145, 22])));
+    let again = Instance::init(&instance.dir, NodeConfig::default()).unwrap();
+    assert_eq!(again.card.fingerprint, instance.card.fingerprint);
+    assert_eq!(again.config.node.network, "tailscale");
+}
+
+#[test]
 fn initialization_is_idempotent_and_instances_have_distinct_keys_and_tokens() {
     let root = tempfile::tempdir().expect("tempdir");
     let a = Instance::init(&root.path().join("a"), NodeConfig::default()).expect("init a");

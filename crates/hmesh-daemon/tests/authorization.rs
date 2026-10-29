@@ -10,6 +10,67 @@ use tokio::{net::TcpListener, sync::watch};
 use uuid::Uuid;
 
 #[tokio::test]
+async fn tailnet_router_blocks_every_owner_namespace_even_with_owner_certificate_and_token() {
+    // Real TLS with the Tailnet route filter on a local test socket; no Mac/model claim.
+    let root = tempfile::tempdir().unwrap();
+    let b = Arc::new(Instance::init(&root.path().join("owner"), NodeConfig::default()).unwrap());
+    let a = Instance::init(&root.path().join("peer"), NodeConfig::default()).unwrap();
+    let store = Store::open(&b.dir.join("state.sqlite3")).unwrap();
+    store.trust_peer(&a.card).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("https://{}", listener.local_addr().unwrap());
+    let (shutdown, receiver) = watch::channel(false);
+    let state = AppState::load(b.clone(), store.clone(), shutdown.clone()).unwrap();
+    let server = b.clone();
+    let task = tokio::spawn(serve(
+        listener,
+        hmesh_daemon::tailnet_router(state),
+        Arc::new(move || server.server_config(&store.peers()?)),
+        receiver,
+    ));
+    let owner = Client::new(&b, &endpoint, &b.card.fingerprint, false, true).unwrap();
+    for path in [
+        "/local/status",
+        "/local/pairs",
+        "/local/services",
+        "/local/integrations",
+    ] {
+        assert_eq!(
+            owner.get::<Value>(path).await.unwrap_err().code,
+            ErrorCode::PermissionDenied
+        );
+    }
+    assert_eq!(
+        owner
+            .post::<_, Value>("/local/stop", &json!({}))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    let peer = Client::new(&a, &endpoint, &b.card.fingerprint, false, false).unwrap();
+    assert_eq!(
+        peer.get::<NodeCard>("/hmesh/v1/node")
+            .await
+            .unwrap()
+            .node_id,
+        b.card.node_id
+    );
+    let anonymous = Client::new(&a, &endpoint, &b.card.fingerprint, true, false).unwrap();
+    anonymous.get::<NodeCard>("/hmesh/v1/hello").await.unwrap();
+    assert_eq!(
+        anonymous
+            .get::<Value>("/hmesh/v1/agents")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthenticated
+    );
+    shutdown.send(true).unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over_tls() {
     let temp = tempfile::tempdir().expect("temp");
     let a = Instance::init(&temp.path().join("a"), NodeConfig::default()).expect("a");

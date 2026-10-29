@@ -2,7 +2,9 @@
 
 Rust runtime for authorized coding-agent tasks between local-first Mesh Nodes.
 
-V0 supports **two independent processes on one Windows computer**, with Pi, DeepSeek Harness and OpenCode as managed subprocesses. A first [Windows → Orion/Linux SSH smoke](docs/ssh-first-smoke.md) has also passed using Pi 1.4.0 and DeepSeek V4 Flash. Full V0.1, Tailscale, Codex and the three-machine Gateway remain later work.
+V0 supports **two independent processes on one Windows computer**, with Pi, DeepSeek Harness and OpenCode as managed subprocesses. A first [Windows → Orion/Linux SSH smoke](docs/ssh-first-smoke.md) has also passed using Pi 1.4.0 and DeepSeek V4 Flash. Full V0.1, Codex and the three-machine Gateway remain later work.
+
+[Direct Tailscale setup for Windows and Mac](docs/quickstart-tailnet.md) supports literal Tailnet IPs, candidate discovery, pinned mTLS and a separate loopback owner API. On Mac, run `node scripts/start-tailnet.mjs` after cloning to build and start a dedicated Node with the local Pi/DeepSeek V4 Flash configuration; SSH is not required. Mac compilation and the two-device real-model acceptance remain pending until run on that device.
 
 [Bidirectional SSH and native MCP delegation](docs/ssh-bidirectional-mcp.md) now pass: execution survives a cut tunnel and origin restart, replay/deduplication remain correct, and Orion Pi uses native MCP to discover and delegate Windows DSH. [MCP setup](docs/mcp.md) is explicitly scoped to owner-enabled running parents; target execution requires independent approval.
 

@@ -76,8 +76,11 @@ impl Instance {
         }
         let node_id = Uuid::new_v4();
         let key = KeyPair::generate_for(&PKCS_ED25519)?;
-        let mut params =
-            CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into(), "::1".into()])?;
+        let mut names = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+        if config.node.network == "tailscale" {
+            names.push(config.node.listen_address.to_string());
+        }
+        let mut params = CertificateParams::new(names)?;
         params
             .distinguished_name
             .push(DnType::CommonName, node_id.to_string());
@@ -254,14 +257,14 @@ pub fn normalize_fingerprint(value: &str) -> Result<String> {
 }
 pub fn validate_endpoint(endpoint: &str) -> Result<url::Url> {
     let url = url::Url::parse(endpoint)?;
-    let loopback = match url.host() {
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+    let permitted = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || is_tailnet_ip(ip.into()),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || is_tailnet_ip(ip.into()),
         Some(url::Host::Domain("localhost")) => true,
         _ => false,
     };
     if url.scheme() != "https"
-        || !loopback
+        || !permitted
         || !url.username().is_empty()
         || url.password().is_some()
         || url.port_or_known_default().is_none_or(|p| p == 0)
@@ -270,7 +273,7 @@ pub fn validate_endpoint(endpoint: &str) -> Result<url::Url> {
         || url.path() != "/"
     {
         bail!(
-            "V0 peer endpoints must be loopback HTTPS origins without credentials, paths or queries"
+            "peer endpoints must be literal loopback/Tailnet HTTPS origins without credentials, paths or queries (localhost is also allowed)"
         );
     }
     Ok(url)

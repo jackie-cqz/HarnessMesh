@@ -15,6 +15,7 @@ use hmesh_security::{
     Instance, atomic_write, normalize_fingerprint, validate_card, verify_pair_submission,
 };
 use hmesh_store::Store;
+use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
 use hmesh_transport::{Client, ConnectionIdentity};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -289,6 +290,22 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn(contract_errors))
         .with_state(state)
 }
+// Reject the whole owner namespace on the Tailnet listener, even with the
+// instance's own certificate and token. Owner RPCs use a separate loopback socket.
+pub fn tailnet_router(state: AppState) -> Router {
+    router(state).layer(middleware::from_fn(
+        |request: axum::extract::Request, next: middleware::Next| async move {
+            if !request.uri().path().starts_with("/hmesh/v1/") {
+                return ApiError(MeshError::new(
+                    ErrorCode::PermissionDenied,
+                    "owner API is loopback-only",
+                ))
+                .into_response();
+            }
+            next.run(request).await
+        },
+    ))
+}
 async fn contract_errors(request: axum::extract::Request, next: middleware::Next) -> Response {
     let response = next.run(request).await;
     if response.status().is_client_error()
@@ -308,14 +325,32 @@ async fn contract_errors(request: axum::extract::Request, next: middleware::Next
 pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let mut instance = Instance::load(dir)?;
     let _lock = instance.lock_daemon()?;
+    let tailnet = instance.config.node.network == "tailscale";
+    if tailnet {
+        CliTailscale::discover(instance.config.node.tailscale_executable.as_deref())?
+            .status()
+            .await?
+            .require_local_ip(instance.config.node.listen_address)?;
+    }
     let address = SocketAddr::new(
         instance.config.node.listen_address,
         instance.config.node.listen_port,
     );
-    let listener = TcpListener::bind(address)
+    let peer_listener = TcpListener::bind(address)
         .await
-        .context("bind loopback node listener")?;
-    instance.card.endpoint = format!("https://{}", listener.local_addr()?);
+        .context("bind node listener on its configured address")?;
+    instance.card.endpoint = format!("https://{}", peer_listener.local_addr()?);
+    let (listener, peer_listener) = if tailnet {
+        let owner = TcpListener::bind((
+            std::net::Ipv4Addr::LOCALHOST,
+            peer_listener.local_addr()?.port(),
+        ))
+        .await
+        .context("bind separate loopback owner listener (same port)")?;
+        (owner, Some(peer_listener))
+    } else {
+        (peer_listener, None)
+    };
     let instance = Arc::new(instance);
     let store = Store::open(&instance.dir.join("state.sqlite3"))?;
     store.set_node(&instance.card)?;
@@ -345,13 +380,32 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     ));
     let managed = tokio::spawn(services::run(state.clone(), shutdown.subscribe()));
     let state_for_cleanup = state.clone();
-    let result = hmesh_transport::serve(
-        listener,
-        router(state),
-        Arc::new(move || tls_instance.server_config(&store.peers()?)),
-        receiver,
-    )
-    .await;
+    let tls: hmesh_transport::TlsConfigProvider =
+        Arc::new(move || tls_instance.server_config(&store.peers()?));
+    let owner = hmesh_transport::serve(listener, router(state.clone()), tls.clone(), receiver);
+    let result = if let Some(listener) = peer_listener {
+        let peer = hmesh_transport::serve_tailnet(
+            listener,
+            tailnet_router(state),
+            tls,
+            shutdown.subscribe(),
+        );
+        tokio::try_join!(
+            async {
+                let result = owner.await;
+                let _ = shutdown.send(true);
+                result
+            },
+            async {
+                let result = peer.await;
+                let _ = shutdown.send(true);
+                result
+            }
+        )
+        .map(|_| ())
+    } else {
+        owner.await
+    };
     let _ = shutdown.send(true);
     let _ = runtime.await;
     let _ = managed.await;
@@ -421,7 +475,9 @@ async fn status(
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
     Ok(Json(
-        json!({"node":s.instance.card,"protocol":PROTOCOL,"network":"loopback","tailscale":"not_required","running":true,"tasks":s.store.tasks()?.len()}),
+        json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
+        "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
+        "running":true,"pid":std::process::id(),"tasks":s.store.tasks()?.len()}),
     ))
 }
 async fn stop(
@@ -1094,5 +1150,14 @@ pub fn local_client(instance: &Instance) -> anyhow::Result<Client> {
     if card.node_id != instance.card.node_id || card.fingerprint != instance.card.fingerprint {
         anyhow::bail!("daemon endpoint identity does not match instance");
     }
-    Client::new(instance, &card.endpoint, &card.fingerprint, false, true)
+    let endpoint = if instance.config.node.network == "tailscale" {
+        let url = hmesh_security::validate_endpoint(&card.endpoint)?;
+        format!(
+            "https://127.0.0.1:{}",
+            url.port_or_known_default().context("missing daemon port")?
+        )
+    } else {
+        card.endpoint
+    };
+    Client::new(instance, &endpoint, &card.fingerprint, false, true)
 }

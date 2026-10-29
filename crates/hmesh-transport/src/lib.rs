@@ -1,4 +1,5 @@
-//! Bounded loopback HTTPS transport with TLS 1.3 and explicit certificate pins.
+//! Bounded loopback/Tailnet HTTPS transport with TLS 1.3 and certificate pins.
+pub mod tailscale;
 use axum::{Extension, Router};
 use hmesh_core::{ErrorCode, MeshError};
 use hmesh_security::{Instance, fingerprint, validate_endpoint};
@@ -27,8 +28,35 @@ pub async fn serve(
     listener: TcpListener,
     router: Router,
     tls: TlsConfigProvider,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    serve_scoped(listener, router, tls, shutdown, false).await
+}
+pub async fn serve_tailnet(
+    listener: TcpListener,
+    router: Router,
+    tls: TlsConfigProvider,
+    shutdown: watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    serve_scoped(listener, router, tls, shutdown, true).await
+}
+pub fn permits_source(tailnet: bool, ip: std::net::IpAddr) -> bool {
+    if tailnet {
+        hmesh_core::is_tailnet_ip(ip)
+    } else {
+        ip.is_loopback()
+    }
+}
+async fn serve_scoped(
+    listener: TcpListener,
+    router: Router,
+    tls: TlsConfigProvider,
+    mut shutdown: watch::Receiver<bool>,
+    tailnet: bool,
+) -> anyhow::Result<()> {
+    if !permits_source(tailnet, listener.local_addr()?.ip()) {
+        anyhow::bail!("listener address does not match its explicit network scope");
+    }
     let semaphore = Arc::new(Semaphore::new(64));
     let mut connections = JoinSet::new();
     loop {
@@ -37,7 +65,7 @@ pub async fn serve(
             changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { break; } }
             accepted = listener.accept() => {
                 let (stream, address) = accepted?;
-                if !address.ip().is_loopback() { continue; }
+                if !permits_source(tailnet, address.ip()) { continue; }
                 let Ok(permit) = semaphore.clone().try_acquire_owned() else { continue; };
                 let config = match tls() { Ok(config) => config, Err(error) => { tracing::error!(%error, "TLS configuration rejected"); continue; } };
                 let app = router.clone();
@@ -92,6 +120,17 @@ impl Client {
         owner: bool,
     ) -> anyhow::Result<Self> {
         let url = validate_endpoint(endpoint)?;
+        let loopback = match url.host() {
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            Some(url::Host::Domain("localhost")) => true,
+            _ => false,
+        };
+        if !loopback && (owner || instance.config.node.network != "tailscale") {
+            anyhow::bail!(
+                "Tailnet RPC requires an opted-in tailscale instance; owner credentials remain loopback-only"
+            );
+        }
         let config = instance.client_config(expected_fingerprint, bootstrap)?;
         let inner = reqwest::Client::builder()
             .use_preconfigured_tls(config)

@@ -1,6 +1,6 @@
 # 当前实际协议
 
-本文件描述当前 Rust 实现：V0 任务核心、SSH 检查点、原生 MCP 子集及受管 HTTP 服务。核心类型在 `crates/hmesh-core/src/lib.rs` 和 `managed.rs`；节点 endpoint 只接受回环地址的 TLS 1.3，跨机复用受控 SSH 路径。JSON 配置未知字段被拒绝。完整 V0.1/V0.2 的后续接口仍以真实实现和验收为准。
+本文件描述当前 Rust 实现：V0 任务核心、SSH 检查点、原生 MCP 子集及受管 HTTP 服务。默认仅回环；显式 `network = "tailscale"` 允许确切 Tailnet 字面 IP 的 TLS 1.3/mTLS 直连，owner 保留独立回环监听。JSON 配置未知字段被拒绝。见 [Tailnet 配置](quickstart-tailnet.md)；Mac 真机模型验收与完整 V0.1/V0.2 仍待独立证据。
 
 ## 请求和身份
 

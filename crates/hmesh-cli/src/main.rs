@@ -6,16 +6,13 @@ use hmesh_daemon::{
     local_client,
 };
 use hmesh_security::Instance;
+use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::ExitCode};
 use uuid::Uuid;
 
 #[derive(Parser)]
-#[command(
-    name = "hmesh",
-    version,
-    about = "Local-first coding harness mesh (V0)"
-)]
+#[command(name = "hmesh", version, about = "Local-first coding harness mesh")]
 struct Cli {
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
@@ -31,6 +28,12 @@ enum Commands {
         name: String,
         #[arg(long, default_value_t = 38880)]
         port: u16,
+        #[arg(long, default_value = "loopback", value_parser = ["loopback", "tailscale"])]
+        network: String,
+        #[arg(long)]
+        listen_address: Option<std::net::IpAddr>,
+        #[arg(long)]
+        tailscale_executable: Option<PathBuf>,
     },
     Doctor,
     Node {
@@ -157,6 +160,10 @@ enum DaemonCommand {
 #[derive(Subcommand)]
 enum PeersCommand {
     List,
+    Candidates {
+        #[arg(long)]
+        tailscale_executable: Option<PathBuf>,
+    },
 }
 #[derive(Subcommand)]
 enum PairCommand {
@@ -330,11 +337,50 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         )
         .into());
     }
-    if let Commands::Init { name, port } = cli.command {
+    if let Commands::Peers {
+        command: PeersCommand::Candidates {
+            tailscale_executable,
+        },
+    } = &cli.command
+    {
+        let configured = Instance::load(&dir)
+            .ok()
+            .and_then(|i| i.config.node.tailscale_executable);
+        let status =
+            CliTailscale::discover(tailscale_executable.as_deref().or(configured.as_deref()))?
+                .status()
+                .await?;
+        return Ok(Some(serde_json::to_value(status)?));
+    }
+    if let Commands::Init {
+        name,
+        port,
+        network,
+        listen_address,
+        tailscale_executable,
+    } = cli.command
+    {
         let mut config = NodeConfig::default();
         config.node.name = name;
         config.node.listen_port = port;
+        config.node.network = network.clone();
+        config.node.tailscale_executable = tailscale_executable;
+        if network == "tailscale" {
+            let status = CliTailscale::discover(config.node.tailscale_executable.as_deref())?
+                .status()
+                .await?;
+            config.node.listen_address = listen_address.unwrap_or(status.preferred_local_ip()?);
+            status.require_local_ip(config.node.listen_address)?;
+            config.node.expose_to_tailnet = true;
+        } else if let Some(address) = listen_address {
+            config.node.listen_address = address;
+        }
         let instance = Instance::init(&dir, config)?;
+        if instance.config.node.network != network {
+            anyhow::bail!(
+                "existing instance uses a different network; create a fresh --data-dir instead of changing identity/configuration"
+            );
+        }
         return Ok(Some(serde_json::to_value(instance.card)?));
     }
     if matches!(
@@ -358,9 +404,25 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             Ok(client) => client.get::<Value>("/local/status").await.ok(),
             Err(_) => None,
         };
+        let tailscale = if instance.config.node.network == "tailscale" {
+            match CliTailscale::discover(instance.config.node.tailscale_executable.as_deref()) {
+                Ok(provider) => match provider.status().await {
+                    Ok(status) => {
+                        match status.require_local_ip(instance.config.node.listen_address) {
+                            Ok(()) => serde_json::to_value(status)?,
+                            Err(error) => json!({"error":error.to_string()}),
+                        }
+                    }
+                    Err(error) => json!({"error":error.to_string()}),
+                },
+                Err(error) => json!({"error":error.to_string()}),
+            }
+        } else {
+            json!("not_required")
+        };
         return Ok(Some(
             json!({"node_id":instance.card.node_id,"data_dir":instance.dir,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
-            "protocol":PROTOCOL,"network":"loopback","tailscale":"not_required","identity":"loaded","daemon":daemon,"harness_execution":"not_checked"}),
+            "protocol":PROTOCOL,"network":instance.config.node.network,"tailscale":tailscale,"identity":"loaded","daemon":daemon,"harness_execution":"not_checked"}),
         ));
     }
     if matches!(

@@ -1,6 +1,8 @@
-# 当前安全与能力边界（V0 与 SSH 检查点）
+# 当前安全与能力边界（V0、SSH 与 Tailnet 直连）
 
 V0 只在本机回环网运行，但每次操作仍经过证书、当前信任、项目 grant 和审批。数据目录内私钥、证书、owner token、数据库、配置和每次运行数据各自独立。Windows 使用仅当前用户可访问的 ACL，Unix 使用 0700/0600；init 拒绝覆盖未完成身份或非空的无关目录。相同 data-dir 的第二个 Daemon 因目录锁失败。
+
+显式 Tailnet 模式每次启动须通过本机 Tailscale CLI 验证运行/在线及确切监听 IP；只绑定该字面 IP，并给新证书加入对应 SAN。公开监听仅接受 Tailnet 地址来源，拒绝整个 `/local/*`，即使请求携带 owner 证书和 token；owner 经独立回环 socket 管理。候选发现只显示必要网络元数据，不自动信任、授权或调用模型。默认回环实例不能主动连接 Tailnet endpoint，owner 客户端不向 Tailnet 发送 token。当前不解析任意 DNS 或发布到公网。详见 [直连说明](quickstart-tailnet.md)。
 
 ## 认证和授权
 

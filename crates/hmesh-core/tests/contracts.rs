@@ -3,6 +3,34 @@ use serde_json::json;
 use uuid::Uuid;
 
 #[test]
+fn tailnet_listeners_require_explicit_opt_in_and_exact_node_ip() {
+    let mut config = NodeConfig::default();
+    config.validate().unwrap();
+    config.node.listen_address = "100.99.145.22".parse().unwrap();
+    assert!(config.validate().is_err());
+    config.node.network = "tailscale".into();
+    assert!(config.validate().is_err());
+    config.node.expose_to_tailnet = true;
+    config.validate().unwrap();
+    for address in [
+        "0.0.0.0",
+        "::",
+        "127.0.0.1",
+        "192.168.1.1",
+        "100.63.255.255",
+        "100.128.0.0",
+        "::ffff:100.64.0.1",
+    ] {
+        config.node.listen_address = address.parse().unwrap();
+        assert!(config.validate().is_err(), "{address}");
+    }
+    config.node.listen_address = "fd7a:115c:a1e0::1".parse().unwrap();
+    config.validate().unwrap();
+    config.node.tailscale_executable = Some("relative-tailscale".into());
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn coding_runs_can_explicitly_request_bounded_wire_output_without_changing_the_default() {
     let mut request = TaskSubmit::new(Uuid::new_v4(), "coding", "write server files");
     assert_eq!(request.limits.max_output_bytes, 1048576);

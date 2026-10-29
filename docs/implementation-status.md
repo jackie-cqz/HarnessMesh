@@ -1,5 +1,7 @@
 # V0 P0 实施与验收状态
 
+2026-10-30 Tailnet 直连：加入只读 TailscaleProvider、候选发现和显式 `init --network tailscale`；监听 IP 必须属于当前本机，证书包含该 IP SAN，owner 有独立回环入口。Windows 59 项 Rust 测试、fmt/Clippy 与 CLI/MCP 构建通过；单机两个真实 Tailnet 地址监听完成 mTLS、双向配对、错误指纹/未认证/公开 owner API 拒绝与撤销，无 SSH、无模型调用。Windows→Mac 的 Tailscale ping 也已直连，但 **Mac 编译、Pi/Flash 真机任务及两机应用联调尚未验收**。已提供 [Mac 本机启动脚本与步骤](quickstart-tailnet.md)，历史 SSH 证据保持原样，完整 V0.1/V0.2 仍未完成。
+
 2026-10-29 受管 HTTP/SSH 检查点：Daemon 已管理限定项目/peer 的服务租约、精确 SSH 转发、本地 mTLS HTTP 连接、进程树与有限重启。真实 Pi/Flash 一轮修复缺失字段，受管服务自动重启，原 GET 契约 verified；DSH/Pro 的同版本客户端修复前失败、修复后 CRUD 通过。后端 10 项与客户端 4 项测试、受管重启后数据保留、断 SSH 子进程自动恢复、撤销关闭入口通过。最终 Windows 52 / Linux 51 项 Rust 测试通过；Windows fmt/Clippy 通过。验收曾发现原 7892 代理请求超时及固定 5 秒/1 秒 HTTP 限制，历史失败保留，现使用独立 Agent 的已验证直连、owner 总预算与调用方余量，写请求不自动重放。见 [配置与限制](managed-services.md)、[最终证据](evidence/latest-managed-services.json)。验收进程已清理，原 Todo 应用保留；完整 V0.1/V0.2、Tailscale、Codex、三机 Gateway 与 OS 开机常驻仍未完成。
 
 2026-10-28：SPEC 1.3 的 **V0 L01-L05 / E2E-00 在当前 Windows x64 电脑通过**。实现语言为 Rust，测试脚本为 PowerShell 7。没有使用第二台电脑、Tailscale、Codex、MCP、Hub 或服务代理。本结论不替代后续 V0.1 的跨设备/跨 OS 门禁。

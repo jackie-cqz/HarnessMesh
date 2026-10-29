@@ -1,0 +1,57 @@
+{
+  "scope": "one-machine-two-daemons-real-tailnet-ip-tls",
+  "ssh_used": false,
+  "model_called": false,
+  "mac_tested": false,
+  "passed": true,
+  "checks": [
+    "exact-ip-bind-and-san",
+    "local-owner-api",
+    "anonymous-denied",
+    "owner-api-denied-on-tailnet-with-owner-credentials",
+    "wrong-pin-denied",
+    "bidirectional-pairing-and-mtls",
+    "revoked-peer-denied"
+  ],
+  "endpoints": [
+    "https://100.99.145.22:59183",
+    "https://100.99.145.22:59185"
+  ],
+  "node_ids": [
+    "133e4a06-d12b-4fd9-a2e7-4478a6b5ee7b",
+    "99efc669-3360-4371-a65b-6c9c08e756c6"
+  ],
+  "cleanup": "both-owned-daemons-exited",
+  "checked_date": "2026-10-30",
+  "platform": "windows-x86_64",
+  "rust_tests_passed": 59,
+  "fmt": "passed",
+  "clippy": "passed-with-warnings-denied",
+  "build": [
+    "hmesh-cli",
+    "hmesh-mcp"
+  ],
+  "startup_script_windows": "passed-start-and-graceful-stop",
+  "mac_acceptance": "pending-local-build-model-and-two-device-integration",
+  "tailscale_version": "1.104.4",
+  "mac_network": {
+    "observed_ping_ms": 14,
+    "application_tested": false,
+    "path": "direct",
+    "samples": 1,
+    "ip": "100.69.246.117"
+  },
+  "binary_sha256": "7c2be8e394f37835a5faaadc8b663c5dfef739a1cdc0a401b9a6896db5da46af",
+  "source_sha256": {
+    "scripts/start-tailnet.mjs": "79360e31f06cc7507443ccf8e2271bba89bfbc9d682256295c2f0dede7287a0e",
+    "crates/hmesh-core/src/lib.rs": "4cc2fb6f6746786a9819807fe008a4d54d378c271713df23166f01bfc6fb38e4",
+    "crates/hmesh-transport/src/tailscale.rs": "c0f17c70dae6b9f6a21affc219302be7e93041b6c917b510f187f27bf6f386f0",
+    "crates/hmesh-cli/src/main.rs": "50d2e45cd9f6f32b7b0f647a0c550992ba77b2b4a23a592494c6f5be186e41a5",
+    "crates/hmesh-core/src/network.rs": "06251ea6e905aca3fc2002218f63871fb4bffae21c809d621682ab19ac4cfda0",
+    "crates/hmesh-daemon/src/lib.rs": "13d617fbe8ec7aa3c90cf830413106afd9088b85912e946bc560f1cea8475dcf",
+    "crates/hmesh-transport/src/lib.rs": "2fb98e7f56d539e472098276364ec423ec618b27838c19326780e1248c5a97b7",
+    "scripts/check-tailnet-local.mjs": "109541cfc751008051ba5a2db7236c08f9dd565ea54f0beb5d33dfdf22a6c554",
+    "Cargo.lock": "4458a16990c64588e2d7f6ee0a2d62970a975cc992bd4832e4a9a92d7c9f9f2d",
+    "crates/hmesh-security/src/lib.rs": "7489d1da46995b0485b9bfc23aa34096a86d046fab10d2aa5d872fba25496a11"
+  }
+}

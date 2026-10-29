@@ -1,4 +1,6 @@
 //! Harness-independent contracts. No network, process or credential access.
+mod network;
+pub use network::is_tailnet_ip;
 pub mod managed;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -390,6 +392,7 @@ pub struct NodeOptions {
     pub listen_port: u16,
     pub network: String,
     pub expose_to_tailnet: bool,
+    pub tailscale_executable: Option<PathBuf>,
 }
 impl Default for NodeOptions {
     fn default() -> Self {
@@ -399,6 +402,7 @@ impl Default for NodeOptions {
             listen_port: 38880,
             network: "loopback".into(),
             expose_to_tailnet: false,
+            tailscale_executable: None,
         }
     }
 }
@@ -446,12 +450,24 @@ impl NodeConfig {
                 "policy_file must be absolute or relative to the instance; ~ is not expanded",
             ));
         }
-        if !self.node.listen_address.is_loopback()
-            || self.node.network != "loopback"
-            || self.node.expose_to_tailnet
+        let valid_network = match self.node.network.as_str() {
+            "loopback" => self.node.listen_address.is_loopback() && !self.node.expose_to_tailnet,
+            "tailscale" => is_tailnet_ip(self.node.listen_address) && self.node.expose_to_tailnet,
+            _ => false,
+        };
+        if !valid_network {
+            return Err(MeshError::input(
+                "use loopback, or explicitly enable tailscale with one literal Tailnet IP; wildcard/LAN/public listeners are forbidden",
+            ));
+        }
+        if self
+            .node
+            .tailscale_executable
+            .as_ref()
+            .is_some_and(|p| !p.is_absolute())
         {
             return Err(MeshError::input(
-                "V0 permits only explicit loopback listeners",
+                "tailscale_executable must be an absolute local path",
             ));
         }
         if !self.security.require_mutual_auth || self.security.default_action != "deny" {
