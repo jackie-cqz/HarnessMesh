@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "date": "2026-10-30",
+  "duplicate_submission": {
+    "passed": true,
+    "task": {
+      "agent_id": "60c5d1af-8e83-482f-afdc-e720f4be91e3",
+      "created_at": 1793329216,
+      "error": null,
+      "last_attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "origin_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+      "project_id": "tailnet-reverse",
+      "request": {
+        "goal": "Use the write tool to create out/health.json containing exactly this JSON object: {\"status\":\"ok\",\"harness\":\"dsh\",\"model\":\"deepseek-v4-pro\",\"request_id\":\"22d08d50-f105-4535-9c40-5a7ce2fd9836\",\"marker\":\"mac-to-windows-9a748bf0db4141bdb98ced84546eba90\"}. Then use the read tool to read it back. Work only in the registered tailnet-reverse project. Do not run shell commands or call networking. Keep the final response brief.",
+        "inputs": [],
+        "limits": {
+          "max_output_bytes": 1048576,
+          "timeout_seconds": 180
+        },
+        "project_id": "tailnet-reverse",
+        "requires_approval": true,
+        "target_agent_id": "60c5d1af-8e83-482f-afdc-e720f4be91e3",
+        "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+      },
+      "status": "SUCCEEDED",
+      "target_node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab",
+      "updated_at": 1793329393
+    }
+  },
+  "cursor_readback": {
+    "passed": true,
+    "cursor": 7,
+    "total_events": 14,
+    "suffix_events": 7,
+    "last_seq": 14,
+    "after_last": []
+  },
+  "verification": [
+    {
+      "artifact": {
+        "name": "out/health.json",
+        "sha256": "a20992b96633dd6c58bb8839739e3b53e80d6be25365c340545b319f43b97ce4",
+        "size_bytes": 168
+      },
+      "assertions": [
+        {
+          "field": "harness",
+          "passed": true
+        },
+        {
+          "field": "marker",
+          "passed": true
+        },
+        {
+          "field": "model",
+          "passed": true
+        },
+        {
+          "field": "request_id",
+          "passed": true
+        },
+        {
+          "field": "status",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "verifier": "deterministic-json-subset-v1"
+    }
+  ],
+  "limitations": [
+    "No running-task network interruption tested"
+  ],
+  "origin_restart": {
+    "status": "blocked",
+    "shutdown": "graceful owner daemon stop succeeded",
+    "startup_attempts": 2,
+    "error": "Tailscale must be logged in, running and online with a node IP (state: Running)",
+    "tailscale": {
+      "BackendState": "Running",
+      "SelfOnline": false,
+      "health": "Unable to connect to the Tailscale coordination server to synchronize the state of your tailnet. Peer reachability might degrade over time."
+    },
+    "daemon_running": false
+  }
+}

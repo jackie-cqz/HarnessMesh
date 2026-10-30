@@ -41,3 +41,9 @@ Mac 原始读回证据见 [latest-tailnet-reverse-mac.json](evidence/latest-tail
 此前的 [Windows → Mac Pi/Flash 检查点](tailnet-mac-smoke.md) 已独立记录。两种任务方向都已有真实执行证据；Mac 完整工作区测试、受管前后端服务、Codex 与三机 Gateway 等仍未完成，不能据此宣称完整 V0.1/V0.2。
 
 结构化证据见 [latest-tailnet-reverse.json](evidence/latest-tailnet-reverse.json)，包含实际请求绑定、attempt、工具事件、输出额度及二进制/依赖 hash，不含模型凭据。
+
+## Mac 可靠性补验（2026-10-30）
+
+相同 request ID、task ID 和原始内容重发返回原 SUCCEEDED 任务及 attempt，核验结果保持不变。以 seq 7 为游标读回的后缀与全量事件过滤结果完全相同，末尾游标之后为空。未创建新的模型任务。
+
+Mac 发起端正常停止后，两次重启均被 Tailscale 在线门禁拒绝：BackendState 为 Running，但 Self.Online=false，Health 报告协调服务器无法连接。因此发起端重启恢复尚未验收，Mac Daemon 当前已停止；未绕过网络门禁。执行中断网、取消和 Windows 执行端重启也尚未验证。见 [原始结果](evidence/latest-tailnet-reverse-reliability.json)。

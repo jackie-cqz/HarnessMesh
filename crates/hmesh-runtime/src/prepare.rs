@@ -311,6 +311,21 @@ fn local_json(path: &Path) -> Result<Value> {
 fn deepseek_key(path: &Path) -> Result<String> {
     let document = local_json(path)?;
     let credential = &document["deepseek"];
+    if credential.is_null() {
+        let key = document["providers"]["deepseek"]["apiKey"]
+            .as_str()
+            .filter(|key| {
+                !key.is_empty() && !key.starts_with('!') && !key.contains(['\r', '\n', '\0'])
+            })
+            .context("DeepSeek model reference must contain a literal API key")?;
+        if key
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        {
+            bail!("DeepSeek environment references require an explicit environment allowlist");
+        }
+        return Ok(key.to_owned());
+    }
     if credential["type"] != "api_key" {
         bail!("DeepSeek credential reference must contain an API key; OAuth is not imported");
     }
@@ -418,6 +433,24 @@ mod tests {
         )
         .expect("write");
         assert!(deepseek_key(&path).is_err());
+    }
+    #[test]
+    fn model_key_reference_rejects_commands_and_environment_names() {
+        let temp = tempfile::tempdir().expect("temp");
+        let path = temp.path().join("models.json");
+        for key in ["!echo secret", "DEEPSEEK_API_KEY", "", "bad\nkey"] {
+            fs::write(
+                &path,
+                serde_json::to_vec(&json!({"providers":{"deepseek":{"apiKey":key}}}))
+                    .expect("json"),
+            )
+            .expect("write");
+            assert!(deepseek_key(&path).is_err());
+        }
+        let bytes = br#"{"providers":{"deepseek":{"apiKey":"fixture-literal-key"}}}"#;
+        fs::write(&path, bytes).expect("write");
+        assert_eq!(deepseek_key(&path).expect("key"), "fixture-literal-key");
+        assert_eq!(fs::read(&path).expect("read"), bytes);
     }
     #[test]
     fn credentials_split_across_text_events_never_reach_persisted_deltas() {

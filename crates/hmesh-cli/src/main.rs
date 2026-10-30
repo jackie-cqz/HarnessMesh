@@ -35,7 +35,10 @@ enum Commands {
         #[arg(long)]
         tailscale_executable: Option<PathBuf>,
     },
-    Doctor,
+    Doctor {
+        #[arg(long)]
+        peer: Option<Uuid>,
+    },
     Node {
         #[command(subcommand)]
         command: NodeCommand,
@@ -208,11 +211,14 @@ enum AgentCommand {
 }
 #[derive(Subcommand)]
 enum TaskCommand {
-    List,
-    Send {
-        agent_id: Uuid,
+    List {
         #[arg(long)]
-        peer: Uuid,
+        pending: bool,
+    },
+    Send {
+        agent_id: String,
+        #[arg(long)]
+        peer: String,
         #[arg(long)]
         project: String,
         #[arg(long)]
@@ -399,9 +405,14 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         return Ok(None);
     }
     let instance = Instance::load(&dir)?;
-    if matches!(cli.command, Commands::Doctor) {
+    if let Commands::Doctor { peer } = &cli.command {
         let daemon = match local_client(&instance) {
-            Ok(client) => client.get::<Value>("/local/status").await.ok(),
+            Ok(client) => Some(match client.get::<Value>("/local/status").await {
+                Ok(status) => json!({"state":"reachable", "status":status}),
+                Err(error) => {
+                    json!({"state":"unreachable", "error":error.to_string(), "hint":"Check daemon start and local owner credentials"})
+                }
+            }),
             Err(_) => None,
         };
         let tailscale = if instance.config.node.network == "tailscale" {
@@ -410,7 +421,9 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                     Ok(status) => {
                         match status.require_local_ip(instance.config.node.listen_address) {
                             Ok(()) => serde_json::to_value(status)?,
-                            Err(error) => json!({"error":error.to_string()}),
+                            Err(error) => {
+                                json!({"state":"not_ready", "status":status, "error":error.to_string(), "hint":"Check coordination connectivity and local Tailnet IP; do not reset identity"})
+                            }
                         }
                     }
                     Err(error) => json!({"error":error.to_string()}),
@@ -420,9 +433,42 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         } else {
             json!("not_required")
         };
+        let peer_diagnostics = if let Some(peer) = peer {
+            match local_client(&instance) {
+                Ok(client) => match client.get::<Value>("/local/peers").await {
+                    Ok(peers) => {
+                        let entry = peers.as_array().and_then(|rows| {
+                            rows.iter().find(|row| {
+                                row["card"]["node_id"].as_str() == Some(&peer.to_string())
+                            })
+                        });
+                        if let Some(entry) = entry {
+                            let agents = match client
+                                .get::<Value>(&format!("/local/agents/remote/{peer}"))
+                                .await
+                            {
+                                Ok(agents) => {
+                                    json!({"state":"reachable", "visible_agents":agents.as_array().map_or(0, Vec::len), "note":"An empty registry does not prove task authorization"})
+                                }
+                                Err(error) => {
+                                    json!({"state":"rpc_failed", "error":error.to_string(), "hint":"Check peer listener, certificate trust and authorization separately"})
+                                }
+                            };
+                            json!({"peer":entry, "registry":agents})
+                        } else {
+                            json!({"state":"not_paired", "hint":"Pair and compare full fingerprints first"})
+                        }
+                    }
+                    Err(error) => json!({"state":"local_api_failed", "error":error.to_string()}),
+                },
+                Err(error) => json!({"state":"local_identity_failed", "error":error.to_string()}),
+            }
+        } else {
+            json!("not_requested")
+        };
         return Ok(Some(
             json!({"node_id":instance.card.node_id,"data_dir":instance.dir,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,
-            "protocol":PROTOCOL,"network":instance.config.node.network,"tailscale":tailscale,"identity":"loaded","daemon":daemon,"harness_execution":"not_checked"}),
+            "protocol":PROTOCOL,"network":instance.config.node.network,"tailscale":tailscale,"identity":"loaded","daemon":daemon,"harness_execution":"not_checked","peer_diagnostics":peer_diagnostics}),
         ));
     }
     if matches!(
@@ -540,7 +586,17 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             client.post("/local/policy", &policy).await?
         }
         Commands::Task { command } => match command {
-            TaskCommand::List => client.get("/local/tasks").await?,
+            TaskCommand::List { pending } => {
+                let mut tasks: Value = client.get("/local/tasks").await?;
+                if pending {
+                    for key in ["executions", "submitted"] {
+                        if let Some(rows) = tasks[key].as_array_mut() {
+                            rows.retain(|row| row["status"] == "PENDING_APPROVAL");
+                        }
+                    }
+                }
+                tasks
+            }
             TaskCommand::Send {
                 agent_id,
                 peer,
@@ -551,6 +607,30 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 timeout,
                 max_output_bytes,
             } => {
+                let peers: Value = if Uuid::parse_str(&peer).is_ok() {
+                    json!([])
+                } else {
+                    client.get("/local/peers").await?
+                };
+                let peer = resolve_id(
+                    &peer,
+                    peers.as_array().map(Vec::as_slice).unwrap_or(&[]),
+                    "node_id",
+                    "display_name",
+                    true,
+                )?;
+                let agents: Value = if Uuid::parse_str(&agent_id).is_ok() {
+                    json!([])
+                } else {
+                    client.get(&format!("/local/agents/remote/{peer}")).await?
+                };
+                let agent_id = resolve_id(
+                    &agent_id,
+                    agents.as_array().map(Vec::as_slice).unwrap_or(&[]),
+                    "agent_id",
+                    "name",
+                    false,
+                )?;
                 let mut task = TaskSubmit::new(agent_id, &project, &prompt);
                 let request_id = request_id.unwrap_or_else(Uuid::new_v4);
                 task.task_id = task_id.unwrap_or(request_id);
@@ -729,6 +809,27 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
     Ok(Some(value))
 }
 
+fn resolve_id(input: &str, rows: &[Value], id: &str, name: &str, nested: bool) -> Result<Uuid> {
+    if let Ok(uuid) = Uuid::parse_str(input) {
+        return Ok(uuid);
+    }
+    let matches: Vec<_> = rows
+        .iter()
+        .map(|row| if nested { &row["card"] } else { row })
+        .filter(|row| row[name].as_str() == Some(input))
+        .collect();
+    if matches.len() != 1 {
+        anyhow::bail!(
+            "name must match exactly one visible entry; use UUID for missing or ambiguous names"
+        );
+    }
+    Ok(Uuid::parse_str(
+        matches[0][id]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("entry has no UUID"))?,
+    )?)
+}
+
 fn read_json(path: &std::path::Path) -> Result<Value> {
     let bytes = fs::read(path)?;
     if bytes.len() > 1048576 {
@@ -827,4 +928,29 @@ fn human_output(value: &Value) -> String {
         );
     }
     serde_json::to_string_pretty(value).unwrap_or_else(|_| "(unavailable)".into())
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    #[test]
+    fn names_never_choose_ambiguous_targets() {
+        let id = Uuid::new_v4();
+        let rows = vec![json!({"agent_id":id,"name":"worker"})];
+        assert_eq!(
+            resolve_id("worker", &rows, "agent_id", "name", false).expect("unique"),
+            id
+        );
+        assert!(
+            resolve_id(
+                "worker",
+                &[rows[0].clone(), rows[0].clone()],
+                "agent_id",
+                "name",
+                false
+            )
+            .is_err()
+        );
+        assert!(resolve_id("missing", &rows, "agent_id", "name", false).is_err());
+    }
 }

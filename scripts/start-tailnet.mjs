@@ -7,6 +7,8 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { resolvePi, credentialSource, configName } from './tailnet-config.mjs';
+
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const flags = new Map();
 const valued = new Set(['--root', '--port', '--pi', '--models', '--credential-source', '--tailscale-executable']);
@@ -72,15 +74,16 @@ try {
   // Resolve Mac configuration before starting a daemon. Keys stay in the existing
   // local file; only a path reference is written into the dedicated Agent config.
   let piConfig;
+  let agentName;
   if (process.platform === 'darwin') {
-    const executable = absoluteFile('--pi', flags.has('--pi') ? undefined : findPi());
+    const executable = resolvePi(absoluteFile('--pi', flags.has('--pi') ? undefined : findPi()));
     const models = absoluteFile('--models', join(homedir(), '.pi', 'agent', 'models.json'));
     const definition = JSON.parse(readFileSync(models, 'utf8'));
     if (!definition.providers?.deepseek?.models?.some(model => model.id === 'deepseek-v4-flash')) {
       throw new Error('Selected models.json does not define deepseek/deepseek-v4-flash; choose the existing Pi file with --models');
     }
     const defaultAuth = join(homedir(), '.pi', 'agent', 'auth.json');
-    const auth = flags.has('--credential-source') || existsSync(defaultAuth) ? absoluteFile('--credential-source', defaultAuth) : undefined;
+    const auth = credentialSource({ explicit: flags.has('--credential-source') ? absoluteFile('--credential-source') : undefined, auth: defaultAuth, models, envKey: process.env.DEEPSEEK_API_KEY });
     if (!auth && !process.env.DEEPSEEK_API_KEY) throw new Error('Configure the local Pi DeepSeek API key or DEEPSEEK_API_KEY first');
     const project = join(root, 'project');
     const adapter = [`executable = ${toml(executable)}`, `node_executable = ${toml(process.execPath)}`,
@@ -91,6 +94,10 @@ try {
       'mode = "managed"', '[project]', `root = ${toml(project)}`, 'allowed_tools = ["read", "write", "edit"]',
       'artifact_paths = ["out/health.json"]', 'require_remote_task_approval = true', '[adapter]', ...adapter, ''].join('\n');
   }
+  if (piConfig) {
+    agentName = configName(piConfig);
+    piConfig = piConfig.replace('name = "mac-pi-flash"', `name = ${toml(agentName)}`);
+  }
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const init = ['init', '--name', process.platform === 'darwin' ? 'mac-pi' : 'windows-tailnet', '--port', port, '--network', 'tailscale'];
   if (flags.has('--tailscale-executable')) init.push('--tailscale-executable', absoluteFile('--tailscale-executable'));
@@ -98,7 +105,7 @@ try {
   if (new URL(card.endpoint).port !== port) throw new Error('Existing instance uses a different port; use a fresh --root');
   if (piConfig) {
     mkdirSync(join(root, 'project'), { recursive: true, mode: 0o700 });
-    const configPath = join(root, 'pi.toml');
+    const configPath = join(root, `${agentName}.toml`);
     if (existsSync(configPath) && readFileSync(configPath, 'utf8') !== piConfig) throw new Error('Existing Agent config differs; use a fresh --root to preserve prior registrations');
     if (!existsSync(configPath)) writeFileSync(configPath, piConfig, { flag: 'wx', mode: 0o600 });
   }
@@ -115,8 +122,8 @@ try {
   if (!ready) throw new Error('Daemon did not become ready within 20 seconds');
   let agent;
   if (piConfig) {
-    agent = mesh(['agents', 'list']).find(item => item.name === 'mac-pi-flash' && item.project_ids.includes('tailnet-demo'));
-    if (!agent) agent = mesh(['agent', 'register', '--config', join(root, 'pi.toml')]);
+    agent = mesh(['agents', 'list']).find(item => item.name === agentName && item.project_ids.includes('tailnet-demo'));
+    if (!agent) agent = mesh(['agent', 'register', '--config', join(root, `${agentName}.toml`)]);
   }
   const receipt = { node: card, agent, data_dir: nodeDir, project: piConfig ? join(root, 'project') : undefined };
   writeFileSync(join(root, 'startup.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });

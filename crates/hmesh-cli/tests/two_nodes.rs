@@ -84,6 +84,28 @@ async fn watch_drains_all_byte_bounded_event_pages_after_task_completion() {
         .collect();
     assert_eq!(indices, (0..24).collect::<Vec<_>>());
     assert_eq!(records.last().unwrap()["status"], "FAILED");
+    let last_seq = records
+        .iter()
+        .filter_map(|row| row["seq"].as_i64())
+        .max()
+        .unwrap();
+    drop(_daemon);
+    std::fs::remove_file(dir.join("daemon.json")).unwrap();
+    let _restarted = daemon(&dir);
+    ready(&dir).await;
+    let restored = cli(&dir, &["task", "show", &task.task_id.to_string()]);
+    assert_eq!(restored["status"], "FAILED");
+    let tail = cli(
+        &dir,
+        &[
+            "task",
+            "events",
+            &task.task_id.to_string(),
+            "--after",
+            &last_seq.to_string(),
+        ],
+    );
+    assert!(tail.as_array().unwrap().is_empty());
 }
 
 fn cli(dir: &Path, args: &[&str]) -> Value {

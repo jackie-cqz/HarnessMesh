@@ -20,8 +20,9 @@ node scripts/start-tailnet.mjs
 
 - Node：仓库内 `.hmesh-v0/tailnet-darwin/node`，在本机 Tailnet IP 和 `127.0.0.1` 分别监听 39880。
 - 项目：`.hmesh-v0/tailnet-darwin/project`，仅 read/write/edit，允许核验 `out/health.json`，远端任务必须批准。
-- Pi：解析 PATH 中 `pi` 的符号链接，使用运行脚本的 Node 解释器。
-- 模型：引用 `~/.pi/agent/models.json` 的 Flash 定义。凭据引用本机 `~/.pi/agent/auth.json`，没有该文件时使用本机 `DEEPSEEK_API_KEY`；当前只支持 DeepSeek API key，不导入 OAuth。
+- Pi：解析 PATH 中 `pi` 的符号链接和 managed install 启动器，定位实际 JavaScript 入口，使用运行脚本的 Node 解释器。
+- Agent 名称包含配置摘要；相同配置复用登记，配置变更创建新登记，需 owner 为新 Agent 显式更新授权，不自动扩大已有 grant。独立配置文件按该名称保存。
+- 模型：引用 `~/.pi/agent/models.json` 的 Flash 定义。凭据优先引用本机 `~/.pi/agent/auth.json` 中有效的 DeepSeek API key，其次使用 `DEEPSEEK_API_KEY`，最后可直接引用 `models.json` 中的字面 API key（不复制密钥、不执行命令）；当前只支持 DeepSeek API key，不导入 OAuth。
 
 路径不同可传展开后的绝对路径：
 
@@ -134,3 +135,7 @@ node scripts/check-tailnet-local.mjs --run-local-network
 已完成的 Windows 单机检查及源码/二进制 hash 见 [单机证据](evidence/latest-tailnet-local.json)，两台设备的真实任务见 [Mac 检查点](evidence/latest-tailnet-mac.json)。Mac 完整工作区测试和 CI 结果仍应独立记录，不能用单条真实任务代替。
 
 参考：[Tailscale CLI 官方说明](https://tailscale.com/docs/reference/tailscale-cli?tab=macos)。
+
+启动配置的无模型回归检查：`node --test scripts/tailnet-config.test.mjs`。
+
+Mac 若终端 PATH 中没有 Node、但 Pi 安装器已提供运行时，可用 `sh scripts/start-tailnet.sh`。开发与验收边界汇总见 [Mac development baseline](mac-development-baseline.md)。

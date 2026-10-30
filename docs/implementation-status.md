@@ -1,5 +1,8 @@
 # V0 P0 实施与验收状态
 
+2026-10-30 Mac 开发基线：Apple Silicon / Rust stable 1.99.1 的 fmt、全工作区 Clippy（warnings denied）和 59 项 Rust 测试通过；3 项启动配置 Node 回归测试通过并接入 CI。启动脚本支持 managed Pi 启动器、空 auth 的安全回退与直接 models 凭据引用，按配置摘要复用登记，避免复用旧配置 Agent。本次未调用模型，未重启现有验收 Daemon；新配置 Agent 仍需独立验证和显式项目授权。
+
+
 2026-10-30 Mac 发起端补充：已读回反向任务 SUCCEEDED、原 attempt、write/read 事件与五字段确定性核验通过结果，hash 与 Windows 报告一致。见 [Mac 读回证据](evidence/latest-tailnet-reverse-mac.json)。Mac CLI 编译已通过；重复提交、专项分页、反向故障恢复及完整 workspace 检查未验证。
 
 2026-10-30 反向执行端检查点：Mac 向 Windows 的 `windows-dsh-pro` / DSH 0.2.0-rc.2 / `deepseek-v4-pro` 发起任务，Windows 本机审批后 SUCCEEDED，write/read、五字段 JSON、168 字节工件独立 hash 和单 attempt 持久化通过。结果已发布到原 Task verification 接口；Mac 侧读取结论、重复提交和补读尚未在 Windows 报告中独立收集。见 [反向检查点](tailnet-reverse-smoke.md) 与 [证据](evidence/latest-tailnet-reverse.json)。两种任务方向已有真实执行证据，Mac 完整工作区测试、前后端受管服务及完整 V0.1/V0.2 仍未完成。

@@ -15,6 +15,8 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
+      - name: Tailnet startup configuration tests
+        run: node --test scripts/tailnet-config.test.mjs
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
