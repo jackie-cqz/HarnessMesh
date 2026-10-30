@@ -1,5 +1,7 @@
 # V0 P0 实施与验收状态
 
+2026-10-30 Mac 发起端补充：已读回反向任务 SUCCEEDED、原 attempt、write/read 事件与五字段确定性核验通过结果，hash 与 Windows 报告一致。见 [Mac 读回证据](evidence/latest-tailnet-reverse-mac.json)。Mac CLI 编译已通过；重复提交、专项分页、反向故障恢复及完整 workspace 检查未验证。
+
 2026-10-30 反向执行端检查点：Mac 向 Windows 的 `windows-dsh-pro` / DSH 0.2.0-rc.2 / `deepseek-v4-pro` 发起任务，Windows 本机审批后 SUCCEEDED，write/read、五字段 JSON、168 字节工件独立 hash 和单 attempt 持久化通过。结果已发布到原 Task verification 接口；Mac 侧读取结论、重复提交和补读尚未在 Windows 报告中独立收集。见 [反向检查点](tailnet-reverse-smoke.md) 与 [证据](evidence/latest-tailnet-reverse.json)。两种任务方向已有真实执行证据，Mac 完整工作区测试、前后端受管服务及完整 V0.1/V0.2 仍未完成。
 
 2026-10-30 正向 Mac 真机检查点：Windows 经 Tailnet/mTLS 向 Mac Pi 1.4.0 / `deepseek-v4-flash` 派发真实 write/read 任务，批准前无 attempt，批准后 SUCCEEDED。五字段 JSON 核验、154 字节工件 hash、同请求去重、23 条事件与游标补读通过；发起端进程退出后，以原身份重启仍可读到同一成功任务/attempt。首次本机凭据失败保留；Mac owner 重新登记 API-key Agent 并更新精确 grant。见 [检查点说明](tailnet-mac-smoke.md) 和 [结构化证据](evidence/latest-tailnet-mac.json)。该报告保留原范围，后续反向任务见上方检查点。

@@ -1,0 +1,272 @@
+{
+  "schema": 1,
+  "date": "2026-10-30",
+  "observer": "Mac origin node",
+  "source_revision": "0420b04524bf91b8bf8c26a45fd9707b26c8bb23",
+  "binary_sha256": "889f92aaa7b5257b0d8870c47d2fbd1cfb89f57edff9eecd9bd9435576666b99",
+  "task": {
+    "agent_id": "60c5d1af-8e83-482f-afdc-e720f4be91e3",
+    "created_at": 1793329216,
+    "error": null,
+    "last_attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+    "origin_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+    "project_id": "tailnet-reverse",
+    "request": {
+      "goal": "Use the write tool to create out/health.json containing exactly this JSON object: {\"status\":\"ok\",\"harness\":\"dsh\",\"model\":\"deepseek-v4-pro\",\"request_id\":\"22d08d50-f105-4535-9c40-5a7ce2fd9836\",\"marker\":\"mac-to-windows-9a748bf0db4141bdb98ced84546eba90\"}. Then use the read tool to read it back. Work only in the registered tailnet-reverse project. Do not run shell commands or call networking. Keep the final response brief.",
+      "inputs": [],
+      "limits": {
+        "max_output_bytes": 1048576,
+        "timeout_seconds": 180
+      },
+      "project_id": "tailnet-reverse",
+      "requires_approval": true,
+      "target_agent_id": "60c5d1af-8e83-482f-afdc-e720f4be91e3",
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    "status": "SUCCEEDED",
+    "target_node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+    "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab",
+    "updated_at": 1793329393
+  },
+  "events": [
+    {
+      "attempt_id": null,
+      "created_at": 1793329216,
+      "event_id": "bbfdaaf0-3267-405a-9509-70b26a6de1b7",
+      "event_type": "status",
+      "payload": {
+        "status": "PENDING_APPROVAL"
+      },
+      "seq": 1,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": null,
+      "created_at": 1793329384,
+      "event_id": "452f4f82-34e9-48c9-a5cc-9cd6583b9f1d",
+      "event_type": "status",
+      "payload": {
+        "error": null,
+        "status": "QUEUED"
+      },
+      "seq": 2,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329384,
+      "event_id": "48495260-6462-44f6-82e5-62e234f9a447",
+      "event_type": "status",
+      "payload": {
+        "error": null,
+        "status": "RUNNING"
+      },
+      "seq": 3,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329385,
+      "event_id": "9b18071e-e4be-4ba9-959e-ba501e0ef244",
+      "event_type": "run",
+      "payload": {
+        "type": "started"
+      },
+      "seq": 4,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329390,
+      "event_id": "91aac88e-18ab-4be2-a5ad-6bae64a050b3",
+      "event_type": "run",
+      "payload": {
+        "name": "write",
+        "phase": "started",
+        "type": "tool_event"
+      },
+      "seq": 5,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329390,
+      "event_id": "fd2b0118-3001-4985-8cfa-e8236f9f28ce",
+      "event_type": "run",
+      "payload": {
+        "name": "write",
+        "phase": "completed",
+        "type": "tool_event"
+      },
+      "seq": 6,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329392,
+      "event_id": "386db752-5880-4162-aaba-c9d107b3816b",
+      "event_type": "run",
+      "payload": {
+        "name": "read",
+        "phase": "started",
+        "type": "tool_event"
+      },
+      "seq": 7,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329392,
+      "event_id": "8da8af17-a67a-476b-8af4-d6a755ac1ccb",
+      "event_type": "run",
+      "payload": {
+        "name": "read",
+        "phase": "completed",
+        "type": "tool_event"
+      },
+      "seq": 8,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329393,
+      "event_id": "87e890ca-e4fa-4f8f-aa98-722ea94e0d10",
+      "event_type": "run",
+      "payload": {
+        "text": "Created `out/health.json` and read it",
+        "type": "text_delta"
+      },
+      "seq": 9,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329393,
+      "event_id": "6e3d082b-8c9b-4006-988e-36b44286bef7",
+      "event_type": "run",
+      "payload": {
+        "text": " back — content matches exactly.",
+        "type": "text_delta"
+      },
+      "seq": 10,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329393,
+      "event_id": "3dce1d70-2dde-44ee-9001-9ffd108ddbf2",
+      "event_type": "output_summary",
+      "payload": {
+        "complete_records": 18,
+        "largest_complete_record_bytes": 713,
+        "native_record_limit_bytes": 1048576,
+        "stdout_bytes": 3239,
+        "stdout_limit_bytes": 1048576
+      },
+      "seq": 11,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329393,
+      "event_id": "68fc2d92-00df-4cff-86cd-8214364ac4f5",
+      "event_type": "artifact",
+      "payload": {
+        "name": "out/health.json",
+        "sha256": "a20992b96633dd6c58bb8839739e3b53e80d6be25365c340545b319f43b97ce4",
+        "size_bytes": 168
+      },
+      "seq": 12,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329393,
+      "event_id": "512f157a-c068-45c8-a135-fe40b91751ef",
+      "event_type": "status",
+      "payload": {
+        "error": null,
+        "status": "SUCCEEDED"
+      },
+      "seq": 13,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    },
+    {
+      "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+      "created_at": 1793329408,
+      "event_id": "0d3e813e-b61d-425b-92b4-2fb8a1a1cec7",
+      "event_type": "verification",
+      "payload": {
+        "artifact": {
+          "name": "out/health.json",
+          "sha256": "a20992b96633dd6c58bb8839739e3b53e80d6be25365c340545b319f43b97ce4",
+          "size_bytes": 168
+        },
+        "assertions": [
+          {
+            "field": "harness",
+            "passed": true
+          },
+          {
+            "field": "marker",
+            "passed": true
+          },
+          {
+            "field": "model",
+            "passed": true
+          },
+          {
+            "field": "request_id",
+            "passed": true
+          },
+          {
+            "field": "status",
+            "passed": true
+          }
+        ],
+        "passed": true,
+        "verifier": "deterministic-json-subset-v1"
+      },
+      "seq": 14,
+      "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab"
+    }
+  ],
+  "verification": [
+    {
+      "artifact": {
+        "name": "out/health.json",
+        "sha256": "a20992b96633dd6c58bb8839739e3b53e80d6be25365c340545b319f43b97ce4",
+        "size_bytes": 168
+      },
+      "assertions": [
+        {
+          "field": "harness",
+          "passed": true
+        },
+        {
+          "field": "marker",
+          "passed": true
+        },
+        {
+          "field": "model",
+          "passed": true
+        },
+        {
+          "field": "request_id",
+          "passed": true
+        },
+        {
+          "field": "status",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "verifier": "deterministic-json-subset-v1"
+    }
+  ],
+  "limits": [
+    "No duplicate submission tested from Mac",
+    "No disconnect, cancellation or restart recovery tested in reverse direction",
+    "No full Mac workspace checks performed"
+  ]
+}
