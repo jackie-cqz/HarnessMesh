@@ -1,0 +1,220 @@
+{
+  "checked_date": "2026-10-30",
+  "scope": "windows-to-macos-tailnet-real-pi-task",
+  "passed": true,
+  "ssh_used": false,
+  "origin": {
+    "os": "windows",
+    "node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+    "fingerprint": "bca6a96bbb77518fc24c28ff4fab362628b61a986d15258def3dafef86ccefed",
+    "endpoint": "https://100.99.145.22:39880"
+  },
+  "target": {
+    "os": "macOS",
+    "node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+    "fingerprint": "063a9034661b76f7ba517fc14c51d9bf38eb659af4467b2d1509ce9c47c2066a",
+    "endpoint": "https://100.69.246.117:39880",
+    "agent_id": "5583c679-a688-4653-92c1-ee960fde64ea",
+    "agent_name": "mac-pi-flash-key",
+    "harness": "pi",
+    "version": "1.4.0",
+    "project": "tailnet-demo",
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "model_selection_evidence": "Mac owner selected the configuration; model configuration and credentials are not exported",
+    "local_model_verification_task": "bd1991a5-5353-4d57-8929-549a72f4b57c",
+    "probe": {
+      "authentication": "passed_real_run",
+      "cancel": "not_checked",
+      "installed": true,
+      "managed_run": "passed",
+      "protocol_probe": "passed_real_run",
+      "session_resume": "not_supported_in_v0",
+      "streaming": "passed_native_json_events",
+      "unavailable_reason": null,
+      "version": "1.4.0",
+      "version_supported": true
+    }
+  },
+  "authorization": {
+    "mutual_trust": true,
+    "project_scoped": true,
+    "agent_scoped": true,
+    "remote_approval_required": true,
+    "admission_status": "PENDING_APPROVAL",
+    "attempt_before_approval": null
+  },
+  "task": {
+    "task_id": "ac2697bc-611a-4d3f-a800-06f1cc5f96e8",
+    "request_id": "7545688d-ce3a-4679-9e36-66161c9599c1",
+    "attempt_id": "a0ecd2df-9ede-47f2-93c5-f6523aca63be",
+    "status": "SUCCEEDED",
+    "created_at": 1793295466,
+    "updated_at": 1793295509,
+    "expected_json": {
+      "harness": "pi",
+      "request_id": "7545688d-ce3a-4679-9e36-66161c9599c1",
+      "model": "deepseek-v4-flash",
+      "marker": "d0de6c5676c84e5ba0803f8f8cf85424",
+      "status": "ok"
+    },
+    "tool_events": [
+      {
+        "seq": 5,
+        "name": "write",
+        "phase": "tool_execution_start",
+        "type": "tool_event"
+      },
+      {
+        "seq": 6,
+        "name": "write",
+        "phase": "tool_execution_end",
+        "type": "tool_event"
+      },
+      {
+        "seq": 7,
+        "name": "read",
+        "phase": "tool_execution_start",
+        "type": "tool_event"
+      },
+      {
+        "seq": 8,
+        "name": "read",
+        "phase": "tool_execution_end",
+        "type": "tool_event"
+      }
+    ],
+    "output_summary": {
+      "complete_records": 149,
+      "largest_complete_record_bytes": 8316,
+      "native_record_limit_bytes": 1048576,
+      "stdout_bytes": 59576,
+      "stdout_limit_bytes": 1048576
+    }
+  },
+  "artifact_verification": {
+    "source": "execution-owner deterministic verification received over mTLS and matched to artifact event plus owner-reported hash",
+    "artifact": {
+      "name": "out/health.json",
+      "sha256": "f0d12fa09dbcced7525a4fc6d85ec10abaded1575a093408986aab1810efa4fa",
+      "size_bytes": 154
+    },
+    "assertions": [
+      {
+        "field": "harness",
+        "passed": true
+      },
+      {
+        "field": "marker",
+        "passed": true
+      },
+      {
+        "field": "model",
+        "passed": true
+      },
+      {
+        "field": "request_id",
+        "passed": true
+      },
+      {
+        "field": "status",
+        "passed": true
+      }
+    ],
+    "passed": true,
+    "verifier": "deterministic-json-subset-v1"
+  },
+  "replay": {
+    "event_count": 23,
+    "after": 12,
+    "replayed_count": 11,
+    "exact_event_id_tail_match": true
+  },
+  "deduplication": {
+    "same_request_id": true,
+    "same_task_id": true,
+    "same_attempt_id": true,
+    "event_history_unchanged": true,
+    "distinct_attempts_observed_in_events": 1
+  },
+  "origin_recovery": {
+    "completed_task_read_after_windows_daemon_restarted": true,
+    "same_node_id": true,
+    "same_task_id": true,
+    "same_attempt_id": true,
+    "model_resubmitted": false,
+    "while_task_running_tested": false
+  },
+  "protocol_checks": {
+    "checked_date": "2026-10-30",
+    "scope": "windows-to-macos-real-tailnet-mtls",
+    "ssh_used": false,
+    "model_called": false,
+    "windows_node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+    "mac_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+    "mac_fingerprint": "063a9034661b76f7ba517fc14c51d9bf38eb659af4467b2d1509ce9c47c2066a",
+    "mac_endpoint": "https://100.69.246.117:39880",
+    "tls_protocol": "TLSv1.3",
+    "passed": true,
+    "checks": [
+      "mac-pinned-san-and-tls13",
+      "wrong-pin-rejected-with-fresh-handshake",
+      "anonymous-registry-denied",
+      "public-owner-api-denied",
+      "mutual-tls-node-identity",
+      "project-filtered-agent-visible",
+      "unregistered-project-rejected-before-execution"
+    ],
+    "negative_project_error": {
+      "code": "PROJECT_NOT_FOUND",
+      "message": "agent is not assigned to this project",
+      "retryable": false,
+      "trace_id": "42c057ba-9574-4ae4-b9d3-a544add85eea"
+    },
+    "diagnostic_deviation": "Initial independent Node probe reused an HTTPS connection and could not test a changed pin; corrected with agent:false. HarnessMesh client pin checks use separate configurations."
+  },
+  "deviations": [
+    {
+      "stage": "initial-local-model-verification",
+      "error_message": "DeepSeek credential reference must contain an API key; OAuth is not imported",
+      "attempt_id": "65509c02-dea5-4eac-99eb-7c604c021d7e",
+      "harness_spawned": false,
+      "task_id": "080aeb56-d239-4274-8346-c5cf93a9e3ca",
+      "error_code": "AGENT_UNAVAILABLE",
+      "source": "owner-supplied-task-status",
+      "status": "FAILED",
+      "resolution": "Mac owner re-registered mac-pi-flash-key with an API-key credential reference; project grant was changed to the new Agent; historical failure retained"
+    },
+    {
+      "stage": "independent-node-https-probe",
+      "detail": "Initial independent Node probe reused an HTTPS connection and could not test a changed pin; corrected with agent:false. HarnessMesh client pin checks use separate configurations."
+    },
+    {
+      "stage": "origin-daemon-recovery",
+      "detail": "Windows background daemon was no longer running when continuation resumed; original identity/data directory was reused and the completed task/attempt remained unchanged. The exit cause was not established."
+    }
+  ],
+  "binding": {
+    "windows_source_commit": "cdc2c1c1dd42b0eee2f454a1e60a54a22fe68961",
+    "windows_binary_sha256": "7c2be8e394f37835a5faaadc8b663c5dfef739a1cdc0a401b9a6896db5da46af",
+    "cargo_lock_sha256": "4458a16990c64588e2d7f6ee0a2d62970a975cc992bd4832e4a9a92d7c9f9f2d",
+    "mac_binary_sha256": null,
+    "mac_source_commit": null,
+    "mac_build_evidence": "Owner started working local CLI/Daemon; native Pi events and successful task received over mTLS; no independent Mac binary hash or full test log collected"
+  },
+  "runtime": {
+    "daemons": "left-running-for-follow-up",
+    "mac_agent_status_after_task": "idle",
+    "owner_authentication_and_credentials": "not exported"
+  },
+  "not_tested": [
+    "mac-to-windows-real-task",
+    "live-transport-failure-during-this-task",
+    "mac-managed-http-frontend-backend-integration",
+    "tailscale-service-revocation-on-these-two-devices",
+    "mac-full-fmt-clippy-workspace-tests",
+    "codex-adapter",
+    "three-machine-gateway",
+    "complete-v0.1-or-v0.2"
+  ]
+}

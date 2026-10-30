@@ -2,7 +2,7 @@
 
 两台电脑各自在本机启动 HarnessMesh。任务、事件、产物核验和受管 HTTP RPC 使用 Tailnet TCP + TLS 1.3/mTLS，不需要 SSH。候选可达、Node 信任、项目授权和 Agent 可运行状态分别记录。
 
-2026-10-30 已确认 Windows 与用户的 Mac Tailscale ping 直连，约 14 ms；这只证明网络可达。**Mac 构建、Pi 真实模型与两台电脑的应用联调仍待实际验收**。
+2026-10-30 已完成 [Windows → Mac 的真实 Pi/Flash 任务](tailnet-mac-smoke.md)：本机批准、write/read、五字段 JSON/hash、同请求去重和事件补读通过。[Mac → Windows 的 DSH/Pro 执行端检查](tailnet-reverse-smoke.md) 也已通过 write/read 和独立 JSON/hash；Mac 发起端的反向读取/补读结论、完整工作区测试和前后端受管服务联调仍待独立验收。
 
 ## Mac 启动
 
@@ -35,6 +35,8 @@ node scripts/start-tailnet.mjs \
 Tailscale CLI 自动发现常规位置。Mac App Store 版使用 `/Applications/Tailscale.app/Contents/MacOS/Tailscale` 并设置 `TAILSCALE_BE_CLI=1`；也可传 `--tailscale-executable /absolute/path`。完整选项见 `node scripts/start-tailnet.mjs --help`。已有二进制可加 `--skip-build`。
 
 启动输出和私有 `startup.json` 包含 Node Card、完整 fingerprint、Agent ID 和路径。Pi 登记只做版本探测，初始 `unverified` 正常。另开 Mac 终端，明确运行一次真实模型验证（会产生模型费用）：
+
+凭据引用须包含 `deepseek` 下的 `type = "api_key"` 和有效 `key`；仅存在 auth.json 不代表符合该格式。本次首次验证曾因此失败，Mac owner 后来选择正确凭据引用并重新登记 Agent。手动重新登记后，以最新 Agent ID 和精确项目授权为准，旧 startup.json 中的 Agent ID 不会自动更新；不要把模型密钥复制到发起端。
 
 ```sh
 HM="$PWD/target/debug/hmesh"
@@ -109,7 +111,7 @@ Windows 发送作用于独立项目的任务：
 & $hmesh --data-dir $node task send <Mac-Agent-ID> --peer <Mac-Node-ID> --project tailnet-demo --prompt 'Use write then read to create out/health.json containing {"status":"ok","model":"deepseek-v4-flash"}. Work only in the registered project.'
 ```
 
-Mac 用 `task approve <Task-ID>` 批准，Windows 用 `task watch <Task-ID>` 等待，再执行 `task verify <Task-ID> --artifact out/health.json --expect-json '{"status":"ok","model":"deepseek-v4-flash"}'`。链路暂断时使用相同 request ID 查询/补读，不重新创建副作用任务。
+Mac 用 `task approve <Task-ID>` 批准，Windows 用 `task watch <Task-ID>` 等待。任务成功后，**Mac owner** 在本机执行 `task verify <Task-ID> --artifact out/health.json --expect-json '{"status":"ok","model":"deepseek-v4-flash"}'`；Windows 用 `task verification <Task-ID>` 读取经 mTLS 返回的核验结果。`task verify` 是执行端本机管理操作，不能在发起端代替 Mac 读取工件。链路暂断时使用相同 request ID 查询/补读，不重新创建副作用任务。
 
 受管服务复用 [HTTP 配置](managed-services.md)，**Tailnet 路径跳过 tunnel add**；后端继续仅在 Mac 回环监听，经 HarnessMesh mTLS 转发到 Windows 的回环 endpoint。服务租约和重启/修复预算不变。
 
@@ -129,6 +131,6 @@ node scripts/check-tailnet-local.mjs --run-local-network
 
 最后一项是显式 opt-in 的**单机两个 Daemon、真实 Tailnet IP/TLS**检查，覆盖双向配对、错误指纹、未认证拒绝、携带 owner 凭据的公开管理接口拒绝、撤销和清理；不调用模型，不能替代两台电脑验收。
 
-已完成的 Windows 检查及源码/二进制 hash 见 [独立证据](evidence/latest-tailnet-local.json)。Mac 的 Pi 登记与启动分支仍须在该设备实测；现有 GitHub Actions 的 macOS job 会在推送后尝试构建和无模型测试，不能提前视为已通过。
+已完成的 Windows 单机检查及源码/二进制 hash 见 [单机证据](evidence/latest-tailnet-local.json)，两台设备的真实任务见 [Mac 检查点](evidence/latest-tailnet-mac.json)。Mac 完整工作区测试和 CI 结果仍应独立记录，不能用单条真实任务代替。
 
 参考：[Tailscale CLI 官方说明](https://tailscale.com/docs/reference/tailscale-cli?tab=macos)。

@@ -1,0 +1,177 @@
+{
+  "checked_date": "2026-10-30",
+  "scope": "mac-to-windows-tailnet-windows-execution-owner-checkpoint",
+  "passed": true,
+  "ssh_used": false,
+  "origin": {
+    "os": "macOS",
+    "node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71"
+  },
+  "target": {
+    "os": "windows",
+    "node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+    "endpoint": "https://100.99.145.22:39880",
+    "agent_id": "60c5d1af-8e83-482f-afdc-e720f4be91e3",
+    "agent_name": "windows-dsh-pro",
+    "harness": "dsh",
+    "version": "0.2.0-rc.2",
+    "provider": "deepseek-official",
+    "model": "deepseek-v4-pro",
+    "project": "tailnet-reverse",
+    "probe": {
+      "authentication": "passed_real_run",
+      "cancel": "not_checked",
+      "installed": true,
+      "managed_run": "passed",
+      "protocol_probe": "passed_real_run",
+      "session_resume": "not_supported_in_v0",
+      "streaming": "passed_native_json_events",
+      "unavailable_reason": null,
+      "version": "0.2.0-rc.2",
+      "version_supported": true
+    }
+  },
+  "local_model_verification": {
+    "task_id": "2bf557fa-39bb-4f81-8f19-8cfeeb71f20f",
+    "status": "SUCCEEDED"
+  },
+  "authorization": {
+    "authenticated_mac_origin": true,
+    "project_scoped": true,
+    "agent_scoped": true,
+    "remote_approval_required": true,
+    "admission_status": "PENDING_APPROVAL",
+    "attempt_before_approval": null,
+    "approved_by": "Windows local owner"
+  },
+  "task": {
+    "task_id": "71ce832e-377c-4544-a6d5-cd6765a31cab",
+    "request_id": "22d08d50-f105-4535-9c40-5a7ce2fd9836",
+    "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+    "status": "SUCCEEDED",
+    "created_at": 1793329216,
+    "updated_at": 1793329393,
+    "expected_json": {
+      "status": "ok",
+      "harness": "dsh",
+      "model": "deepseek-v4-pro",
+      "request_id": "22d08d50-f105-4535-9c40-5a7ce2fd9836",
+      "marker": "mac-to-windows-9a748bf0db4141bdb98ced84546eba90"
+    },
+    "tool_events": [
+      {
+        "seq": 5,
+        "name": "write",
+        "phase": "started",
+        "type": "tool_event"
+      },
+      {
+        "seq": 6,
+        "name": "write",
+        "phase": "completed",
+        "type": "tool_event"
+      },
+      {
+        "seq": 7,
+        "name": "read",
+        "phase": "started",
+        "type": "tool_event"
+      },
+      {
+        "seq": 8,
+        "name": "read",
+        "phase": "completed",
+        "type": "tool_event"
+      }
+    ],
+    "output_summary": {
+      "complete_records": 18,
+      "largest_complete_record_bytes": 713,
+      "native_record_limit_bytes": 1048576,
+      "stdout_bytes": 3239,
+      "stdout_limit_bytes": 1048576
+    }
+  },
+  "artifact_verification": {
+    "artifact": {
+      "name": "out/health.json",
+      "sha256": "a20992b96633dd6c58bb8839739e3b53e80d6be25365c340545b319f43b97ce4",
+      "size_bytes": 168
+    },
+    "assertions": [
+      {
+        "field": "harness",
+        "passed": true
+      },
+      {
+        "field": "marker",
+        "passed": true
+      },
+      {
+        "field": "model",
+        "passed": true
+      },
+      {
+        "field": "request_id",
+        "passed": true
+      },
+      {
+        "field": "status",
+        "passed": true
+      }
+    ],
+    "passed": true,
+    "verifier": "deterministic-json-subset-v1",
+    "independent_windows_file_json_exact_match": true,
+    "independent_windows_file_sha256_match": true,
+    "artifact_event_sha256_match": true,
+    "actual_byte_count": 168
+  },
+  "observed_persistence": {
+    "request_binding_count": 1,
+    "attempt_count": 1,
+    "attempts": [
+      {
+        "attempt_id": "d021b156-2fa4-4003-ab65-4f7901384b06",
+        "status": "SUCCEEDED",
+        "started_at": 1793329384,
+        "ended_at": 1793329393
+      }
+    ]
+  },
+  "events": {
+    "count": 14,
+    "mac_side_cursor_replay": "not collected by this Windows report"
+  },
+  "published_result": {
+    "method": "existing authenticated task verification RPC",
+    "mac_origin_side_verdict": "not collected by this Windows report"
+  },
+  "scope_adjustment": {
+    "prepared_artifact": "reverse.json",
+    "caller_requested_artifact": "out/health.json",
+    "decision": "Windows owner aligned the exact artifact declaration before approving the task; project, tools and peer grants unchanged"
+  },
+  "binding": {
+    "windows_source_commit": "cdc2c1c1dd42b0eee2f454a1e60a54a22fe68961",
+    "windows_binary_sha256": "7c2be8e394f37835a5faaadc8b663c5dfef739a1cdc0a401b9a6896db5da46af",
+    "cargo_lock_sha256": "4458a16990c64588e2d7f6ee0a2d62970a975cc992bd4832e4a9a92d7c9f9f2d",
+    "dsh_entry_sha256": "1a03dee18683483ff6a1b27b2a1e650230da6bcca9a0f55f7d81b3308c3f307f"
+  },
+  "runtime": {
+    "windows_agent_status_after_task": "idle",
+    "windows_daemon": "left running for Mac readback",
+    "credentials": "not exported"
+  },
+  "not_tested": [
+    "repeat submission from Mac origin",
+    "Mac event-cursor replay",
+    "transport failure during reverse execution",
+    "reverse task cancellation or daemon recovery",
+    "Mac full workspace test suite",
+    "Mac managed HTTP frontend/backend integration",
+    "Codex adapter",
+    "three-machine gateway",
+    "complete-v0.1-or-v0.2"
+  ]
+}

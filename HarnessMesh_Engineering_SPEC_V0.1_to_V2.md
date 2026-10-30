@@ -2,7 +2,7 @@
 
 > **Engineering Specification / 可交给 Coding Agent 实施的工程规格**  
 > 工作名称：`HarnessMesh`（暂定，不代表已核验名称可用性）  
-> 文档版本：`SPEC 1.9` · 2026-10-30  
+> 文档版本：`SPEC 1.11` · 2026-10-30  
 > 覆盖发布：**V0 → V0.1 → V0.2 → V0.3 → V1 → V2**  
 > 实现语言：Rust 为主；Harness 专用桥接层可选 TypeScript / Python  
 > 项目定位：**独立开源项目**；不依赖 AgentMeld，也不复制 AgentMeld 的团队工作台。  
@@ -1037,7 +1037,7 @@ max_service_lease_seconds = 3600
 - [x] `hmesh peers candidates` 仅展示候选；支持显式配置字面 Tailnet 地址。
 - **验收**：在两个不同网络的设备中发现彼此的候选地址，无公网端口映射。
 
-2026-10-30 直连实现：`init --network tailscale` 根据本机 CLI 确认确切 IP，绑定该 IP 并生成对应证书 SAN；owner 使用独立回环监听，公开监听拒绝整个 `/local/*`。Mac 在本机运行 `node scripts/start-tailnet.mjs`，登记本机 Pi/`deepseek-v4-flash`，不依赖 SSH。Windows→Mac Tailscale ping 已直连；Mac 构建、真实模型及两机应用验收保持未完成，不据此宣称完整 V0.1。见 `docs/quickstart-tailnet.md`。
+2026-10-30 直连实现：`init --network tailscale` 根据本机 CLI 确认确切 IP，绑定该 IP 并生成对应证书 SAN；owner 使用独立回环监听，公开监听拒绝整个 `/local/*`。Mac 在本机运行 CLI/Daemon，不依赖 SSH。Windows→Mac Pi 1.4.0 / `deepseek-v4-flash` 的真实 write/read 已通过：批准前无 attempt，批准后 SUCCEEDED，五字段 JSON/hash、同请求去重、23 条事件补读以及发起端重启后读取同一完成任务均通过。Mac→Windows DSH 0.2.0-rc.2 / `deepseek-v4-pro` 的执行端检查也已通过审批、write/read、五字段 JSON 与独立文件 hash；Mac 侧反向读取/补读结论尚未在 Windows 报告中独立收集。首次凭据失败及新 Agent 登记保留；Mac 完整工作区测试和 Mac 前后端受管服务联调仍未验收，不据此宣称完整 V0.1。见 `docs/quickstart-tailnet.md`、`docs/tailnet-mac-smoke.md`、`docs/tailnet-reverse-smoke.md` 及对应结构化证据。
 
 #### W03 — Node 身份与配对
 
