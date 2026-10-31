@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Windows loopback HTTP connection to Mac backend over Tailnet mTLS",
+  "service_id": "39fae314-4ad0-4f1c-87e3-5f37f7e4db0c",
+  "backend_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+  "allowed_peer_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+  "backend": "http://127.0.0.1:18091/health",
+  "windows_connection": "http://127.0.0.1:18092/health",
+  "mac_observed": {"state":"active","process":"running","http_health":"healthy","revision":1},
+  "windows_response_source": "User supplied output after requesting Windows loopback connection endpoint; not independently collected by Mac",
+  "windows_response": {"status":"ok","node":"mac","marker":"tailnet-http-smoke-20261030"},
+  "passed": true,
+  "model_calls": 0,
+  "limitations": ["Windows connection config and status not independently exported", "No per-request Mac access log collected", "No CRUD, restart persistence, revocation or repair-cycle acceptance", "Service lease is 1800 seconds; not permanent hosting"]
+}

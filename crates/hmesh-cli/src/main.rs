@@ -213,6 +213,10 @@ enum AgentCommand {
             default_value = "Reply exactly READY without invoking any tools."
         )]
         prompt: String,
+        #[arg(long, default_value_t = 1048576)]
+        max_output_bytes: usize,
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
     },
     Artifacts {
         agent_id: Uuid,
@@ -565,6 +569,8 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                     agent_id,
                     allow_model,
                     prompt,
+                    max_output_bytes,
+                    timeout,
                 },
         } => {
             client
@@ -573,6 +579,10 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                     &VerifyRequest {
                         allow_model,
                         prompt,
+                        limits: RunLimits {
+                            max_output_bytes,
+                            timeout_seconds: timeout,
+                        },
                     },
                 )
                 .await?
@@ -994,5 +1004,30 @@ mod selection_tests {
             .is_err()
         );
         assert!(resolve_id("missing", &rows, "agent_id", "name", false).is_err());
+    }
+    #[test]
+    fn owner_verification_cli_accepts_explicit_output_and_timeout() {
+        let cli = Cli::try_parse_from([
+            "hmesh",
+            "agent",
+            "verify",
+            "5583c679-a688-4653-92c1-ee960fde64ea",
+            "--allow-model",
+            "--max-output-bytes",
+            "16777216",
+            "--timeout",
+            "600",
+        ])
+        .expect("CLI");
+        assert!(matches!(
+            cli.command,
+            Commands::Agent {
+                command: AgentCommand::Verify {
+                    max_output_bytes: 16777216,
+                    timeout: 600,
+                    ..
+                }
+            }
+        ));
     }
 }

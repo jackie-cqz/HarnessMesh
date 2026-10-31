@@ -1,0 +1,846 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Single-machine two independent nodes with real mTLS, CLI and managed processes; synthetic backend/checker; no real model or Tailnet acceptance claimed",
+  "host": {
+    "os": "Darwin",
+    "arch": "arm64"
+  },
+  "checks": {
+    "rust_tests_passed": 67,
+    "node_tests_passed": 14,
+    "fmt": "passed",
+    "clippy": "passed"
+  },
+  "no_model_run": {
+    "schema": 1,
+    "run_id": "326c5353-5ebf-40c4-8a79-afb0873e5561",
+    "plan_sha256": "fee49c223c3f37f935619939b9eb48cb37e2a0d9cf1084ee8bc12afd52cdaf68",
+    "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+    "mode": "no-model",
+    "started_at": "2026-10-31T15:54:15.016Z",
+    "stages": {
+      "publish_backend": {
+        "state": "passed",
+        "result": {
+          "enabled": true,
+          "expires_at": 1793462655,
+          "id": "ce70e94a-6c26-45df-8f3c-803baa00db55",
+          "name": "todo-326c5353",
+          "project_id": "mac-fixture",
+          "revision": 1,
+          "status": {
+            "endpoint": null,
+            "error": null,
+            "http_health": "not_checked",
+            "pid": null,
+            "process": "not_applicable",
+            "revision": 0,
+            "starts": 0,
+            "state": "pending",
+            "tunnel": "not_applicable"
+          }
+        }
+      },
+      "backend_health": {
+        "state": "passed",
+        "result": {
+          "revision": 1,
+          "pid": 55855
+        }
+      },
+      "worker_visible": {
+        "state": "passed",
+        "result": {
+          "expires_at": 1793462655,
+          "health": "healthy",
+          "id": "5918c1da-4eb4-4c18-9887-e2d611fecc53",
+          "name": "acceptance-326c5353",
+          "project_id": "windows-fixture",
+          "protocol": "http-buffered-v1",
+          "request_timeout_seconds": 10,
+          "revision": 1
+        }
+      },
+      "worker_connection": {
+        "state": "passed",
+        "result": {
+          "enabled": true,
+          "expires_at": 1793462655,
+          "id": "1e1d402b-45f4-40ee-8bf8-2f89c133484c",
+          "name": null,
+          "project_id": null,
+          "revision": 1,
+          "status": {
+            "endpoint": null,
+            "error": null,
+            "http_health": "not_checked",
+            "pid": null,
+            "process": "not_applicable",
+            "revision": 0,
+            "starts": 0,
+            "state": "pending",
+            "tunnel": "not_applicable"
+          }
+        }
+      },
+      "worker_identity": {
+        "state": "passed",
+        "result": {
+          "run_id": "326c5353-5ebf-40c4-8a79-afb0873e5561",
+          "plan_sha256": "fee49c223c3f37f935619939b9eb48cb37e2a0d9cf1084ee8bc12afd52cdaf68",
+          "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+          "ready": true,
+          "expires_at": 1793462655054,
+          "platform": "darwin"
+        }
+      },
+      "worker_baseline": {
+        "state": "passed",
+        "result": {
+          "checker": {
+            "ok": true,
+            "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+            "checks": [
+              {
+                "name": "health",
+                "status": "pass"
+              },
+              {
+                "name": "list",
+                "status": "pass"
+              },
+              {
+                "name": "create",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_created",
+                "status": "pass"
+              },
+              {
+                "name": "patch",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_patched",
+                "status": "pass"
+              },
+              {
+                "name": "delete",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_removed",
+                "status": "pass"
+              }
+            ],
+            "output_sha256": "00983e79d70253d0216ed66d3ec5aaa9a6441bcc8bda0e438c91a80d70f6b8a3"
+          },
+          "independent": {
+            "passed": true,
+            "checks": 8
+          }
+        }
+      },
+      "worker_seed": {
+        "state": "passed",
+        "result": {
+          "passed": true,
+          "id": "3761f34f-b94a-4bbb-888a-cdb07811ebce"
+        }
+      },
+      "restart_backend": {
+        "state": "passed",
+        "result": {
+          "enabled": true,
+          "expires_at": 1793462655,
+          "id": "ce70e94a-6c26-45df-8f3c-803baa00db55",
+          "name": "todo-326c5353",
+          "project_id": "mac-fixture",
+          "revision": 2,
+          "status": {
+            "endpoint": null,
+            "error": null,
+            "http_health": "healthy",
+            "pid": 55855,
+            "process": "running",
+            "revision": 1,
+            "starts": 1,
+            "state": "active",
+            "tunnel": "not_applicable"
+          }
+        }
+      },
+      "restart_health": {
+        "state": "passed",
+        "result": {
+          "revision": 2,
+          "pid": 55884
+        }
+      },
+      "worker_verify_persistence": {
+        "state": "passed",
+        "result": {
+          "passed": true
+        }
+      },
+      "revoke_backend": {
+        "state": "passed",
+        "result": {
+          "disabled": true,
+          "process_stopped": true
+        }
+      },
+      "worker_assert_revoked": {
+        "state": "passed",
+        "result": {
+          "passed": true,
+          "connection_refused": true
+        }
+      },
+      "worker_cleanup": {
+        "state": "passed",
+        "result": {
+          "passed": true,
+          "backend_connection_revoked": true
+        }
+      }
+    },
+    "model_submissions": 0,
+    "limitations": [
+      "Transport outage and OS/TUN manipulation are not part of this run",
+      "Pinned checker uses owner OS privileges; hash pinning is not a sandbox",
+      "JSON file persistence checks process restart, not power-loss durability"
+    ],
+    "status": "passed",
+    "cleanup": {
+      "worker": "revoked",
+      "backend": {
+        "disabled": true,
+        "process_stopped": true
+      },
+      "worker_connection": "revoked_or_not_created"
+    },
+    "worker_evidence": {
+      "baseline": {
+        "action_id": "19fc74ce-f351-4ea0-9896-e9aa07cfb21c",
+        "stage": "baseline",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:15.942Z",
+        "result": {
+          "checker": {
+            "ok": true,
+            "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+            "checks": [
+              {
+                "name": "health",
+                "status": "pass"
+              },
+              {
+                "name": "list",
+                "status": "pass"
+              },
+              {
+                "name": "create",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_created",
+                "status": "pass"
+              },
+              {
+                "name": "patch",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_patched",
+                "status": "pass"
+              },
+              {
+                "name": "delete",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_removed",
+                "status": "pass"
+              }
+            ],
+            "output_sha256": "00983e79d70253d0216ed66d3ec5aaa9a6441bcc8bda0e438c91a80d70f6b8a3"
+          },
+          "independent": {
+            "passed": true,
+            "checks": 8
+          }
+        },
+        "completed_at": "2026-10-31T15:54:16.078Z"
+      },
+      "seed": {
+        "action_id": "a7042817-1122-47be-ad19-c6155ed54b83",
+        "stage": "seed",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:16.221Z",
+        "result": {
+          "passed": true,
+          "id": "3761f34f-b94a-4bbb-888a-cdb07811ebce"
+        },
+        "completed_at": "2026-10-31T15:54:16.234Z"
+      },
+      "verify_persistence": {
+        "action_id": "f31fe61e-42ac-46f6-b4a3-410c181aa104",
+        "stage": "verify_persistence",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:18.185Z",
+        "result": {
+          "passed": true
+        },
+        "completed_at": "2026-10-31T15:54:18.214Z"
+      },
+      "assert_revoked": {
+        "action_id": "942bb524-d0bb-441c-a448-99d6a1f63e1b",
+        "stage": "assert_revoked",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:18.793Z",
+        "result": {
+          "passed": true,
+          "connection_refused": true
+        },
+        "completed_at": "2026-10-31T15:54:18.795Z"
+      },
+      "cleanup": {
+        "action_id": "f3c5e382-bfcc-45e9-b033-c212cc76dcfb",
+        "stage": "cleanup",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:18.811Z",
+        "result": {
+          "passed": true,
+          "backend_connection_revoked": true
+        },
+        "completed_at": "2026-10-31T15:54:18.823Z"
+      }
+    },
+    "completed_at": "2026-10-31T15:54:21.978Z",
+    "backend_sha256": "c108cb0209f590f6445d378afeaa22345b9f891fd2ea6be1c5f9f1c17db47df0"
+  },
+  "fixture_repair_run": {
+    "schema": 1,
+    "run_id": "ea39e019-af8a-4862-86d8-c83e11936ff2",
+    "plan_sha256": "8cb8357eff58fa8eddac9b53d9bc921086a24f03292ebecfa030bc54b0898bab",
+    "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+    "mode": "fixture-repair",
+    "started_at": "2026-10-31T15:54:23.111Z",
+    "stages": {
+      "publish_backend": {
+        "state": "passed",
+        "result": {
+          "enabled": true,
+          "expires_at": 1793462663,
+          "id": "c97a1f24-61bc-4327-a1f0-0a2f3b92ec3e",
+          "name": "todo-ea39e019",
+          "project_id": "mac-fixture",
+          "revision": 1,
+          "status": {
+            "endpoint": null,
+            "error": null,
+            "http_health": "not_checked",
+            "pid": null,
+            "process": "not_applicable",
+            "revision": 0,
+            "starts": 0,
+            "state": "pending",
+            "tunnel": "not_applicable"
+          }
+        }
+      },
+      "backend_health": {
+        "state": "passed",
+        "result": {
+          "revision": 1,
+          "pid": 55942
+        }
+      },
+      "worker_visible": {
+        "state": "passed",
+        "result": {
+          "expires_at": 1793462663,
+          "health": "healthy",
+          "id": "0b9e2c3d-02fa-4232-8fce-65582b43a49e",
+          "name": "acceptance-ea39e019",
+          "project_id": "windows-fixture",
+          "protocol": "http-buffered-v1",
+          "request_timeout_seconds": 10,
+          "revision": 1
+        }
+      },
+      "worker_connection": {
+        "state": "passed",
+        "result": {
+          "enabled": true,
+          "expires_at": 1793462663,
+          "id": "36c8b823-8d80-48cf-8069-361f0064b5b2",
+          "name": null,
+          "project_id": null,
+          "revision": 1,
+          "status": {
+            "endpoint": null,
+            "error": null,
+            "http_health": "not_checked",
+            "pid": null,
+            "process": "not_applicable",
+            "revision": 0,
+            "starts": 0,
+            "state": "pending",
+            "tunnel": "not_applicable"
+          }
+        }
+      },
+      "worker_identity": {
+        "state": "passed",
+        "result": {
+          "run_id": "ea39e019-af8a-4862-86d8-c83e11936ff2",
+          "plan_sha256": "8cb8357eff58fa8eddac9b53d9bc921086a24f03292ebecfa030bc54b0898bab",
+          "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+          "ready": true,
+          "expires_at": 1793462663150,
+          "platform": "darwin"
+        }
+      },
+      "worker_baseline": {
+        "state": "passed",
+        "result": {
+          "checker": {
+            "ok": true,
+            "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+            "checks": [
+              {
+                "name": "health",
+                "status": "pass"
+              },
+              {
+                "name": "list",
+                "status": "pass"
+              },
+              {
+                "name": "create",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_created",
+                "status": "pass"
+              },
+              {
+                "name": "patch",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_patched",
+                "status": "pass"
+              },
+              {
+                "name": "delete",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_removed",
+                "status": "pass"
+              }
+            ],
+            "output_sha256": "8cbf1eb41cefba07aa5b3c9cde94ee566ba851e241f842102881cc6e1b9c6a39"
+          },
+          "independent": {
+            "passed": true,
+            "checks": 8
+          }
+        }
+      },
+      "worker_seed": {
+        "state": "passed",
+        "result": {
+          "passed": true,
+          "id": "56cc530e-2098-4936-8a5d-3bd1bd54c71f"
+        }
+      },
+      "restart_backend": {
+        "state": "passed",
+        "result": {
+          "enabled": true,
+          "expires_at": 1793462663,
+          "id": "c97a1f24-61bc-4327-a1f0-0a2f3b92ec3e",
+          "name": "todo-ea39e019",
+          "project_id": "mac-fixture",
+          "revision": 2,
+          "status": {
+            "endpoint": null,
+            "error": null,
+            "http_health": "healthy",
+            "pid": 55942,
+            "process": "running",
+            "revision": 1,
+            "starts": 1,
+            "state": "active",
+            "tunnel": "not_applicable"
+          }
+        }
+      },
+      "restart_health": {
+        "state": "passed",
+        "result": {
+          "revision": 2,
+          "pid": 55965
+        }
+      },
+      "worker_verify_persistence": {
+        "state": "passed",
+        "result": {
+          "passed": true
+        }
+      },
+      "inject_fault": {
+        "state": "passed",
+        "result": {
+          "fault_sha256": "7ec965f71728d444ed935defe689455445d41b1ee6256763c9bdb62b2432c1d2",
+          "original_sha256": "c108cb0209f590f6445d378afeaa22345b9f891fd2ea6be1c5f9f1c17db47df0"
+        }
+      },
+      "restart_fault": {
+        "state": "passed",
+        "result": {
+          "enabled": true,
+          "expires_at": 1793462663,
+          "id": "c97a1f24-61bc-4327-a1f0-0a2f3b92ec3e",
+          "name": "todo-ea39e019",
+          "project_id": "mac-fixture",
+          "revision": 3,
+          "status": {
+            "endpoint": null,
+            "error": null,
+            "http_health": "healthy",
+            "pid": 55965,
+            "process": "running",
+            "revision": 2,
+            "starts": 1,
+            "state": "active",
+            "tunnel": "not_applicable"
+          }
+        }
+      },
+      "fault_health": {
+        "state": "passed",
+        "result": {
+          "revision": 3,
+          "pid": 55974
+        }
+      },
+      "worker_assert_broken": {
+        "state": "passed",
+        "result": {
+          "passed": true,
+          "original_contract_failed": true,
+          "checker": {
+            "failed_as_expected": true,
+            "exit_code": 1,
+            "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+            "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        }
+      },
+      "submit_one_repair": {
+        "state": "passed",
+        "result": {
+          "task_id": "fb4cdc71-58f7-456c-8cfe-bccd85336bed"
+        }
+      },
+      "repair_completion": {
+        "state": "passed",
+        "result": {
+          "task_id": "fb4cdc71-58f7-456c-8cfe-bccd85336bed",
+          "attempt_id": "b4bfe701-7989-4b30-bf5b-dde196ea38fd",
+          "status": "SUCCEEDED"
+        }
+      },
+      "restart_repaired": {
+        "state": "passed",
+        "result": {
+          "enabled": true,
+          "expires_at": 1793462663,
+          "id": "c97a1f24-61bc-4327-a1f0-0a2f3b92ec3e",
+          "name": "todo-ea39e019",
+          "project_id": "mac-fixture",
+          "revision": 4,
+          "status": {
+            "endpoint": null,
+            "error": null,
+            "http_health": "healthy",
+            "pid": 55974,
+            "process": "running",
+            "revision": 3,
+            "starts": 1,
+            "state": "active",
+            "tunnel": "not_applicable"
+          }
+        }
+      },
+      "repair_health": {
+        "state": "passed",
+        "result": {
+          "revision": 4,
+          "pid": 55984
+        }
+      },
+      "worker_repaired": {
+        "state": "passed",
+        "result": {
+          "checker": {
+            "ok": true,
+            "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+            "checks": [
+              {
+                "name": "health",
+                "status": "pass"
+              },
+              {
+                "name": "list",
+                "status": "pass"
+              },
+              {
+                "name": "create",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_created",
+                "status": "pass"
+              },
+              {
+                "name": "patch",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_patched",
+                "status": "pass"
+              },
+              {
+                "name": "delete",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_removed",
+                "status": "pass"
+              }
+            ],
+            "output_sha256": "8cbf1eb41cefba07aa5b3c9cde94ee566ba851e241f842102881cc6e1b9c6a39"
+          },
+          "independent": {
+            "passed": true,
+            "checks": 8
+          }
+        }
+      },
+      "revoke_backend": {
+        "state": "passed",
+        "result": {
+          "disabled": true,
+          "process_stopped": true
+        }
+      },
+      "worker_assert_revoked": {
+        "state": "passed",
+        "result": {
+          "passed": true,
+          "connection_refused": true
+        }
+      },
+      "worker_cleanup": {
+        "state": "passed",
+        "result": {
+          "passed": true,
+          "backend_connection_revoked": true
+        }
+      }
+    },
+    "model_submissions": 0,
+    "limitations": [
+      "Transport outage and OS/TUN manipulation are not part of this run",
+      "Pinned checker uses owner OS privileges; hash pinning is not a sandbox",
+      "JSON file persistence checks process restart, not power-loss durability"
+    ],
+    "repair_submissions": 1,
+    "status": "passed",
+    "cleanup": {
+      "worker": "revoked",
+      "backend": {
+        "disabled": true,
+        "process_stopped": true
+      },
+      "worker_connection": "revoked_or_not_created"
+    },
+    "worker_evidence": {
+      "baseline": {
+        "action_id": "e70bf2d4-a4fc-410c-8bc9-dc411c5c2993",
+        "stage": "baseline",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:24.057Z",
+        "result": {
+          "checker": {
+            "ok": true,
+            "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+            "checks": [
+              {
+                "name": "health",
+                "status": "pass"
+              },
+              {
+                "name": "list",
+                "status": "pass"
+              },
+              {
+                "name": "create",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_created",
+                "status": "pass"
+              },
+              {
+                "name": "patch",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_patched",
+                "status": "pass"
+              },
+              {
+                "name": "delete",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_removed",
+                "status": "pass"
+              }
+            ],
+            "output_sha256": "8cbf1eb41cefba07aa5b3c9cde94ee566ba851e241f842102881cc6e1b9c6a39"
+          },
+          "independent": {
+            "passed": true,
+            "checks": 8
+          }
+        },
+        "completed_at": "2026-10-31T15:54:24.200Z"
+      },
+      "seed": {
+        "action_id": "ebc41279-899f-4ec1-82fd-1d61fc834a11",
+        "stage": "seed",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:24.333Z",
+        "result": {
+          "passed": true,
+          "id": "56cc530e-2098-4936-8a5d-3bd1bd54c71f"
+        },
+        "completed_at": "2026-10-31T15:54:24.346Z"
+      },
+      "verify_persistence": {
+        "action_id": "5195dc2f-6ee5-4ce8-b62d-e4adb759fb31",
+        "stage": "verify_persistence",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:26.025Z",
+        "result": {
+          "passed": true
+        },
+        "completed_at": "2026-10-31T15:54:26.053Z"
+      },
+      "assert_broken": {
+        "action_id": "0e714d94-6df2-4294-80d2-d8b0515436e1",
+        "stage": "assert_broken",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:27.718Z",
+        "result": {
+          "passed": true,
+          "original_contract_failed": true,
+          "checker": {
+            "failed_as_expected": true,
+            "exit_code": 1,
+            "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+            "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        "completed_at": "2026-10-31T15:54:27.782Z"
+      },
+      "repaired": {
+        "action_id": "8a350059-112d-4a89-a873-14cde82eab33",
+        "stage": "repaired",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:29.676Z",
+        "result": {
+          "checker": {
+            "ok": true,
+            "checker_sha256": "185b5790da47c0f6e3eec77ff8b9f5a35f56c55e4b683d86784562b07c7ece48",
+            "checks": [
+              {
+                "name": "health",
+                "status": "pass"
+              },
+              {
+                "name": "list",
+                "status": "pass"
+              },
+              {
+                "name": "create",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_created",
+                "status": "pass"
+              },
+              {
+                "name": "patch",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_patched",
+                "status": "pass"
+              },
+              {
+                "name": "delete",
+                "status": "pass"
+              },
+              {
+                "name": "list_verify_removed",
+                "status": "pass"
+              }
+            ],
+            "output_sha256": "8cbf1eb41cefba07aa5b3c9cde94ee566ba851e241f842102881cc6e1b9c6a39"
+          },
+          "independent": {
+            "passed": true,
+            "checks": 8
+          }
+        },
+        "completed_at": "2026-10-31T15:54:29.812Z"
+      },
+      "assert_revoked": {
+        "action_id": "69797ed2-3a5a-45e0-ad05-7ec621f2ad1a",
+        "stage": "assert_revoked",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:30.265Z",
+        "result": {
+          "passed": true,
+          "connection_refused": true
+        },
+        "completed_at": "2026-10-31T15:54:30.268Z"
+      },
+      "cleanup": {
+        "action_id": "1b1a9421-4bff-4959-8cca-a738fed93a8b",
+        "stage": "cleanup",
+        "state": "passed",
+        "started_at": "2026-10-31T15:54:30.284Z",
+        "result": {
+          "passed": true,
+          "backend_connection_revoked": true
+        },
+        "completed_at": "2026-10-31T15:54:30.295Z"
+      }
+    },
+    "completed_at": "2026-10-31T15:54:33.444Z",
+    "backend_sha256": "c108cb0209f590f6445d378afeaa22345b9f891fd2ea6be1c5f9f1c17db47df0"
+  },
+  "real_windows_mac_automated_acceptance": "pending Windows owner worker startup"
+}

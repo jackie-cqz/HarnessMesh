@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "scope": "Real Mac Pi backend and Windows DSH contract checker over Tailnet mTLS; CLI orchestrated",
+  "backend": {
+    "harness": "pi",
+    "model": "deepseek-v4-flash",
+    "task_id": "61385281-3d76-4dff-84c5-528d9fb0b588",
+    "status": "SUCCEEDED",
+    "output_bytes": 1153857,
+    "output_limit_bytes": 16777216,
+    "timeout_seconds": 600,
+    "service_id": "a74b6711-1961-4c7d-9534-d47fa2c259dc",
+    "mac_observed_health": "healthy",
+    "local_independent_crud": "passed"
+  },
+  "historical_failures": [
+    {
+      "task_id": "650ed56f-6204-4ca6-b5ab-837842865589",
+      "status": "FAILED",
+      "error": "RATE_LIMITED",
+      "output_limit_bytes": 1048576
+    },
+    {
+      "task_id": "6ae45416-1381-4232-aa57-372fbabd5db7",
+      "status": "FAILED",
+      "error": "RATE_LIMITED",
+      "output_limit_bytes": 1048576
+    }
+  ],
+  "client": {
+    "harness": "dsh",
+    "task_id": "65be4a33-5948-4c4b-acce-348381755099",
+    "status": "SUCCEEDED",
+    "artifact": "app-todo/contract-check.mjs",
+    "artifact_bytes": 7184,
+    "artifact_sha256": "42cb7210b9c9eb489b8b11e109b260e20196f04d142ab94c92a8903b7e19d33d"
+  },
+  "acceptance": {
+    "source": "Windows output supplied by user; not independently executed on Windows by Mac agent",
+    "ok": true,
+    "base_url": "http://127.0.0.1:18094",
+    "created_id": "9e63a230-594b-4c74-8292-4090ab480a0c",
+    "checks": [
+      {
+        "name": "health",
+        "status": "pass"
+      },
+      {
+        "name": "list",
+        "status": "pass"
+      },
+      {
+        "name": "create",
+        "status": "pass"
+      },
+      {
+        "name": "list_verify_created",
+        "status": "pass"
+      },
+      {
+        "name": "patch",
+        "status": "pass"
+      },
+      {
+        "name": "list_verify_patched",
+        "status": "pass"
+      },
+      {
+        "name": "delete",
+        "status": "pass"
+      },
+      {
+        "name": "list_verify_removed",
+        "status": "pass"
+      }
+    ]
+  },
+  "limitations": [
+    "No native MCP autonomous delegation claimed",
+    "No restart persistence acceptance yet",
+    "No bounded repair-cycle acceptance yet",
+    "No access revocation acceptance yet",
+    "Generated application remains in ignored isolated test directories"
+  ]
+}

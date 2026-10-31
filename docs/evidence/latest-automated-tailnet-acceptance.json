@@ -1,0 +1,590 @@
+{
+  "schema": 1,
+  "recorded_date": "2026-11-01",
+  "scope": "Real Windows worker and Mac coordinator over Tailnet/mTLS; model-authored Todo backend and checker; one real Pi repair",
+  "run_id": "b17d75f3-aa32-4556-a1af-c3617a17e2e4",
+  "started_at": "2026-10-31T15:57:11.526Z",
+  "completed_at": "2026-10-31T16:03:16.960Z",
+  "status": "passed",
+  "source": "Coordinator collected Windows worker results via authenticated HarnessMesh HTTP forwarding; no manually pasted results in this automated round",
+  "plan_sha256": "a0ba69f3131c07f3262f62f799c1bb4692d978ccd409ce061625fce4fcbb91dd",
+  "checker_sha256": "42cb7210b9c9eb489b8b11e109b260e20196f04d142ab94c92a8903b7e19d33d",
+  "backend_sha256": "2f9cdd31d8421725b8af0439c4d7f7138d292091fbba58b7c1e99fefd48c7c31",
+  "original_application_unchanged": true,
+  "backend_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+  "worker_node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+  "worker_platform": "win32",
+  "model_submissions": 1,
+  "repair": {
+    "harness": "pi",
+    "model": "deepseek-v4-flash",
+    "task_id": "793ad108-9c0f-4d69-9cf7-7d22ffb992de",
+    "attempt_id": "3eb30904-1392-4668-af0c-82e522a2bff6",
+    "status": "SUCCEEDED",
+    "limits": {
+      "max_output_bytes": 16777216,
+      "timeout_seconds": 600
+    },
+    "tools": [
+      {
+        "name": "read",
+        "phase": "tool_execution_start"
+      },
+      {
+        "name": "read",
+        "phase": "tool_execution_end"
+      },
+      {
+        "name": "edit",
+        "phase": "tool_execution_start"
+      },
+      {
+        "name": "edit",
+        "phase": "tool_execution_end"
+      },
+      {
+        "name": "read",
+        "phase": "tool_execution_start"
+      },
+      {
+        "name": "read",
+        "phase": "tool_execution_end"
+      }
+    ],
+    "output_summary": {
+      "complete_records": 687,
+      "largest_complete_record_bytes": 21702,
+      "native_record_limit_bytes": 4194304,
+      "stdout_bytes": 266846,
+      "stdout_limit_bytes": 16777216
+    }
+  },
+  "stages": {
+    "publish_backend": {
+      "state": "passed",
+      "result": {
+        "enabled": true,
+        "expires_at": 1793465831,
+        "id": "89d3932d-44e2-44df-a61d-b320ead10704",
+        "name": "todo-b17d75f3",
+        "project_id": "tailnet-demo",
+        "revision": 1,
+        "status": {
+          "endpoint": null,
+          "error": null,
+          "http_health": "not_checked",
+          "pid": null,
+          "process": "not_applicable",
+          "revision": 0,
+          "starts": 0,
+          "state": "pending",
+          "tunnel": "not_applicable"
+        }
+      }
+    },
+    "backend_health": {
+      "state": "passed",
+      "result": {
+        "revision": 1,
+        "pid": 56142
+      }
+    },
+    "worker_visible": {
+      "state": "passed",
+      "result": {
+        "expires_at": 1793466172,
+        "health": "healthy",
+        "id": "240f86dc-31da-41c8-b66b-bc8ee9b56ae4",
+        "name": "acceptance-b17d75f3",
+        "project_id": "tailnet-reverse",
+        "protocol": "http-buffered-v1",
+        "request_timeout_seconds": 10,
+        "revision": 1
+      }
+    },
+    "worker_connection": {
+      "state": "passed",
+      "result": {
+        "enabled": true,
+        "expires_at": 1793466172,
+        "id": "0f0c2600-54fb-4b12-b300-e0691b951a30",
+        "name": null,
+        "project_id": null,
+        "revision": 1,
+        "status": {
+          "endpoint": null,
+          "error": null,
+          "http_health": "not_checked",
+          "pid": null,
+          "process": "not_applicable",
+          "revision": 0,
+          "starts": 0,
+          "state": "pending",
+          "tunnel": "not_applicable"
+        }
+      }
+    },
+    "worker_identity": {
+      "state": "passed",
+      "result": {
+        "run_id": "b17d75f3-aa32-4556-a1af-c3617a17e2e4",
+        "plan_sha256": "a0ba69f3131c07f3262f62f799c1bb4692d978ccd409ce061625fce4fcbb91dd",
+        "checker_sha256": "42cb7210b9c9eb489b8b11e109b260e20196f04d142ab94c92a8903b7e19d33d",
+        "ready": true,
+        "expires_at": 1793466172621,
+        "platform": "win32"
+      }
+    },
+    "worker_baseline": {
+      "state": "passed",
+      "result": {
+        "checker": {
+          "ok": true,
+          "checker_sha256": "42cb7210b9c9eb489b8b11e109b260e20196f04d142ab94c92a8903b7e19d33d",
+          "checks": [
+            {
+              "name": "health",
+              "status": "pass"
+            },
+            {
+              "name": "list",
+              "status": "pass"
+            },
+            {
+              "name": "create",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_created",
+              "status": "pass"
+            },
+            {
+              "name": "patch",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_patched",
+              "status": "pass"
+            },
+            {
+              "name": "delete",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_removed",
+              "status": "pass"
+            }
+          ],
+          "output_sha256": "66a88bb94ad4ec7fc48a5c6018fe66a0bc0bad11d95060d7c857358789402e71"
+        },
+        "independent": {
+          "passed": true,
+          "checks": 8
+        }
+      }
+    },
+    "worker_seed": {
+      "state": "passed",
+      "result": {
+        "passed": true,
+        "id": "fe63688e-3f3a-4133-a0cf-3eb6c35c4dc7"
+      }
+    },
+    "restart_backend": {
+      "state": "passed",
+      "result": {
+        "enabled": true,
+        "expires_at": 1793465831,
+        "id": "89d3932d-44e2-44df-a61d-b320ead10704",
+        "name": "todo-b17d75f3",
+        "project_id": "tailnet-demo",
+        "revision": 2,
+        "status": {
+          "endpoint": null,
+          "error": null,
+          "http_health": "healthy",
+          "pid": 56142,
+          "process": "running",
+          "revision": 1,
+          "starts": 1,
+          "state": "active",
+          "tunnel": "not_applicable"
+        }
+      }
+    },
+    "restart_health": {
+      "state": "passed",
+      "result": {
+        "revision": 2,
+        "pid": 57482
+      }
+    },
+    "worker_verify_persistence": {
+      "state": "passed",
+      "result": {
+        "passed": true
+      }
+    },
+    "inject_fault": {
+      "state": "passed",
+      "result": {
+        "fault_sha256": "397286ddad73810088d68e849971405b434dc6a5c1510bdaf77ffbd4eeba2023",
+        "original_sha256": "2f9cdd31d8421725b8af0439c4d7f7138d292091fbba58b7c1e99fefd48c7c31"
+      }
+    },
+    "restart_fault": {
+      "state": "passed",
+      "result": {
+        "enabled": true,
+        "expires_at": 1793465831,
+        "id": "89d3932d-44e2-44df-a61d-b320ead10704",
+        "name": "todo-b17d75f3",
+        "project_id": "tailnet-demo",
+        "revision": 3,
+        "status": {
+          "endpoint": null,
+          "error": null,
+          "http_health": "healthy",
+          "pid": 57482,
+          "process": "running",
+          "revision": 2,
+          "starts": 1,
+          "state": "active",
+          "tunnel": "not_applicable"
+        }
+      }
+    },
+    "fault_health": {
+      "state": "passed",
+      "result": {
+        "revision": 3,
+        "pid": 57492
+      }
+    },
+    "worker_assert_broken": {
+      "state": "passed",
+      "result": {
+        "passed": true,
+        "original_contract_failed": true,
+        "checker": {
+          "failed_as_expected": true,
+          "exit_code": 1,
+          "checker_sha256": "42cb7210b9c9eb489b8b11e109b260e20196f04d142ab94c92a8903b7e19d33d",
+          "output_sha256": "8b44a0159cbab1f7c5e749a46fbd1031a6745aeeeca6de28c7c9d7e0f89c3312"
+        }
+      }
+    },
+    "submit_one_repair": {
+      "state": "passed",
+      "result": {
+        "agent_id": "5583c679-a688-4653-92c1-ee960fde64ea",
+        "created_at": 1793462581,
+        "error": null,
+        "last_attempt_id": null,
+        "origin_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+        "project_id": "tailnet-demo",
+        "request": {
+          "goal": "Repair only .acceptance/b17d75f3-aa32-4556-a1af-c3617a17e2e4/server.mjs using read/write/edit. The fixed GET /health response must contain {\"status\":\"ok\",\"service\":\"tailnet-todo\",\"node\":\"mac\"}. Preserve the existing Todo CRUD contract and persistent data. Do not alter other files, execute shell commands or use networking. There is exactly one repair attempt. Read back the corrected file and finish briefly.",
+          "inputs": [],
+          "limits": {
+            "max_output_bytes": 16777216,
+            "timeout_seconds": 600
+          },
+          "project_id": "tailnet-demo",
+          "requires_approval": false,
+          "target_agent_id": "5583c679-a688-4653-92c1-ee960fde64ea",
+          "task_id": "793ad108-9c0f-4d69-9cf7-7d22ffb992de"
+        },
+        "status": "QUEUED",
+        "target_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+        "task_id": "793ad108-9c0f-4d69-9cf7-7d22ffb992de",
+        "updated_at": 1793462581
+      }
+    },
+    "repair_completion": {
+      "state": "passed",
+      "result": {
+        "task_id": "793ad108-9c0f-4d69-9cf7-7d22ffb992de",
+        "attempt_id": "3eb30904-1392-4668-af0c-82e522a2bff6",
+        "status": "SUCCEEDED"
+      }
+    },
+    "restart_repaired": {
+      "state": "passed",
+      "result": {
+        "enabled": true,
+        "expires_at": 1793465831,
+        "id": "89d3932d-44e2-44df-a61d-b320ead10704",
+        "name": "todo-b17d75f3",
+        "project_id": "tailnet-demo",
+        "revision": 4,
+        "status": {
+          "endpoint": null,
+          "error": null,
+          "http_health": "healthy",
+          "pid": 57492,
+          "process": "running",
+          "revision": 3,
+          "starts": 1,
+          "state": "active",
+          "tunnel": "not_applicable"
+        }
+      }
+    },
+    "repair_health": {
+      "state": "passed",
+      "result": {
+        "revision": 4,
+        "pid": 57537
+      }
+    },
+    "worker_repaired": {
+      "state": "passed",
+      "result": {
+        "checker": {
+          "ok": true,
+          "checker_sha256": "42cb7210b9c9eb489b8b11e109b260e20196f04d142ab94c92a8903b7e19d33d",
+          "checks": [
+            {
+              "name": "health",
+              "status": "pass"
+            },
+            {
+              "name": "list",
+              "status": "pass"
+            },
+            {
+              "name": "create",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_created",
+              "status": "pass"
+            },
+            {
+              "name": "patch",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_patched",
+              "status": "pass"
+            },
+            {
+              "name": "delete",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_removed",
+              "status": "pass"
+            }
+          ],
+          "output_sha256": "e7d1ef7966f48808e0a52bf010e48137c27a65925452a4f26d5b49922259c49c"
+        },
+        "independent": {
+          "passed": true,
+          "checks": 8
+        }
+      }
+    },
+    "revoke_backend": {
+      "state": "passed",
+      "result": {
+        "disabled": true,
+        "process_stopped": true
+      }
+    },
+    "worker_assert_revoked": {
+      "state": "passed",
+      "result": {
+        "passed": true,
+        "connection_refused": true
+      }
+    },
+    "worker_cleanup": {
+      "state": "passed",
+      "result": {
+        "passed": true,
+        "backend_connection_revoked": true
+      }
+    }
+  },
+  "worker_evidence": {
+    "baseline": {
+      "action_id": "ed951ed4-5a65-47b8-84ca-48833ec46746",
+      "stage": "baseline",
+      "state": "passed",
+      "started_at": "2026-10-31T16:02:53.626Z",
+      "result": {
+        "checker": {
+          "ok": true,
+          "checker_sha256": "42cb7210b9c9eb489b8b11e109b260e20196f04d142ab94c92a8903b7e19d33d",
+          "checks": [
+            {
+              "name": "health",
+              "status": "pass"
+            },
+            {
+              "name": "list",
+              "status": "pass"
+            },
+            {
+              "name": "create",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_created",
+              "status": "pass"
+            },
+            {
+              "name": "patch",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_patched",
+              "status": "pass"
+            },
+            {
+              "name": "delete",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_removed",
+              "status": "pass"
+            }
+          ],
+          "output_sha256": "66a88bb94ad4ec7fc48a5c6018fe66a0bc0bad11d95060d7c857358789402e71"
+        },
+        "independent": {
+          "passed": true,
+          "checks": 8
+        }
+      },
+      "completed_at": "2026-10-31T16:02:55.579Z"
+    },
+    "seed": {
+      "action_id": "b38e959b-8dad-4852-9efe-4cc1365cd837",
+      "stage": "seed",
+      "state": "passed",
+      "started_at": "2026-10-31T16:02:55.719Z",
+      "result": {
+        "passed": true,
+        "id": "fe63688e-3f3a-4133-a0cf-3eb6c35c4dc7"
+      },
+      "completed_at": "2026-10-31T16:02:55.944Z"
+    },
+    "verify_persistence": {
+      "action_id": "026c473b-9d40-4fb9-a1c5-bf7d0fa169d6",
+      "stage": "verify_persistence",
+      "state": "passed",
+      "started_at": "2026-10-31T16:02:57.891Z",
+      "result": {
+        "passed": true
+      },
+      "completed_at": "2026-10-31T16:02:58.380Z"
+    },
+    "assert_broken": {
+      "action_id": "d3d29710-41fc-475f-b645-4aa1405a3be7",
+      "stage": "assert_broken",
+      "state": "passed",
+      "started_at": "2026-10-31T16:03:00.101Z",
+      "result": {
+        "passed": true,
+        "original_contract_failed": true,
+        "checker": {
+          "failed_as_expected": true,
+          "exit_code": 1,
+          "checker_sha256": "42cb7210b9c9eb489b8b11e109b260e20196f04d142ab94c92a8903b7e19d33d",
+          "output_sha256": "8b44a0159cbab1f7c5e749a46fbd1031a6745aeeeca6de28c7c9d7e0f89c3312"
+        }
+      },
+      "completed_at": "2026-10-31T16:03:00.443Z"
+    },
+    "repaired": {
+      "action_id": "a997b5ed-c493-455a-955c-afc21874e00a",
+      "stage": "repaired",
+      "state": "passed",
+      "started_at": "2026-10-31T16:03:09.830Z",
+      "result": {
+        "checker": {
+          "ok": true,
+          "checker_sha256": "42cb7210b9c9eb489b8b11e109b260e20196f04d142ab94c92a8903b7e19d33d",
+          "checks": [
+            {
+              "name": "health",
+              "status": "pass"
+            },
+            {
+              "name": "list",
+              "status": "pass"
+            },
+            {
+              "name": "create",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_created",
+              "status": "pass"
+            },
+            {
+              "name": "patch",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_patched",
+              "status": "pass"
+            },
+            {
+              "name": "delete",
+              "status": "pass"
+            },
+            {
+              "name": "list_verify_removed",
+              "status": "pass"
+            }
+          ],
+          "output_sha256": "e7d1ef7966f48808e0a52bf010e48137c27a65925452a4f26d5b49922259c49c"
+        },
+        "independent": {
+          "passed": true,
+          "checks": 8
+        }
+      },
+      "completed_at": "2026-10-31T16:03:11.940Z"
+    },
+    "assert_revoked": {
+      "action_id": "2eda2d15-6df2-45ed-82ee-62b92635d77d",
+      "stage": "assert_revoked",
+      "state": "passed",
+      "started_at": "2026-10-31T16:03:12.558Z",
+      "result": {
+        "passed": true,
+        "connection_refused": true
+      },
+      "completed_at": "2026-10-31T16:03:12.562Z"
+    },
+    "cleanup": {
+      "action_id": "40e89b77-d159-4539-bad3-5c7675c10ed6",
+      "stage": "cleanup",
+      "state": "passed",
+      "started_at": "2026-10-31T16:03:12.689Z",
+      "result": {
+        "passed": true,
+        "backend_connection_revoked": true
+      },
+      "completed_at": "2026-10-31T16:03:12.731Z"
+    }
+  },
+  "cleanup": {
+    "worker": "revoked",
+    "backend": {
+      "disabled": true,
+      "process_stopped": true
+    },
+    "worker_connection": "revoked_or_not_created"
+  },
+  "limitations": [
+    "Transport outage and OS/TUN manipulation are not part of this run",
+    "Pinned checker uses owner OS privileges; hash pinning is not a sandbox",
+    "JSON file persistence checks process restart, not power-loss durability"
+  ]
+}

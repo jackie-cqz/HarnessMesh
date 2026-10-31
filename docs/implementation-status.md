@@ -1,5 +1,8 @@
 # V0 P0 实施与验收状态
 
+2026-11-01 Windows↔Mac 自动化真机验收通过：Mac 总控经受管 mTLS HTTP 自动收集 Windows 执行器结果，22 个阶段全部 passed。冻结 DSH 检查器与独立 CRUD 检查均通过；后端 revision 1→2 且 PID 改变后测试数据仍保留；注入固定 health 缺陷后原检查器退出 1，Pi/Flash 一次真实修复 SUCCEEDED，revision 4 后同一检查器与独立 CRUD 再通过。后端/执行器服务与双端转发连接已撤销，本轮后端进程已停止，原应用源文件 hash 未变。真实修复输出 266,846 字节，限额 16 MiB / 600 秒。结果由 Mac 经认证通道采集，不依赖人工贴回；原生 MCP 自主委派、强制断网和断电持久化不在本轮范围。见 [独立证据](evidence/latest-automated-tailnet-acceptance.json)。
+
+
 2026-10-31 核心加固：新增按原 request ID 恢复提交、验收条件/attempt/配置摘要绑定、执行中授权复查、每任务事件预算以及 owner Agent 更新/停用/摘要接口。配置更新使模型验证失效，并拒绝修改仍有未结任务的 Agent。行为、测试边界和未覆盖门禁见 [核心加固说明](core-hardening.md)。本地 fixture 不作为真实跨机模型验收。
 
 2026-10-30 Mac 开发基线：Apple Silicon / Rust stable 1.99.1 的 fmt、全工作区 Clippy（warnings denied）和 59 项 Rust 测试通过；3 项启动配置 Node 回归测试通过并接入 CI。启动脚本支持 managed Pi 启动器、空 auth 的安全回退与直接 models 凭据引用，按配置摘要复用登记，避免复用旧配置 Agent。本次未调用模型，未重启现有验收 Daemon；新配置 Agent 仍需独立验证和显式项目授权。
@@ -57,3 +60,9 @@ SSH 应用检查点也已验收：`examples/ssh-todo` 的 Orion Pi/Flash 服务�
 - V0 CLI 显式使用 Node/Agent UUID；协议轮询采用持久 seq 游标。具体设计决定见 docs/adr/0001-v0-rust-boundaries.md。
 
 本次测试只停止它自己启动的进程。私有实例/运行诊断保存在被忽略的 `.hmesh-v0/acceptance-9369313213414b0e851e5f6bbce6992d/`；两个 Daemon 已正常停止。实例属于初始化它的 Windows 账户，工具沙箱账户与桌面用户不得通过放宽 ACL 混用这些目录。
+
+2026-10-31 Tailnet HTTP 基础连通：Mac 发布仅授权 Windows peer 的独立受管回环后端，Mac 侧观察 active/running/healthy。用户提供 Windows 回环 connection `/health` 的响应，status=ok、node=mac、唯一 marker 与后端一致，基础转发通过。无 SSH、无模型调用；Windows 输出由用户提供，非 Mac 独立采集。CRUD、重启持久化、撤销和修复循环未验收。见 [证据](evidence/latest-tailnet-http-smoke.json)。
+
+2026-10-31 真实 Tailnet Todo CRUD：Mac Pi/Flash 后端任务 SUCCEEDED（16 MiB 显式额度，实测累计 1,153,857 字节），Windows DSH 编写固定契约检查器 SUCCEEDED；用户提供 Windows 经 `127.0.0.1:18094` mTLS 转发执行的八项检查汇总，全部 pass。Mac 独立本机 CRUD 也通过，受管服务 healthy。此前两次 1 MiB 输出限额失败保留，不改写为成功。见 [独立证据](evidence/latest-tailnet-todo.json)。这是 CLI 编排的真实 Harness 协作，不代表原生 MCP 自主委派；重启持久化、修复循环、撤销仍未验收。
+
+2026-10-31 自动验收脚本：新增 Mac 总控和 Windows owner 启动的固定动作执行器，经现有受管 mTLS HTTP 协调。包括冻结检查器、CRUD、重启持久化、可选一次 Pi 修复、撤销和双端证据回传；无远程 shell、SSH 或网络配置修改。67 项 Rust、14 项 Node 检查通过，本机两个真实 Daemon 的无模型及修复替身流程通过。Windows/Mac 真机自动化和真实修复仍待执行，未用本机测试替代。见 [使用说明](automated-tailnet-acceptance.md) 和 [本机证据](evidence/latest-automated-acceptance-local.json)。

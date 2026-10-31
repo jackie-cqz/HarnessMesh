@@ -1125,6 +1125,8 @@ async fn grant_artifacts(
 pub struct VerifyRequest {
     pub allow_model: bool,
     pub prompt: String,
+    #[serde(default)]
+    pub limits: RunLimits,
 }
 async fn verify_agent(
     State(s): State<AppState>,
@@ -1149,6 +1151,8 @@ async fn verify_agent(
     }
     let mut task = TaskSubmit::new(id, &agent.project_ids[0], &body.prompt);
     task.requires_approval = false;
+    task.limits = body.limits;
+    task.validate()?;
     let envelope = Envelope::new(s.instance.card.node_id, "task.submit", task);
     Ok(Json(s.store.admit(
         s.instance.card.node_id,
@@ -1260,4 +1264,22 @@ pub fn local_client(instance: &Instance) -> anyhow::Result<Client> {
         card.endpoint
     };
     Client::new(instance, &endpoint, &card.fingerprint, false, true)
+}
+
+#[cfg(test)]
+mod verification_limits_tests {
+    use super::*;
+    #[test]
+    fn owner_verification_limits_keep_defaults_and_validate_explicit_budgets() {
+        let old: VerifyRequest =
+            serde_json::from_value(json!({"allow_model":true,"prompt":"READY"}))
+                .expect("old request");
+        assert_eq!(old.limits.max_output_bytes, 1048576);
+        let explicit: VerifyRequest = serde_json::from_value(json!({"allow_model":true,"prompt":"READY","limits":{"max_output_bytes":16777216,"timeout_seconds":600}})).expect("explicit request");
+        let mut task = TaskSubmit::new(Uuid::new_v4(), "fixture", &explicit.prompt);
+        task.limits = explicit.limits;
+        assert!(task.validate().is_ok());
+        task.limits.max_output_bytes = MAX_RUN_OUTPUT_BYTES + 1;
+        assert!(task.validate().is_err());
+    }
 }
