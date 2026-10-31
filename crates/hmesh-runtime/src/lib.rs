@@ -188,7 +188,8 @@ async fn execute(
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() { cancellation = true; break; }
             }
-            _ = inspect.tick() => { if store.task(task.task_id)?.status == TaskStatus::Cancelling { cancellation = true; break; }
+            _ = inspect.tick() => { if let Err(error)=tree.refresh() { run_error=Some(MeshError::new(ErrorCode::TaskUnknown,format!("owned descendant tracking failed: {error}"))); break; }
+                if store.task(task.task_id)?.status == TaskStatus::Cancelling { cancellation = true; break; }
                 if let Err(error) = authorize(task) { run_error = Some(error); break; } }
             _ = &mut deadline => { run_error = Some(failure("managed run deadline exceeded")); break; }
             status = child.wait(), if exited.is_none() => { exited = Some(status.map_err(|_| failure("cannot observe harness exit"))?); }

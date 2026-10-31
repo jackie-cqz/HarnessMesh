@@ -1,0 +1,341 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "status": "passed",
+  "scope": "Real Windows/Mac task recovery and native MCP; Mac lifecycle API readback",
+  "reliability": {
+    "schema": 1,
+    "scope": "Real Windows/Mac origin restart, guardian crash uncertainty and native Pi MCP delegation",
+    "run_id": "eade6bd0-f640-4657-9932-e855c99c129f",
+    "stages": {
+      "guardian_visible": {
+        "passed": true,
+        "result": {
+          "expires_at": 1793467659,
+          "health": "healthy",
+          "id": "c1008fdc-9c1f-4d5c-aed4-d3d5b23f3171",
+          "name": "guardian-eade6bd0",
+          "project_id": "tailnet-reverse",
+          "protocol": "http-buffered-v1",
+          "request_timeout_seconds": 10,
+          "revision": 1
+        }
+      },
+      "guardian_connection": {
+        "passed": true,
+        "result": "http://127.0.0.1:58199"
+      },
+      "guardian_identity": {
+        "passed": true,
+        "result": {
+          "run_id": "eade6bd0-f640-4657-9932-e855c99c129f",
+          "binding": "297f8e5e37471846e6abf2d21c5dfd014cf85f22aa5e92674964e2a01108436a",
+          "platform": "win32",
+          "jobs": {
+            "cf857ed7-c76f-43da-adca-fe5407c3ab44": {
+              "state": "waiting"
+            },
+            "617c28a5-639c-4857-9399-a97e396899ec": {
+              "state": "waiting"
+            }
+          },
+          "crash": {
+            "state": "not_started"
+          },
+          "restarts": 0
+        }
+      },
+      "submit_recovery": {
+        "passed": true,
+        "result": {
+          "agent_id": "60c5d1af-8e83-482f-afdc-e720f4be91e3",
+          "created_at": 1793464060,
+          "error": null,
+          "last_attempt_id": null,
+          "origin_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+          "project_id": "tailnet-reverse",
+          "status": "PENDING_APPROVAL",
+          "target_node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+          "task_id": "cf857ed7-c76f-43da-adca-fe5407c3ab44",
+          "updated_at": 1793464060,
+          "request_sha256": "64f4f72a7e9e1cf374066b26b3ff4d739e904dd5eaebc8edbe1765de359dc0f9",
+          "limits": {
+            "max_output_bytes": 16777216,
+            "timeout_seconds": 600
+          }
+        }
+      },
+      "recovery_running": {
+        "passed": true,
+        "result": {
+          "task_id": "cf857ed7-c76f-43da-adca-fe5407c3ab44",
+          "attempt_id": "a2f985a7-bdc4-497e-ab58-613d1c723558"
+        }
+      },
+      "restart_origin": {
+        "passed": true,
+        "result": {
+          "old_pid": 50523,
+          "new_pid": 60055,
+          "node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+          "fingerprint_unchanged": true
+        }
+      },
+      "guardian_reconnection": {
+        "passed": true,
+        "result": "http://127.0.0.1:58222"
+      },
+      "recover_original_request": {
+        "passed": true,
+        "result": {
+          "agent_id": "60c5d1af-8e83-482f-afdc-e720f4be91e3",
+          "created_at": 1793464060,
+          "error": null,
+          "last_attempt_id": "a2f985a7-bdc4-497e-ab58-613d1c723558",
+          "origin_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+          "project_id": "tailnet-reverse",
+          "status": "RUNNING",
+          "target_node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+          "task_id": "cf857ed7-c76f-43da-adca-fe5407c3ab44",
+          "updated_at": 1793464060,
+          "request_sha256": "64f4f72a7e9e1cf374066b26b3ff4d739e904dd5eaebc8edbe1765de359dc0f9",
+          "limits": {
+            "max_output_bytes": 16777216,
+            "timeout_seconds": 600
+          }
+        }
+      },
+      "recovery_complete": {
+        "passed": true,
+        "result": {
+          "agent_id": "60c5d1af-8e83-482f-afdc-e720f4be91e3",
+          "created_at": 1793464060,
+          "error": null,
+          "last_attempt_id": "a2f985a7-bdc4-497e-ab58-613d1c723558",
+          "origin_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+          "project_id": "tailnet-reverse",
+          "status": "SUCCEEDED",
+          "target_node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
+          "task_id": "cf857ed7-c76f-43da-adca-fe5407c3ab44",
+          "updated_at": 1793464096,
+          "request_sha256": "64f4f72a7e9e1cf374066b26b3ff4d739e904dd5eaebc8edbe1765de359dc0f9",
+          "limits": {
+            "max_output_bytes": 16777216,
+            "timeout_seconds": 600
+          }
+        }
+      },
+      "windows_recovery_readback": {
+        "passed": true,
+        "result": {
+          "state": "passed",
+          "approval_reserved": true,
+          "approved": true,
+          "status": "QUEUED",
+          "attempt_id": "a2f985a7-bdc4-497e-ab58-613d1c723558",
+          "observed_running_at": "2026-10-31T16:27:41.093Z",
+          "task_id": "cf857ed7-c76f-43da-adca-fe5407c3ab44",
+          "artifact_sha256": "6648efb8a7be8eb7eabb12d7f1a4405e075001c9fefa44cfb495ef8b51bd2429",
+          "completed_at": "2026-10-31T16:28:17.319Z"
+        }
+      },
+      "recovery_event_replay": {
+        "passed": true,
+        "result": {
+          "count": 17,
+          "last_seq": 17,
+          "attempt_ids": [
+            "a2f985a7-bdc4-497e-ab58-613d1c723558"
+          ]
+        }
+      },
+      "guardian_crash_reserved": {
+        "passed": true,
+        "result": {
+          "status": 202,
+          "json": {
+            "state": "running",
+            "action_id": "ec6c0c00-6ad8-495c-8aaa-017dc84cfac7",
+            "mutation_count": 1
+          }
+        }
+      },
+      "guardian_restarted_blocked": {
+        "passed": true,
+        "result": {
+          "run_id": "eade6bd0-f640-4657-9932-e855c99c129f",
+          "binding": "297f8e5e37471846e6abf2d21c5dfd014cf85f22aa5e92674964e2a01108436a",
+          "platform": "win32",
+          "jobs": {
+            "cf857ed7-c76f-43da-adca-fe5407c3ab44": {
+              "state": "passed",
+              "approval_reserved": true,
+              "approved": true,
+              "status": "QUEUED",
+              "attempt_id": "a2f985a7-bdc4-497e-ab58-613d1c723558",
+              "observed_running_at": "2026-10-31T16:27:41.093Z",
+              "task_id": "cf857ed7-c76f-43da-adca-fe5407c3ab44",
+              "artifact_sha256": "6648efb8a7be8eb7eabb12d7f1a4405e075001c9fefa44cfb495ef8b51bd2429",
+              "completed_at": "2026-10-31T16:28:17.319Z"
+            },
+            "617c28a5-639c-4857-9399-a97e396899ec": {
+              "state": "waiting"
+            }
+          },
+          "crash": {
+            "state": "blocked",
+            "action_id": "ec6c0c00-6ad8-495c-8aaa-017dc84cfac7",
+            "mutation_count": 1,
+            "error": "Worker exited after mutation; automatic replay disabled"
+          },
+          "restarts": 1
+        }
+      },
+      "guardian_duplicate_refused": {
+        "passed": true,
+        "result": {
+          "status": 200,
+          "json": {
+            "state": "blocked",
+            "action_id": "ec6c0c00-6ad8-495c-8aaa-017dc84cfac7",
+            "mutation_count": 1,
+            "error": "Worker exited after mutation; automatic replay disabled"
+          }
+        }
+      },
+      "native_mcp_parent": {
+        "passed": true,
+        "result": {
+          "agent_id": "2628dd8c-aa16-4071-844b-f8d596e5c74c",
+          "created_at": 1793464099,
+          "error": null,
+          "last_attempt_id": null,
+          "origin_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+          "project_id": "tailnet-demo",
+          "status": "QUEUED",
+          "target_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+          "task_id": "56aebfdb-4e6b-4ae3-87ed-a0acbb91a69f",
+          "updated_at": 1793464099,
+          "request_sha256": "db3a67b24eabd4586757fd491f4edad2d069850c9f7baa73c3fca3279c94fa12",
+          "limits": {
+            "max_output_bytes": 16777216,
+            "timeout_seconds": 600
+          }
+        }
+      },
+      "native_mcp_parent_complete": {
+        "passed": true,
+        "result": {
+          "agent_id": "2628dd8c-aa16-4071-844b-f8d596e5c74c",
+          "created_at": 1793464099,
+          "error": null,
+          "last_attempt_id": "91962964-e198-4d9f-8737-2e237b8c3bfd",
+          "origin_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+          "project_id": "tailnet-demo",
+          "status": "SUCCEEDED",
+          "target_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
+          "task_id": "56aebfdb-4e6b-4ae3-87ed-a0acbb91a69f",
+          "updated_at": 1793464113,
+          "request_sha256": "db3a67b24eabd4586757fd491f4edad2d069850c9f7baa73c3fca3279c94fa12",
+          "limits": {
+            "max_output_bytes": 16777216,
+            "timeout_seconds": 600
+          }
+        }
+      },
+      "native_mcp_windows_readback": {
+        "passed": true,
+        "result": {
+          "state": "passed",
+          "approval_reserved": true,
+          "approved": true,
+          "status": "QUEUED",
+          "attempt_id": "4812de16-22f3-4d06-bd7c-cb62b6a8449e",
+          "observed_running_at": "2026-10-31T16:28:23.869Z",
+          "task_id": "617c28a5-639c-4857-9399-a97e396899ec",
+          "artifact_sha256": "bfb1653cdfa745e6e982abc32484626b6f7505c4d1c579aa3c1b371fc780a210",
+          "completed_at": "2026-10-31T16:28:29.478Z"
+        }
+      },
+      "native_mcp_proof": {
+        "passed": true,
+        "result": {
+          "parent_task_id": "56aebfdb-4e6b-4ae3-87ed-a0acbb91a69f",
+          "child_task_id": "617c28a5-639c-4857-9399-a97e396899ec",
+          "parent_receipt_sha256": "b785413f9819ac7a0348ee3e3a0a79b7f26506bdde1edc0b78e483aec8df232e",
+          "tools": [
+            "mcp__harnessmesh__mesh_list_peers",
+            "mcp__harnessmesh__mesh_list_agents",
+            "mcp__harnessmesh__mesh_submit_task",
+            "mcp__harnessmesh__mesh_get_task",
+            "write",
+            "read"
+          ]
+        }
+      }
+    },
+    "started_at": "2026-10-31T16:26:49.665Z",
+    "limitations": [
+      "No Tailscale/TUN outage injected",
+      "Observed Unix descendant cleanup is not OS containment",
+      "Windows fixed-task approver is owner-started, not a policy change"
+    ],
+    "status": "passed",
+    "cleanup": {
+      "guardian_finish": true,
+      "guardian_revoked": true
+    },
+    "completed_at": "2026-10-31T16:28:37.075Z"
+  },
+  "lifecycle": {
+    "archive_task": "56aebfdb-4e6b-4ae3-87ed-a0acbb91a69f",
+    "archived_events": 124,
+    "replay_before_sha256": "653160bbb1abbc9cffb13de43c9149bde42f2c3cecc4c958d0a2f96824b1a093",
+    "replay_after_sha256": "653160bbb1abbc9cffb13de43c9149bde42f2c3cecc4c958d0a2f96824b1a093",
+    "post_archive_next_seq": 125,
+    "retired_agent_ids": [
+      "42939827-9db2-43f1-93d2-3a5155408431",
+      "2628dd8c-aa16-4071-844b-f8d596e5c74c"
+    ],
+    "restore_requires_verification": true,
+    "historical_verification": {
+      "artifact": {
+        "name": ".acceptance/eade6bd0-f640-4657-9932-e855c99c129f/mcp-parent.json",
+        "sha256": "b785413f9819ac7a0348ee3e3a0a79b7f26506bdde1edc0b78e483aec8df232e",
+        "size_bytes": 124
+      },
+      "assertions": [
+        {
+          "field": "child_task_id",
+          "passed": true
+        },
+        {
+          "field": "nonce",
+          "passed": true
+        },
+        {
+          "field": "status",
+          "passed": true
+        }
+      ],
+      "attempt_id": "91962964-e198-4d9f-8737-2e237b8c3bfd",
+      "configuration_sha256": "ce3df9167aae44977d8ed0fe183c783b467b9f32c224a66ad00aaf7a89e1051b",
+      "expected": {
+        "child_task_id": "617c28a5-639c-4857-9399-a97e396899ec",
+        "nonce": "e3829582-6360-426a-8f87-2d4b495c855f",
+        "status": "SUCCEEDED"
+      },
+      "passed": true,
+      "task_id": "56aebfdb-4e6b-4ae3-87ed-a0acbb91a69f",
+      "verifier": "deterministic-json-subset-v1"
+    }
+  },
+  "native_mcp_submission_bindings": [
+    {
+      "parent_task_id": "56aebfdb-4e6b-4ae3-87ed-a0acbb91a69f",
+      "child_task_id": "617c28a5-639c-4857-9399-a97e396899ec",
+      "request_id": "617c28a5-639c-4857-9399-a97e396899ec",
+      "peer_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6"
+    }
+  ]
+}

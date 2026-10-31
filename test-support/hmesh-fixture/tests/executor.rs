@@ -466,3 +466,59 @@ fn agent_changes_preserve_history_and_reject_outstanding_tasks() {
         TaskStatus::Cancelled
     );
 }
+
+#[test]
+fn retired_agent_disappears_from_discovery_without_deleting_history() {
+    let f = Fixture::new();
+    let task = f.submit("fixture:wait", 5);
+    assert!(f.store.retire_agent(f.agent.agent_id, false).is_err());
+    f.store.request_cancel(task.task_id).unwrap();
+    f.store.retire_agent(f.agent.agent_id, false).unwrap();
+    assert!(f.store.agents().unwrap().is_empty());
+    assert_eq!(f.store.retired_agents().unwrap().len(), 1);
+    assert!(f.store.agent_retired(f.agent.agent_id).unwrap());
+    let request = Envelope::new(
+        f.instance.card.node_id,
+        "task.submit",
+        TaskSubmit::new(f.agent.agent_id, "fixture", "new task"),
+    );
+    assert!(
+        f.store
+            .admit(f.instance.card.node_id, &request, false, 20)
+            .is_err()
+    );
+    assert!(f.store.replace_agent(&f.agent, &f.config).is_err());
+    let restored = f.store.retire_agent(f.agent.agent_id, true).unwrap();
+    assert_eq!(restored.availability, "unverified");
+    assert_eq!(restored.probe.managed_run, "not_checked");
+    assert_eq!(
+        f.store.task(task.task_id).unwrap().status,
+        TaskStatus::Cancelled
+    );
+    assert_eq!(f.store.agents().unwrap().len(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancellation_stops_an_observed_child_that_left_the_process_group() {
+    let f = Fixture::new();
+    let task = f.submit("fixture:escaped-child", 10);
+    let (stop, job) = f.executor();
+    let heartbeat = f.config.project.root.join("heartbeat");
+    for _ in 0..100 {
+        if heartbeat.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(heartbeat.exists());
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    f.store.request_cancel(task.task_id).unwrap();
+    let terminal = f.terminal(task.task_id).await;
+    assert_eq!(terminal.status, TaskStatus::Cancelled);
+    let after = std::fs::read(&heartbeat).unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(std::fs::read(&heartbeat).unwrap(), after);
+    stop.send(true).unwrap();
+    job.await.unwrap();
+}

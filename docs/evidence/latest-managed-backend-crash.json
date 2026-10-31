@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "run_id": "8798f5af-0456-4df2-831d-eabace70a214",
+  "scope": "Real Mac managed backend process crash and subsequent local HTTP client recovery; no model call or TUN change",
+  "model_calls": 0,
+  "before": {
+    "pid": 61644,
+    "starts": 1,
+    "revision": 1
+  },
+  "after": {
+    "pid": 61661,
+    "starts": 2,
+    "revision": 1
+  },
+  "persistence_passed": true,
+  "original_unchanged": true,
+  "status": "passed",
+  "cleanup": {
+    "disabled": true,
+    "process_stopped": true
+  }
+}

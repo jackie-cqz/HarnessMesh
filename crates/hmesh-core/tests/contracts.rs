@@ -3,6 +3,20 @@ use serde_json::json;
 use uuid::Uuid;
 
 #[test]
+fn old_node_config_gets_bounded_pending_approval_expiry() {
+    let mut config: NodeConfig = serde_json::from_value(json!({"security": {}})).unwrap();
+    assert_eq!(config.security.pending_approval_ttl_seconds, 86400);
+    for ttl in [1, 604800] {
+        config.security.pending_approval_ttl_seconds = ttl;
+        config.validate().unwrap();
+    }
+    for ttl in [0, 604801, u64::MAX] {
+        config.security.pending_approval_ttl_seconds = ttl;
+        assert!(config.validate().is_err());
+    }
+}
+
+#[test]
 fn tailnet_listeners_require_explicit_opt_in_and_exact_node_ip() {
     let mut config = NodeConfig::default();
     config.validate().unwrap();

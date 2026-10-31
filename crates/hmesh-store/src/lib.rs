@@ -39,7 +39,7 @@ impl Store {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(internal)?;
-        if version > 4 {
+        if version > 5 {
             return Err(MeshError::new(
                 ErrorCode::UnsupportedVersion,
                 "database is newer than this binary; refusing to alter it",
@@ -74,6 +74,14 @@ impl Store {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(internal)?;
             tx.execute_batch(include_str!("../migrations/004_managed.sql"))
+                .map_err(internal)?;
+            tx.commit().map_err(internal)?;
+        }
+        if version < 5 {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(internal)?;
+            tx.execute_batch(include_str!("../migrations/005_lifecycle.sql"))
                 .map_err(internal)?;
             tx.commit().map_err(internal)?;
         }
@@ -328,6 +336,7 @@ impl Store {
     pub fn replace_agent(&self, card: &AgentCard, config: &AgentConfig) -> Result<()> {
         config.validate()?;
         self.transaction(|tx| {
+            if tx.query_row("SELECT EXISTS(SELECT 1 FROM retired_agents WHERE agent_id=?1)", [card.agent_id.to_string()], |r| r.get::<_,bool>(0)).map_err(internal)? { return Err(MeshError::input("restore retired Agent before updating")); }
             let old: String = tx.query_row("SELECT config_json FROM agents WHERE agent_id=?1", [card.agent_id.to_string()], |r| r.get(0)).map_err(internal)?;
             let old: AgentConfig = decode(&old)?;
             if old.project.root != config.project.root || old.agent.project_id != config.agent.project_id {
@@ -343,7 +352,7 @@ impl Store {
     pub fn agents(&self) -> Result<Vec<AgentCard>> {
         self.read(|c| {
             let mut q = c
-                .prepare("SELECT card_json FROM agents ORDER BY name")
+                .prepare("SELECT card_json FROM agents WHERE agent_id NOT IN (SELECT agent_id FROM retired_agents) ORDER BY name")
                 .map_err(internal)?;
             q.query_map([], |r| r.get::<_, String>(0))
                 .map_err(internal)?
@@ -531,6 +540,7 @@ impl Store {
                 if old != payload { return Err(MeshError::new(ErrorCode::TaskConflict, "request_id reused with different payload")); }
                 return task_in(tx, Uuid::parse_str(&id).map_err(internal)?);
             }
+            if tx.query_row("SELECT EXISTS(SELECT 1 FROM retired_agents WHERE agent_id=?1)",[envelope.payload.target_agent_id.to_string()],|r|r.get::<_,bool>(0)).map_err(internal)? { return Err(MeshError::new(ErrorCode::AgentUnavailable,"Agent is retired")); }
             let count: i64 = tx.query_row("SELECT COUNT(*) FROM tasks WHERE status IN ('PENDING_APPROVAL','QUEUED','RUNNING','CANCELLING','WAITING_INPUT')", [], |r| r.get(0)).map_err(internal)?;
             if count >= max_queue as i64 { return Err(MeshError::new(ErrorCode::RateLimited, "local task queue is full")); }
             let task = TaskRecord { task_id: envelope.payload.task_id, origin_node_id: envelope.sender_node_id, target_node_id: target,
@@ -654,7 +664,7 @@ impl Store {
             return Err(MeshError::input("event exceeds 65536 bytes"));
         }
         self.transaction(|tx| {
-            let stored: i64 = tx.query_row("SELECT COALESCE(SUM(length(CAST(event_json AS BLOB))),0) FROM task_events WHERE task_id=?1", [id.to_string()], |r| r.get(0)).map_err(internal)?;
+            let stored: i64 = tx.query_row("SELECT COALESCE(SUM(length(CAST(event_json AS BLOB))),0) FROM (SELECT event_json FROM task_events WHERE task_id=?1 UNION ALL SELECT event_json FROM archived_task_events WHERE task_id=?1)", [id.to_string()], |r| r.get(0)).map_err(internal)?;
             if stored + encode(&payload)?.len() as i64 + 1024 > 16 * 1024 * 1024 { return Err(MeshError::new(ErrorCode::RateLimited, "task event storage budget exceeded; execution stopped without discarding history")); }
             append_in(tx, &task_in(tx, id)?, kind, payload)
         })
@@ -663,7 +673,7 @@ impl Store {
         if after < 0 {
             return Err(MeshError::input("event cursor must be nonnegative"));
         }
-        self.read(|c| { let mut q = c.prepare("SELECT event_json FROM task_events WHERE task_id=?1 AND seq>?2 ORDER BY seq LIMIT 1000").map_err(internal)?;
+        self.read(|c| { let mut q = c.prepare("SELECT event_json FROM (SELECT seq,event_json FROM task_events WHERE task_id=?1 AND seq>?2 UNION ALL SELECT seq,event_json FROM archived_task_events WHERE task_id=?1 AND seq>?2) ORDER BY seq LIMIT 1000").map_err(internal)?;
             let rows=q.query_map(params![id.to_string(), after], |r| r.get::<_,String>(0)).map_err(internal)?;
             // Stay below the 1 MiB transport response cap even for escaped text.
             let mut result=vec![];
@@ -689,6 +699,79 @@ impl Store {
     pub fn audits(&self) -> Result<Vec<Value>> {
         self.read(|c| { let mut q = c.prepare("SELECT actor_node_id,action,target,decision,trace_id,created_at FROM audit_records ORDER BY created_at,id LIMIT 1000").map_err(internal)?;
             q.query_map([], |r| Ok(json!({"actor_node_id":r.get::<_,Option<String>>(0)?,"action":r.get::<_,String>(1)?,"target":r.get::<_,String>(2)?,"decision":r.get::<_,String>(3)?,"trace_id":r.get::<_,String>(4)?,"created_at":r.get::<_,i64>(5)?}))).map_err(internal)?.map(|r| r.map_err(internal)).collect() })
+    }
+    pub fn expire_pending_approvals_at(&self, ttl: u64, at: i64) -> Result<usize> {
+        if !(1..=604800).contains(&ttl) {
+            return Err(MeshError::input("invalid approval TTL"));
+        }
+        self.transaction(|tx| {
+            let mut q = tx.prepare("SELECT record_json FROM tasks WHERE status='PENDING_APPROVAL' AND created_at<=?1").map_err(internal)?;
+            let rows: Vec<String> = q.query_map([at.saturating_sub(ttl as i64)], |r| r.get(0)).map_err(internal)?.collect::<std::result::Result<_,_>>().map_err(internal)?;
+            for row in &rows { let task: TaskRecord = decode(row)?; let id=task.task_id; transition_in(tx,task,TaskStatus::Expired,Some(MeshError::new(ErrorCode::PermissionDenied,"pending approval expired; resubmission requires a new explicit request")))?; audit_in(tx,None,"task.approval.expire",&id.to_string(),"expired",Uuid::new_v4())?; }
+            Ok(rows.len())
+        })
+    }
+    pub fn approve_pending(&self, id: Uuid, ttl: u64) -> Result<TaskRecord> {
+        if !(1..=604800).contains(&ttl) {
+            return Err(MeshError::input("invalid approval TTL"));
+        }
+        self.transaction(|tx| {
+            let task = task_in(tx, id)?;
+            if task.status != TaskStatus::PendingApproval {
+                return Err(MeshError::new(
+                    ErrorCode::TaskConflict,
+                    "only pending tasks may be approved",
+                ));
+            }
+            if now().saturating_sub(task.created_at) >= ttl as i64 {
+                return transition_in(
+                    tx,
+                    task,
+                    TaskStatus::Expired,
+                    Some(MeshError::new(
+                        ErrorCode::PermissionDenied,
+                        "pending approval expired",
+                    )),
+                );
+            }
+            transition_in(tx, task, TaskStatus::Queued, None)
+        })
+    }
+    pub fn archive_events(&self, id: Uuid) -> Result<usize> {
+        self.transaction(|tx| {
+            if !task_in(tx,id)?.status.is_terminal() { return Err(MeshError::new(ErrorCode::TaskConflict,"only terminal task events may be archived")); }
+            let count=tx.execute("INSERT INTO archived_task_events SELECT task_id,seq,event_json FROM task_events WHERE task_id=?1",[id.to_string()]).map_err(internal)?;
+            tx.execute("DELETE FROM task_events WHERE task_id=?1",[id.to_string()]).map_err(internal)?;
+            audit_in(tx,None,"task.events.archive",&id.to_string(),"cold-storage",Uuid::new_v4())?;
+            Ok(count)
+        })
+    }
+    pub fn agent_retired(&self, id: Uuid) -> Result<bool> {
+        self.read(|c| {
+            c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM retired_agents WHERE agent_id=?1)",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .map_err(internal)
+        })
+    }
+    pub fn retired_agents(&self) -> Result<Vec<AgentCard>> {
+        self.read(|c| { let mut q=c.prepare("SELECT card_json FROM agents JOIN retired_agents USING(agent_id) ORDER BY name").map_err(internal)?; q.query_map([],|r|r.get::<_,String>(0)).map_err(internal)?.map(|r|decode(&r.map_err(internal)?)).collect() })
+    }
+    pub fn retire_agent(&self, id: Uuid, restore: bool) -> Result<AgentCard> {
+        self.transaction(|tx| {
+            let busy: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE json_extract(record_json,'$.agent_id')=?1 AND status IN ('PENDING_APPROVAL','QUEUED','RUNNING','WAITING_INPUT','CANCELLING'))",[id.to_string()],|r|r.get(0)).map_err(internal)?;
+            if busy { return Err(MeshError::new(ErrorCode::TaskConflict,"resolve outstanding tasks before retiring or restoring Agent")); }
+            let text: String=tx.query_row("SELECT card_json FROM agents WHERE agent_id=?1",[id.to_string()],|r|r.get(0)).map_err(internal)?;
+            let mut card: AgentCard=decode(&text)?;
+            if restore { tx.execute("DELETE FROM retired_agents WHERE agent_id=?1",[id.to_string()]).map_err(internal)?; }
+            else { tx.execute("INSERT OR IGNORE INTO retired_agents VALUES(?1,?2)",params![id.to_string(),now()]).map_err(internal)?; }
+            card.availability=if restore {"unverified"} else {"retired"}.into(); card.probe.managed_run="not_checked".into(); card.probe.authentication="not_checked".into(); card.probe.unavailable_reason=Some("owner lifecycle change; explicit model verification required".into());
+            tx.execute("UPDATE agents SET card_json=?1 WHERE agent_id=?2",params![encode(&card)?,id.to_string()]).map_err(internal)?;
+            audit_in(tx,None,if restore {"agent.restore"} else {"agent.retire"},&id.to_string(),"owner-approved",Uuid::new_v4())?;
+            Ok(card)
+        })
     }
     pub fn record_verification(&self, id: Uuid, evidence: &Value) -> Result<Value> {
         self.transaction(|tx| {
@@ -811,7 +894,7 @@ fn append_in(
 ) -> Result<TaskEvent> {
     let seq: i64 = tx
         .query_row(
-            "SELECT COALESCE(MAX(seq),0)+1 FROM task_events WHERE task_id=?1",
+            "SELECT COALESCE(MAX(seq),0)+1 FROM (SELECT seq FROM task_events WHERE task_id=?1 UNION ALL SELECT seq FROM archived_task_events WHERE task_id=?1)",
             [task.task_id.to_string()],
             |r| r.get(0),
         )

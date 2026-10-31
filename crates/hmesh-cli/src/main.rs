@@ -189,6 +189,13 @@ enum PairCommand {
 }
 #[derive(Subcommand)]
 enum AgentCommand {
+    Retired,
+    Retire {
+        agent_id: Uuid,
+    },
+    Restore {
+        agent_id: Uuid,
+    },
     Summary {
         agent_id: Uuid,
     },
@@ -226,6 +233,9 @@ enum AgentCommand {
 }
 #[derive(Subcommand)]
 enum TaskCommand {
+    Archive {
+        task_id: Uuid,
+    },
     /// Recover a reserved submission using its exact original request and payload.
     Recover {
         request_id: Uuid,
@@ -588,6 +598,23 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 .await?
         }
         Commands::Agent {
+            command: AgentCommand::Retired,
+        } => client.get("/local/agents/retired").await?,
+        Commands::Agent {
+            command: AgentCommand::Retire { agent_id },
+        } => {
+            client
+                .post(&format!("/local/agents/{agent_id}/retire"), &json!({}))
+                .await?
+        }
+        Commands::Agent {
+            command: AgentCommand::Restore { agent_id },
+        } => {
+            client
+                .post(&format!("/local/agents/{agent_id}/restore"), &json!({}))
+                .await?
+        }
+        Commands::Agent {
             command: AgentCommand::Summary { agent_id },
         } => {
             client
@@ -633,6 +660,11 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             client.post("/local/policy", &policy).await?
         }
         Commands::Task { command } => match command {
+            TaskCommand::Archive { task_id } => {
+                client
+                    .post(&format!("/local/tasks/{task_id}/archive"), &json!({}))
+                    .await?
+            }
             TaskCommand::Recover { request_id } => {
                 client
                     .post(&format!("/local/requests/{request_id}/recover"), &json!({}))

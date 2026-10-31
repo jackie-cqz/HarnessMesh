@@ -1,5 +1,8 @@
 # V0 P0 实施与验收状态
 
+2026-11-01 后续稳定性验收：Windows/Mac 真机原 task/attempt 恢复、Windows 固定动作执行器退出一次后拒绝重放、Mac Pi/DeepSeek V4 Flash 原生 MCP 发现并委派 Windows DSH、父子工件独立核验均通过。Mac 独立后端 SIGKILL 后仅重启一次、revision 不变、数据保留且最终停止。生命周期 schema 5 已实现待审批过期、终态事件逻辑归档、旧 Agent 退役/恢复，以及 Unix 已观察脱组子进程的身份核对与清理；真实父任务 124 条事件归档前后 hash 一致，退役后历史核验仍通过。此前提交 021813f 的 [三平台 CI 与依赖审计](https://github.com/jackie-cqz/HarnessMesh/actions/runs/41218230946) 全部成功；本次新增代码以最终提交的 CI 为准。见 [恢复与生命周期说明](lifecycle-and-recovery.md)、[双机证据](evidence/latest-real-recovery-native-mcp.json)、[后端崩溃证据](evidence/latest-managed-backend-crash.json)。未注入强制 Tailnet 断网/断电；Unix 快速未观察双 fork 和 Daemon 硬崩溃仍不属于已保证的 OS 进程隔离。
+
+
 2026-11-01 Windows↔Mac 自动化真机验收通过：Mac 总控经受管 mTLS HTTP 自动收集 Windows 执行器结果，22 个阶段全部 passed。冻结 DSH 检查器与独立 CRUD 检查均通过；后端 revision 1→2 且 PID 改变后测试数据仍保留；注入固定 health 缺陷后原检查器退出 1，Pi/Flash 一次真实修复 SUCCEEDED，revision 4 后同一检查器与独立 CRUD 再通过。后端/执行器服务与双端转发连接已撤销，本轮后端进程已停止，原应用源文件 hash 未变。真实修复输出 266,846 字节，限额 16 MiB / 600 秒。结果由 Mac 经认证通道采集，不依赖人工贴回；原生 MCP 自主委派、强制断网和断电持久化不在本轮范围。见 [独立证据](evidence/latest-automated-tailnet-acceptance.json)。
 
 
@@ -52,7 +55,7 @@ SSH 应用检查点也已验收：`examples/ssh-todo` 的 Orion Pi/Flash 服务�
 
 ## 已验证边界
 
-- 三平台编译/检查 CI 已配置，当前只执行了本机 Windows 检查；没有远端 CI 成功记录。
+- 三平台编译/检查与依赖审计 CI 已有远端成功记录，见页首 2026-11-01 稳定性检查点；下方原 V0 测试数量为历史记录。
 - 真实 Harness 的正常 managed-run/原生 JSON 事件已通过；原生 abort、已有 Session 注入或恢复未验证。取消机制为受控进程树终止；Probe 对未验证项仍标 not_checked。
 - Windows Job Object 的进程树回收已测试。Linux 正常结束与受控进程回收已有 SSH 实证；Unix 专用进程组为 best-effort，脱离进程组的子进程和 Unix 硬崩溃清理仍未验收。
 - 工作目录和工具限制不构成 OS 文件系统沙箱。只登记独立测试项目；工件仅发布 owner 授权相对路径的 hash/大小/断言。

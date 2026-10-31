@@ -29,6 +29,8 @@ jobs:
         run: node scripts/acceptance/local-smoke.mjs
       - name: Bounded repair orchestration with explicit test double
         run: node scripts/acceptance/local-smoke.mjs --fixture-repair
+      - name: Guardian crash uncertainty without models
+        run: node scripts/reliability/local-smoke.mjs
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

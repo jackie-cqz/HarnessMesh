@@ -58,6 +58,8 @@ hmesh-mcp --data-dir ABSOLUTE_NODE_DIR --parent-task RUNNING_PARENT_UUID
 
 ## 已验证的链路
 
+2026-11-01：Mac Pi/DeepSeek V4 Flash 经 Tailnet/mTLS 实际调用原生 MCP 的 list peers、list agents、submit 和 get 工具，委派 Windows DSH。Windows owner 启动的助手仅批准清单内两个固定任务（精确 UUID、origin、Agent、project、prompt hash 与限额），未修改授权策略。该父任务的一个子请求配额及 SQLite 父子绑定一致，父子任务均 SUCCEEDED；Windows 独立核验子工件、Mac 核验父回执与 nonce/hash。父任务 124 条事件逻辑归档后完整回放 hash 未变。见 [双机证据](evidence/latest-real-recovery-native-mcp.json) 和 [复测说明](lifecycle-and-recovery.md)。此项补充了下方历史 SSH 验收；未覆盖真实模型调用 cancel 或 DSH 作为 MCP 发起端。
+
 2026-10-29：Orion Pi/Flash 真实调用发现节点、发现 Agent、提交和查询工具，委派 Windows DSH/Pro。子任务先保持 PENDING_APPROVAL 且没有 attempt，由 Windows owner CLI 独立批准后执行。父子任务均 SUCCEEDED，子文件 nonce、父文件 nonce 和 artifact SHA-256 独立核对一致。
 
 MCP cancel 的实际模型调用不计入这次四工具 smoke；其任务归属拒绝路径、协议边界和后端取消入口由自动化测试覆盖。DSH 作为 MCP 发起端的接入尚未核查。工作目录、工具 allowlist 与 scope 均不构成 OS 用户隔离：Pi、MCP 服务器和当前 owner 仍具有各自进程的系统权限。

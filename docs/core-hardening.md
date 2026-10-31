@@ -1,5 +1,7 @@
 # Task engine P0/P1 hardening
 
+2026-11-01 follow-up: [lifecycle and recovery](lifecycle-and-recovery.md) adds approval expiry, explicit logical event archival, Agent retirement and observed Unix descendant tracking, with real Windows/Mac origin-restart and native MCP evidence. Remaining limits there supersede the corresponding future-work notes in this historical P0/P1 checkpoint.
+
 ## Recovery and submission uncertainty
 
 Interrupted RUNNING, CANCELLING and WAITING_INPUT tasks recover as UNKNOWN with the original attempt. They are not automatically reexecuted. Pending and queued tasks remain durable and require authorization at execution.

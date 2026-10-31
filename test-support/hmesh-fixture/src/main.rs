@@ -118,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
             emit(json!({"type":"message_update","snapshot":"x".repeat(4 * 1024 * 1024)}));
         }
         "fixture:crash" => std::process::exit(7),
-        "fixture:child" => {
+        "fixture:child" | "fixture:escaped-child" => {
             let mut command = Command::new(std::env::current_exe()?);
             command
                 .arg("--child")
@@ -130,7 +130,14 @@ async fn main() -> anyhow::Result<()> {
                 use std::os::windows::process::CommandExt;
                 command.creation_flags(0x08000000);
             }
-            let _child = command.spawn()?;
+            #[cfg(unix)]
+            if prompt == "fixture:escaped-child" {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+            let child = command.spawn()?;
+            std::fs::write("owned-child.pid", child.id().to_string())?;
+            let _child = child;
             loop {
                 std::thread::sleep(Duration::from_secs(1));
             }

@@ -275,6 +275,9 @@ pub fn router(state: AppState) -> Router {
         .route("/local/agents/{id}/update", post(update_agent))
         .route("/local/agents/{id}/disable", post(disable_agent))
         .route("/local/agents/{id}/summary", get(agent_summary))
+        .route("/local/agents/retired", get(retired_agents))
+        .route("/local/agents/{id}/retire", post(retire_agent))
+        .route("/local/agents/{id}/restore", post(restore_agent))
         .route("/local/agents/{id}/verify", post(verify_agent))
         .route("/local/agents/{id}/artifacts", post(grant_artifacts))
         .route("/local/agents/remote/{id}", get(remote_agents))
@@ -286,6 +289,7 @@ pub fn router(state: AppState) -> Router {
         .route("/local/tasks/{id}/events", get(owner_events))
         .route("/local/tasks/{id}/cancel", post(owner_cancel))
         .route("/local/tasks/{id}/verify", post(verify_task))
+        .route("/local/tasks/{id}/archive", post(archive_task_events))
         .route("/local/tasks/{id}/verification", get(owner_verifications))
         .route("/local/tasks/{id}/approve", post(approve_task))
         .route("/local/tasks/{id}/reject", post(reject_task))
@@ -383,6 +387,15 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
         shutdown.subscribe(),
     ));
     let managed = tokio::spawn(services::run(state.clone(), shutdown.subscribe()));
+    let expiry_store = state.store.clone();
+    let ttl = instance.config.security.pending_approval_ttl_seconds;
+    let mut expiry_stop = shutdown.subscribe();
+    let expiry = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            tokio::select! { changed=expiry_stop.changed()=>{ if changed.is_err() || *expiry_stop.borrow() {break;} }, _=tick.tick()=>{ if let Err(error)=expiry_store.expire_pending_approvals_at(ttl,now()) { tracing::error!(code=?error.code,"approval expiry failed"); } } }
+        }
+    });
     let state_for_cleanup = state.clone();
     let tls: hmesh_transport::TlsConfigProvider =
         Arc::new(move || tls_instance.server_config(&store.peers()?));
@@ -413,6 +426,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let _ = shutdown.send(true);
     let _ = runtime.await;
     let _ = managed.await;
+    let _ = expiry.await;
     services::recover(&state_for_cleanup)?;
     signal.abort();
     let _ = fs::remove_file(instance.dir.join("daemon.json"));
@@ -709,6 +723,43 @@ async fn register_agent(
     };
     s.store.register_agent(&card, &config)?;
     Ok(Json(card))
+}
+async fn retired_agents(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+) -> ApiResult<Vec<AgentCard>> {
+    s.owner(&headers, &c)?;
+    Ok(Json(s.store.retired_agents()?))
+}
+async fn retire_agent(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<AgentCard> {
+    s.owner(&headers, &c)?;
+    Ok(Json(s.store.retire_agent(id, false)?))
+}
+async fn restore_agent(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<AgentCard> {
+    s.owner(&headers, &c)?;
+    Ok(Json(s.store.retire_agent(id, true)?))
+}
+async fn archive_task_events(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Value> {
+    s.owner(&headers, &c)?;
+    Ok(Json(
+        json!({"task_id":id,"archived_events":s.store.archive_events(id)?,"replay_preserved":true}),
+    ))
 }
 async fn agent_summary(
     State(s): State<AppState>,
@@ -1076,12 +1127,18 @@ async fn approve_task(
     Path(id): Path<Uuid>,
 ) -> ApiResult<TaskRecord> {
     s.owner(&headers, &c)?;
-    let task = s.store.transition(id, TaskStatus::Queued, None)?;
+    let task = s
+        .store
+        .approve_pending(id, s.instance.config.security.pending_approval_ttl_seconds)?;
     s.store.audit(
         Some(s.instance.card.node_id),
         "task.approve",
         &id.to_string(),
-        "approved",
+        if task.status == TaskStatus::Queued {
+            "approved"
+        } else {
+            "expired"
+        },
         Uuid::new_v4(),
     )?;
     Ok(Json(task))
@@ -1143,6 +1200,12 @@ async fn verify_agent(
         )));
     }
     let (agent, _) = s.store.agent(id)?;
+    if s.store.agent_retired(id)? {
+        return Err(ApiError(MeshError::new(
+            ErrorCode::AgentUnavailable,
+            "restore retired Agent before verification",
+        )));
+    }
     if !agent.probe.version_supported {
         return Err(ApiError(MeshError::new(
             ErrorCode::AdapterNotSupported,

@@ -1,6 +1,8 @@
 //! Only operates on a process started by this runtime. Never enumerates or kills
 //! unrelated harness processes; process isolation is not a filesystem sandbox.
+#[cfg(windows)]
 use anyhow::{Context, Result, bail};
+#[cfg(windows)]
 use tokio::process::{Child, Command};
 
 #[cfg(windows)]
@@ -17,6 +19,9 @@ mod platform {
     unsafe impl Send for ProcessTree {}
     impl ProcessTree {
         pub fn configure(_command: &mut Command) {}
+        pub fn refresh(&self) -> Result<()> {
+            Ok(())
+        }
         pub fn attach(child: &Child) -> Result<Self> {
             // SAFETY: all pointers are valid for the duration of each call.
             unsafe {
@@ -79,46 +84,6 @@ mod platform {
 }
 
 #[cfg(unix)]
-mod platform {
-    use super::*;
-    pub struct ProcessTree {
-        group: i32,
-    }
-    impl ProcessTree {
-        pub fn configure(command: &mut Command) {
-            command.process_group(0);
-        }
-        pub fn attach(child: &Child) -> Result<Self> {
-            let group = i32::try_from(child.id().context("child has no pid")?)?;
-            if group <= 1 {
-                bail!("invalid managed process group");
-            }
-            Ok(Self { group })
-        }
-        pub fn terminate(&self) -> Result<()> {
-            // SAFETY: negative PID targets the new group owned by this child.
-            let result = unsafe { libc::kill(-self.group, libc::SIGKILL) };
-            if result != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            Ok(())
-        }
-        pub fn stopped(&self) -> Result<bool> {
-            // SAFETY: signal zero checks only the owned group's existence.
-            if unsafe { libc::kill(-self.group, 0) } == 0 {
-                return Ok(false);
-            }
-            if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-                Ok(true)
-            } else {
-                Err(std::io::Error::last_os_error().into())
-            }
-        }
-    }
-    impl Drop for ProcessTree {
-        fn drop(&mut self) {
-            let _ = self.terminate();
-        }
-    }
-}
+#[path = "process_tree_unix.rs"]
+mod platform;
 pub use platform::ProcessTree;

@@ -496,10 +496,22 @@ struct Owned {
     tree: ProcessTree,
 }
 impl Owned {
-    async fn stop(&mut self) {
-        let _ = self.tree.terminate();
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
+    async fn stop(&mut self) -> bool {
+        let terminated = self.tree.terminate().is_ok();
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await,
+            Ok(Ok(_))
+        ) {
+            return false;
+        }
+        for _ in 0..40 {
+            match self.tree.stopped() {
+                Ok(true) => return terminated,
+                Err(_) => return false,
+                Ok(false) => tokio::time::sleep(Duration::from_millis(25)).await,
+            }
+        }
+        false
     }
 }
 async fn spawn(mut command: Command) -> anyhow::Result<Owned> {
@@ -623,10 +635,20 @@ async fn process_worker(
             break;
         }
         if let Some(p) = &mut owned {
+            if p.tree.refresh().is_err() {
+                status.error = Some("owned descendant tracking failed".into());
+                break;
+            }
             match p.child.try_wait() {
                 Ok(None) => {}
                 _ => {
-                    p.stop().await;
+                    if !p.stop().await {
+                        status.state = "failed_needs_input".into();
+                        status.error = Some(
+                            "owned process cleanup unconfirmed; automatic restart disabled".into(),
+                        );
+                        break;
+                    }
                     owned = None;
                     status.pid = None;
                     status.process = "backoff".into();
@@ -696,11 +718,17 @@ async fn process_worker(
         status.state = "active".into();
         s.managed.set(kind, id, status.clone());
     }
-    if let Some(mut p) = owned {
-        p.stop().await;
-    }
+    let stopped = if let Some(mut p) = owned {
+        p.stop().await
+    } else {
+        true
+    };
     status.pid = None;
-    status.process = "stopped".into();
+    status.process = if stopped { "stopped" } else { "unknown" }.into();
+    if !stopped {
+        status.state = "failed_needs_input".into();
+        status.error = Some("owned process cleanup unconfirmed".into());
+    }
     if status.state != "failed_needs_input" {
         status.state = "stopped".into();
     }

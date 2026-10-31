@@ -265,7 +265,7 @@ fn schema_two_upgrade_preserves_historical_task_records() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
 }
 
@@ -360,4 +360,103 @@ fn event_budget_preserves_history_and_allows_terminal_status() {
         .unwrap();
     assert_eq!(store.task(task.task_id).unwrap().status, TaskStatus::Failed);
     assert_eq!(store.events(task.task_id, 0).unwrap()[0].seq, 1);
+}
+
+#[test]
+fn pending_approval_expiry_is_durable_and_never_creates_an_attempt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("expiry.sqlite3");
+    let store = Store::open(&path).unwrap();
+    let envelope = request();
+    let task = store.admit(Uuid::new_v4(), &envelope, true, 20).unwrap();
+    assert_eq!(
+        store
+            .expire_pending_approvals_at(60, task.created_at + 59)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store
+            .expire_pending_approvals_at(60, task.created_at + 60)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.task(task.task_id).unwrap().status,
+        TaskStatus::Expired
+    );
+    assert_eq!(store.attempt_count(task.task_id).unwrap(), 0);
+    assert!(store.approve_pending(task.task_id, 60).is_err());
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store
+            .admit(Uuid::new_v4(), &envelope, true, 20)
+            .unwrap()
+            .status,
+        TaskStatus::Expired
+    );
+    assert!(store.claim_next().unwrap().is_none());
+}
+
+#[test]
+fn approval_rechecks_deadline_without_waiting_for_background_expiry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("late-approval.sqlite3");
+    let store = Store::open(&path).unwrap();
+    let mut task = store.admit(Uuid::new_v4(), &request(), true, 20).unwrap();
+    // Simulate an old pending task without a timer or a sweep racing the approval.
+    task.created_at -= 120;
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute(
+        "UPDATE tasks SET created_at=?1,record_json=?2 WHERE task_id=?3",
+        rusqlite::params![
+            task.created_at,
+            serde_json::to_string(&task).unwrap(),
+            task.task_id.to_string()
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        store.approve_pending(task.task_id, 60).unwrap().status,
+        TaskStatus::Expired
+    );
+    assert!(store.claim_next().unwrap().is_none());
+    assert_eq!(store.attempt_count(task.task_id).unwrap(), 0);
+    let fresh = store.admit(Uuid::new_v4(), &request(), true, 20).unwrap();
+    assert_eq!(
+        store.approve_pending(fresh.task_id, 60).unwrap().status,
+        TaskStatus::Queued
+    );
+    assert!(store.approve_pending(fresh.task_id, 60).is_err());
+}
+#[test]
+fn archive_preserves_all_events_cursors_and_future_sequence_numbers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("archive.sqlite3");
+    let store = Store::open(&path).unwrap();
+    let task = store.admit(Uuid::new_v4(), &request(), false, 20).unwrap();
+    assert!(store.archive_events(task.task_id).is_err());
+    store.request_cancel(task.task_id).unwrap();
+    let before = store.events(task.task_id, 0).unwrap();
+    assert_eq!(store.archive_events(task.task_id).unwrap(), before.len());
+    assert_eq!(store.archive_events(task.task_id).unwrap(), 0);
+    let after = store.events(task.task_id, 0).unwrap();
+    assert_eq!(
+        serde_json::to_value(&before).unwrap(),
+        serde_json::to_value(&after).unwrap()
+    );
+    let last = before.last().unwrap().seq;
+    let event = store
+        .append_event(task.task_id, "test", json!({"after_archive":true}))
+        .unwrap();
+    assert_eq!(event.seq, last + 1);
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.events(task.task_id, last).unwrap().len(), 1);
+    assert_eq!(store.archive_events(task.task_id).unwrap(), 1);
+    assert_eq!(
+        store.events(task.task_id, 0).unwrap().len(),
+        before.len() + 1
+    );
 }

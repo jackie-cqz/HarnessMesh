@@ -426,6 +426,7 @@ pub struct SecurityOptions {
     pub require_mutual_auth: bool,
     pub policy_file: PathBuf,
     pub default_action: String,
+    pub pending_approval_ttl_seconds: u64,
 }
 impl Default for SecurityOptions {
     fn default() -> Self {
@@ -433,12 +434,18 @@ impl Default for SecurityOptions {
             require_mutual_auth: true,
             policy_file: "policy.toml".into(),
             default_action: "deny".into(),
+            pending_approval_ttl_seconds: 86400,
         }
     }
 }
 impl NodeConfig {
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.node.name)?;
+        if !(1..=604800).contains(&self.security.pending_approval_ttl_seconds) {
+            return Err(MeshError::input(
+                "pending approval TTL must be 1..604800 seconds",
+            ));
+        }
         if self
             .security
             .policy_file
