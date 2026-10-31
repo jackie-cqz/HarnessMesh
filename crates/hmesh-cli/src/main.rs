@@ -189,6 +189,17 @@ enum PairCommand {
 }
 #[derive(Subcommand)]
 enum AgentCommand {
+    Summary {
+        agent_id: Uuid,
+    },
+    Disable {
+        agent_id: Uuid,
+    },
+    Update {
+        agent_id: Uuid,
+        #[arg(long)]
+        config: PathBuf,
+    },
     Register {
         #[arg(long)]
         config: PathBuf,
@@ -211,6 +222,10 @@ enum AgentCommand {
 }
 #[derive(Subcommand)]
 enum TaskCommand {
+    /// Recover a reserved submission using its exact original request and payload.
+    Recover {
+        request_id: Uuid,
+    },
     List {
         #[arg(long)]
         pending: bool,
@@ -563,6 +578,28 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 .await?
         }
         Commands::Agent {
+            command: AgentCommand::Summary { agent_id },
+        } => {
+            client
+                .get(&format!("/local/agents/{agent_id}/summary"))
+                .await?
+        }
+        Commands::Agent {
+            command: AgentCommand::Disable { agent_id },
+        } => {
+            client
+                .post(&format!("/local/agents/{agent_id}/disable"), &json!({}))
+                .await?
+        }
+        Commands::Agent {
+            command: AgentCommand::Update { agent_id, config },
+        } => {
+            let config: AgentConfig = toml::from_str(&fs::read_to_string(config)?)?;
+            client
+                .post(&format!("/local/agents/{agent_id}/update"), &config)
+                .await?
+        }
+        Commands::Agent {
             command: AgentCommand::Artifacts { agent_id, paths },
         } => {
             client
@@ -586,6 +623,11 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             client.post("/local/policy", &policy).await?
         }
         Commands::Task { command } => match command {
+            TaskCommand::Recover { request_id } => {
+                client
+                    .post(&format!("/local/requests/{request_id}/recover"), &json!({}))
+                    .await?
+            }
             TaskCommand::List { pending } => {
                 let mut tasks: Value = client.get("/local/tasks").await?;
                 if pending {

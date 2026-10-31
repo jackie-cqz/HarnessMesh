@@ -1,5 +1,7 @@
 # V0 P0 实施与验收状态
 
+2026-10-31 核心加固：新增按原 request ID 恢复提交、验收条件/attempt/配置摘要绑定、执行中授权复查、每任务事件预算以及 owner Agent 更新/停用/摘要接口。配置更新使模型验证失效，并拒绝修改仍有未结任务的 Agent。行为、测试边界和未覆盖门禁见 [核心加固说明](core-hardening.md)。本地 fixture 不作为真实跨机模型验收。
+
 2026-10-30 Mac 开发基线：Apple Silicon / Rust stable 1.99.1 的 fmt、全工作区 Clippy（warnings denied）和 59 项 Rust 测试通过；3 项启动配置 Node 回归测试通过并接入 CI。启动脚本支持 managed Pi 启动器、空 auth 的安全回退与直接 models 凭据引用，按配置摘要复用登记，避免复用旧配置 Agent。本次未调用模型，未重启现有验收 Daemon；新配置 Agent 仍需独立验证和显式项目授权。
 
 

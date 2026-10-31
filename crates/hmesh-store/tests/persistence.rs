@@ -297,3 +297,67 @@ fn stopped_integration_is_durable_and_cannot_be_overwritten_by_a_late_worker() {
         cancelled
     );
 }
+
+#[test]
+fn lost_submission_response_recovers_exact_reservation_after_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("origin.sqlite3");
+    let receiver = Store::open(&dir.path().join("receiver.sqlite3")).expect("receiver");
+    let peer = Uuid::new_v4();
+    let request = request();
+    let origin = Store::open(&path).expect("origin");
+    origin.remember_outbound(peer, &request).expect("reserve");
+    let accepted = receiver
+        .admit(peer, &request, false, 20)
+        .expect("accepted but response lost");
+    receiver.claim_next().expect("claim").expect("task");
+    drop(origin);
+    let origin = Store::open(&path).expect("reopen");
+    let (recovered_peer, recovered) = origin
+        .outbound_request(request.request_id)
+        .expect("recover");
+    assert_eq!(recovered_peer, peer);
+    assert_eq!(
+        serde_json::to_value(&recovered).unwrap(),
+        serde_json::to_value(&request).unwrap()
+    );
+    let replay = receiver.admit(peer, &recovered, false, 20).expect("dedup");
+    assert_eq!(replay.task_id, accepted.task_id);
+    assert_eq!(receiver.attempt_count(accepted.task_id).unwrap(), 1);
+    assert!(origin.outbound_request(Uuid::new_v4()).is_err());
+}
+
+#[test]
+fn event_cursor_rejects_negative_values_without_mutating_history() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(&dir.path().join("events.sqlite3")).unwrap();
+    let task = store.admit(Uuid::new_v4(), &request(), false, 20).unwrap();
+    assert!(store.events(task.task_id, -1).is_err());
+    let events = store.events(task.task_id, 0).unwrap();
+    let last = events.last().unwrap().seq;
+    assert!(store.events(task.task_id, last).unwrap().is_empty());
+}
+
+#[test]
+fn event_budget_preserves_history_and_allows_terminal_status() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(&dir.path().join("budget.sqlite3")).unwrap();
+    let task = store.admit(Uuid::new_v4(), &request(), false, 20).unwrap();
+    store.claim_next().unwrap().unwrap();
+    let mut limited = false;
+    for _ in 0..300 {
+        if let Err(error) =
+            store.append_event(task.task_id, "run", json!({"text":"x".repeat(60000)}))
+        {
+            assert_eq!(error.code, ErrorCode::RateLimited);
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited);
+    store
+        .transition(task.task_id, TaskStatus::Failed, None)
+        .unwrap();
+    assert_eq!(store.task(task.task_id).unwrap().status, TaskStatus::Failed);
+    assert_eq!(store.events(task.task_id, 0).unwrap()[0].seq, 1);
+}

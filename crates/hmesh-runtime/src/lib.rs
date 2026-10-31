@@ -32,7 +32,7 @@ pub async fn run_queue(
                     Ok(Some(task)) => {
                         let store = store.clone(); let dir = data_dir.clone(); let stop = shutdown.clone(); let authorize=authorize.clone();
                         workers.spawn(async move {
-                            let result=match authorize(&task) {Ok(())=>execute(&store,&dir,&task,stop).await,Err(error)=>Err(error)};
+                            let result=match authorize(&task) {Ok(())=>execute(&store,&dir,&task,stop, &authorize).await,Err(error)=>Err(error)};
                             if let Err(error) = result {
                                 let current = store.task(task.task_id);
                                 if let Ok(current) = current && !current.status.is_terminal() {
@@ -98,6 +98,7 @@ async fn execute(
     data_dir: &std::path::Path,
     task: &TaskRecord,
     mut shutdown: watch::Receiver<bool>,
+    authorize: &ExecutionAuthorizer,
 ) -> Result<()> {
     let (_, config) = store.agent(task.agent_id)?;
     let attempt = task
@@ -187,7 +188,8 @@ async fn execute(
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() { cancellation = true; break; }
             }
-            _ = inspect.tick() => { if store.task(task.task_id)?.status == TaskStatus::Cancelling { cancellation = true; break; } }
+            _ = inspect.tick() => { if store.task(task.task_id)?.status == TaskStatus::Cancelling { cancellation = true; break; }
+                if let Err(error) = authorize(task) { run_error = Some(error); break; } }
             _ = &mut deadline => { run_error = Some(failure("managed run deadline exceeded")); break; }
             status = child.wait(), if exited.is_none() => { exited = Some(status.map_err(|_| failure("cannot observe harness exit"))?); }
             read = stdout.read(&mut buffer), if !output_closed => {
@@ -273,6 +275,9 @@ async fn execute(
             )),
         )?;
         return Ok(());
+    }
+    if run_error.is_none() {
+        run_error = authorize(task).err();
     }
     let result = match run_error {
         Some(error) => Err(error),

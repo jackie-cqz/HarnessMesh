@@ -394,3 +394,75 @@ async fn killed_daemon_recovers_unknown_without_restarting_a_side_effect_task() 
     );
     drop(restarted);
 }
+
+#[tokio::test]
+async fn running_grant_revocation_stops_execution_without_retry() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let f = Fixture::new();
+    let task = f.submit("fixture:wait", 10);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let (stop, receiver) = watch::channel(false);
+    let job = tokio::spawn(hmesh_runtime::run_queue(
+        f.store.clone(),
+        f.instance.dir.clone(),
+        1,
+        Arc::new(move |_| {
+            if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(())
+            } else {
+                Err(MeshError::new(
+                    ErrorCode::PermissionDenied,
+                    "running grant revoked",
+                ))
+            }
+        }),
+        receiver,
+    ));
+    let result = f.terminal(task.task_id).await;
+    assert_eq!(result.status, TaskStatus::Failed);
+    assert_eq!(
+        result.error.expect("revocation error").code,
+        ErrorCode::PermissionDenied
+    );
+    assert_eq!(f.store.attempt_count(task.task_id).unwrap(), 1);
+    assert!(calls.load(Ordering::SeqCst) >= 2);
+    stop.send(true).expect("stop");
+    job.await.expect("join");
+}
+
+#[test]
+fn agent_changes_preserve_history_and_reject_outstanding_tasks() {
+    let f = Fixture::new();
+    let mut disabled = f.agent.clone();
+    disabled.availability = "disabled".into();
+    disabled.probe.managed_run = "not_checked".into();
+    f.store
+        .replace_agent(&disabled, &f.config)
+        .expect("disable idle agent");
+    assert_eq!(
+        f.store.agent(disabled.agent_id).unwrap().0.availability,
+        "disabled"
+    );
+    let task = f.submit("fixture:wait", 5);
+    assert_eq!(
+        f.store
+            .replace_agent(&disabled, &f.config)
+            .expect_err("outstanding task")
+            .code,
+        ErrorCode::TaskConflict
+    );
+    f.store
+        .request_cancel(task.task_id)
+        .expect("cancel queued task");
+    let mut changed = f.config.clone();
+    changed.project.root = f.instance.dir.clone();
+    assert!(f.store.replace_agent(&disabled, &changed).is_err());
+    f.store
+        .replace_agent(&disabled, &f.config)
+        .expect("resolved tasks allow update");
+    assert_eq!(
+        f.store.task(task.task_id).unwrap().status,
+        TaskStatus::Cancelled
+    );
+}

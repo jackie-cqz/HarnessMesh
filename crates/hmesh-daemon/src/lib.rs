@@ -272,6 +272,9 @@ pub fn router(state: AppState) -> Router {
         .route("/local/pairs/approve", post(approve_pair))
         .route("/local/peers/{id}/revoke", post(revoke))
         .route("/local/agents", post(register_agent))
+        .route("/local/agents/{id}/update", post(update_agent))
+        .route("/local/agents/{id}/disable", post(disable_agent))
+        .route("/local/agents/{id}/summary", get(agent_summary))
         .route("/local/agents/{id}/verify", post(verify_agent))
         .route("/local/agents/{id}/artifacts", post(grant_artifacts))
         .route("/local/agents/remote/{id}", get(remote_agents))
@@ -279,6 +282,7 @@ pub fn router(state: AppState) -> Router {
         .route("/local/tasks", get(local_tasks))
         .route("/local/tasks/submit", post(outgoing_task))
         .route("/local/tasks/{id}", get(owner_task))
+        .route("/local/requests/{id}/recover", post(recover_request))
         .route("/local/tasks/{id}/events", get(owner_events))
         .route("/local/tasks/{id}/cancel", post(owner_cancel))
         .route("/local/tasks/{id}/verify", post(verify_task))
@@ -706,6 +710,73 @@ async fn register_agent(
     s.store.register_agent(&card, &config)?;
     Ok(Json(card))
 }
+async fn agent_summary(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Value> {
+    s.owner(&headers, &c)?;
+    let (card, config) = s.store.agent(id)?;
+    let digest = hmesh_security::sha256_hex(&serde_json::to_vec(&config).map_err(internal)?);
+    Ok(Json(
+        json!({"agent":card,"configuration_sha256":digest,"project_id":config.agent.project_id,"note":"Configuration digest excludes credential file contents"}),
+    ))
+}
+async fn update_agent(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(mut config): Json<AgentConfig>,
+) -> ApiResult<AgentCard> {
+    s.owner(&headers, &c)?;
+    config.validate()?;
+    config.project.root = fs::canonicalize(&config.project.root).map_err(internal)?;
+    let probe = hmesh_adapters::probe(
+        &config,
+        &s.instance
+            .dir
+            .join("probes")
+            .join(Uuid::new_v4().to_string()),
+    )
+    .await
+    .map_err(internal)?;
+    if config.adapter.mesh_server.is_some() && probe.version.as_deref() != Some("1.4.0") {
+        return Err(ApiError(MeshError::new(
+            ErrorCode::AdapterNotSupported,
+            "native MCP update requires Pi 1.4.0",
+        )));
+    }
+    let (mut card, _) = s.store.agent(id)?;
+    card.probe = probe;
+    card.name = config.agent.name.clone();
+    card.harness = config.agent.harness;
+    card.availability = "unverified".into();
+    card.probe.authentication = "not_checked".into();
+    card.probe.managed_run = "not_checked".into();
+    card.probe.protocol_probe = "not_checked".into();
+    card.probe.streaming = "not_checked".into();
+    card.probe.unavailable_reason =
+        Some("configuration changed; explicit model verification required".into());
+    s.store.replace_agent(&card, &config)?;
+    Ok(Json(card))
+}
+async fn disable_agent(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<AgentCard> {
+    s.owner(&headers, &c)?;
+    let (mut card, config) = s.store.agent(id)?;
+    card.availability = "disabled".into();
+    card.probe.managed_run = "not_checked".into();
+    card.probe.unavailable_reason = Some("disabled by owner".into());
+    s.store.replace_agent(&card, &config)?;
+    Ok(Json(card))
+}
+
 async fn remote_agents(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
@@ -895,6 +966,29 @@ async fn outgoing_task(
     s.store.cache_outbound(&task)?;
     Ok(Json(task))
 }
+async fn recover_request(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<TaskRecord> {
+    s.owner(&headers, &c)?;
+    let (_, envelope) = s.store.outbound_request(id)?;
+    let task_id = envelope.payload.task_id;
+    let client = outbound_client(&s, task_id)?
+        .ok_or_else(|| ApiError(MeshError::input("request has no outbound peer")))?;
+    // Resend only the exact original envelope; the receiver's durable dedup owns admission.
+    let task: TaskRecord = client.post("/hmesh/v1/tasks", &envelope).await?;
+    if task.task_id != task_id {
+        return Err(ApiError(MeshError::new(
+            ErrorCode::TaskConflict,
+            "recovery returned a different task ID",
+        )));
+    }
+    s.store.cache_outbound(&task)?;
+    Ok(Json(task))
+}
+
 fn outbound_client(s: &AppState, id: Uuid) -> std::result::Result<Option<Client>, ApiError> {
     let Some(peer_id) = s.store.outbound_peer(id)? else {
         return Ok(None);
@@ -1102,9 +1196,15 @@ async fn verify_task(
         )));
     }
     let (_, config) = s.store.agent(task.agent_id)?;
-    let evidence =
+    let mut evidence =
         hmesh_runtime::verification::verify_json(&config, &body.artifact, &body.expected)
             .map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+    evidence["task_id"] = json!(id);
+    evidence["attempt_id"] = json!(task.last_attempt_id);
+    evidence["expected"] = body.expected;
+    evidence["configuration_sha256"] = json!(hmesh_security::sha256_hex(
+        &serde_json::to_vec(&config).map_err(internal)?
+    ));
     Ok(Json(s.store.record_verification(id, &evidence)?))
 }
 async fn task_verifications(

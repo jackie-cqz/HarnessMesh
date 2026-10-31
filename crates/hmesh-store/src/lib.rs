@@ -325,6 +325,21 @@ impl Store {
             Ok(())
         })
     }
+    pub fn replace_agent(&self, card: &AgentCard, config: &AgentConfig) -> Result<()> {
+        config.validate()?;
+        self.transaction(|tx| {
+            let old: String = tx.query_row("SELECT config_json FROM agents WHERE agent_id=?1", [card.agent_id.to_string()], |r| r.get(0)).map_err(internal)?;
+            let old: AgentConfig = decode(&old)?;
+            if old.project.root != config.project.root || old.agent.project_id != config.agent.project_id {
+                return Err(MeshError::input("update cannot change registered project identity or root; register a new agent"));
+            }
+            let busy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE json_extract(record_json,'$.agent_id')=?1 AND status IN ('PENDING_APPROVAL','QUEUED','RUNNING','CANCELLING','WAITING_INPUT'))", [card.agent_id.to_string()], |r| r.get(0)).map_err(internal)?;
+            if busy { return Err(MeshError::new(ErrorCode::TaskConflict, "resolve outstanding tasks before changing agent configuration")); }
+            tx.execute("UPDATE agents SET name=?1,card_json=?2,config_json=?3 WHERE agent_id=?4", params![card.name,encode(card)?,encode(config)?,card.agent_id.to_string()]).map_err(internal)?;
+            audit_in(tx,None,"agent.update",&card.agent_id.to_string(),"verification-invalidated",Uuid::new_v4())?;
+            Ok(())
+        })
+    }
     pub fn agents(&self) -> Result<Vec<AgentCard>> {
         self.read(|c| {
             let mut q = c
@@ -448,6 +463,26 @@ impl Store {
             if local { return Err(MeshError::new(ErrorCode::TaskConflict, "task id already identifies a local execution")); }
             tx.execute("INSERT INTO outbound_tasks(task_id,peer_id,request_id,envelope_json) VALUES(?1,?2,?3,?4)", params![envelope.payload.task_id.to_string(), peer.to_string(), envelope.request_id.to_string(), encode(envelope)?]).map_err(internal)?;
             Ok(envelope.clone())
+        })
+    }
+    /// Recover the exact durable outbound reservation without guessing IDs or replaying execution.
+    pub fn outbound_request(&self, request: Uuid) -> Result<(Uuid, Envelope<TaskSubmit>)> {
+        self.read(|c| {
+            let row: Option<(String, String)> = c
+                .query_row(
+                    "SELECT peer_id,envelope_json FROM outbound_tasks WHERE request_id=?1",
+                    [request.to_string()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(internal)?;
+            let (peer, envelope) = row.ok_or_else(|| {
+                MeshError::input("outbound request ID is not reserved on this node")
+            })?;
+            Ok((
+                Uuid::parse_str(&peer).map_err(internal)?,
+                decode(&envelope)?,
+            ))
         })
     }
     pub fn outbound_peer(&self, id: Uuid) -> Result<Option<Uuid>> {
@@ -618,9 +653,16 @@ impl Store {
         if encode(&payload)?.len() > MAX_EVENT_PAYLOAD_BYTES {
             return Err(MeshError::input("event exceeds 65536 bytes"));
         }
-        self.transaction(|tx| append_in(tx, &task_in(tx, id)?, kind, payload))
+        self.transaction(|tx| {
+            let stored: i64 = tx.query_row("SELECT COALESCE(SUM(length(CAST(event_json AS BLOB))),0) FROM task_events WHERE task_id=?1", [id.to_string()], |r| r.get(0)).map_err(internal)?;
+            if stored + encode(&payload)?.len() as i64 + 1024 > 16 * 1024 * 1024 { return Err(MeshError::new(ErrorCode::RateLimited, "task event storage budget exceeded; execution stopped without discarding history")); }
+            append_in(tx, &task_in(tx, id)?, kind, payload)
+        })
     }
     pub fn events(&self, id: Uuid, after: i64) -> Result<Vec<TaskEvent>> {
+        if after < 0 {
+            return Err(MeshError::input("event cursor must be nonnegative"));
+        }
         self.read(|c| { let mut q = c.prepare("SELECT event_json FROM task_events WHERE task_id=?1 AND seq>?2 ORDER BY seq LIMIT 1000").map_err(internal)?;
             let rows=q.query_map(params![id.to_string(), after], |r| r.get::<_,String>(0)).map_err(internal)?;
             // Stay below the 1 MiB transport response cap even for escaped text.
