@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>HarnessMesh · 本机控制台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/assets/panel.css">
+  <script src="/assets/panel.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#overview" aria-label="HarnessMesh 首页"><span class="brand-mark" aria-hidden="true">⠿</span>HarnessMesh<span class="version">V0</span></a>
+    <div class="workspace-label">本机工作空间</div>
+    <nav aria-label="主导航">
+      <button class="nav-item selected" data-view="overview"><span aria-hidden="true">▦</span>运行总览</button>
+      <button class="nav-item" data-view="tasks"><span aria-hidden="true">☷</span>任务<span id="nav-pending" class="nav-count" hidden></span></button>
+      <button class="nav-item" data-view="agents"><span aria-hidden="true">◈</span>Agents</button>
+      <button class="nav-item" data-view="services"><span aria-hidden="true">⊞</span>服务与连接</button>
+      <button class="nav-item" data-view="nodes"><span aria-hidden="true">⌘</span>配对节点</button>
+    </nav>
+    <div class="sidebar-bottom"><div class="local-scope"><i class="dot"></i>LOCAL CONTROL</div><p>状态来自本机 Daemon<br>审批沿用现有项目授权</p><span class="mono">127.0.0.1 only</span></div>
+  </aside>
+  <main>
+    <header class="topbar"><span>工作空间 <span class="slash">/</span> <strong id="breadcrumb">运行总览</strong></span><div class="topbar-right"><span id="sync-state" role="status">等待连接</span><button id="refresh" class="icon-button" aria-label="刷新数据" title="刷新数据">↻</button></div></header>
+    <div class="content">
+      <div id="access-gate" class="access-gate" hidden><span class="eyebrow">LOCAL ACCESS</span><h1>从启动链接进入</h1><p>请打开 <code>hmesh panel</code> 启动终端中显示的完整链接。访问令牌每次启动更新，owner 凭据始终留在本机进程。</p><button id="clear-access" class="button">清除本页旧访问令牌</button></div>
+      <div id="app">
+        <section class="page-heading"><div><div class="eyebrow">HARNESSMESH / CONTROL ROOM</div><h1 id="page-title">运行总览</h1><p id="page-description">节点、任务与执行状态，尽在一处。</p></div><div class="node-pill"><span class="node-symbol">M</span><span><strong id="local-name">连接中</strong><small id="local-network">读取本机节点</small></span></div></section>
+        <div id="alerts" aria-live="polite"></div>
+        <section id="metrics" class="metrics" aria-label="运行统计"></section>
+        <section id="overview-view" class="view">
+          <div class="overview-grid"><section class="surface recent"><div class="section-heading"><div><span class="eyebrow">TASK STREAM</span><h2>最近任务</h2></div><button class="text-button" data-go="tasks">查看全部 <span aria-hidden="true">↗</span></button></div><div id="recent-tasks"></div></section><div class="overview-side"><section class="surface mesh-map"><div class="section-heading"><div><span class="eyebrow">YOUR NETWORK</span><h2>节点连接</h2></div><span class="outline-tag">mTLS</span></div><div id="mesh-nodes"></div></section><section class="approval-card"><span class="eyebrow">OWNER IN CONTROL</span><h2 id="approval-title">每一次执行，都有边界。</h2><p id="approval-description">待审批任务在批准前不会开始执行。可先查看目标 Agent、项目和完整请求。</p><button id="review-pending" class="button light">查看待审批 <span aria-hidden="true">↗</span></button></section></div></div>
+        </section>
+        <section id="tasks-view" class="view" hidden><div class="toolbar"><div class="segmented" id="task-filters" aria-label="任务状态"><button data-filter="all" class="selected">全部</button><button data-filter="pending">待审批</button><button data-filter="active">进行中</button><button data-filter="attention">需关注</button></div><label class="search"><span aria-hidden="true">⌕</span><input id="task-search" type="search" placeholder="搜索任务、项目或 UUID" aria-label="搜索任务"></label></div><p class="list-note">发出任务的列表为最近缓存，打开详情会查询执行端最新状态。</p><div class="surface" id="task-list"></div></section>
+        <section id="agents-view" class="view" hidden><div class="toolbar"><div class="segmented" id="agent-filters"><button class="selected" data-agent-filter="active">本机 Agent</button><button data-agent-filter="retired">已退役</button></div><span class="muted">配置与凭据通过 CLI 管理</span></div><div id="agent-list" class="card-grid"></div></section>
+        <section id="services-view" class="view" hidden><div class="section-heading"><h2>本机发布的服务</h2><label class="checkbox"><input id="show-inactive" type="checkbox">显示已停止 / 过期</label></div><div id="service-list" class="card-grid"></div><div class="section-heading subheading"><h2>转发连接与隧道</h2><span class="muted">仅展示当前 Daemon 的记录</span></div><div id="connection-list" class="surface"></div></section>
+        <section id="nodes-view" class="view" hidden><div id="node-list" class="card-grid"></div><section id="remote-agents" class="surface remote-agents" hidden></section></section>
+        <footer><span>HarnessMesh <span class="footer-dot">·</span> 本机管理面板</span><span id="last-observed">等待读取实时状态</span></footer>
+      </div>
+    </div>
+  </main>
+  <dialog id="task-dialog" class="task-dialog" aria-labelledby="task-dialog-title"><div class="dialog-heading"><div><span class="eyebrow">TASK INSPECTOR</span><h2 id="task-dialog-title">任务详情</h2></div><button class="icon-button" data-close="task-dialog" aria-label="关闭任务详情">×</button></div><div id="task-detail"></div><div class="events-heading"><h3>事件流</h3><span id="event-count" class="mono muted">0 events</span></div><div id="event-list" class="event-list"></div><button id="load-events" class="button secondary">加载后续事件</button></dialog>
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title"><span class="eyebrow">CONFIRM ACTION</span><h2 id="confirm-title"></h2><p id="confirm-description"></p><div class="confirm-actions"><button id="confirm-cancel" class="button secondary">返回</button><button id="confirm-accept" class="button">确认</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
