@@ -46,6 +46,7 @@
       "manifest-hashes",
       "no-instance-material",
       "standalone-cli",
+      "standalone-panel",
       "actual-launcher",
       "fresh-panel-and-daemon",
       "authenticated-snapshot",
@@ -70,8 +71,8 @@
     "web/panel/workflow.js": "66dc2410a2473c9f7a71cab4c6cabba5ac71a85303491e28b6e667f9257f7b44",
     "web/panel/panel.css": "6fde8f57bddc14cd9528ec08c67f626e54de5f161dbc63f713ce28065df27ef6",
     "scripts/panel-smoke.mjs": "2c358df99ff73a8aaef34c10ff6adf53295ed75ee488403595f0f7e86e8b2a05",
-    "scripts/package-runtime.mjs": "6228b190183f74796bd833361b29b9f3e2a7e2ebb3c8d00ef9dc741227706142",
-    "scripts/package-smoke.mjs": "7e10e794fb8850e5731022916e14bd5383bc307e661a581e0ddd05e40d1ffc43",
+    "scripts/package-runtime.mjs": "74daabe58f6605ae510b369335292d7d311e8045826a1bc77485c493836472b1",
+    "scripts/package-smoke.mjs": "75505ba47e0b8cbdb94d174c6a66d8cb013e98a2039c8311e4d04050bb8aa0b4",
     "scripts/package-windows.ps1": "6eba2ad059413f37b9307be14345e4cb1bd9f9347f30dda3e90e8ca71cfd4eee"
   },
   "incremental_cli_tests_passed": 9,

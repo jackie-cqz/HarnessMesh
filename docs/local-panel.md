@@ -55,4 +55,4 @@ Playwright 版本由 package-lock 固定，仅为开发回归依赖。可用 HME
 
 原生 Mac/Windows release 运行包及实际解压回归见 [打包与启动](runtime-packages.md)。运行包无需 Rust/npm，不带项目、模型凭据、Harness 或 Tailscale。初版面板的历史基线见 [原验收记录](evidence/latest-local-panel.json)。
 
-2026-11-01 开发回归：79 项 Rust、14 项 Node 协议检查、20 项浏览器流程、8 项 Mac 实际运行包检查通过，fmt/Clippy 通过。三项既有本机 mTLS/修复替身/防重放流程复测通过。见 [本地脱敏记录](evidence/latest-panel-workflow.json)，跨平台 CI 与运行包结果以对应 PR/workflow 为准。
+2026-11-01 开发回归：79 项 Rust、14 项 Node 协议检查、20 项浏览器流程、9 项 Mac 实际运行包检查通过，fmt/Clippy 通过。三项既有本机 mTLS/修复替身/防重放流程复测通过。见 [本地脱敏记录](evidence/latest-panel-workflow.json)，跨平台 CI 与运行包结果以对应 PR/workflow 为准。

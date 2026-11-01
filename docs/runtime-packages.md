@@ -34,4 +34,4 @@ node scripts/package-smoke.mjs --archive-dir target/my-new-bundle
 
 只复制固定 CLI/MCP 二进制，生成启动器、说明、NOTICE、manifest 和校验清单。输出目录必须新建，避免旧文件混入。Windows 使用系统 Compress-Archive；Mac 使用 tar。manifest 包含 OS/CPU、源 commit、dirty 标记和文件 hash；未提交源码构建会标 dirty，CI 包绑定 PR commit。
 
-回归实际解压压缩包、核对清单/hash、执行独立 CLI、初始化临时 Node、启动面板与自建 Daemon、鉴权读取状态、正常关闭并确认 Daemon 不再可达。测试子进程 PATH 不含 Rust 或 Node，无模型调用、无个人 Harness 配置，不等于新的真实跨机验收。
+回归实际解压压缩包、核对清单/hash、执行独立 CLI，分别直接启动面板和通过平台启动器启动，初始化临时 Node 与自建 Daemon、鉴权读取状态、正常关闭并确认 Daemon 不再可达。启动失败保留有界错误摘要并隐藏面板访问令牌。测试子进程 PATH 不含 Rust 或 Node，无模型调用、无个人 Harness 配置，不等于新的真实跨机验收。
