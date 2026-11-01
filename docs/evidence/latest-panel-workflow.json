@@ -61,7 +61,7 @@
   "baseline_merge": "81bdde260cab4609f5499e363f9037d3b2ba0b84",
   "baseline_ci": "https://github.com/jackie-cqz/HarnessMesh/actions/runs/41316467220",
   "source_sha256": {
-    "crates/hmesh-cli/src/panel.rs": "5aa9cf667f538d6e27f9e22896946bfa017af264368e1c8e94009f6f003fa6f4",
+    "crates/hmesh-cli/src/panel.rs": "3572f42678508c9d8d889f4c7d53d300975968cfc7f8ae7c0efb067dfa333721",
     "crates/hmesh-daemon/src/lib.rs": "a949f91a57a31d0747f06094a5d58a6d3a2e4011838997188e140e31b27716cc",
     "crates/hmesh-store/src/lib.rs": "93452c371d0146b573a02ddea44720c9029204a56153933699db81d8f5ce28d8",
     "crates/hmesh-store/migrations/006_observation.sql": "a12364e962408d192d0d28f2ff6dc474ac000faf1fb84669afdb624f55935de9",
@@ -73,5 +73,7 @@
     "scripts/package-runtime.mjs": "6228b190183f74796bd833361b29b9f3e2a7e2ebb3c8d00ef9dc741227706142",
     "scripts/package-smoke.mjs": "7e10e794fb8850e5731022916e14bd5383bc307e661a581e0ddd05e40d1ffc43",
     "scripts/package-windows.ps1": "6eba2ad059413f37b9307be14345e4cb1bd9f9347f30dda3e90e8ca71cfd4eee"
-  }
+  },
+  "incremental_cli_tests_passed": 9,
+  "signal_handling": "Unavailable console signal registration does not close the panel; authenticated stop stays active"
 }

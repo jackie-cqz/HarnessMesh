@@ -182,11 +182,17 @@ async fn shutdown_signal() {
         if let Ok(mut term) =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         {
-            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=term.recv()=>{}};
+            tokio::select! {_=ctrl_c_signal()=>{},_=term.recv()=>{}};
             return;
         }
     }
-    let _ = tokio::signal::ctrl_c().await;
+    ctrl_c_signal().await;
+}
+async fn ctrl_c_signal() {
+    // A missing console/signal handler is not a shutdown request; the authenticated UI stop remains usable.
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 async fn stop_panel(State(s): State<Panel>, Json(body): Json<Value>) -> Response {
     if body != json!({}) {
