@@ -7,12 +7,13 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
-use hmesh_core::{MeshError, now};
+use hmesh_core::{MeshError, NodeConfig, RunLimits, TaskSubmit, now};
+use hmesh_daemon::{RemoteTask, VerificationRequest};
 use hmesh_security::Instance;
 use hmesh_transport::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{net::Ipv4Addr, sync::Arc};
+use std::{net::Ipv4Addr, path::Path as FilePath, process::Stdio, sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
 use tokio::{net::TcpListener, sync::Semaphore};
 use uuid::Uuid;
@@ -24,22 +25,75 @@ struct Panel {
     origin: String,
     token: String,
     requests: Arc<Semaphore>,
+    stop: tokio::sync::watch::Sender<bool>,
 }
 
-pub async fn run(instance: &Instance, port: u16, json_output: bool) -> anyhow::Result<()> {
-    let client = hmesh_daemon::local_client(instance)?;
-    client.get::<Value>("/local/status").await?;
+pub async fn run(
+    dir: &FilePath,
+    port: u16,
+    start_daemon: bool,
+    json_output: bool,
+) -> anyhow::Result<()> {
+    // Bind first: a port conflict must not start a Daemon or execute its queued work.
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+    let instance = if start_daemon && !dir.join("identity.json").exists() {
+        let mut config = NodeConfig::default();
+        config.node.listen_port = 0;
+        Instance::init(dir, config)?
+    } else {
+        Instance::load(dir)?
+    };
+    let existing = ready_client(&instance).await?;
+    let mut owned = None;
+    let client = if let Some(client) = existing {
+        client
+    } else if start_daemon {
+        let mut child = tokio::process::Command::new(std::env::current_exe()?)
+            .arg("--data-dir")
+            .arg(&instance.dir)
+            .args(["daemon", "start"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let client = loop {
+            if let Some(status) = child.try_wait()? {
+                anyhow::bail!(
+                    "owned Daemon exited during startup ({status}); existing instance files were preserved"
+                );
+            }
+            if let Some(c) = ready_client(&instance).await? {
+                let status = c.get::<Value>("/local/status").await?;
+                if status["pid"].as_u64() != child.id().map(u64::from) {
+                    anyhow::bail!("another Daemon started concurrently; it was preserved");
+                }
+                break c;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!("owned Daemon readiness deadline exceeded");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        owned = Some(child);
+        client
+    } else {
+        anyhow::bail!("Daemon is not reachable; start it or pass --start-daemon");
+    };
+    let owned_pid = owned.as_ref().and_then(|p| p.id());
     let host = format!("127.0.0.1:{}", listener.local_addr()?.port());
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let origin = format!("http://{host}");
     let url = format!("{origin}/#access={token}");
+    let (stop, mut stopping) = tokio::sync::watch::channel(false);
     let state = Panel {
         client,
         host,
         origin,
         token,
         requests: Arc::new(Semaphore::new(32)),
+        stop,
     };
     let app = Router::new()
         .route(
@@ -64,33 +118,110 @@ pub async fn run(instance: &Instance, port: u16, json_output: bool) -> anyhow::R
                 )
             }),
         )
+        .route(
+            "/assets/workflow.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/workflow.js"),
+                )
+            }),
+        )
         .route("/api/overview", get(overview))
+        .route("/api/panel/stop", post(stop_panel))
+        .route("/api/tasks", post(create_task))
         .route("/api/tasks/{id}", get(task))
+        .route("/api/tasks/{id}/verify", post(verify_artifact))
+        .route("/api/requests/{id}/recover", post(recover))
         .route("/api/tasks/{id}/events", get(events))
         .route("/api/tasks/{id}/{action}", post(task_action))
         .route("/api/agents/{id}/{action}", post(agent_action))
         .route("/api/services/{id}/{action}", post(service_action))
         .route("/api/peers/{id}/agents", get(remote_agents))
         .fallback(|| async { error(StatusCode::NOT_FOUND, "NOT_FOUND") })
-        .layer(DefaultBodyLimit::max(4096))
+        .layer(DefaultBodyLimit::max(524288))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state);
     if json_output {
         println!(
             "{}",
-            json!({"url":url,"pid":std::process::id(),"scope":"loopback-owner-panel"})
+            json!({"url":url,"pid":std::process::id(),"owned_daemon_pid":owned_pid,"scope":"loopback-owner-panel"})
         );
     } else {
         println!(
-            "HarnessMesh 本机管理面板\n{url}\n访问链接仅供本机使用；Ctrl+C 关闭面板，Daemon 继续运行。"
+            "HarnessMesh 本机管理面板\n{url}\n访问链接仅供本机使用。Ctrl+C 正常关闭面板；仅本次启动的 Daemon 会一并停止。"
         );
     }
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+    let served = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            tokio::select! {_ = shutdown_signal()=>{},_ = stopping.changed()=>{}}
         })
-        .await?;
+        .await;
+    if let Some(mut child) = owned {
+        if matches!(child.try_wait(), Ok(None))
+            && let Ok(owner) = hmesh_daemon::local_client(&instance)
+            && let Ok(status) = owner.get::<Value>("/local/status").await
+            && status["pid"].as_u64() == child.id().map(u64::from)
+        {
+            let _ = owner.post::<_, Value>("/local/stop", &json!({})).await;
+        }
+        if tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+    }
+    served?;
     Ok(())
+}
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut term) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            tokio::select! {_=ctrl_c_signal()=>{},_=term.recv()=>{}};
+            return;
+        }
+    }
+    ctrl_c_signal().await;
+}
+async fn ctrl_c_signal() {
+    // A missing console/signal handler is not a shutdown request; the authenticated UI stop remains usable.
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+async fn stop_panel(State(s): State<Panel>, Json(body): Json<Value>) -> Response {
+    if body != json!({}) {
+        return error(StatusCode::BAD_REQUEST, "UNSUPPORTED_ACTION");
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = s.stop.send(true);
+    });
+    Json(json!({"data":{"stopping":true}})).into_response()
+}
+async fn ready_client(instance: &Instance) -> anyhow::Result<Option<Client>> {
+    let Ok(client) = hmesh_daemon::local_client(instance) else {
+        return Ok(None);
+    };
+    match tokio::time::timeout(Duration::from_secs(2), client.get::<Value>("/local/status")).await {
+        Ok(Ok(status)) => {
+            if !status["api_features"]
+                .as_array()
+                .is_some_and(|v| v.iter().any(|x| x == "panel-task-workflow-v1"))
+            {
+                anyhow::bail!(
+                    "existing Daemon needs an explicit update/restart for panel-task-workflow-v1; it was preserved"
+                );
+            }
+            Ok(Some(client))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn error(status: StatusCode, code: &str) -> Response {
@@ -140,6 +271,14 @@ async fn guard(State(s): State<Panel>, req: Request, next: Next) -> Response {
     } else {
         next.run(req).await
     };
+    if response.status().is_client_error()
+        && !response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .is_some_and(|h| h.to_str().is_ok_and(|s| s.starts_with("application/json")))
+    {
+        response = error(response.status(), "INVALID_REQUEST");
+    }
     let headers = response.headers_mut();
     for (name, value) in [
         ("cache-control", "no-store"),
@@ -159,7 +298,9 @@ async fn guard(State(s): State<Panel>, req: Request, next: Next) -> Response {
 fn result(value: Result<Value, MeshError>) -> Value {
     match value {
         Ok(value) => json!({"data":value}),
-        Err(e) => json!({"error":{"code":e.code}}),
+        Err(e) => {
+            json!({"error":{"code":e.code,"retryable":e.retryable,"trace_id":e.trace_id,"automatic_retry":false}})
+        }
     }
 }
 // Managed process configurations may contain secrets in env/argv. Never send them to the UI.
@@ -191,11 +332,77 @@ async fn overview(State(s): State<Panel>) -> Json<Value> {
 async fn task(State(s): State<Panel>, Path(id): Path<Uuid>) -> Json<Value> {
     let path = format!("/local/tasks/{id}");
     let verification_path = format!("/local/tasks/{id}/verification");
-    let (task, verification) = tokio::join!(
+    let artifacts_path = format!("/local/tasks/{id}/artifacts");
+    let (task, verification, artifacts) = tokio::join!(
         s.client.get::<Value>(&path),
-        s.client.get::<Value>(&verification_path)
+        s.client.get::<Value>(&verification_path),
+        s.client.get::<Value>(&artifacts_path)
     );
-    Json(json!({"task":result(task),"verification":result(verification)}))
+    Json(
+        json!({"observed_at":now(),"task":result(task),"verification":result(verification),"artifacts":result(artifacts)}),
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewTask {
+    request_id: Uuid,
+    peer_id: Uuid,
+    agent_id: Uuid,
+    project_id: String,
+    goal: String,
+    timeout_seconds: u64,
+    max_output_bytes: usize,
+}
+async fn create_task(State(s): State<Panel>, Json(body): Json<NewTask>) -> Response {
+    let mut task = TaskSubmit::new(body.agent_id, &body.project_id, &body.goal);
+    task.task_id = body.request_id;
+    task.limits = RunLimits {
+        timeout_seconds: body.timeout_seconds,
+        max_output_bytes: body.max_output_bytes,
+    };
+    if task.validate().is_err() {
+        return error(StatusCode::BAD_REQUEST, "INVALID_TASK_REQUEST");
+    }
+    mutation(
+        s.client
+            .post(
+                "/local/tasks/submit",
+                &RemoteTask {
+                    peer_id: body.peer_id,
+                    request_id: body.request_id,
+                    task,
+                },
+            )
+            .await,
+    )
+}
+async fn verify_artifact(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<VerificationRequest>,
+) -> Response {
+    mutation(
+        s.client
+            .post(&format!("/local/tasks/{id}/verify"), &body)
+            .await,
+    )
+}
+async fn recover(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Value>,
+) -> Response {
+    if body != json!({}) {
+        return error(StatusCode::BAD_REQUEST, "UNSUPPORTED_ACTION");
+    }
+    mutation(
+        s.client
+            .post(&format!("/local/requests/{id}/recover"), &body)
+            .await,
+    )
+}
+fn mutation(response: Result<Value, MeshError>) -> Response {
+    match response {Ok(v)=>Json(json!({"data":v})).into_response(),Err(e)=>(StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":e.code,"retryable":e.retryable,"trace_id":e.trace_id,"automatic_retry":false}}))).into_response()}
 }
 #[derive(Deserialize)]
 struct Cursor {

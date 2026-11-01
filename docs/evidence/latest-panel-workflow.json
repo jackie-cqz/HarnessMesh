@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "status": "passed",
+  "scope": "Mac development and regression; two isolated local Nodes using real mTLS and explicit fixture; not a new physical Windows/Mac model acceptance",
+  "model_calls": 0,
+  "rust_tests_passed": 79,
+  "node_protocol_tests": 14,
+  "clippy": "passed",
+  "format": "passed",
+  "browser": {
+    "passed": true,
+    "model_calls": 0,
+    "fixture_runs": 3,
+    "scope": "isolated two-node mTLS and headless browser",
+    "checks": [
+      "navigation",
+      "pending-approval",
+      "request-text-XSS",
+      "reject",
+      "archive",
+      "local-create",
+      "local-approval",
+      "local-verify",
+      "remote-create",
+      "lost-acknowledgement",
+      "original-request-recovery",
+      "no-duplicate-attempt",
+      "remote-verification-fail",
+      "remote-verification-pass",
+      "observation-time",
+      "retire",
+      "restore-unverified",
+      "mobile",
+      "access-gate",
+      "stop-preserves-existing-daemon"
+    ]
+  },
+  "native_mac_package": {
+    "passed": true,
+    "platform": "darwin",
+    "arch": "arm64",
+    "model_calls": 0,
+    "checks": [
+      "archive-extraction",
+      "manifest-hashes",
+      "no-instance-material",
+      "standalone-cli",
+      "standalone-panel",
+      "actual-launcher",
+      "fresh-panel-and-daemon",
+      "authenticated-snapshot",
+      "owned-shutdown"
+    ]
+  },
+  "existing_local_smoke": [
+    "two-node mTLS",
+    "explicit repair test double",
+    "guardian exit and no replay"
+  ],
+  "baseline_pr": "https://github.com/jackie-cqz/HarnessMesh/pull/1",
+  "baseline_merge": "81bdde260cab4609f5499e363f9037d3b2ba0b84",
+  "baseline_ci": "https://github.com/jackie-cqz/HarnessMesh/actions/runs/41316467220",
+  "source_sha256": {
+    "crates/hmesh-cli/src/panel.rs": "3572f42678508c9d8d889f4c7d53d300975968cfc7f8ae7c0efb067dfa333721",
+    "crates/hmesh-daemon/src/lib.rs": "a949f91a57a31d0747f06094a5d58a6d3a2e4011838997188e140e31b27716cc",
+    "crates/hmesh-store/src/lib.rs": "93452c371d0146b573a02ddea44720c9029204a56153933699db81d8f5ce28d8",
+    "crates/hmesh-store/migrations/006_observation.sql": "a12364e962408d192d0d28f2ff6dc474ac000faf1fb84669afdb624f55935de9",
+    "web/panel/index.html": "89a2a5808375553cc2290517d0624097dd0c9af0ed39507482f544f5457cf8c3",
+    "web/panel/panel.js": "06fb3701899f17574297f36440d2d097a78bb48a28754637f906ccf352a5ab85",
+    "web/panel/workflow.js": "66dc2410a2473c9f7a71cab4c6cabba5ac71a85303491e28b6e667f9257f7b44",
+    "web/panel/panel.css": "6fde8f57bddc14cd9528ec08c67f626e54de5f161dbc63f713ce28065df27ef6",
+    "scripts/panel-smoke.mjs": "2c358df99ff73a8aaef34c10ff6adf53295ed75ee488403595f0f7e86e8b2a05",
+    "scripts/package-runtime.mjs": "74daabe58f6605ae510b369335292d7d311e8045826a1bc77485c493836472b1",
+    "scripts/package-smoke.mjs": "75505ba47e0b8cbdb94d174c6a66d8cb013e98a2039c8311e4d04050bb8aa0b4",
+    "scripts/package-windows.ps1": "6eba2ad059413f37b9307be14345e4cb1bd9f9347f30dda3e90e8ca71cfd4eee"
+  },
+  "incremental_cli_tests_passed": 9,
+  "signal_handling": "Unavailable console signal registration does not close the panel; authenticated stop stays active"
+}

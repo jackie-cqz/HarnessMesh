@@ -84,7 +84,7 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
     let id = Uuid::new_v4();
     let config: AgentConfig = serde_json::from_value(json!({
         "agent":{"name":"registry-fixture","harness":"pi","project_id":"demo","mode":"managed"},
-        "project":{"root":project,"allowed_tools":["read","write","edit"],"require_remote_task_approval":true},
+        "project":{"root":project,"allowed_tools":["read","write","edit"],"require_remote_task_approval":true,"artifact_paths":["out/health.json"]},
         "adapter":{"executable":std::env::current_exe().expect("test executable"),"provider":"fixture","model":"fixture"}
     })).expect("config");
     let card: AgentCard = serde_json::from_value(json!({
@@ -243,6 +243,92 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
         .expect("pre-start cancel");
     assert_eq!(cancelled.status, TaskStatus::Cancelled);
     assert_eq!(store.attempt_count(task.task_id).expect("attempt count"), 0);
+    // Synthetic success only; no executor runs. Checks remain origin/project/file scoped.
+    std::fs::create_dir_all(project.join("out")).unwrap();
+    std::fs::write(project.join("out/health.json"), br#"{"status":"ok"}"#).unwrap();
+    let synthetic = Envelope::new(
+        a.card.node_id,
+        "task.submit",
+        TaskSubmit::new(id, "demo", "synthetic finished artifact"),
+    );
+    let finished = store.admit(b.card.node_id, &synthetic, false, 20).unwrap();
+    store.claim_next().unwrap().unwrap();
+    store
+        .transition(finished.task_id, TaskStatus::Succeeded, None)
+        .unwrap();
+    let artifact_path = format!("/hmesh/v1/tasks/{}/artifacts", finished.task_id);
+    let verify_path = format!("/hmesh/v1/tasks/{}/verify", finished.task_id);
+    let allowed: Value = peer.get(&artifact_path).await.unwrap();
+    assert_eq!(allowed["artifacts"], json!(["out/health.json"]));
+    let check = json!({"artifact":"out/health.json","expected":{"status":"ok"}});
+    assert_eq!(
+        other.get::<Value>(&artifact_path).await.unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    assert_eq!(
+        other
+            .post::<_, Value>(&verify_path, &check)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    assert_eq!(
+        peer.post::<_, Value>(
+            &verify_path,
+            &json!({"artifact":"../private.json","expected":{"status":"ok"}})
+        )
+        .await
+        .unwrap_err()
+        .code,
+        ErrorCode::InvalidInput
+    );
+    let verified: Value = peer.post(&verify_path, &check).await.unwrap();
+    assert_eq!(verified["passed"], true);
+    assert_eq!(verified["task_id"], finished.task_id.to_string());
+    assert!(!verified["attempt_id"].is_null());
+    assert!(verified["configuration_sha256"].is_string());
+    let failed: Value = peer
+        .post(
+            &verify_path,
+            &json!({"artifact":"out/health.json","expected":{"status":"wrong"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(failed["passed"], false);
+    assert_eq!(
+        store.task(finished.task_id).unwrap().status,
+        TaskStatus::Succeeded
+    );
+    assert_eq!(store.attempt_count(finished.task_id).unwrap(), 1);
+    let request_id = Uuid::new_v4();
+    let mut local = TaskSubmit::new(id, "demo", "local owner request");
+    local.task_id = request_id;
+    let local_request = json!({"peer_id":b.card.node_id,"request_id":request_id,"task":local});
+    let submitted: TaskRecord = owner
+        .post("/local/tasks/submit", &local_request)
+        .await
+        .unwrap();
+    assert_eq!(submitted.status, TaskStatus::PendingApproval);
+    let recovered: TaskRecord = owner
+        .post(&format!("/local/requests/{request_id}/recover"), &json!({}))
+        .await
+        .unwrap();
+    assert_eq!(recovered.task_id, submitted.task_id);
+    assert!(recovered.last_attempt_id.is_none());
+    let mut conflict = local_request.clone();
+    conflict["task"]["goal"] = json!("different payload");
+    assert_eq!(
+        owner
+            .post::<_, Value>("/local/tasks/submit", &conflict)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::TaskConflict
+    );
+    let observations = store.outbound_tasks().unwrap();
+    assert_eq!(observations[0]["request_id"], request_id.to_string());
+    assert!(observations[0]["last_observed_at"].is_i64());
     // A malformed hot reload retains the previous valid policy. A valid revoke applies immediately.
     std::fs::write(b.dir.join("policy.toml"), "not valid [").expect("bad reload");
     assert_eq!(
@@ -256,6 +342,17 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
         .post::<_, Policy>("/local/policy", &Policy::default())
         .await
         .expect("revoke grant");
+    assert_eq!(
+        peer.get::<Value>(&artifact_path).await.unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    assert_eq!(
+        peer.post::<_, Value>(&verify_path, &check)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
     envelope.request_id = Uuid::new_v4();
     envelope.payload.task_id = Uuid::new_v4();
     assert_eq!(
@@ -267,7 +364,11 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
     );
     store.revoke_peer(a.card.node_id).expect("revoke trust");
     assert!(peer.get::<Value>("/hmesh/v1/node").await.is_err());
-    assert_eq!(std::fs::read_dir(project).expect("project").count(), 0);
+    assert_eq!(std::fs::read_dir(&project).expect("project").count(), 1);
+    assert_eq!(
+        std::fs::read(project.join("out/health.json")).unwrap(),
+        br#"{"status":"ok"}"#
+    );
     let audits = store.audits().expect("audits");
     assert!(audits.iter().any(|a| a["action"] == "task.reject"));
     assert!(audits.iter().any(|a| a["action"] == "task.cancel"));

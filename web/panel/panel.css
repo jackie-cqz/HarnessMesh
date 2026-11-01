@@ -1122,3 +1122,22 @@ dialog::backdrop {
     width:28%;
   }
 }
+.workspace-actions { display:flex; justify-content:flex-end; margin:-10px 0 20px; }
+.compose-dialog { width:min(720px,94vw); }
+.form-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.form-grid label,.form-label { display:flex; flex-direction:column; gap:7px; font-size:12px; }
+.form-label { margin-top:17px; }
+select,textarea,.form-grid input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:5px; background:#fff; color:var(--ink); font:12px/1.6 var(--body); }
+textarea { resize:vertical; }
+select:focus-visible,textarea:focus-visible { outline:2px solid var(--green); outline-offset:2px; }
+.form-note { font-size:11px; margin:12px 0; }
+#compose-binding { font-size:10px; overflow-wrap:anywhere; margin-top:15px; }
+.workflow-detail { margin-top:18px; }
+.verification-result { padding:16px; border:1px solid var(--line); background:#fff; margin:14px 0; border-radius:5px; }
+.verification-result>strong { margin-left:10px; font-size:12px; }
+.assertion { font:11px/1.9 var(--mono); }
+.assertion.good { color:var(--green); }.assertion.bad { color:var(--red); }
+.verify-form { margin-top:18px; padding-top:5px; border-top:1px solid var(--line); }
+#pending-submission .text-button { margin-right:20px; }
+#stop-panel { margin:0; }
+@media(max-width:700px) { .form-grid {grid-template-columns:1fr;} .compose-dialog {max-height:92vh;} }

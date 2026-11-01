@@ -264,6 +264,8 @@ pub fn router(state: AppState) -> Router {
         .route("/hmesh/v1/tasks/{id}/events", get(events))
         .route("/hmesh/v1/tasks/{id}/cancel", post(cancel_task))
         .route("/hmesh/v1/tasks/{id}/verification", get(task_verifications))
+        .route("/hmesh/v1/tasks/{id}/artifacts", get(peer_task_artifacts))
+        .route("/hmesh/v1/tasks/{id}/verify", post(peer_verify_task))
         .route("/local/status", get(status))
         .route("/local/stop", post(stop))
         .route("/local/peers", get(peers))
@@ -289,6 +291,7 @@ pub fn router(state: AppState) -> Router {
         .route("/local/tasks/{id}/events", get(owner_events))
         .route("/local/tasks/{id}/cancel", post(owner_cancel))
         .route("/local/tasks/{id}/verify", post(verify_task))
+        .route("/local/tasks/{id}/artifacts", get(owner_task_artifacts))
         .route("/local/tasks/{id}/archive", post(archive_task_events))
         .route("/local/tasks/{id}/verification", get(owner_verifications))
         .route("/local/tasks/{id}/approve", post(approve_task))
@@ -495,7 +498,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"pid":std::process::id(),"tasks":s.store.tasks()?.len()}),
+        "running":true,"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1"],"schema_version":6}),
     ))
 }
 async fn stop(
@@ -884,6 +887,13 @@ async fn submit_task(
     Json(envelope): Json<Envelope<TaskSubmit>>,
 ) -> ApiResult<TaskRecord> {
     let actor = s.actor(&headers, &c)?;
+    Ok(Json(admit_task(&s, actor, envelope)?))
+}
+fn admit_task(
+    s: &AppState,
+    actor: Actor,
+    envelope: Envelope<TaskSubmit>,
+) -> std::result::Result<TaskRecord, ApiError> {
     envelope.validate(actor.node_id, "task.submit")?;
     envelope.payload.validate()?;
     let (agent, config) = s.store.agent(envelope.payload.target_agent_id)?;
@@ -934,12 +944,12 @@ async fn submit_task(
     let approval = envelope.payload.requires_approval
         || (!actor.owner && config.project.require_remote_task_approval)
         || decision == Decision::ApprovalRequired;
-    Ok(Json(s.store.admit(
+    Ok(s.store.admit(
         s.instance.card.node_id,
         &envelope,
         approval,
         s.instance.config.runtime.max_queue_depth,
-    )?))
+    )?)
 }
 async fn task(
     State(s): State<AppState>,
@@ -995,6 +1005,21 @@ async fn outgoing_task(
 ) -> ApiResult<TaskRecord> {
     s.owner(&headers, &c)?;
     body.task.validate()?;
+    if body.peer_id == s.instance.card.node_id {
+        let mut envelope = Envelope::new(s.instance.card.node_id, "task.submit", body.task);
+        envelope.request_id = body.request_id;
+        let envelope = s.store.remember_outbound(body.peer_id, &envelope)?;
+        let task = admit_task(
+            &s,
+            Actor {
+                node_id: s.instance.card.node_id,
+                owner: true,
+            },
+            envelope,
+        )?;
+        s.store.cache_outbound(&task)?;
+        return Ok(Json(task));
+    }
     let peer = s.store.peer(body.peer_id)?;
     if peer.status != "trusted" {
         return Err(ApiError(MeshError::new(
@@ -1024,7 +1049,19 @@ async fn recover_request(
     Path(id): Path<Uuid>,
 ) -> ApiResult<TaskRecord> {
     s.owner(&headers, &c)?;
-    let (_, envelope) = s.store.outbound_request(id)?;
+    let (peer, envelope) = s.store.outbound_request(id)?;
+    if peer == s.instance.card.node_id {
+        let task = admit_task(
+            &s,
+            Actor {
+                node_id: s.instance.card.node_id,
+                owner: true,
+            },
+            envelope,
+        )?;
+        s.store.cache_outbound(&task)?;
+        return Ok(Json(task));
+    }
     let task_id = envelope.payload.task_id;
     let client = outbound_client(&s, task_id)?
         .ok_or_else(|| ApiError(MeshError::input("request has no outbound peer")))?;
@@ -1044,6 +1081,9 @@ fn outbound_client(s: &AppState, id: Uuid) -> std::result::Result<Option<Client>
     let Some(peer_id) = s.store.outbound_peer(id)? else {
         return Ok(None);
     };
+    if peer_id == s.instance.card.node_id {
+        return Ok(None);
+    }
     let peer = s.store.peer(peer_id)?;
     if peer.status != "trusted" {
         return Err(ApiError(MeshError::new(
@@ -1255,11 +1295,95 @@ async fn verify_task(
     Json(body): Json<VerificationRequest>,
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
-    let task = s.store.task(id)?;
+    if let Some(client) = outbound_client(&s, id)? {
+        return Ok(Json(
+            client
+                .post(&format!("/hmesh/v1/tasks/{id}/verify"), &body)
+                .await?,
+        ));
+    }
+    Ok(Json(verify_task_as(&s, s.actor(&headers, &c)?, id, body)?))
+}
+fn artifact_task(
+    s: &AppState,
+    actor: Actor,
+    id: Uuid,
+) -> std::result::Result<TaskRecord, ApiError> {
+    let task = s.task_access(actor, id)?;
+    if !actor.owner
+        && s.current_policy().decide(
+            actor.node_id,
+            &task.project_id,
+            task.agent_id,
+            "task.submit",
+        ) == Decision::Denied
+    {
+        return Err(ApiError(MeshError::new(
+            ErrorCode::PermissionDenied,
+            "current project grant required for artifact verification",
+        )));
+    }
     if task.status != TaskStatus::Succeeded {
         return Err(ApiError(MeshError::new(
             ErrorCode::TaskConflict,
             "only completed successful runs may be verified",
+        )));
+    }
+    Ok(task)
+}
+fn artifact_names(s: &AppState, actor: Actor, id: Uuid) -> std::result::Result<Value, ApiError> {
+    let task = artifact_task(s, actor, id)?;
+    let (_, config) = s.store.agent(task.agent_id)?;
+    Ok(json!({"task_id":id,"artifacts":config.project.artifact_paths}))
+}
+async fn owner_task_artifacts(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Value> {
+    s.owner(&headers, &c)?;
+    if let Some(client) = outbound_client(&s, id)? {
+        return Ok(Json(
+            client
+                .get(&format!("/hmesh/v1/tasks/{id}/artifacts"))
+                .await?,
+        ));
+    }
+    Ok(Json(artifact_names(&s, s.actor(&headers, &c)?, id)?))
+}
+async fn peer_task_artifacts(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Value> {
+    Ok(Json(artifact_names(&s, s.actor(&headers, &c)?, id)?))
+}
+async fn peer_verify_task(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<VerificationRequest>,
+) -> ApiResult<Value> {
+    Ok(Json(verify_task_as(&s, s.actor(&headers, &c)?, id, body)?))
+}
+fn verify_task_as(
+    s: &AppState,
+    actor: Actor,
+    id: Uuid,
+    body: VerificationRequest,
+) -> std::result::Result<Value, ApiError> {
+    let task = artifact_task(s, actor, id)?;
+    if body
+        .expected
+        .as_object()
+        .is_none_or(|o| o.is_empty() || o.len() > 16)
+        || serde_json::to_vec(&body.expected).map_err(internal)?.len() > 8192
+    {
+        return Err(ApiError(MeshError::input(
+            "expected JSON must contain 1..16 fields and fit in 8192 bytes",
         )));
     }
     let (_, config) = s.store.agent(task.agent_id)?;
@@ -1272,7 +1396,19 @@ async fn verify_task(
     evidence["configuration_sha256"] = json!(hmesh_security::sha256_hex(
         &serde_json::to_vec(&config).map_err(internal)?
     ));
-    Ok(Json(s.store.record_verification(id, &evidence)?))
+    let evidence = s.store.record_verification(id, &evidence)?;
+    s.store.audit(
+        Some(actor.node_id),
+        "task.verify",
+        &id.to_string(),
+        if evidence["passed"] == true {
+            "passed"
+        } else {
+            "failed"
+        },
+        Uuid::new_v4(),
+    )?;
+    Ok(evidence)
 }
 async fn task_verifications(
     State(s): State<AppState>,

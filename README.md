@@ -26,7 +26,7 @@ Use Rust 1.90 or newer. `rust-toolchain.toml` and CI pin 1.90.0; `+stable` also 
 
 See [V0 quickstart](docs/quickstart-v0.md), [protocol](docs/protocol.md), [security boundaries](docs/security.md), and [implementation/acceptance status](docs/implementation-status.md).
 
-A [local management panel](docs/local-panel.md) shows Nodes, Agents, tasks/events and managed services. Run `hmesh --data-dir YOUR_NODE_DIR panel`, then open the full access link printed in that terminal. The browser uses a per-launch token; owner mTLS credentials stay in the CLI process. Opening the panel does not start models or restart the Daemon.
+A [local management panel](docs/local-panel.md) supports task creation, owner approval, original-request recovery, scoped artifact verification and Node/Agent/service management. Run `hmesh --data-dir YOUR_NODE_DIR panel` and open the private access link. Owner mTLS credentials stay in the CLI process. Optional `--start-daemon` owns only a Daemon started here; compatible existing Daemons are preserved. [Native runtime packages](docs/runtime-packages.md) run without Rust or a frontend build. Opening the panel does not call models.
 
 Development checks do not call models or read personal Harness configurations:
 
