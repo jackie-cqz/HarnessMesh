@@ -28,6 +28,9 @@ enum Commands {
     Panel {
         #[arg(long, default_value_t = 38900)]
         port: u16,
+        /// Initialize an empty local instance if needed and own a Daemon only when not running.
+        #[arg(long)]
+        start_daemon: bool,
     },
     Init {
         #[arg(long, default_value = "local-node")]
@@ -439,11 +442,11 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         hmesh_daemon::run(&dir).await?;
         return Ok(None);
     }
-    let instance = Instance::load(&dir)?;
-    if let Commands::Panel { port } = cli.command {
-        panel::run(&instance, port, cli.json).await?;
+    if let Commands::Panel { port, start_daemon } = cli.command {
+        panel::run(&dir, port, start_daemon, cli.json).await?;
         return Ok(None);
     }
+    let instance = Instance::load(&dir)?;
     if let Commands::Doctor { peer } = &cli.command {
         let daemon = match local_client(&instance) {
             Ok(client) => Some(match client.get::<Value>("/local/status").await {

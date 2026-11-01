@@ -39,7 +39,7 @@ impl Store {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(internal)?;
-        if version > 5 {
+        if version > 6 {
             return Err(MeshError::new(
                 ErrorCode::UnsupportedVersion,
                 "database is newer than this binary; refusing to alter it",
@@ -82,6 +82,14 @@ impl Store {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(internal)?;
             tx.execute_batch(include_str!("../migrations/005_lifecycle.sql"))
+                .map_err(internal)?;
+            tx.commit().map_err(internal)?;
+        }
+        if version < 6 {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(internal)?;
+            tx.execute_batch(include_str!("../migrations/006_observation.sql"))
                 .map_err(internal)?;
             tx.commit().map_err(internal)?;
         }
@@ -511,8 +519,8 @@ impl Store {
     pub fn cache_outbound(&self, task: &TaskRecord) -> Result<()> {
         self.read(|c| {
             c.execute(
-                "UPDATE outbound_tasks SET last_record_json=?1 WHERE task_id=?2",
-                params![encode(task)?, task.task_id.to_string()],
+                "UPDATE outbound_tasks SET last_record_json=?1,last_observed_at=?3 WHERE task_id=?2",
+                params![encode(task)?, task.task_id.to_string(), now()],
             )
             .map_err(internal)?;
             Ok(())
@@ -520,9 +528,9 @@ impl Store {
     }
     pub fn outbound_tasks(&self) -> Result<Vec<Value>> {
         self.read(|c| {
-            let mut q = c.prepare("SELECT task_id,peer_id,last_record_json FROM outbound_tasks ORDER BY task_id").map_err(internal)?;
-            q.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?))).map_err(internal)?
-                .map(|r| { let (id,peer,record) = r.map_err(internal)?; Ok(json!({"task_id":id,"peer_id":peer,"direction":"outbound","last_observed":record.map(|r| decode::<Value>(&r)).transpose()?})) }).collect()
+            let mut q = c.prepare("SELECT task_id,peer_id,last_record_json,request_id,last_observed_at FROM outbound_tasks ORDER BY task_id").map_err(internal)?;
+            q.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<i64>>(4)?))).map_err(internal)?
+                .map(|r| { let (id,peer,record,request,observed) = r.map_err(internal)?; Ok(json!({"task_id":id,"peer_id":peer,"request_id":request,"last_observed_at":observed,"direction":"outbound","last_observed":record.map(|r| decode::<Value>(&r)).transpose()?})) }).collect()
         })
     }
     pub fn admit(

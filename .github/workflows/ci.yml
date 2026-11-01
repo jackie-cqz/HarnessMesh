@@ -31,6 +31,15 @@ jobs:
         run: node scripts/acceptance/local-smoke.mjs --fixture-repair
       - name: Guardian crash uncertainty without models
         run: node scripts/reliability/local-smoke.mjs
+      - name: Install pinned browser regression tools
+        if: runner.os == 'Linux'
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install headless Chromium
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+      - name: Panel create, recover and artifact verification without models
+        if: runner.os == 'Linux'
+        run: npm run test:panel
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

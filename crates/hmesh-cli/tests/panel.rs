@@ -9,6 +9,183 @@ use tokio::{
     process::Command,
 };
 
+async fn start_panel(dir: &std::path::Path) -> (tokio::process::Child, Value) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hmesh"))
+        .arg("--data-dir")
+        .arg(dir)
+        .args(["--json", "panel", "--start-daemon", "--port", "0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let line = tokio::time::timeout(Duration::from_secs(25), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    (child, serde_json::from_str(&line).unwrap())
+}
+async fn stop_panel(http: &reqwest::Client, ready: &Value) {
+    let (origin, token) = ready["url"]
+        .as_str()
+        .unwrap()
+        .split_once("/#access=")
+        .unwrap();
+    assert_eq!(
+        http.post(format!("{origin}/api/panel/stop"))
+            .bearer_auth(token)
+            .header("origin", origin)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+}
+#[tokio::test]
+async fn panel_launch_and_stop_own_only_the_daemon_started_here() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("empty instance");
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let (mut panel, ready) = start_panel(&dir).await;
+    assert!(ready["owned_daemon_pid"].is_u64());
+    let instance = Instance::load(&dir).unwrap();
+    let original = instance.card.node_id;
+    stop_panel(&http, &ready).await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), panel.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    if let Ok(client) = hmesh_daemon::local_client(&instance) {
+        assert!(client.get::<Value>("/local/status").await.is_err());
+    }
+    let mut existing = Command::new(env!("CARGO_BIN_EXE_hmesh"))
+        .arg("--data-dir")
+        .arg(&dir)
+        .args(["daemon", "start"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Ok(c) = hmesh_daemon::local_client(&instance)
+                && c.get::<Value>("/local/status").await.is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let (mut panel, ready) = start_panel(&dir).await;
+    assert!(ready["owned_daemon_pid"].is_null());
+    stop_panel(&http, &ready).await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), panel.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    let current: Value = hmesh_daemon::local_client(&instance)
+        .unwrap()
+        .get("/local/status")
+        .await
+        .unwrap();
+    assert_eq!(current["pid"], existing.id().unwrap());
+    assert_eq!(Instance::load(&dir).unwrap().card.node_id, original);
+    existing.kill().await.unwrap();
+    existing.wait().await.unwrap();
+}
+#[tokio::test]
+async fn occupied_panel_port_never_initializes_or_starts_a_daemon() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("must stay absent");
+    let port = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let number = port.local_addr().unwrap().port().to_string();
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        Command::new(env!("CARGO_BIN_EXE_hmesh"))
+            .arg("--data-dir")
+            .arg(&dir)
+            .args(["panel", "--start-daemon", "--port", &number])
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!result.status.success());
+    assert!(!dir.exists());
+}
+
+#[tokio::test]
+async fn legacy_daemon_is_preserved_and_requires_explicit_update() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("legacy");
+    let mut config = NodeConfig::default();
+    config.node.listen_port = 0;
+    let mut instance = Instance::init(&dir, config).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    instance.card.endpoint = format!("https://{}", listener.local_addr().unwrap());
+    std::fs::write(
+        dir.join("daemon.json"),
+        serde_json::to_vec(&instance.card).unwrap(),
+    )
+    .unwrap();
+    let instance = std::sync::Arc::new(instance);
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    let identity = instance.clone();
+    let app = axum::Router::new().route(
+        "/local/status",
+        axum::routing::get(|| async {
+            axum::Json(json!({"running":true,"pid":std::process::id()}))
+        }),
+    );
+    let server = tokio::spawn(hmesh_transport::serve(
+        listener,
+        app,
+        std::sync::Arc::new(move || identity.server_config(&[])),
+        rx,
+    ));
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        Command::new(env!("CARGO_BIN_EXE_hmesh"))
+            .arg("--data-dir")
+            .arg(&dir)
+            .args(["panel", "--start-daemon", "--port", "0"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("explicit update/restart"));
+    assert!(!dir.join("state.sqlite3").exists());
+    assert!(
+        hmesh_daemon::local_client(&instance)
+            .unwrap()
+            .get::<Value>("/local/status")
+            .await
+            .is_ok()
+    );
+    stop.send(true).unwrap();
+    server.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn panel_requires_launch_access_and_same_origin_before_mutating_a_task() {
     let root = tempfile::tempdir().unwrap();
@@ -225,7 +402,7 @@ async fn panel_requires_launch_access_and_same_origin_before_mutating_a_task() {
             .await
             .unwrap()
             .status(),
-        400
+        422
     );
     assert_eq!(
         http.post(format!("{origin}/local/stop"))

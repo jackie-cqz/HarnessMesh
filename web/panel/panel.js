@@ -20,15 +20,15 @@ async function api(path, options={}) {
   const response=await fetch('/api'+path,{...options,credentials:'omit',redirect:'error',headers:{Authorization:`Bearer ${access}`,...(options.body?{'content-type':'application/json'}:{})},signal:AbortSignal.timeout(20000)});
   if(response.status===401){gate();throw Error('访问令牌已失效，请从启动终端重新打开链接。');}
   const body=await response.json();
-  if(!response.ok)throw Error(body.error?.code||`HTTP ${response.status}`);
+  if(!response.ok)throw Object.assign(Error(body.error?.code||`HTTP ${response.status}`),body.error||{});
   return body;
 }
-function unwrap(r) { if(r?.error)throw Error(r.error.code); return r?.data; }
+function unwrap(r) { if(r?.error)throw Object.assign(Error(r.error.code),r.error); return r?.data; }
 function data(key,fallback=[]) { return state.snapshot?.[key]?.data??fallback; }
 function allTasks() {
   const rows=data('tasks',{}), tasks=new Map();
-  for(const t of rows.submitted||[])tasks.set(t.task_id,{...t.last_observed,task_id:t.task_id,_direction:'outbound',status:t.last_observed?.status||'UNCONFIRMED'});
-  for(const t of rows.executions||[])tasks.set(t.task_id,{...t,_direction:'local'});
+  for(const t of rows.submitted||[])tasks.set(t.task_id,{...t.last_observed,task_id:t.task_id,_request_id:t.request_id,_observed:t.last_observed_at,_direction:'outbound',status:t.last_observed?.status||'UNCONFIRMED'});
+  for(const t of rows.executions||[])tasks.set(t.task_id,{...tasks.get(t.task_id),...t,_direction:'local'});
   return [...tasks.values()].sort((a,b)=>(b.created_at||0)-(a.created_at||0));
 }
 let toastTimer;
@@ -104,9 +104,10 @@ function render() {
   if(!state.snapshot)return;
   renderMetrics();renderMesh();$('#recent-tasks').replaceChildren(table(allTasks().slice(0,6)));
   if(state.view==='tasks')renderTasks();if(state.view==='agents')renderAgents();if(state.view==='services')renderServices();if(state.view==='nodes')renderNodes();
+  if(typeof renderWorkflow==='function')renderWorkflow();
 }
 async function refresh() {
-  if(state.refreshing||!access)return;state.refreshing=true;$('#refresh').disabled=true;$('#sync-state').textContent='同步中…';
+  if(state.stopped||state.refreshing||!access)return;state.refreshing=true;$('#refresh').disabled=true;$('#sync-state').textContent='同步中…';
   try {
     state.snapshot=await api('/overview');const node=data('node',{});$('#access-gate').hidden=true;$('#app').hidden=false;
     $('#local-name').textContent=node.node?.display_name||'Daemon 不可读取';$('#local-network').textContent=node.network==='tailscale'?'TAILNET / OWNER LOCAL':node.network?'LOOPBACK / OWNER LOCAL':'RPC UNAVAILABLE';
@@ -141,8 +142,8 @@ async function readDetail(version) {
   const selected=state.selected;
   try {
     const response=await api(`/tasks/${selected.task_id}`);const task=unwrap(response.task);if(version!==state.detailVersion)return;
-    state.selected={...task,_direction:selected._direction};
-    const detailKey=JSON.stringify(response);if(state.lastDetail===detailKey)return;state.lastDetail=detailKey;
+    state.selected={...selected,...task,_observed:response.observed_at};
+    const stable=r=>r?.data??r?.error?.code;const detailKey=JSON.stringify({task:stable(response.task),verification:stable(response.verification),artifacts:stable(response.artifacts)});if(state.lastDetail===detailKey){const observed=$('#last-task-observed');if(observed)observed.textContent='最近成功观察 '+fullTime(response.observed_at);return;}state.lastDetail=detailKey;
     const title=el('div','detail-id',task.task_id),status=badge(task.status),grid=el('dl','detail-grid');
     const agent=data('agents').find(a=>a.agent_id===task.agent_id)||data('retired').find(a=>a.agent_id===task.agent_id);
     const verification=response.verification?.data,verified=Array.isArray(verification)?verification.filter(v=>v.passed===true).length:0;
@@ -153,8 +154,8 @@ async function readDetail(version) {
     }
     if(!terminal.has(task.status)&&task.status!=='UNCONFIRMED')actions.append(button('取消任务','button secondary',()=>act('tasks',task.task_id,'cancel','请求取消任务？','已发生的副作用不会撤销。仅在进程清理得到确认后，任务才会标记为已取消。')));
     if(selected._direction==='local'&&terminal.has(task.status))actions.append(button('归档事件','button secondary',()=>act('tasks',task.task_id,'archive','归档任务事件？','事件仍可完整回放；这是同库逻辑归档，不删除历史，也不缩减数据库文件。')));
-    const children=[status,title,grid,el('h3','','任务请求'),goal,actions];if(task.error)children.push(el('div','alert',`${task.error.code}: ${task.error.message}`));$('#task-detail').replaceChildren(...children);
-  }catch(e){if(version===state.detailVersion)$('#task-detail').replaceChildren(empty('任务暂不可读取',e.message));}
+    const children=[status,title,grid,el('h3','','任务请求'),goal,actions];if(task.error)children.push(el('div','alert',`${task.error.code}: ${task.error.message}`));if(typeof workflowDetail==='function')children.push(workflowDetail(state.selected,response));$('#task-detail').replaceChildren(...children);
+  }catch(e){if(version===state.detailVersion)$('#task-detail').replaceChildren(typeof workflowFailure==='function'?workflowFailure(e,selected):empty('任务暂不可读取',e.message));}
   finally{if(state.detailLoading===version)state.detailLoading=false;}
 }
 async function loadEvents(version=state.detailVersion) {

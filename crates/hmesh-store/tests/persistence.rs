@@ -3,6 +3,30 @@ use hmesh_store::Store;
 use serde_json::json;
 use uuid::Uuid;
 
+#[test]
+fn outbound_observation_time_is_unknown_until_a_real_response_is_cached() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("observed.sqlite3");
+    let store = Store::open(&path).unwrap();
+    let envelope = request();
+    let peer = Uuid::new_v4();
+    store.remember_outbound(peer, &envelope).unwrap();
+    assert!(store.outbound_tasks().unwrap()[0]["last_observed_at"].is_null());
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert!(store.outbound_tasks().unwrap()[0]["last_observed_at"].is_null());
+    let task = store.admit(peer, &envelope, true, 20).unwrap();
+    store.cache_outbound(&task).unwrap();
+    let rows = store.outbound_tasks().unwrap();
+    assert!(
+        rows[0]["last_observed_at"]
+            .as_i64()
+            .is_some_and(|t| t <= now())
+    );
+    assert_eq!(rows[0]["request_id"], envelope.request_id.to_string());
+    assert_eq!(rows[0]["last_observed"]["status"], "PENDING_APPROVAL");
+}
+
 fn request() -> Envelope<TaskSubmit> {
     Envelope::new(
         Uuid::new_v4(),
@@ -265,7 +289,7 @@ fn schema_two_upgrade_preserves_historical_task_records() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
 }
 
