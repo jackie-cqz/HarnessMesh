@@ -557,13 +557,17 @@ name = "hmesh-cli"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "hmesh-core",
  "hmesh-daemon",
  "hmesh-security",
  "hmesh-store",
  "hmesh-transport",
+ "reqwest",
+ "serde",
  "serde_json",
+ "subtle",
  "tempfile",
  "tokio",
  "toml",

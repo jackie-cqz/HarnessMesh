@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "status": "passed",
+  "scope": "Mac local owner panel; isolated two-node mTLS fixture and headless browser. Not cross-device model acceptance.",
+  "model_calls": 0,
+  "fixture_probe_calls": 1,
+  "rust_tests_passed": 75,
+  "clippy": "passed",
+  "format": "passed",
+  "browser_checks": [
+    "navigation",
+    "pending-approval-review",
+    "request-text-XSS",
+    "reject",
+    "archive",
+    "retire",
+    "restore-unverified",
+    "mobile-layout",
+    "access-gate"
+  ],
+  "live_readonly_checks": [
+    "existing-daemon-connection",
+    "local-task-details",
+    "archived-event-replay",
+    "desktop-1440",
+    "mobile-390"
+  ],
+  "access_checks": [
+    "per-launch-token",
+    "exact-host",
+    "same-origin-mutations",
+    "fixed-action-body",
+    "no-owner-token-in-browser",
+    "no-process-env-or-argv-in-summary"
+  ],
+  "source_sha256": {
+    "crates/hmesh-cli/src/panel.rs": "2e36d372c38157265b8ac5c5d0ad43c0b10508ad96f863e3da9fb2785f50eb71",
+    "crates/hmesh-cli/tests/panel.rs": "331cb43c6ac581e8a3e4d6b4c425580f9904ad28c5bc07b1cf4fa811371eaff1",
+    "web/panel/index.html": "553cb53f04b9bd8afdcfaadcf797bc44d2da17a14449e5562fd7f3119fe6bad6",
+    "web/panel/panel.css": "3a33779747f36926a4c50002fd20546fc54e5baf8fdfd02dd78986a478de86d7",
+    "web/panel/panel.js": "74223259f0e57cedc718913e2d33e993111e24b6d158fbd9f77ae7c80d8e293f",
+    "scripts/panel-smoke.mjs": "ad4c0bcfee973a9b9509d405de92874996ee073011647dd53936a59a1b84ebd7"
+  }
+}

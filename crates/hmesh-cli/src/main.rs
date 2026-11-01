@@ -10,6 +10,7 @@ use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::ExitCode};
 use uuid::Uuid;
+mod panel;
 
 #[derive(Parser)]
 #[command(name = "hmesh", version, about = "Local-first coding harness mesh")]
@@ -23,6 +24,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Serve the owner management panel on 127.0.0.1 only. No model is called at startup.
+    Panel {
+        #[arg(long, default_value_t = 38900)]
+        port: u16,
+    },
     Init {
         #[arg(long, default_value = "local-node")]
         name: String,
@@ -434,6 +440,10 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         return Ok(None);
     }
     let instance = Instance::load(&dir)?;
+    if let Commands::Panel { port } = cli.command {
+        panel::run(&instance, port, cli.json).await?;
+        return Ok(None);
+    }
     if let Commands::Doctor { peer } = &cli.command {
         let daemon = match local_client(&instance) {
             Ok(client) => Some(match client.get::<Value>("/local/status").await {

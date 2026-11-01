@@ -11,12 +11,15 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
 clap.workspace = true
 hmesh-core = { path = "../hmesh-core" }
 hmesh-daemon = { path = "../hmesh-daemon" }
 hmesh-security = { path = "../hmesh-security" }
 hmesh-transport = { path = "../hmesh-transport" }
 serde_json.workspace = true
+serde.workspace = true
+subtle.workspace = true
 tokio.workspace = true
 toml.workspace = true
 tracing-subscriber.workspace = true
@@ -24,4 +27,5 @@ uuid.workspace = true
 
 [dev-dependencies]
 hmesh-store = { path = "../hmesh-store" }
+reqwest.workspace = true
 tempfile.workspace = true
