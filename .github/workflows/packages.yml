@@ -19,8 +19,26 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal
+      - name: Restore native build cache
+        id: native-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+          key: native-${{ runner.os }}-${{ runner.arch }}-rust190-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: native-${{ runner.os }}-${{ runner.arch }}-rust190-${{ hashFiles('Cargo.lock') }}-
       - name: Build native release runtime
         run: cargo build --release --locked -p hmesh-cli -p hmesh-mcp
+      - name: Save native build cache
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
       - name: Package allowlisted binaries and launchers
         run: node scripts/package-runtime.mjs --out target/bundles
       - name: Unpack and run with no Rust or Node on the child PATH
