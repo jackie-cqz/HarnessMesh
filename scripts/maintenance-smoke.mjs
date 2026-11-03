@@ -11,7 +11,7 @@ assert(!startup||process.env.GITHUB_ACTIONS==='true','Startup installation smoke
 const binary=resolve(f['--binary']||('target/debug/hmesh'+(process.platform==='win32'?'.exe':'')));
 const root=mkdtempSync(join(tmpdir(),'hmesh-maintenance-')),node=join(root,'node'),backup=join(root,'backup');
 let daemon,installed=false;const checks=[];
-function call(args,success=true){const r=spawnSync(binary,['--json','--data-dir',node,...args],{encoding:'utf8',timeout:30000});assert(success?r.status===0:r.status!==0,'Unexpected CLI status for '+args.slice(0,2).join(' '));return r.status===0?JSON.parse(r.stdout):null;}
+function call(args,success=true){const r=spawnSync(binary,['--json','--data-dir',node,...args],{encoding:'utf8',timeout:30000});assert(success?r.status===0:r.status!==0,'Unexpected CLI status for '+args.slice(0,2).join(' ')+' (exit '+r.status+'): '+(r.stderr||r.error?.message||'').replace(/#access=[^\s]+/g,'#access=[REDACTED]').slice(-3000));return r.status===0?JSON.parse(r.stdout):null;}
 try{
  const identity=call(['init','--name','maintenance-fixture','--port','0']);
  daemon=spawn(binary,['--data-dir',node,'daemon','start'],{stdio:'ignore',windowsHide:true});

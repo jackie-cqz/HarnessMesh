@@ -61,7 +61,16 @@ function workflowDetail(task,response){
  const workspace=response.workspace?.data;
  if(workspace&&workspace.state!=='shared'){
   box.append(el('h3','subheading','独立工作目录'),meta([['状态',workspace.state],['基础 commit',workspace.base_commit],['修改 SHA-256',workspace.patch_sha256]]));
-  if(workspace.patch_sha256){const diff=el('pre','goal workspace-diff');diff.hidden=true;const view=button('查看修改 diff','button secondary',async()=>{view.disabled=true;try{const value=unwrap(await api(`/tasks/${task.task_id}/workspace`));diff.textContent=value.patch||'没有文件修改。';diff.hidden=false;}catch(e){toast(problem(e));}finally{view.disabled=false;}});box.append(view,diff,el('p','form-note muted',`合入前停止本机 Daemon，再执行 hmesh --data-dir YOUR_NODE_DIR workspace apply ${task.task_id} --sha256 ${workspace.patch_sha256}。操作会核对基础版本和原目录状态；不会自动提交。`));}
+  if(workspace.patch_sha256){
+   const diff=el('pre','goal workspace-diff'),progress=el('p','form-note muted');diff.hidden=true;let next=0,complete=false;
+   const view=button('查看修改 diff','button secondary',async()=>{view.disabled=true;try{
+    const value=unwrap(await api(`/tasks/${task.task_id}/workspace?after=${next}`));
+    if(value.patch_sha256!==workspace.patch_sha256||value.patch_offset!==next)throw Error('修改版本或游标不一致，请重新读取任务。');
+    diff.textContent+=value.patch||'';diff.hidden=false;complete=value.patch_next_offset===null;next=complete?value.patch_size_bytes:value.patch_next_offset;
+    if(complete&&!diff.textContent)diff.textContent='没有文件修改。';progress.textContent=`已读取 ${next} / ${value.patch_size_bytes} 字节${complete?' · 完整 diff':' · 可继续加载；完整内容也可通过 CLI 查看'}`;view.textContent=complete?'diff 已读完':'继续加载 diff';
+   }catch(e){toast(problem(e));}finally{view.disabled=complete;}});
+   box.append(view,progress,diff,el('p','form-note muted',`合入前停止本机 Daemon，再执行 hmesh --data-dir YOUR_NODE_DIR workspace apply ${task.task_id} --sha256 ${workspace.patch_sha256}。操作会核对基础版本和原目录状态；不会自动提交。`));
+  }
  }
  if(task.status!=='SUCCEEDED')return box;
  const history=response.verification?.data||[];box.append(el('h3','subheading','工件核验'));

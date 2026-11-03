@@ -11,6 +11,17 @@ pub struct OnboardingRequest {
 }
 fn inspect(s: &AppState, body: &mut OnboardingRequest) -> std::result::Result<Value, ApiError> {
     body.config.validate()?;
+    if s.store
+        .agents()?
+        .into_iter()
+        .chain(s.store.retired_agents()?)
+        .any(|a| a.name == body.config.agent.name && a.agent_id != body.agent_id)
+    {
+        return Err(ApiError(MeshError::new(
+            ErrorCode::TaskConflict,
+            "Agent name is already registered; use its original ID or choose another name",
+        )));
+    }
     body.config.project.root = fs::canonicalize(&body.config.project.root)
         .map_err(|_| ApiError(MeshError::input("local project directory is unavailable")))?;
     if !body.config.project.root.is_dir() {

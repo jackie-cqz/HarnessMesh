@@ -142,7 +142,8 @@ pub fn create(node: &Path, destination: &Path) -> Result<Value> {
         };
         regular(&policy)?;
         let policy_bytes = fs::read(policy)?;
-        let _: hmesh_core::Policy = toml::from_str(std::str::from_utf8(&policy_bytes)?)?;
+        let policy: hmesh_core::Policy = toml::from_str(std::str::from_utf8(&policy_bytes)?)?;
+        policy.validate()?;
         atomic_write(&dest.join("policy.toml"), &policy_bytes)?;
         // Preserve the source config's fields so a pre-upgrade backup remains readable by its older binary.
         let mut config_document: toml::Value =
@@ -228,6 +229,9 @@ pub fn check(path: &Path) -> Result<Value> {
         }
     }
     let identity = Instance::load(path)?;
+    let policy: hmesh_core::Policy =
+        toml::from_str(&fs::read_to_string(path.join("policy.toml"))?)?;
+    policy.validate()?;
     let schema = db_check(&path.join("state.sqlite3"))?;
     let db =
         Connection::open_with_flags(path.join("state.sqlite3"), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -509,6 +513,10 @@ mod tests {
             Instance::load(&backup).unwrap().config.security.policy_file,
             PathBuf::from("policy.toml")
         );
+        fs::write(&config.security.policy_file, "[default]\naction='allow'\n").unwrap();
+        let rejected = temp.path().join("invalid-policy-backup");
+        assert!(create(&instance.dir, &rejected).is_err());
+        assert!(!rejected.exists());
     }
     #[test]
     fn upgrade_check_rejects_changed_binary_wrong_cpu_and_traversal() {

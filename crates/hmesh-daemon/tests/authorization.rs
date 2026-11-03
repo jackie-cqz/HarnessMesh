@@ -312,6 +312,46 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
         br#"{"status":"later-edit"}"#,
     )
     .unwrap();
+    // Large Unicode patches stay below the existing per-response transport budget and remain owner-only.
+    let patch = "界".repeat(50000);
+    let patch_hash = hmesh_security::sha256_hex(patch.as_bytes());
+    store
+        .workspace_put(
+            finished.task_id,
+            &json!({"state":"review","patch":patch,"patch_sha256":patch_hash}),
+        )
+        .unwrap();
+    let workspace_path = format!("/local/tasks/{}/workspace", finished.task_id);
+    assert_eq!(
+        peer.get::<Value>(&workspace_path).await.unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    let metadata: Value = owner.get(&workspace_path).await.unwrap();
+    assert!(metadata.get("patch").is_none());
+    assert_eq!(metadata["patch_size_bytes"], patch.len());
+    let mut offset = 0;
+    let mut restored = String::new();
+    loop {
+        let page: Value = owner
+            .get(&format!("{workspace_path}?diff=true&offset={offset}"))
+            .await
+            .unwrap();
+        assert_eq!(page["patch_offset"], offset);
+        assert_eq!(page["patch_sha256"], patch_hash);
+        assert!(serde_json::to_vec(&page).unwrap().len() < 1048576);
+        restored.push_str(page["patch"].as_str().unwrap());
+        match page["patch_next_offset"].as_u64() {
+            Some(next) => offset = next as usize,
+            None => break,
+        }
+    }
+    assert_eq!(restored, patch);
+    assert!(
+        owner
+            .get::<Value>(&format!("{workspace_path}?diff=true&offset=1"))
+            .await
+            .is_err()
+    );
     let artifact_path = format!("/hmesh/v1/tasks/{}/artifacts", finished.task_id);
     let verify_path = format!("/hmesh/v1/tasks/{}/verify", finished.task_id);
     let allowed: Value = peer.get(&artifact_path).await.unwrap();

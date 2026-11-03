@@ -50,16 +50,27 @@ fn system32(name: &str) -> Result<std::path::PathBuf> {
 fn task_command() -> Result<Command> {
     Ok(Command::new(system32("schtasks.exe")?))
 }
+// Use regular Win32 paths for scheduled-task XML and command arguments.
+fn native_argument(path: &Path) -> Result<String> {
+    let value = path.to_str().context("startup paths must be UTF-8")?;
+    #[cfg(windows)]
+    {
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            return Ok(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = value.strip_prefix(r"\\?\") {
+            return Ok(rest.to_owned());
+        }
+    }
+    Ok(value.to_owned())
+}
 pub fn execute(node: &Path, command: &StartupCommand) -> Result<Value> {
     let instance = Instance::load(node)?;
     let executable = std::env::current_exe()?;
-    let binary = executable
-        .to_str()
-        .context("startup executable must be UTF-8")?;
-    let node = instance
-        .dir
-        .to_str()
-        .context("startup Node path must be UTF-8")?;
+    let executable_argument = native_argument(&executable)?;
+    let node_argument = native_argument(&instance.dir)?;
+    let binary = executable_argument.as_str();
+    let node = node_argument.as_str();
     safe(binary)?;
     safe(node)?;
     let name = format!("dev.harnessmesh.{}", instance.card.node_id);
@@ -217,22 +228,28 @@ pub fn execute(node: &Path, command: &StartupCommand) -> Result<Value> {
     use std::io::Write;
     file.write_all(config.as_bytes())?;
     file.sync_all()?;
-    if cfg!(windows)
-        && !task_command()?
-            .args([
-                "/Create",
-                "/TN",
-                &name,
-                "/XML",
-                path.to_str().context("invalid task path")?,
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?
-            .success()
-    {
-        let _ = fs::remove_file(path);
-        bail!("login task registration failed; no existing task was overwritten");
+    drop(file);
+    if cfg!(windows) {
+        let output = task_command()?
+            .args(["/Create", "/TN", &name, "/XML"])
+            .arg(native_argument(&path)?)
+            .output()?;
+        if !output.status.success() {
+            let _ = fs::remove_file(&path);
+            let diagnostic = if output.stderr.is_empty() {
+                &output.stdout
+            } else {
+                &output.stderr
+            };
+            let message: String = String::from_utf8_lossy(diagnostic)
+                .chars()
+                .take(1000)
+                .collect();
+            bail!(
+                "login task registration failed ({}); no existing task was overwritten: {message}",
+                output.status
+            );
+        }
     }
     let record = json!({"name":name,"node_id":instance.card.node_id,"path":path,"binary":executable,"sha256":file_sha256(&path,65536)?,"starts":"next owner login"});
     if let Err(error) = atomic_write(&marker, &serde_json::to_vec_pretty(&record)?) {
@@ -264,5 +281,16 @@ mod tests {
         assert!(win.contains("&quot;C:\\Node one&quot;"));
         assert!(!win.contains("Password"));
         assert!(safe("bad\npath").is_err());
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                native_argument(Path::new(r"\\?\C:\Program Files\hmesh.exe")).unwrap(),
+                r"C:\Program Files\hmesh.exe"
+            );
+            assert_eq!(
+                native_argument(Path::new(r"\\?\UNC\server\share\hmesh.exe")).unwrap(),
+                r"\\server\share\hmesh.exe"
+            );
+        }
     }
 }

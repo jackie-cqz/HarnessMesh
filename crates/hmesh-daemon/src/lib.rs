@@ -1356,6 +1356,8 @@ async fn queue_status(
 struct WorkspaceQuery {
     #[serde(default)]
     diff: bool,
+    #[serde(default)]
+    offset: usize,
 }
 async fn task_workspace(
     State(s): State<AppState>,
@@ -1366,8 +1368,28 @@ async fn task_workspace(
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
     let mut value = s.store.workspace(id)?.unwrap_or(json!({"state":"shared"}));
-    if !query.diff {
-        value.as_object_mut().map(|o| o.remove("patch"));
+    if let Some(patch) = value.get("patch").and_then(Value::as_str) {
+        let length = patch.len();
+        if query.offset > length || !patch.is_char_boundary(query.offset) {
+            return Err(ApiError(MeshError::input("invalid diff byte cursor")));
+        }
+        if query.diff {
+            let mut end = (query.offset + 65536).min(length);
+            while !patch.is_char_boundary(end) {
+                end -= 1;
+            }
+            let page = patch[query.offset..end].to_owned();
+            value["patch"] = json!(page);
+            value["patch_offset"] = json!(query.offset);
+            value["patch_next_offset"] = if end < length {
+                json!(end)
+            } else {
+                Value::Null
+            };
+        } else if let Some(object) = value.as_object_mut() {
+            object.remove("patch");
+        }
+        value["patch_size_bytes"] = json!(length);
     }
     Ok(Json(value))
 }

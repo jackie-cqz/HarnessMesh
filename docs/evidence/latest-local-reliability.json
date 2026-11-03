@@ -11,9 +11,10 @@
   "browser": {
     "passed": true,
     "model_calls": 0,
-    "fixture_runs": 5,
+    "fixture_runs": 6,
     "scope": "isolated two-node mTLS and headless browser",
     "checks": [
+      "worktree-diff-review",
       "queue-wait-reason",
       "queue-resumes-after-cancel",
       "completion-snapshot-after-file-edit",
@@ -106,18 +107,25 @@
     "crates/hmesh-runtime/src/workspace.rs": "3cf0e2d6ad0cf146b34e4e669eea1f2b7dd7d14acb04e5bcc1379147826c433a",
     "crates/hmesh-runtime/src/prepare.rs": "0a5df4bffcdd4368c93488b4ca2805cf9c5564bfa39693eb6f7c21d37fc24266",
     "crates/hmesh-security/src/lib.rs": "9aae8a0357129ea9d9cadf201633f586e26d2570bc7503b7be443dd1661ec9e2",
-    "crates/hmesh-daemon/src/lib.rs": "e08cc8b522758a9435df25bfa8d152b6181a90a8efe2a01577ddf1cf21d60cad",
-    "crates/hmesh-daemon/src/onboarding.rs": "30bf965e24dfeb69a378efb422b1a9e3ed965e895c9d30131bb89001dce17d59",
+    "crates/hmesh-daemon/src/lib.rs": "0b3470cef138821dd34ca23025c692661792cd8315d312ea588bcc3106cd2f4c",
+    "crates/hmesh-daemon/src/onboarding.rs": "4d64afc4ed1157fc597936c83b124c5388f9034b46aad6750e11d2dfc0196b2a",
     "crates/hmesh-cli/src/main.rs": "3b2eef87deffc913efbc9647728ede87dd990e98d09d27c9f2195e046bc0ad0c",
-    "crates/hmesh-cli/src/maintenance.rs": "b18d46122788372cd82dfa5ae68af42ef53f6b95d04bfa88488883b7a2cd45fe",
-    "crates/hmesh-cli/src/startup.rs": "4d2b5e606314fae89b50c489cb5a37d792fc2423102ff3329c364875544cc87e",
-    "crates/hmesh-cli/src/panel.rs": "ae457ecc3ed5163d7316fc7f53c0fd46e67d395baae0a1125b66fa453a967ed1",
+    "crates/hmesh-cli/src/maintenance.rs": "18ee8d90798e9a9bfa2726c0e0810de4c713feb697308e618eaafa53841202d2",
+    "crates/hmesh-cli/src/startup.rs": "b29945f051f08668ff7d1923110a0bca8910bccfb52014d25dfcb35e80bc53a5",
+    "crates/hmesh-cli/src/panel.rs": "a86eeaaec8c83ba9b45c080bcd411ecdcd384849c2fe4ad50aca208f4275cf38",
     "web/panel/panel.js": "ab1bdddf981f70a9462f8429f0d968bbb91f475042a27023586e58a10cac6b85",
-    "web/panel/workflow.js": "054d64f62bf1f88d7f62c371f8c3bd6f23067ead89bf9fe37d9ad0aba7fae81b",
-    "web/panel/onboarding.js": "fceabdcfa10507fa2b6e8f342008d7a7e3aacdafd6eb640fa5cbc2c882d583b3",
-    "scripts/maintenance-smoke.mjs": "757eaa75dbacedcc7a1a693f7c2cf2bf15b7b11dba2e866767f40f808f2f2f7e",
-    "scripts/panel-smoke.mjs": "43efd91ef23510a2fdade57b702ad073c808b26b42e5c25c2ef40b881d51c247",
+    "web/panel/workflow.js": "f8a6325f3a0571a6ef342a32729a4db1698ce4d2d5ee9f0c2ae42008b41bad29",
+    "web/panel/onboarding.js": "92ad38feabbeab24ecf2adf36b6b52b0ba82ec32b51eb86c4d2cff4bf0cc19ce",
+    "scripts/maintenance-smoke.mjs": "597b248b6583c31a63a7956cc7a22cf45301dd1dc6b3c8aa1255edf5c754e5a6",
+    "scripts/panel-smoke.mjs": "dab9cbf6511e5b18af6e0db1a2f225290fb65397dc0cb7c4b9b8049f3ebb3c04",
     "scripts/package-runtime.mjs": "f2919df0ee622c1cd7770473cecd16fdbcf27ada248dc1a34b1e0766febd12a3",
     "scripts/package-smoke.mjs": "5aff6d88ee88f8d2ebc3a02066f91c8d631f04ff0d05de708ea4a25abb2ac0b0"
-  }
+  },
+  "diff_transport": {
+    "page_bytes": 65536,
+    "unchanged_response_limit_bytes": 1048576,
+    "large_unicode_reassembly": "passed",
+    "owner_only_and_invalid_cursor": "passed"
+  },
+  "post_review_targeted_tests": 10
 }

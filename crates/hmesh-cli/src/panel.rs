@@ -369,10 +369,20 @@ async fn register_onboarding(
 ) -> Response {
     mutation(s.client.post("/local/onboarding/register", &body).await)
 }
-async fn workspace_diff(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
+async fn workspace_diff(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Query(cursor): Query<Cursor>,
+) -> Response {
+    if cursor.after < 0 || cursor.after > 4 * 1024 * 1024 {
+        return error(StatusCode::BAD_REQUEST, "INVALID_CURSOR");
+    }
     mutation(
         s.client
-            .get(&format!("/local/tasks/{id}/workspace?diff=true"))
+            .get(&format!(
+                "/local/tasks/{id}/workspace?diff=true&offset={}",
+                cursor.after
+            ))
             .await,
     )
 }

@@ -27,7 +27,7 @@ git_executable = "/absolute/git"
 
 根目录必须是干净、已有 commit 的 Git 仓库根。每个 attempt 在 Node 的 `runs` 下面建立 detached worktree，原仓库工作文件不变。Mesh 的 Git 操作关闭 hooks、交互提示与外部 diff，单次有 30 秒 / 4 MiB 输出边界；超限后保留工作目录供 owner 检查。隔离是代码工作目录隔离，不是 OS 文件系统沙箱。
 
-任务完成后保存相对于起始 commit 的二进制 diff 及 SHA-256。面板按需读取 diff，常规轮询只返回摘要。应用修改是离线 owner 操作：
+任务完成后保存相对于起始 commit 的二进制 diff 及 SHA-256。面板按 UTF-8 字节游标每次读取最多 64 KiB diff，显示进度并继续加载；常规轮询只返回摘要。每页核对同一修改 hash，完整 diff 也可通过 CLI 查看。应用修改是离线 owner 操作：
 
 ```sh
 hmesh --data-dir NODE daemon stop
