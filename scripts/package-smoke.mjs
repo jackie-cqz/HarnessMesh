@@ -17,6 +17,7 @@ for(const[name,digest]of Object.entries(manifest.files)){assert(/^[A-Za-z0-9._-]
 assert(readdirSync(dir).length===Object.keys(manifest.files).length+2,'Unexpected runtime data in package');
 const childEnv={...process.env};for(const key of Object.keys(childEnv))if(key.toLowerCase()==='path')delete childEnv[key];childEnv.PATH=win?join(process.env.SystemRoot||'C:\\Windows','System32'):'/usr/bin:/bin';
 const binary=join(dir,'hmesh'+(win?'.exe':'')),version=spawnSync(binary,['--version'],{encoding:'utf8',env:childEnv});assert(version.status===0&&version.stdout.trim()===manifest.version,'Standalone CLI did not run');
+const preflight=spawnSync(binary,['--json','upgrade','check','--bundle',dir],{encoding:'utf8',env:childEnv});assert(preflight.status===0&&JSON.parse(preflight.stdout).passed===true,'Packaged upgrade preflight failed');
 // Keep failed startup actionable without publishing the panel capability URL.
 const redact=text=>text.replace(/#access=[^\s"']+/g,'#access=[REDACTED]').slice(-6000);
 async function checkStartup(command,args,dataDir,label){
@@ -38,4 +39,4 @@ await checkStartup(binary,['--data-dir',join(root,'direct instance'),'panel','--
  const launcher=win?join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe'):'/bin/sh';
  const args=win?['-NoProfile','-NonInteractive','-File',join(dir,'start-windows.ps1'),'-DataDir',join(root,'fresh instance'),'-Port','0']:[join(dir,process.platform==='darwin'?'start-mac.command':'start.sh'),join(root,'fresh instance'),'0'];
 await checkStartup(launcher,args,join(root,'fresh instance'),'Packaged launcher');
-console.log(JSON.stringify({passed:true,platform:process.platform,arch:process.arch,model_calls:0,checks:['archive-extraction','manifest-hashes','no-instance-material','standalone-cli','standalone-panel','actual-launcher','fresh-panel-and-daemon','authenticated-snapshot','owned-shutdown']}));
+console.log(JSON.stringify({passed:true,platform:process.platform,arch:process.arch,model_calls:0,checks:['archive-extraction','manifest-hashes','no-instance-material','standalone-cli','standalone-panel','upgrade-preflight','actual-launcher','fresh-panel-and-daemon','authenticated-snapshot','owned-shutdown']}));

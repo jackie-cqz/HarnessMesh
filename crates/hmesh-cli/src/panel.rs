@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use hmesh_core::{MeshError, NodeConfig, RunLimits, TaskSubmit, now};
-use hmesh_daemon::{RemoteTask, VerificationRequest};
+use hmesh_daemon::{OnboardingRequest, RemoteTask, VerificationRequest};
 use hmesh_security::Instance;
 use hmesh_transport::Client;
 use serde::Deserialize;
@@ -96,6 +96,18 @@ pub async fn run(
         stop,
     };
     let app = Router::new()
+        .route(
+            "/assets/onboarding.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/onboarding.js"),
+                )
+            }),
+        )
+        .route("/api/onboarding/preview", post(preview_onboarding))
+        .route("/api/onboarding/register", post(register_onboarding))
+        .route("/api/tasks/{id}/workspace", get(workspace_diff))
         .route(
             "/",
             get(|| async { Html(include_str!("../../../web/panel/index.html")) }),
@@ -212,10 +224,10 @@ async fn ready_client(instance: &Instance) -> anyhow::Result<Option<Client>> {
         Ok(Ok(status)) => {
             if !status["api_features"]
                 .as_array()
-                .is_some_and(|v| v.iter().any(|x| x == "panel-task-workflow-v1"))
+                .is_some_and(|v| v.iter().any(|x| x == "reliability-v2"))
             {
                 anyhow::bail!(
-                    "existing Daemon needs an explicit update/restart for panel-task-workflow-v1; it was preserved"
+                    "existing Daemon needs an explicit update/restart for reliability-v2; it was preserved"
                 );
             }
             Ok(Some(client))
@@ -314,7 +326,7 @@ fn resources(value: Result<Value, MeshError>) -> Value {
     }).collect())))
 }
 async fn overview(State(s): State<Panel>) -> Json<Value> {
-    let (node, peers, agents, retired, tasks, services, connections, tunnels) = tokio::join!(
+    let (node, peers, agents, retired, tasks, services, connections, tunnels, queue) = tokio::join!(
         s.client.get::<Value>("/local/status"),
         s.client.get::<Value>("/local/peers"),
         s.client.get::<Value>("/hmesh/v1/agents"),
@@ -323,23 +335,55 @@ async fn overview(State(s): State<Panel>) -> Json<Value> {
         s.client.get::<Value>("/local/services"),
         s.client.get::<Value>("/local/connections"),
         s.client.get::<Value>("/local/tunnels"),
+        s.client.get::<Value>("/local/queue"),
     );
     Json(
         json!({"observed_at":now(),"node":result(node),"peers":result(peers),"agents":result(agents),
-        "retired":result(retired),"tasks":result(tasks),"services":resources(services),"connections":resources(connections),"tunnels":resources(tunnels)}),
+        "retired":result(retired),"tasks":result(tasks),"services":resources(services),"connections":resources(connections),"tunnels":resources(tunnels),"queue":result(queue)}),
     )
 }
 async fn task(State(s): State<Panel>, Path(id): Path<Uuid>) -> Json<Value> {
     let path = format!("/local/tasks/{id}");
     let verification_path = format!("/local/tasks/{id}/verification");
     let artifacts_path = format!("/local/tasks/{id}/artifacts");
-    let (task, verification, artifacts) = tokio::join!(
+    let workspace_path = format!("/local/tasks/{id}/workspace");
+    let (task, verification, artifacts, workspace) = tokio::join!(
         s.client.get::<Value>(&path),
         s.client.get::<Value>(&verification_path),
-        s.client.get::<Value>(&artifacts_path)
+        s.client.get::<Value>(&artifacts_path),
+        s.client.get::<Value>(&workspace_path)
     );
     Json(
-        json!({"observed_at":now(),"task":result(task),"verification":result(verification),"artifacts":result(artifacts)}),
+        json!({"observed_at":now(),"task":result(task),"verification":result(verification),"artifacts":result(artifacts),"workspace":result(workspace)}),
+    )
+}
+async fn preview_onboarding(
+    State(s): State<Panel>,
+    Json(body): Json<OnboardingRequest>,
+) -> Response {
+    mutation(s.client.post("/local/onboarding/preview", &body).await)
+}
+async fn register_onboarding(
+    State(s): State<Panel>,
+    Json(body): Json<OnboardingRequest>,
+) -> Response {
+    mutation(s.client.post("/local/onboarding/register", &body).await)
+}
+async fn workspace_diff(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Query(cursor): Query<Cursor>,
+) -> Response {
+    if cursor.after < 0 || cursor.after > 4 * 1024 * 1024 {
+        return error(StatusCode::BAD_REQUEST, "INVALID_CURSOR");
+    }
+    mutation(
+        s.client
+            .get(&format!(
+                "/local/tasks/{id}/workspace?diff=true&offset={}",
+                cursor.after
+            ))
+            .await,
     )
 }
 #[derive(Deserialize)]

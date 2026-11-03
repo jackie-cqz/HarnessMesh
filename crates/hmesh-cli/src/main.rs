@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use hmesh_core::*;
 use hmesh_daemon::{
@@ -10,7 +10,9 @@ use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::ExitCode};
 use uuid::Uuid;
+mod maintenance;
 mod panel;
+mod startup;
 
 #[derive(Parser)]
 #[command(name = "hmesh", version, about = "Local-first coding harness mesh")]
@@ -24,6 +26,23 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    /// Private, offline Node backups. Never copies external Harness credential files.
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+    Upgrade {
+        #[command(subcommand)]
+        command: UpgradeCommand,
+    },
+    Startup {
+        #[command(subcommand)]
+        command: StartupCommand,
+    },
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
     /// Serve the owner management panel on 127.0.0.1 only. No model is called at startup.
     Panel {
         #[arg(long, default_value_t = 38900)]
@@ -99,6 +118,53 @@ enum Commands {
         command: IntegrationCommand,
     },
     Audit,
+}
+#[derive(Subcommand)]
+enum BackupCommand {
+    Create {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    Check {
+        #[arg(long)]
+        from: PathBuf,
+    },
+    Restore {
+        #[arg(long)]
+        from: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum UpgradeCommand {
+    Check {
+        #[arg(long)]
+        bundle: PathBuf,
+    },
+    Prepare {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        backup_dir: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum StartupCommand {
+    Plan,
+    Install,
+    Uninstall,
+    Status,
+}
+#[derive(Subcommand)]
+enum WorkspaceCommand {
+    Show {
+        task_id: Uuid,
+    },
+    /// Requires an offline Daemon and the exact reviewed patch hash. Never creates a commit.
+    Apply {
+        task_id: Uuid,
+        #[arg(long)]
+        sha256: String,
+    },
 }
 #[derive(Subcommand)]
 enum ServiceCommand {
@@ -445,6 +511,50 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
     if let Commands::Panel { port, start_daemon } = cli.command {
         panel::run(&dir, port, start_daemon, cli.json).await?;
         return Ok(None);
+    }
+    match &cli.command {
+        Commands::Backup { command } => {
+            return Ok(Some(match command {
+                BackupCommand::Create { out } => maintenance::create(&dir, out)?,
+                BackupCommand::Check { from } => maintenance::check(from)?,
+                BackupCommand::Restore { from } => maintenance::restore(&dir, from)?,
+            }));
+        }
+        Commands::Upgrade { command } => {
+            return Ok(Some(match command {
+                UpgradeCommand::Check { bundle } => maintenance::bundle_check(bundle)?,
+                UpgradeCommand::Prepare { bundle, backup_dir } => {
+                    let bundle = maintenance::bundle_check(bundle)?;
+                    let backup = maintenance::create(&dir, backup_dir)?;
+                    if backup["schema"].as_i64() > bundle["database_schema"].as_i64() {
+                        anyhow::bail!(
+                            "candidate cannot open this Node schema; private backup was preserved"
+                        );
+                    }
+                    json!({"bundle":bundle,"backup":backup,"binary_replaced":false,"next":"Start the verified bundle against this existing Node directory. Restore the matching backup before using an older schema binary."})
+                }
+            }));
+        }
+        Commands::Startup { command } => return Ok(Some(startup::execute(&dir, command)?)),
+        Commands::Workspace { command } => {
+            let instance = Instance::load(&dir)?;
+            let _lock = instance
+                .lock_daemon()
+                .context("stop the Daemon before offline workspace review/apply")?;
+            let store = hmesh_store::Store::open(&instance.dir.join("state.sqlite3"))?;
+            return Ok(Some(match command {
+                WorkspaceCommand::Show { task_id } => store
+                    .workspace(*task_id)?
+                    .unwrap_or(json!({"state":"shared"})),
+                WorkspaceCommand::Apply { task_id, sha256 } => hmesh_runtime::workspace::apply(
+                    &store,
+                    *task_id,
+                    sha256,
+                    &instance.dir.join("workspace-review"),
+                )?,
+            }));
+        }
+        _ => {}
     }
     let instance = Instance::load(&dir)?;
     if let Commands::Doctor { peer } = &cli.command {

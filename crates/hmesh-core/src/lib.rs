@@ -411,12 +411,30 @@ impl Default for NodeOptions {
 pub struct RuntimeOptions {
     pub max_concurrent_runs: usize,
     pub max_queue_depth: usize,
+    pub project_limits: std::collections::BTreeMap<String, QueueLimits>,
+    pub agent_limits: std::collections::BTreeMap<Uuid, QueueLimits>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct QueueLimits {
+    pub max_concurrent_runs: usize,
+    pub max_queue_depth: usize,
+}
+impl Default for QueueLimits {
+    fn default() -> Self {
+        Self {
+            max_concurrent_runs: 1,
+            max_queue_depth: 20,
+        }
+    }
 }
 impl Default for RuntimeOptions {
     fn default() -> Self {
         Self {
             max_concurrent_runs: 1,
             max_queue_depth: 20,
+            project_limits: Default::default(),
+            agent_limits: Default::default(),
         }
     }
 }
@@ -489,6 +507,21 @@ impl NodeConfig {
         {
             return Err(MeshError::input("invalid local runtime limits"));
         }
+        for name in self.runtime.project_limits.keys() {
+            validate_name(name)?;
+        }
+        for limit in self
+            .runtime
+            .project_limits
+            .values()
+            .chain(self.runtime.agent_limits.values())
+        {
+            if !(1..=16).contains(&limit.max_concurrent_runs)
+                || !(1..=1000).contains(&limit.max_queue_depth)
+            {
+                return Err(MeshError::input("invalid project/Agent queue limits"));
+            }
+        }
         Ok(())
     }
 }
@@ -523,6 +556,13 @@ pub struct ProjectOptions {
     pub require_remote_task_approval: bool,
     #[serde(default)]
     pub artifact_paths: Vec<PathBuf>,
+    #[serde(default = "shared_workspace")]
+    pub workspace_mode: String,
+    #[serde(default)]
+    pub git_executable: Option<PathBuf>,
+}
+fn shared_workspace() -> String {
+    "shared".into()
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -598,6 +638,48 @@ impl AgentConfig {
         }
         if self.project.allowed_tools.is_empty() {
             return Err(MeshError::input("an explicit tool allowlist is required"));
+        }
+        if self
+            .project
+            .allowed_tools
+            .iter()
+            .any(|t| !["read", "write", "edit", "bash", "grep", "find", "ls"].contains(&t.as_str()))
+        {
+            return Err(MeshError::input("unsupported tool in project allowlist"));
+        }
+        let unique: std::collections::BTreeSet<_> = self.project.artifact_paths.iter().collect();
+        if unique.len() != self.project.artifact_paths.len() {
+            return Err(MeshError::input("artifact paths must be unique"));
+        }
+        if !matches!(
+            self.project.workspace_mode.as_str(),
+            "shared" | "git-worktree"
+        ) || (self.project.workspace_mode == "git-worktree"
+            && self
+                .project
+                .git_executable
+                .as_ref()
+                .is_none_or(|p| !p.is_absolute()))
+            || self
+                .project
+                .git_executable
+                .as_ref()
+                .is_some_and(|p| !p.is_absolute())
+        {
+            return Err(MeshError::input(
+                "workspace mode must be shared or git-worktree with an absolute Git executable",
+            ));
+        }
+        if self.project.artifact_paths.len() > 16
+            || self.project.artifact_paths.iter().any(|p| {
+                p.as_os_str().is_empty()
+                    || p.components()
+                        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            })
+        {
+            return Err(MeshError::input(
+                "at most 16 relative artifact paths without traversal are allowed",
+            ));
         }
         if [
             &self.adapter.node_executable,

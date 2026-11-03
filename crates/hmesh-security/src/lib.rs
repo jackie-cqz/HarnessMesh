@@ -30,6 +30,26 @@ pub struct Instance {
     key_der: Vec<u8>,
     token: String,
 }
+/// Bounded, streaming file integrity check; never returns file contents.
+pub fn file_sha256(path: &Path, maximum: u64) -> Result<String> {
+    use std::io::Read;
+    let mut file = File::open(path)?;
+    let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buffer = [0u8; 65536];
+    let mut total = 0;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        if total > maximum {
+            bail!("file exceeds integrity-check budget");
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(hex::encode(digest.finish().as_ref()))
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IdentityMetadata {
@@ -429,7 +449,7 @@ fn reject_link(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn secure_directory(path: &Path) -> Result<()> {
+pub fn secure_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

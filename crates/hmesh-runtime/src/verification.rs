@@ -8,7 +8,7 @@ use std::{
     path::{Component, Path},
 };
 
-fn artifact(config: &AgentConfig, name: &Path) -> Result<(Vec<u8>, Value)> {
+pub fn artifact(config: &AgentConfig, name: &Path) -> Result<(Vec<u8>, Value)> {
     if !config.project.artifact_paths.iter().any(|p| p == name) {
         bail!("artifact has no local owner grant");
     }
@@ -44,14 +44,46 @@ pub fn summaries(config: &AgentConfig) -> Result<Vec<Value>> {
         .collect()
 }
 pub fn verify_json(config: &AgentConfig, name: &Path, expected: &Value) -> Result<Value> {
+    let (bytes, summary) = artifact(config, name)?;
+    verify_bytes(&bytes, summary, expected)
+}
+pub fn verify_bytes(bytes: &[u8], summary: Value, expected: &Value) -> Result<Value> {
     let expected = expected
         .as_object()
         .context("expected JSON must be an object")?;
-    let (bytes, summary) = artifact(config, name)?;
-    let actual: Option<Value> = serde_json::from_slice(&bytes).ok();
+    let actual: Option<Value> = serde_json::from_slice(bytes).ok();
     let assertions: Vec<_> = expected.iter().map(|(key,value)| json!({"field":key,"passed":actual.as_ref().and_then(|a| a.get(key)) == Some(value)})).collect();
     let passed = !assertions.is_empty() && assertions.iter().all(|a| a["passed"] == true);
     Ok(
         json!({"verifier":"deterministic-json-subset-v1","passed":passed,"artifact":summary,"assertions":assertions}),
     )
+}
+pub fn capture(config: &AgentConfig) -> Vec<hmesh_store::SnapshotEntry> {
+    let mut total = 0;
+    config
+        .project
+        .artifact_paths
+        .iter()
+        .map(|name| {
+            let result = artifact(config, name).and_then(|(bytes, _)| {
+                total += bytes.len();
+                if total > 32 * 1024 * 1024 {
+                    bail!("artifact set exceeds budget");
+                }
+                Ok(bytes)
+            });
+            match result {
+                Ok(bytes) => hmesh_store::SnapshotEntry {
+                    name: name.to_string_lossy().into_owned(),
+                    bytes: Some(bytes),
+                    error: None,
+                },
+                Err(_) => hmesh_store::SnapshotEntry {
+                    name: name.to_string_lossy().into_owned(),
+                    bytes: None,
+                    error: Some("unavailable_at_completion".into()),
+                },
+            }
+        })
+        .collect()
 }

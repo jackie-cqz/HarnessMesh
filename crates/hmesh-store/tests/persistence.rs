@@ -141,6 +141,11 @@ fn future_database_version_is_refused_without_reset() {
     assert!(Store::open(&path).is_err());
     let db = rusqlite::Connection::open(path).expect("sqlite");
     assert_eq!(
+        db.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
+            .unwrap(),
+        "delete"
+    );
+    assert_eq!(
         db.query_row("SELECT value FROM keep_me", [], |r| r.get::<_, String>(0))
             .expect("preserved"),
         "retained"
@@ -289,7 +294,7 @@ fn schema_two_upgrade_preserves_historical_task_records() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
 }
 

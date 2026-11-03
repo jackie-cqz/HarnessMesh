@@ -57,17 +57,32 @@ $('#compose-form').addEventListener('submit',async event=>{
 function workflowDetail(task,response){
  const box=el('section','workflow-detail');box.append(meta([['执行节点',task.target_node_id],['原请求 ID',task._request_id||'未绑定本机发起请求']]));const observed=el('p','muted form-note','最近成功观察 '+fullTime(task._observed));observed.id='last-task-observed';box.append(observed);
  if(task._request_id)box.append(button('恢复原请求','button secondary',()=>recoverOriginal(task._request_id)));
+ const waiting=data('queue',{}).waiting?.find(w=>w.task_id===task.task_id);if(waiting)box.append(el('p','queue-note',queueReason(waiting.reason)));
+ const workspace=response.workspace?.data;
+ if(workspace&&workspace.state!=='shared'){
+  box.append(el('h3','subheading','独立工作目录'),meta([['状态',workspace.state],['基础 commit',workspace.base_commit],['修改 SHA-256',workspace.patch_sha256]]));
+  if(workspace.patch_sha256){
+   const diff=el('pre','goal workspace-diff'),progress=el('p','form-note muted');diff.hidden=true;let next=0,complete=false;
+   const view=button('查看修改 diff','button secondary',async()=>{view.disabled=true;try{
+    const value=unwrap(await api(`/tasks/${task.task_id}/workspace?after=${next}`));
+    if(value.patch_sha256!==workspace.patch_sha256||value.patch_offset!==next)throw Error('修改版本或游标不一致，请重新读取任务。');
+    diff.textContent+=value.patch||'';diff.hidden=false;complete=value.patch_next_offset===null;next=complete?value.patch_size_bytes:value.patch_next_offset;
+    if(complete&&!diff.textContent)diff.textContent='没有文件修改。';progress.textContent=`已读取 ${next} / ${value.patch_size_bytes} 字节${complete?' · 完整 diff':' · 可继续加载；完整内容也可通过 CLI 查看'}`;view.textContent=complete?'diff 已读完':'继续加载 diff';
+   }catch(e){toast(problem(e));}finally{view.disabled=complete;}});
+   box.append(view,progress,diff,el('p','form-note muted',`合入前停止本机 Daemon，再执行 hmesh --data-dir YOUR_NODE_DIR workspace apply ${task.task_id} --sha256 ${workspace.patch_sha256}。操作会核对基础版本和原目录状态；不会自动提交。`));
+  }
+ }
  if(task.status!=='SUCCEEDED')return box;
  const history=response.verification?.data||[];box.append(el('h3','subheading','工件核验'));
  for(const v of history.slice(-5).reverse()){
-  const card=el('div','verification-result');card.append(badge(v.passed?'SUCCEEDED':'FAILED'),el('strong','',v.passed?'核验通过':'核验未通过'),meta([['工件',v.artifact?.name],['SHA-256',v.artifact?.sha256],['Attempt',v.attempt_id],['配置摘要',v.configuration_sha256]]));
+  const card=el('div','verification-result');card.append(badge(v.passed?'SUCCEEDED':'FAILED'),el('strong','',v.passed?'核验通过':'核验未通过'),meta([['来源',v.source==='completion-snapshot'?'完成时快照':'历史任务 · 当前文件'],['工件',v.artifact?.name],['SHA-256',v.artifact?.sha256],['Attempt',v.attempt_id],['配置摘要',v.configuration_sha256]]));
   for(const a of v.assertions||[])card.append(el('div',a.passed?'assertion good':'assertion bad',`${a.passed?'✓':'×'} ${a.field}`));box.append(card);
  }
  const paths=response.artifacts?.data?.artifacts||[];
- if(!paths.length){box.append(el('p','muted form-note',response.artifacts?.error?`工件列表不可读取：${response.artifacts.error.code}`:'执行端尚未授权工件。请由执行端 owner 通过 CLI 授权需要核验的相对路径。'));return box;}
+ if(!paths.length){box.append(el('p','muted form-note',response.artifacts?.error?`工件列表不可读取：${response.artifacts.error.code}`:response.artifacts?.data?.source==='completion-snapshot'?'当前授权范围内没有可用的完成时工件快照；后补文件不会写入此任务结果。':'执行端尚未授权工件。请由执行端 owner 通过 CLI 授权需要核验的相对路径。'));return box;}
  const form=el('form','verify-form'),label=el('label','form-label','已授权工件'),select=el('select');select.name='artifact';select.setAttribute('aria-label','已授权工件');for(const path of paths)option(select,path,path);label.append(select);
  const expectedLabel=el('label','form-label','预期 JSON 字段'),expected=el('textarea');expected.rows=4;expected.value='{"status":"ok"}';expected.setAttribute('aria-label','预期 JSON');expectedLabel.append(expected);const submit=el('button','button','核验工件');submit.type='submit';const message=el('p','form-note muted');
- form.append(label,expectedLabel,el('p','form-note muted','只检查已授权文件，不调用模型。执行成功与核验通过分别记录。'),message,submit);box.append(form);
+ form.append(label,expectedLabel,el('p','form-note muted',response.artifacts?.data?.source==='completion-snapshot'?'检查完成时保存的工件快照，不调用模型。执行与核验分别记录。':'历史任务：读取当前授权文件，不是完成时快照。不调用模型。'),message,submit);box.append(form);
  form.addEventListener('submit',async event=>{
   event.preventDefault();let value;try{value=JSON.parse(expected.value);if(!value||Array.isArray(value)||typeof value!=='object'||!Object.keys(value).length||Object.keys(value).length>16||new TextEncoder().encode(expected.value).length>8192)throw Error();}catch{return message.textContent='请输入包含 1–16 个字段、最多 8192 字节的 JSON 对象。';}
   submit.disabled=true;

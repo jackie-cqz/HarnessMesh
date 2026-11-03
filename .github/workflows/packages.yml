@@ -28,7 +28,9 @@ jobs:
             ~/.cargo/git
             target/release
           key: native-${{ runner.os }}-${{ runner.arch }}-rust190-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-          restore-keys: native-${{ runner.os }}-${{ runner.arch }}-rust190-${{ hashFiles('Cargo.lock') }}-
+          restore-keys: |
+            native-${{ runner.os }}-${{ runner.arch }}-rust190-${{ hashFiles('Cargo.lock') }}-
+            native-${{ runner.os }}-${{ runner.arch }}-rust190-
       - name: Build native release runtime
         run: cargo build --release --locked -p hmesh-cli -p hmesh-mcp
       - name: Save native build cache
@@ -43,6 +45,8 @@ jobs:
         run: node scripts/package-runtime.mjs --out target/bundles
       - name: Unpack and run with no Rust or Node on the child PATH
         run: node scripts/package-smoke.mjs --archive-dir target/bundles
+      - name: Native backup and disposable login registration lifecycle
+        run: node scripts/maintenance-smoke.mjs --binary target/release/hmesh${{ runner.os == 'Windows' && '.exe' || '' }} --startup-install
       - name: Upload native runtime
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

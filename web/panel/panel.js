@@ -51,10 +51,11 @@ function renderMetrics() {
   $('#approval-title').textContent=pending?`${pending} 个任务，等待你的决定。`:'每一次执行，都有边界。';
   $('#review-pending').textContent=pending?'审阅待审批任务 ↗':'查看任务记录 ↗';
 }
+function queueReason(reason){return ({global_limit:'等待全局执行名额',project_limit:'等待项目执行名额',agent_limit:'等待 Agent 执行名额',shared_workspace:'等待共享工作目录',ready:'等待调度'})[reason]||reason;}
 function table(tasks) {
   if(!tasks.length)return empty('这里暂时没有任务','任务开始后，执行状态和事件会显示在这里。');
   const t=el('table','task-table'),head=el('thead'),tr=el('tr');for(const text of ['任务 / 项目','状态','创建时间'])tr.append(el('th','',text));head.append(tr);const body=el('tbody');
-  for(const task of tasks){const row=el('tr'),title=el('td');const b=button(task.request?.goal||'提交结果尚未确认','task-title',()=>openTask(task));b.title=task.request?.goal||task.task_id;title.append(b,el('div','task-sub',`${short(task.task_id)} · ${task.project_id||'—'} · ${task._direction==='local'?'本机执行':'发出 · 缓存'}`));const status=el('td');status.append(badge(task.status));row.append(title,status,el('td','task-time',time(task.created_at)));body.append(row);}t.append(head,body);return t;
+  for(const task of tasks){const row=el('tr'),title=el('td');const b=button(task.request?.goal||'提交结果尚未确认','task-title',()=>openTask(task));b.title=task.request?.goal||task.task_id;title.append(b,el('div','task-sub',`${short(task.task_id)} · ${task.project_id||'—'} · ${task._direction==='local'?'本机执行':'发出 · 缓存'}`));const status=el('td');status.append(badge(task.status));const waiting=data('queue',{}).waiting?.find(w=>w.task_id===task.task_id);if(waiting)status.append(el('div','queue-note',queueReason(waiting.reason)));row.append(title,status,el('td','task-time',time(task.created_at)));body.append(row);}t.append(head,body);return t;
 }
 function renderTasks() {
   const query=$('#task-search').value.trim().toLowerCase();
@@ -143,7 +144,7 @@ async function readDetail(version) {
   try {
     const response=await api(`/tasks/${selected.task_id}`);const task=unwrap(response.task);if(version!==state.detailVersion)return;
     state.selected={...selected,...task,_observed:response.observed_at};
-    const stable=r=>r?.data??r?.error?.code;const detailKey=JSON.stringify({task:stable(response.task),verification:stable(response.verification),artifacts:stable(response.artifacts)});if(state.lastDetail===detailKey){const observed=$('#last-task-observed');if(observed)observed.textContent='最近成功观察 '+fullTime(response.observed_at);return;}state.lastDetail=detailKey;
+    const stable=r=>r?.data??r?.error?.code;const detailKey=JSON.stringify({task:stable(response.task),verification:stable(response.verification),artifacts:stable(response.artifacts),workspace:stable(response.workspace),queue:data('queue',{}).waiting?.find(w=>w.task_id===task.task_id)});if(state.lastDetail===detailKey){const observed=$('#last-task-observed');if(observed)observed.textContent='最近成功观察 '+fullTime(response.observed_at);return;}state.lastDetail=detailKey;
     const title=el('div','detail-id',task.task_id),status=badge(task.status),grid=el('dl','detail-grid');
     const agent=data('agents').find(a=>a.agent_id===task.agent_id)||data('retired').find(a=>a.agent_id===task.agent_id);
     const verification=response.verification?.data,verified=Array.isArray(verification)?verification.filter(v=>v.passed===true).length:0;

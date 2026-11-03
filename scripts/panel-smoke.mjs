@@ -1,6 +1,6 @@
 // Real browser + two real TLS Nodes; the only executable Agent is the test fixture.
 import {spawn,spawnSync} from 'node:child_process';
-import {mkdtempSync,mkdirSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {once} from 'node:events';
@@ -81,6 +81,8 @@ try{
  assert(!b.mesh.call(['task','show',localId]).last_attempt_id,'Attempt before approval');
  await page.getByRole('button',{name:'批准执行',exact:true}).click();await confirm(page);await succeeded(b.mesh,localId);
  await page.locator('#task-detail > .badge').filter({hasText:'已完成'}).waitFor();await verify(page,{status:'ok'},'核验通过');
+ writeFileSync(join(project,'out/health.json'),JSON.stringify({status:'later-edit'}));
+ await verify(page,{status:'ok'},'核验通过');assert(await page.locator('#task-detail').innerText().then(t=>t.includes('完成时快照')),'Snapshot source missing');
  await page.locator('[data-close="task-dialog"]').click();
  stage='remote-lost-ack-recover';
  const origin=await browser.newPage({viewport:{width:1440,height:1000},reducedMotion:'reduce'});origin.on('pageerror',e=>errors.push(e.message));
@@ -98,19 +100,48 @@ try{
  assert(b.mesh.call(['task','show',remoteId]).last_attempt_id===remote.last_attempt_id,'Verification reran task');
  assert(a.mesh.call(['task','list']).submitted.find(t=>t.task_id===remoteId).last_observed_at,'No persisted observation');
  await origin.locator('[data-close="task-dialog"]').click();
+ stage='queue-wait-and-resume';
+ const blockingId=await create(page,agent.agent_id,'fixture:wait');await page.getByRole('button',{name:'批准执行',exact:true}).click();await confirm(page);await until(()=>b.mesh.call(['task','show',blockingId]).status==='RUNNING');await page.locator('[data-close="task-dialog"]').click();
+ const queuedId=await create(page,agent.agent_id,'fixture:create');await page.getByRole('button',{name:'批准执行',exact:true}).click();await confirm(page);
+ await page.locator('#task-detail .queue-note').filter({hasText:'等待全局执行名额'}).waitFor();assert(!b.mesh.call(['task','show',queuedId]).last_attempt_id,'Waiting task started above concurrency cap');
+ b.mesh.call(['task','cancel',blockingId]);await until(()=>b.mesh.call(['task','show',blockingId]).status==='CANCELLED');await succeeded(b.mesh,queuedId);await page.locator('#task-detail > .badge').filter({hasText:'已完成'}).waitFor();await page.locator('[data-close="task-dialog"]').click();
  stage='agent-lifecycle';
  await page.locator('[data-view="agents"]').click();await page.getByRole('button',{name:'退役 Agent',exact:true}).click();await confirm(page);
  await until(()=>b.mesh.call(['agent','retired']).length===1);await page.locator('[data-agent-filter="retired"]').click();
  await page.getByRole('button',{name:'恢复 Agent',exact:true}).click();await confirm(page);
  await until(()=>b.mesh.call(['agents','list']).some(a=>a.agent_id===agent.agent_id&&a.probe.managed_run==='not_checked'));
+ stage='onboarding-preview-register-recover';
+ const beforePolicy=readFileSync(join(b.dir,'policy.toml'),'utf8');
+ await page.locator('#new-agent').click();
+ for(const[id,value]of Object.entries({name:'wizard-fixture',project:'panel-test',root:project,executable:fixture,provider:'fixture',model:'fixture'}))await page.locator('#onboard-'+id).fill(value);
+ await page.locator('#onboard-peer').selectOption(a.card.node_id);
+ const previewResponse=page.waitForResponse(r=>r.url().endsWith('/onboarding/preview'));
+ await page.getByRole('button',{name:'检查并预览',exact:true}).click();const preview=(await(await previewResponse).json()).data;
+ assert(preview.model_called===false&&preview.policy_applied===false&&preview.policy_preview.includes(preview.agent_id)&&preview.policy_preview.includes(a.card.node_id),'Exact preview failed');
+ await page.route('**/api/onboarding/register',async route=>{const response=await route.fetch();assert(response.ok(),'Onboarding registration failed');await route.abort('failed');});
+ await page.getByRole('button',{name:'登记此 Agent',exact:true}).click();await confirm(page);await page.waitForFunction(()=>document.querySelector('#onboard-message').textContent.length>0&&!document.querySelector('#onboard-submit').disabled);await page.unroute('**/api/onboarding/register');
+ const firstRegistration=b.mesh.call(['agents','list']).filter(a=>a.agent_id===preview.agent_id);assert(firstRegistration.length===1,'First registration missing');
+ await page.getByRole('button',{name:'登记此 Agent',exact:true}).click();await confirm(page);await page.getByRole('button',{name:'已登记',exact:true}).waitFor();
+ const registered=b.mesh.call(['agents','list']).filter(a=>a.agent_id===preview.agent_id);assert(registered.length===1&&registered[0].probe.managed_run!=='passed','Registration duplicated or called a model');
+ assert(readFileSync(join(b.dir,'policy.toml'),'utf8')===beforePolicy,'Wizard applied policy');
+ await page.locator('#close-onboard').click();await page.locator('#onboard-dialog').waitFor({state:'hidden'});
+ stage='worktree-diff-review';
+ const locate=spawnSync(process.platform==='win32'?'where.exe':'which',['git'],{encoding:'utf8'});assert(locate.status===0,'Git is required for worktree browser regression');const git=locate.stdout.trim().split(/\r?\n/)[0];
+ mkdirSync(join(root,'disabled-test-hooks'));const gitCall=args=>assert(spawnSync(git,['-c','core.hooksPath='+join(root,'disabled-test-hooks'),'-c','core.fsmonitor=false','-C',project,...args],{encoding:'utf8',timeout:30000}).status===0,'Git browser fixture setup failed');
+ gitCall(['init','-q']);writeFileSync(join(project,'out/health.json'),JSON.stringify({status:'base'}));gitCall(['add','.']);gitCall(['-c','user.name=fixture','-c','user.email=fixture@invalid','-c','commit.gpgsign=false','commit','-qm','fixture base']);
+ const gitConfig=join(root,'git-agent.toml');writeFileSync(gitConfig,readFileSync(config,'utf8').replace('name="panel-fixture"','name="worktree-fixture"').replace('[adapter]','workspace_mode="git-worktree"\ngit_executable='+JSON.stringify(git)+'\n[adapter]'));
+ const gitAgent=b.mesh.call(['agent','register','--config',gitConfig]);const gitTask=b.mesh.call(['agent','verify',gitAgent.agent_id,'--allow-model','--prompt','fixture:create']);await succeeded(b.mesh,gitTask.task_id);
+ await page.locator('[data-view="tasks"]').click();await page.locator('[data-filter="all"]').click();await page.locator('#task-list tr').filter({hasText:gitTask.task_id.slice(0,8)}).locator('.task-title').click();await page.getByRole('button',{name:'查看修改 diff',exact:true}).click();await page.locator('.workspace-diff').filter({hasText:'out/health.json'}).waitFor();await page.getByRole('button',{name:'diff 已读完',exact:true}).waitFor();
+ assert(JSON.parse(readFileSync(join(project,'out/health.json'),'utf8')).status==='base','Worktree changed original project');await page.locator('[data-close="task-dialog"]').click();
  for(const name of ['overview','tasks','agents','services','nodes']){await page.locator('[data-view="'+name+'"]').click();assert(await page.locator('#'+name+'-view').isVisible(),'Navigation failed');}
  await page.setViewportSize({width:390,height:844});await page.locator('[data-view="overview"]').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile overflow');
+ await page.locator('[data-view="agents"]').click();await page.locator('#new-agent').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile onboarding overflow');await page.locator('#close-onboard').click();
  const privatePage=await browser.newPage();await privatePage.goto(new URL(ready.url).origin);await privatePage.locator('#access-gate').waitFor();
  assert(!await page.evaluate(()=>!!window.panelInjected)&&!errors.length,'Browser error or script execution');
  stage='stop-panel-preserves-existing-daemon';
  await page.locator('#stop-panel').click();await confirm(page);
  await until(()=>owned.find(p=>p.pid===ready.pid)?.exitCode===0,20);
  assert(b.mesh.call(['daemon','status']).running===true,'Stopping a reused panel stopped its Daemon');
- console.log(JSON.stringify({passed:true,model_calls:0,fixture_runs:3,scope:'isolated two-node mTLS and headless browser',checks:['navigation','pending-approval','request-text-XSS','reject','archive','local-create','local-approval','local-verify','remote-create','lost-acknowledgement','original-request-recovery','no-duplicate-attempt','remote-verification-fail','remote-verification-pass','observation-time','retire','restore-unverified','mobile','access-gate','stop-preserves-existing-daemon']}));
+ console.log(JSON.stringify({passed:true,model_calls:0,fixture_runs:6,scope:'isolated two-node mTLS and headless browser',checks:['worktree-diff-review','queue-wait-reason','queue-resumes-after-cancel','completion-snapshot-after-file-edit','onboarding-reference-preview','onboarding-idempotent-register','onboarding-no-policy-or-model','mobile-onboarding','navigation','pending-approval','request-text-XSS','reject','archive','local-create','local-approval','local-verify','remote-create','lost-acknowledgement','original-request-recovery','no-duplicate-attempt','remote-verification-fail','remote-verification-pass','observation-time','retire','restore-unverified','mobile','access-gate','stop-preserves-existing-daemon']}));
 }catch(e){console.error(stage+': '+e.message+' diagnostics='+root);process.exitCode=1;}
 finally{await browser?.close();for(const p of owned.reverse()){if(p.exitCode===null){p.kill();await Promise.race([once(p,'exit'),new Promise(r=>setTimeout(r,3000))]);}}}

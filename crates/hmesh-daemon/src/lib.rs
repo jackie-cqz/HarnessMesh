@@ -1,5 +1,6 @@
 //! Owner and peer RPC boundaries. Every request rechecks current trust/policy.
 mod integration;
+mod onboarding;
 mod services;
 use anyhow::Context;
 use axum::{
@@ -17,6 +18,7 @@ use hmesh_security::{
 use hmesh_store::Store;
 use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
 use hmesh_transport::{Client, ConnectionIdentity};
+pub use onboarding::OnboardingRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -267,6 +269,8 @@ pub fn router(state: AppState) -> Router {
         .route("/hmesh/v1/tasks/{id}/artifacts", get(peer_task_artifacts))
         .route("/hmesh/v1/tasks/{id}/verify", post(peer_verify_task))
         .route("/local/status", get(status))
+        .route("/local/queue", get(queue_status))
+        .route("/local/tasks/{id}/workspace", get(task_workspace))
         .route("/local/stop", post(stop))
         .route("/local/peers", get(peers))
         .route("/local/pairs", get(pairs))
@@ -274,6 +278,8 @@ pub fn router(state: AppState) -> Router {
         .route("/local/pairs/approve", post(approve_pair))
         .route("/local/peers/{id}/revoke", post(revoke))
         .route("/local/agents", post(register_agent))
+        .route("/local/onboarding/preview", post(onboarding::preview))
+        .route("/local/onboarding/register", post(onboarding::register))
         .route("/local/agents/{id}/update", post(update_agent))
         .route("/local/agents/{id}/disable", post(disable_agent))
         .route("/local/agents/{id}/summary", get(agent_summary))
@@ -385,7 +391,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let runtime = tokio::spawn(hmesh_runtime::run_queue(
         store.clone(),
         instance.dir.clone(),
-        instance.config.runtime.max_concurrent_runs,
+        instance.config.runtime.clone(),
         Arc::new(move |task| execution_state.authorize_execution(task)),
         shutdown.subscribe(),
     ));
@@ -498,7 +504,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1"],"schema_version":6}),
+        "running":true,"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2"],"schema_version":7}),
     ))
 }
 async fn stop(
@@ -684,9 +690,16 @@ async fn register_agent(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
-    Json(mut config): Json<AgentConfig>,
+    Json(config): Json<AgentConfig>,
 ) -> ApiResult<AgentCard> {
     s.owner(&headers, &c)?;
+    Ok(Json(register_config(&s, config, Uuid::new_v4()).await?))
+}
+async fn register_config(
+    s: &AppState,
+    mut config: AgentConfig,
+    id: Uuid,
+) -> std::result::Result<AgentCard, ApiError> {
     config.validate()?;
     config.project.root = fs::canonicalize(&config.project.root).map_err(|_| {
         ApiError(MeshError::new(
@@ -715,7 +728,7 @@ async fn register_agent(
         )));
     }
     let card = AgentCard {
-        agent_id: Uuid::new_v4(),
+        agent_id: id,
         node_id: s.instance.card.node_id,
         name: config.agent.name.clone(),
         harness: config.agent.harness,
@@ -725,7 +738,7 @@ async fn register_agent(
         probe,
     };
     s.store.register_agent(&card, &config)?;
-    Ok(Json(card))
+    Ok(card)
 }
 async fn retired_agents(
     State(s): State<AppState>,
@@ -944,11 +957,11 @@ fn admit_task(
     let approval = envelope.payload.requires_approval
         || (!actor.owner && config.project.require_remote_task_approval)
         || decision == Decision::ApprovalRequired;
-    Ok(s.store.admit(
+    Ok(s.store.admit_with_limits(
         s.instance.card.node_id,
         &envelope,
         approval,
-        s.instance.config.runtime.max_queue_depth,
+        &s.instance.config.runtime,
     )?)
 }
 async fn task(
@@ -1257,11 +1270,11 @@ async fn verify_agent(
     task.limits = body.limits;
     task.validate()?;
     let envelope = Envelope::new(s.instance.card.node_id, "task.submit", task);
-    Ok(Json(s.store.admit(
+    Ok(Json(s.store.admit_with_limits(
         s.instance.card.node_id,
         &envelope,
         false,
-        s.instance.config.runtime.max_queue_depth,
+        &s.instance.config.runtime,
     )?))
 }
 async fn reject_task(
@@ -1331,10 +1344,78 @@ fn artifact_task(
     }
     Ok(task)
 }
+async fn queue_status(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+) -> ApiResult<Value> {
+    s.owner(&headers, &c)?;
+    Ok(Json(s.store.queue_status(&s.instance.config.runtime)?))
+}
+#[derive(Deserialize, Default)]
+struct WorkspaceQuery {
+    #[serde(default)]
+    diff: bool,
+    #[serde(default)]
+    offset: usize,
+}
+async fn task_workspace(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(query): Query<WorkspaceQuery>,
+) -> ApiResult<Value> {
+    s.owner(&headers, &c)?;
+    let mut value = s.store.workspace(id)?.unwrap_or(json!({"state":"shared"}));
+    if let Some(patch) = value.get("patch").and_then(Value::as_str) {
+        let length = patch.len();
+        if query.offset > length || !patch.is_char_boundary(query.offset) {
+            return Err(ApiError(MeshError::input("invalid diff byte cursor")));
+        }
+        if query.diff {
+            let mut end = (query.offset + 65536).min(length);
+            while !patch.is_char_boundary(end) {
+                end -= 1;
+            }
+            let page = patch[query.offset..end].to_owned();
+            value["patch"] = json!(page);
+            value["patch_offset"] = json!(query.offset);
+            value["patch_next_offset"] = if end < length {
+                json!(end)
+            } else {
+                Value::Null
+            };
+        } else if let Some(object) = value.as_object_mut() {
+            object.remove("patch");
+        }
+        value["patch_size_bytes"] = json!(length);
+    }
+    Ok(Json(value))
+}
 fn artifact_names(s: &AppState, actor: Actor, id: Uuid) -> std::result::Result<Value, ApiError> {
     let task = artifact_task(s, actor, id)?;
     let (_, config) = s.store.agent(task.agent_id)?;
-    Ok(json!({"task_id":id,"artifacts":config.project.artifact_paths}))
+    if let Some(set) = s.store.artifact_set(id)? {
+        let names: Vec<_> = set
+            .entries
+            .iter()
+            .filter(|e| {
+                e.bytes.is_some()
+                    && config
+                        .project
+                        .artifact_paths
+                        .contains(&std::path::PathBuf::from(&e.name))
+            })
+            .map(|e| e.name.clone())
+            .collect();
+        return Ok(
+            json!({"task_id":id,"artifacts":names,"source":"completion-snapshot","attempt_id":set.attempt_id}),
+        );
+    }
+    Ok(
+        json!({"task_id":id,"artifacts":config.project.artifact_paths,"source":"legacy-current-file"}),
+    )
 }
 async fn owner_task_artifacts(
     State(s): State<AppState>,
@@ -1376,6 +1457,16 @@ fn verify_task_as(
     body: VerificationRequest,
 ) -> std::result::Result<Value, ApiError> {
     let task = artifact_task(s, actor, id)?;
+    if body.artifact.as_os_str().is_empty()
+        || body
+            .artifact
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(ApiError(MeshError::input(
+            "artifact path must be relative without traversal",
+        )));
+    }
     if body
         .expected
         .as_object()
@@ -1387,15 +1478,45 @@ fn verify_task_as(
         )));
     }
     let (_, config) = s.store.agent(task.agent_id)?;
-    let mut evidence =
-        hmesh_runtime::verification::verify_json(&config, &body.artifact, &body.expected)
-            .map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+    if !config.project.artifact_paths.contains(&body.artifact) {
+        return Err(ApiError(MeshError::new(
+            ErrorCode::PermissionDenied,
+            "artifact is not currently granted",
+        )));
+    }
+    let (mut evidence, digest) = if let Some(set) = s.store.artifact_set(id)? {
+        if Some(set.attempt_id) != task.last_attempt_id {
+            return Err(ApiError(MeshError::input("snapshot attempt mismatch")));
+        }
+        let entry = set
+            .entries
+            .iter()
+            .find(|e| std::path::Path::new(&e.name) == body.artifact)
+            .ok_or_else(|| ApiError(MeshError::input("artifact was not captured at completion")))?;
+        let bytes = entry
+            .bytes
+            .as_ref()
+            .ok_or_else(|| ApiError(MeshError::input("artifact was unavailable at completion")))?;
+        let summary = json!({"name":entry.name,"sha256":hmesh_security::sha256_hex(bytes),"size_bytes":bytes.len()});
+        let mut evidence =
+            hmesh_runtime::verification::verify_bytes(bytes, summary, &body.expected)
+                .map_err(internal)?;
+        evidence["source"] = json!("completion-snapshot");
+        (evidence, set.configuration_sha256)
+    } else {
+        let mut evidence =
+            hmesh_runtime::verification::verify_json(&config, &body.artifact, &body.expected)
+                .map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+        evidence["source"] = json!("legacy-current-file");
+        (
+            evidence,
+            hmesh_security::sha256_hex(&serde_json::to_vec(&config).map_err(internal)?),
+        )
+    };
     evidence["task_id"] = json!(id);
     evidence["attempt_id"] = json!(task.last_attempt_id);
     evidence["expected"] = body.expected;
-    evidence["configuration_sha256"] = json!(hmesh_security::sha256_hex(
-        &serde_json::to_vec(&config).map_err(internal)?
-    ));
+    evidence["configuration_sha256"] = json!(digest);
     let evidence = s.store.record_verification(id, &evidence)?;
     s.store.audit(
         Some(actor.node_id),
