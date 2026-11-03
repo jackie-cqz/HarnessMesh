@@ -1,5 +1,8 @@
 # V0 P0 实施与验收状态
 
+0.0.1 本机可靠性与接入：schema 7 增加任务完成时工件快照、按 attempt 绑定的独立 Git worktree 与离线精确 hash 应用、私有一致性备份与原路径恢复、项目/Agent 容量及持久化公平调度、面板接入向导与精确授权预览，以及版本化运行包、升级预检/备份和显式用户登录自启管理。本机 93 项 Rust、14 项 Node、27 项浏览器流程、10 项实际运行包检查通过；既有 mTLS、修复替身和 guardian 不重放流程复测通过。未调用真实模型、未迁移现有运行 Node、未在开发者 Mac 安装自启。原生 Mac/Windows 登录注册生命周期由 Native runtime CI 在一次性 runner 上检查；跨平台结果以对应 PR 的最终提交检查为准。见 [说明](local-reliability.md) 与 [脱敏本机记录](evidence/latest-local-reliability.json)。
+
+
 2026-11-01 后续稳定性验收：Windows/Mac 真机原 task/attempt 恢复、Windows 固定动作执行器退出一次后拒绝重放、Mac Pi/DeepSeek V4 Flash 原生 MCP 发现并委派 Windows DSH、父子工件独立核验均通过。Mac 独立后端 SIGKILL 后仅重启一次、revision 不变、数据保留且最终停止。生命周期 schema 5 已实现待审批过期、终态事件逻辑归档、旧 Agent 退役/恢复，以及 Unix 已观察脱组子进程的身份核对与清理；真实父任务 124 条事件归档前后 hash 一致，退役后历史核验仍通过。此前提交 021813f 的 [三平台 CI 与依赖审计](https://github.com/jackie-cqz/HarnessMesh/actions/runs/41218230946) 全部成功；本次新增代码以最终提交的 CI 为准。见 [恢复与生命周期说明](lifecycle-and-recovery.md)、[双机证据](evidence/latest-real-recovery-native-mcp.json)、[后端崩溃证据](evidence/latest-managed-backend-crash.json)。未注入强制 Tailnet 断网/断电；Unix 快速未观察双 fork 和 Daemon 硬崩溃仍不属于已保证的 OS 进程隔离。
 
 

@@ -25,6 +25,8 @@ jobs:
         run: cargo test --locked --workspace
       - name: Build model-free acceptance binaries
         run: cargo build --locked -p hmesh-cli -p hmesh-fixture
+      - name: Offline backup, restore and startup planning without models
+        run: node scripts/maintenance-smoke.mjs
       - name: Two-node automated acceptance without models
         run: node scripts/acceptance/local-smoke.mjs
       - name: Bounded repair orchestration with explicit test double

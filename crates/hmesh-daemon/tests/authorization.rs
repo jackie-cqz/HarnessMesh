@@ -107,6 +107,47 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
     let peer = Client::new(&a, &endpoint, &b.card.fingerprint, false, false).expect("peer");
     let other = Client::new(&c, &endpoint, &b.card.fingerprint, false, false).expect("other");
     let owner = Client::new(&b, &endpoint, &b.card.fingerprint, false, true).expect("owner");
+    // Owner-only reference preview must deny peers before reading any local reference.
+    let mut onboarding =
+        json!({"agent_id":Uuid::new_v4(),"peer_id":a.card.node_id,"config":config.clone()});
+    onboarding["config"]["agent"]["name"] = json!("onboard-fixture");
+    assert_eq!(
+        peer.post::<_, Value>("/local/onboarding/preview", &onboarding)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    let preview: Value = owner
+        .post("/local/onboarding/preview", &onboarding)
+        .await
+        .unwrap();
+    let exact: Policy = toml::from_str(preview["policy_preview"].as_str().unwrap()).unwrap();
+    assert_eq!(exact.grant.len(), 1);
+    assert_eq!(exact.grant[0].peer, a.card.node_id);
+    assert_eq!(
+        exact.grant[0].agent,
+        Some(Uuid::parse_str(onboarding["agent_id"].as_str().unwrap()).unwrap())
+    );
+    assert!(exact.grant[0].require_approval);
+    onboarding["expected_sha256"] = preview["configuration_sha256"].clone();
+    onboarding["config"]["adapter"]["model"] = json!("changed-after-preview");
+    assert_eq!(
+        owner
+            .post::<_, Value>("/local/onboarding/register", &onboarding)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::TaskConflict
+    );
+    assert_eq!(store.agents().unwrap().len(), 1);
+    onboarding["peer_id"] = json!(Uuid::new_v4());
+    assert!(
+        owner
+            .post::<_, Value>("/local/onboarding/preview", &onboarding)
+            .await
+            .is_err()
+    );
     let mut envelope = Envelope::new(
         a.card.node_id,
         "task.submit",
@@ -252,10 +293,25 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
         TaskSubmit::new(id, "demo", "synthetic finished artifact"),
     );
     let finished = store.admit(b.card.node_id, &synthetic, false, 20).unwrap();
-    store.claim_next().unwrap().unwrap();
+    let active = store.claim_next().unwrap().unwrap();
+    let entry = hmesh_store::SnapshotEntry {
+        name: "out/health.json".into(),
+        bytes: Some(br#"{"status":"ok"}"#.to_vec()),
+        error: None,
+    };
     store
-        .transition(finished.task_id, TaskStatus::Succeeded, None)
+        .complete_with_artifacts(
+            finished.task_id,
+            active.last_attempt_id.unwrap(),
+            "original-configuration",
+            &[entry],
+        )
         .unwrap();
+    std::fs::write(
+        project.join("out/health.json"),
+        br#"{"status":"later-edit"}"#,
+    )
+    .unwrap();
     let artifact_path = format!("/hmesh/v1/tasks/{}/artifacts", finished.task_id);
     let verify_path = format!("/hmesh/v1/tasks/{}/verify", finished.task_id);
     let allowed: Value = peer.get(&artifact_path).await.unwrap();
@@ -287,7 +343,8 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
     assert_eq!(verified["passed"], true);
     assert_eq!(verified["task_id"], finished.task_id.to_string());
     assert!(!verified["attempt_id"].is_null());
-    assert!(verified["configuration_sha256"].is_string());
+    assert_eq!(verified["configuration_sha256"], "original-configuration");
+    assert_eq!(verified["source"], "completion-snapshot");
     let failed: Value = peer
         .post(
             &verify_path,
@@ -367,7 +424,7 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
     assert_eq!(std::fs::read_dir(&project).expect("project").count(), 1);
     assert_eq!(
         std::fs::read(project.join("out/health.json")).unwrap(),
-        br#"{"status":"ok"}"#
+        br#"{"status":"later-edit"}"#
     );
     let audits = store.audits().expect("audits");
     assert!(audits.iter().any(|a| a["action"] == "task.reject"));

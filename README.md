@@ -28,6 +28,8 @@ See [V0 quickstart](docs/quickstart-v0.md), [protocol](docs/protocol.md), [secur
 
 A [local management panel](docs/local-panel.md) supports task creation, owner approval, original-request recovery, scoped artifact verification and Node/Agent/service management. Run `hmesh --data-dir YOUR_NODE_DIR panel` and open the private access link. Owner mTLS credentials stay in the CLI process. Optional `--start-daemon` owns only a Daemon started here; compatible existing Daemons are preserved. [Native runtime packages](docs/runtime-packages.md) run without Rust or a frontend build. Opening the panel does not call models.
 
+[Local reliability and onboarding](docs/local-reliability.md) adds completion-time artifact snapshots, opt-in Git worktrees with reviewed patch application, offline identity-preserving backups, scoped/fair queueing, a reference-only Agent setup wizard, versioned runtime preflight and owner-managed login startup. Schema 7 upgrades require a pre-upgrade backup; old successful tasks remain explicitly marked as current-file verification.
+
 Development checks do not call models or read personal Harness configurations:
 
 ```powershell

@@ -65,7 +65,7 @@ impl Prepared {
         value
     }
 }
-fn native_path(path: &Path) -> PathBuf {
+pub(crate) fn native_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         if let Some(value) = path.to_str() {
@@ -295,6 +295,54 @@ pub fn prepare(config: &AgentConfig, task: &TaskRecord, directory: &Path) -> Res
     })
 }
 
+/// Read local references only. Returns presence/validity flags, never credential values.
+pub fn inspect_references(config: &AgentConfig) -> Result<Value> {
+    config.validate()?;
+    let present = |path: &Path| -> Result<()> {
+        if !fs::metadata(path)?.is_file() {
+            bail!("configured reference is not a file");
+        }
+        Ok(())
+    };
+    present(&config.adapter.executable)?;
+    if let Some(path) = &config.adapter.node_executable {
+        present(path)?;
+    }
+    if let Some(path) = &config.project.git_executable {
+        present(path)?;
+    }
+    for name in &config.adapter.env_allowlist {
+        if std::env::var_os(name).is_none_or(|v| v.is_empty()) {
+            bail!("a configured environment reference is unavailable");
+        }
+    }
+    if let Some(path) = &config.adapter.credential_source {
+        if config.agent.harness != HarnessKind::Pi
+            || config.adapter.provider.as_deref() != Some("deepseek")
+        {
+            bail!("file credential references require Pi/DeepSeek");
+        }
+        deepseek_key(path)?;
+    }
+    if let Some(path) = &config.adapter.models_file {
+        if config.agent.harness != HarnessKind::Pi
+            || config.adapter.provider.as_deref() != Some("deepseek")
+        {
+            bail!("model references require Pi/DeepSeek");
+        }
+        deepseek_model(
+            path,
+            config
+                .adapter
+                .model
+                .as_deref()
+                .context("explicit model required")?,
+        )?;
+    }
+    Ok(
+        json!({"executable_present":true,"credential_reference_valid":config.adapter.credential_source.is_some(),"models_reference_valid":config.adapter.models_file.is_some(),"environment_references_present":config.adapter.env_allowlist.len(),"model_called":false}),
+    )
+}
 fn local_json(path: &Path) -> Result<Value> {
     use std::io::Read;
     let mut bytes = vec![];

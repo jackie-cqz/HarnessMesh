@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/assets/panel.css">
   <script src="/assets/panel.js" defer></script>
   <script src="/assets/workflow.js" defer></script>
+  <script src="/assets/onboarding.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -37,7 +38,7 @@
           <div class="overview-grid"><section class="surface recent"><div class="section-heading"><div><span class="eyebrow">TASK STREAM</span><h2>最近任务</h2></div><button class="text-button" data-go="tasks">查看全部 <span aria-hidden="true">↗</span></button></div><div id="recent-tasks"></div></section><div class="overview-side"><section class="surface mesh-map"><div class="section-heading"><div><span class="eyebrow">YOUR NETWORK</span><h2>节点连接</h2></div><span class="outline-tag">mTLS</span></div><div id="mesh-nodes"></div></section><section class="approval-card"><span class="eyebrow">OWNER IN CONTROL</span><h2 id="approval-title">每一次执行，都有边界。</h2><p id="approval-description">待审批任务在批准前不会开始执行。可先查看目标 Agent、项目和完整请求。</p><button id="review-pending" class="button light">查看待审批 <span aria-hidden="true">↗</span></button></section></div></div>
         </section>
         <section id="tasks-view" class="view" hidden><div class="toolbar"><div class="segmented" id="task-filters" aria-label="任务状态"><button data-filter="all" class="selected">全部</button><button data-filter="pending">待审批</button><button data-filter="active">进行中</button><button data-filter="attention">需关注</button></div><label class="search"><span aria-hidden="true">⌕</span><input id="task-search" type="search" placeholder="搜索任务、项目或 UUID" aria-label="搜索任务"></label></div><p class="list-note">发出任务的列表为最近缓存，打开详情会查询执行端最新状态。</p><div class="surface" id="task-list"></div></section>
-        <section id="agents-view" class="view" hidden><div class="toolbar"><div class="segmented" id="agent-filters"><button class="selected" data-agent-filter="active">本机 Agent</button><button data-agent-filter="retired">已退役</button></div><span class="muted">配置与凭据通过 CLI 管理</span></div><div id="agent-list" class="card-grid"></div></section>
+        <section id="agents-view" class="view" hidden><div class="toolbar"><div class="segmented" id="agent-filters"><button class="selected" data-agent-filter="active">本机 Agent</button><button data-agent-filter="retired">已退役</button></div><button class="button secondary" id="new-agent">接入项目与 Agent</button></div><div id="agent-list" class="card-grid"></div></section>
         <section id="services-view" class="view" hidden><div class="section-heading"><h2>本机发布的服务</h2><label class="checkbox"><input id="show-inactive" type="checkbox">显示已停止 / 过期</label></div><div id="service-list" class="card-grid"></div><div class="section-heading subheading"><h2>转发连接与隧道</h2><span class="muted">仅展示当前 Daemon 的记录</span></div><div id="connection-list" class="surface"></div></section>
         <section id="nodes-view" class="view" hidden><div id="node-list" class="card-grid"></div><section id="remote-agents" class="surface remote-agents" hidden></section></section>
         <footer><span>HarnessMesh <span class="footer-dot">·</span> 本机管理面板</span><span id="last-observed">等待读取实时状态</span></footer>
@@ -54,6 +55,29 @@
       <p id="compose-binding" class="mono muted"></p><p class="muted form-note">提交后进入执行端审批。批准后可能调用模型并产生费用；输出额度不是 token 或费用预算。</p>
       <p id="compose-error" class="alert" hidden></p><div class="confirm-actions"><button id="discard-pending" class="button secondary" type="button" hidden>放弃本地草稿</button><button id="compose-submit" class="button" type="submit">审阅并提交</button></div>
     </form>
+  </dialog>
+  <dialog id="onboard-dialog" class="compose-dialog" aria-labelledby="onboard-title">
+    <div class="dialog-heading"><div><span class="eyebrow">LOCAL SETUP</span><h2 id="onboard-title">接入项目与 Agent</h2></div><button class="icon-button" id="close-onboard" aria-label="关闭接入向导">×</button></div>
+    <form id="onboard-form"><fieldset id="onboard-fields" class="onboard-fields"><div class="form-grid">
+      <label>Agent 名称<input id="onboard-name" required maxlength="64" placeholder="mac-pi"></label>
+      <label>项目 ID<input id="onboard-project" required maxlength="64" placeholder="my-project"></label>
+      <label class="full-field">项目绝对路径<input id="onboard-root" required placeholder="/absolute/project"></label>
+      <label>Harness<select id="onboard-harness"><option value="pi">Pi</option><option value="dsh">DeepSeek Harness</option><option value="opencode">OpenCode</option></select></label>
+      <label>Harness 可执行文件<input id="onboard-executable" required placeholder="/absolute/executable"></label>
+      <label>模型<input id="onboard-model" required value="deepseek-v4-flash"></label>
+      <label>Provider<input id="onboard-provider" required value="deepseek"></label>
+      <label>Node 可执行文件（可选）<input id="onboard-node" placeholder="/absolute/node"></label>
+      <label>凭据文件引用（Pi，可选）<input id="onboard-credential" placeholder="只填写本机文件路径"></label>
+      <label>模型配置文件引用（Pi，可选）<input id="onboard-models" placeholder="/absolute/models.json"></label>
+      <label>环境变量引用（逗号分隔）<input id="onboard-env" placeholder="DEEPSEEK_API_KEY"></label>
+      <label>允许工具（逗号分隔）<input id="onboard-tools" required value="read,write,edit"></label>
+      <label>工作目录<select id="onboard-workspace"><option value="shared">共享目录 · 同目录互斥执行</option><option value="git-worktree">独立 Git worktree</option></select></label>
+      <label id="onboard-git-label" hidden>Git 可执行文件绝对路径<input id="onboard-git" placeholder="/usr/bin/git"></label>
+      <label>工件相对路径（逗号分隔）<input id="onboard-artifacts" placeholder="out/health.json"></label>
+      <label>授权预览节点<select id="onboard-peer"></select></label>
+    </div></fieldset><p class="form-note muted">凭据仅通过本机文件或环境变量引用。登记后仍需显式模型验证；授权预览不会自动修改现有策略。</p>
+    <section id="onboard-review" hidden><h3>检查与授权预览</h3><div id="onboard-summary"></div><pre id="onboard-policy" class="goal"></pre></section>
+    <p id="onboard-message" class="form-note" role="status"></p><div class="confirm-actions"><button id="onboard-back" type="button" class="button secondary" hidden>修改配置</button><button id="onboard-submit" type="submit" class="button">检查并预览</button></div></form>
   </dialog>
   <div id="toast" class="toast" role="status" hidden></div>
 </body>

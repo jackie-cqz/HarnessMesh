@@ -1141,3 +1141,4 @@ select:focus-visible,textarea:focus-visible { outline:2px solid var(--green); ou
 #pending-submission .text-button { margin-right:20px; }
 #stop-panel { margin:0; }
 @media(max-width:700px) { .form-grid {grid-template-columns:1fr;} .compose-dialog {max-height:92vh;} }
+.onboard-fields{border:0;padding:0;margin:0;min-width:0}.onboard-fields input,.onboard-fields select{width:100%;min-width:0}.full-field{grid-column:1/-1}#onboard-dialog{max-height:90dvh;overflow-y:auto}#onboard-policy{max-height:240px;overflow:auto}.workspace-diff{max-height:400px;overflow:auto;white-space:pre;font-size:12px}.queue-note{margin-top:6px;color:var(--muted)}

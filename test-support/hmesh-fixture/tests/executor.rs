@@ -38,6 +38,8 @@ impl Fixture {
                 allowed_tools: vec!["read".into(), "write".into(), "edit".into()],
                 require_remote_task_approval: true,
                 artifact_paths: vec!["out/health.json".into()],
+                workspace_mode: "shared".into(),
+                git_executable: None,
             },
             adapter: AdapterOptions {
                 node_executable: None,
@@ -99,7 +101,7 @@ impl Fixture {
         let job = tokio::spawn(hmesh_runtime::run_queue(
             self.store.clone(),
             self.instance.dir.clone(),
-            1,
+            RuntimeOptions::default(),
             Arc::new(|_| Ok(())),
             receiver,
         ));
@@ -115,6 +117,149 @@ impl Fixture {
         }
         panic!("fixture task did not reach a terminal state");
     }
+}
+#[tokio::test]
+async fn completed_snapshot_does_not_follow_later_project_edits_or_new_grants() {
+    let f = Fixture::new();
+    let task = f.submit("fixture:create", 5);
+    let (stop, job) = f.executor();
+    let terminal = f.terminal(task.task_id).await;
+    assert_eq!(terminal.status, TaskStatus::Succeeded);
+    let set = f.store.artifact_set(task.task_id).unwrap().unwrap();
+    assert_eq!(Some(set.attempt_id), terminal.last_attempt_id);
+    let bytes = set.entries[0].bytes.as_ref().unwrap();
+    std::fs::write(
+        f.config.project.root.join("out/health.json"),
+        br#"{"status":"changed"}"#,
+    )
+    .unwrap();
+    let evidence = hmesh_runtime::verification::verify_bytes(
+        bytes,
+        serde_json::json!({}),
+        &serde_json::json!({"status":"ok"}),
+    )
+    .unwrap();
+    assert_eq!(evidence["passed"], true);
+    f.store
+        .set_artifact_paths(f.agent.agent_id, &["later.json".into()])
+        .unwrap();
+    assert_eq!(
+        f.store.artifact_set(task.task_id).unwrap().unwrap().entries[0]
+            .bytes
+            .as_ref(),
+        Some(bytes)
+    );
+    stop.send(true).unwrap();
+    job.await.unwrap();
+}
+fn setup_git(f: &mut Fixture) {
+    let tool = if cfg!(windows) { "where.exe" } else { "which" };
+    let found = std::process::Command::new(tool)
+        .arg("git")
+        .output()
+        .unwrap();
+    assert!(found.status.success());
+    let git = PathBuf::from(
+        String::from_utf8(found.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .trim(),
+    );
+    f.config.project.workspace_mode = "git-worktree".into();
+    f.config.project.git_executable = Some(git.clone());
+    let run = |args: &[&str]| {
+        let result = std::process::Command::new(&git)
+            .arg("-C")
+            .arg(&f.config.project.root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "Git fixture setup failed");
+    };
+    run(&["init", "-q"]);
+    std::fs::write(f.config.project.root.join("README.txt"), "fixture base\n").unwrap();
+    run(&["add", "README.txt"]);
+    run(&[
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        "fixture base",
+    ]);
+    f.store.replace_agent(&f.agent, &f.config).unwrap();
+}
+#[tokio::test]
+async fn worktree_execution_leaves_original_untouched_and_applies_only_reviewed_patch() {
+    let mut f = Fixture::new();
+    setup_git(&mut f);
+    let task = f.submit("fixture:create", 5);
+    let (stop, job) = f.executor();
+    let terminal = f.terminal(task.task_id).await;
+    assert_eq!(
+        terminal.status,
+        TaskStatus::Succeeded,
+        "{:?}",
+        terminal.error
+    );
+    stop.send(true).unwrap();
+    job.await.unwrap();
+    assert!(!f.config.project.root.join("out/health.json").exists());
+    let workspace = f.store.workspace(task.task_id).unwrap().unwrap();
+    assert_eq!(workspace["state"], "review");
+    assert!(
+        workspace["patch"]
+            .as_str()
+            .unwrap()
+            .contains("out/health.json")
+    );
+    let scratch = f.instance.dir.join("review");
+    assert!(
+        hmesh_runtime::workspace::apply(&f.store, task.task_id, "wrong-hash", &scratch).is_err()
+    );
+    hmesh_runtime::workspace::apply(
+        &f.store,
+        task.task_id,
+        workspace["patch_sha256"].as_str().unwrap(),
+        &scratch,
+    )
+    .unwrap();
+    assert!(f.config.project.root.join("out/health.json").is_file());
+    assert!(
+        hmesh_runtime::workspace::apply(
+            &f.store,
+            task.task_id,
+            workspace["patch_sha256"].as_str().unwrap(),
+            &scratch
+        )
+        .is_err()
+    );
+}
+#[tokio::test]
+async fn worktree_refuses_uncommitted_original_without_touching_its_files() {
+    let mut f = Fixture::new();
+    setup_git(&mut f);
+    std::fs::write(
+        f.config.project.root.join("README.txt"),
+        "owner unfinished work",
+    )
+    .unwrap();
+    let task = f.submit("fixture:create", 5);
+    let (stop, job) = f.executor();
+    let terminal = f.terminal(task.task_id).await;
+    assert_eq!(terminal.status, TaskStatus::Failed);
+    assert_eq!(
+        std::fs::read_to_string(f.config.project.root.join("README.txt")).unwrap(),
+        "owner unfinished work"
+    );
+    assert!(!f.config.project.root.join("out").exists());
+    stop.send(true).unwrap();
+    job.await.unwrap();
 }
 
 #[tokio::test]
@@ -322,7 +467,7 @@ async fn execution_authorization_is_rechecked_before_a_queued_process_starts() {
     let job = tokio::spawn(hmesh_runtime::run_queue(
         f.store.clone(),
         f.instance.dir.clone(),
-        1,
+        RuntimeOptions::default(),
         Arc::new(|_| {
             Err(MeshError::new(
                 ErrorCode::PermissionDenied,
@@ -406,9 +551,9 @@ async fn running_grant_revocation_stops_execution_without_retry() {
     let job = tokio::spawn(hmesh_runtime::run_queue(
         f.store.clone(),
         f.instance.dir.clone(),
-        1,
+        RuntimeOptions::default(),
         Arc::new(move |_| {
-            if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+            if seen.fetch_add(1, Ordering::SeqCst) < 2 {
                 Ok(())
             } else {
                 Err(MeshError::new(

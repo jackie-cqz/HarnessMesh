@@ -1,7 +1,9 @@
 //! Persistent queue executor and bounded, individually tracked managed runs.
 mod prepare;
+pub use prepare::inspect_references;
 pub mod process_tree;
 pub mod verification;
+pub mod workspace;
 use hmesh_adapters::{JsonlDecoder, ObservedEvent, ProtocolObserver, native_record_limit};
 use hmesh_core::*;
 use hmesh_store::Store;
@@ -18,7 +20,7 @@ pub type ExecutionAuthorizer = Arc<dyn Fn(&TaskRecord) -> Result<()> + Send + Sy
 pub async fn run_queue(
     store: Store,
     data_dir: PathBuf,
-    concurrent: usize,
+    limits: RuntimeOptions,
     authorize: ExecutionAuthorizer,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -27,8 +29,8 @@ pub async fn run_queue(
     loop {
         tokio::select! {
             changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { break; } }
-            _ = tick.tick(), if workers.len() < concurrent => {
-                match store.claim_next() {
+            _ = tick.tick(), if workers.len() < limits.max_concurrent_runs => {
+                match store.claim_next_with_limits(&limits) {
                     Ok(Some(task)) => {
                         let store = store.clone(); let dir = data_dir.clone(); let stop = shutdown.clone(); let authorize=authorize.clone();
                         workers.spawn(async move {
@@ -36,7 +38,7 @@ pub async fn run_queue(
                             if let Err(error) = result {
                                 let current = store.task(task.task_id);
                                 if let Ok(current) = current && !current.status.is_terminal() {
-                                    let next = if current.status == TaskStatus::Cancelling { TaskStatus::Unknown } else { TaskStatus::Failed };
+                                    let next = if current.status == TaskStatus::Cancelling || error.code==ErrorCode::TaskUnknown { TaskStatus::Unknown } else { TaskStatus::Failed };
                                     let _ = store.transition(task.task_id, next, Some(error));
                                 }
                             }
@@ -101,15 +103,25 @@ async fn execute(
     authorize: &ExecutionAuthorizer,
 ) -> Result<()> {
     let (_, config) = store.agent(task.agent_id)?;
+    let digest = hmesh_security::sha256_hex(&serde_json::to_vec(&config).map_err(failure)?);
     let attempt = task
         .last_attempt_id
         .ok_or_else(|| MeshError::new(ErrorCode::TaskUnknown, "execution attempt lease missing"))?;
     let dir = data_dir.join("runs").join(attempt.to_string());
+    let config = workspace::prepare(store, task, &config, &dir).map_err(failure)?;
     let mut prepared = prepare::prepare(&config, task, &dir).map_err(failure)?;
     if store.task(task.task_id)?.status == TaskStatus::Cancelling {
         store.transition(task.task_id, TaskStatus::Cancelled, None)?;
         return Ok(());
     }
+    if *shutdown.borrow() {
+        return Err(MeshError::new(
+            ErrorCode::TaskUnknown,
+            "Daemon stopped during preparation; no prompt was sent",
+        ));
+    }
+    // Workspace preparation may take time; recheck the current grant immediately before spawning.
+    authorize(task)?;
     prepared
         .command
         .stdin(Stdio::piped())
@@ -293,17 +305,16 @@ async fn execute(
     }
     match result {
         Ok(()) => {
-            match verification::summaries(&config) {
-                Ok(artifacts) => {
-                    for artifact in artifacts {
-                        store.append_event(task.task_id, "artifact", artifact)?;
-                    }
-                }
-                Err(_) => {
-                    store.append_event(task.task_id, "verification", json!({"status":"not_verified","reason":"an owner-declared artifact is missing, oversized or outside the project"}))?;
+            workspace::finish(store, task, &dir).map_err(failure)?;
+            let entries = verification::capture(&config);
+            for entry in &entries {
+                if let Some(bytes) = &entry.bytes {
+                    store.append_event(task.task_id,"artifact",json!({"name":entry.name,"sha256":hmesh_security::sha256_hex(bytes),"size_bytes":bytes.len(),"source":"completion-snapshot"}))?;
+                } else {
+                    store.append_event(task.task_id,"verification",json!({"status":"not_verified","artifact":entry.name,"reason":"unavailable_at_completion"}))?;
                 }
             }
-            store.transition(task.task_id, TaskStatus::Succeeded, None)?;
+            store.complete_with_artifacts(task.task_id, attempt, &digest, &entries)?;
         }
         Err(error) => {
             store.transition(

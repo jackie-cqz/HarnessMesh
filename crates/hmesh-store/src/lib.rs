@@ -9,6 +9,9 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
+mod reliability;
+use reliability::scoped_admission;
+pub use reliability::{ArtifactSet, SnapshotEntry};
 
 #[derive(Clone)]
 pub struct Store {
@@ -32,65 +35,35 @@ impl Store {
         let mut conn = Connection::open(path).map_err(internal)?;
         conn.busy_timeout(Duration::from_secs(5))
             .map_err(internal)?;
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .map_err(internal)?;
+        if !(0..=7).contains(&version) {
+            return Err(MeshError::new(
+                ErrorCode::UnsupportedVersion,
+                "unsupported database schema; refusing to alter it",
+            ));
+        }
         conn.execute_batch(
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )
         .map_err(internal)?;
-        let version: i64 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
-            .map_err(internal)?;
-        if version > 6 {
-            return Err(MeshError::new(
-                ErrorCode::UnsupportedVersion,
-                "database is newer than this binary; refusing to alter it",
-            ));
-        }
-        if version == 0 {
+        if version < 7 {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(internal)?;
-            tx.execute_batch(include_str!("../migrations/001_initial.sql"))
-                .map_err(internal)?;
-            tx.commit().map_err(internal)?;
-        }
-        if version < 2 {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(internal)?;
-            tx.execute_batch(include_str!("../migrations/002_outbound.sql"))
-                .map_err(internal)?;
-            tx.commit().map_err(internal)?;
-        }
-        if version < 3 {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(internal)?;
-            tx.execute_batch(include_str!("../migrations/003_tool_submissions.sql"))
-                .map_err(internal)?;
-            tx.commit().map_err(internal)?;
-        }
-        if version < 4 {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(internal)?;
-            tx.execute_batch(include_str!("../migrations/004_managed.sql"))
-                .map_err(internal)?;
-            tx.commit().map_err(internal)?;
-        }
-        if version < 5 {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(internal)?;
-            tx.execute_batch(include_str!("../migrations/005_lifecycle.sql"))
-                .map_err(internal)?;
-            tx.commit().map_err(internal)?;
-        }
-        if version < 6 {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(internal)?;
-            tx.execute_batch(include_str!("../migrations/006_observation.sql"))
-                .map_err(internal)?;
+            let migrations = [
+                include_str!("../migrations/001_initial.sql"),
+                include_str!("../migrations/002_outbound.sql"),
+                include_str!("../migrations/003_tool_submissions.sql"),
+                include_str!("../migrations/004_managed.sql"),
+                include_str!("../migrations/005_lifecycle.sql"),
+                include_str!("../migrations/006_observation.sql"),
+                include_str!("../migrations/007_reliability.sql"),
+            ];
+            for migration in migrations.iter().skip(version as usize) {
+                tx.execute_batch(migration).map_err(internal)?;
+            }
             tx.commit().map_err(internal)?;
         }
         Ok(Self {
@@ -408,6 +381,10 @@ impl Store {
         Ok(())
     }
     pub fn set_artifact_paths(&self, id: Uuid, paths: &[std::path::PathBuf]) -> Result<()> {
+        let unique: std::collections::BTreeSet<_> = paths.iter().collect();
+        if unique.len() != paths.len() {
+            return Err(MeshError::input("artifact paths must be unique"));
+        }
         if paths.len() > 16
             || paths.iter().any(|p| {
                 p.as_os_str().is_empty()
@@ -540,6 +517,19 @@ impl Store {
         approval: bool,
         max_queue: usize,
     ) -> Result<TaskRecord> {
+        let limits = RuntimeOptions {
+            max_queue_depth: max_queue,
+            ..Default::default()
+        };
+        self.admit_with_limits(target, envelope, approval, &limits)
+    }
+    pub fn admit_with_limits(
+        &self,
+        target: Uuid,
+        envelope: &Envelope<TaskSubmit>,
+        approval: bool,
+        limits: &RuntimeOptions,
+    ) -> Result<TaskRecord> {
         envelope.payload.validate()?;
         self.transaction(|tx| {
             let payload = encode(&envelope.payload)?;
@@ -550,7 +540,8 @@ impl Store {
             }
             if tx.query_row("SELECT EXISTS(SELECT 1 FROM retired_agents WHERE agent_id=?1)",[envelope.payload.target_agent_id.to_string()],|r|r.get::<_,bool>(0)).map_err(internal)? { return Err(MeshError::new(ErrorCode::AgentUnavailable,"Agent is retired")); }
             let count: i64 = tx.query_row("SELECT COUNT(*) FROM tasks WHERE status IN ('PENDING_APPROVAL','QUEUED','RUNNING','CANCELLING','WAITING_INPUT')", [], |r| r.get(0)).map_err(internal)?;
-            if count >= max_queue as i64 { return Err(MeshError::new(ErrorCode::RateLimited, "local task queue is full")); }
+            if count >= limits.max_queue_depth as i64 { return Err(MeshError::new(ErrorCode::RateLimited, "local task queue is full")); }
+            scoped_admission(tx, &envelope.payload, limits)?;
             let task = TaskRecord { task_id: envelope.payload.task_id, origin_node_id: envelope.sender_node_id, target_node_id: target,
                 agent_id: envelope.payload.target_agent_id, project_id: envelope.payload.project_id.clone(),
                 status: if approval { TaskStatus::PendingApproval } else { TaskStatus::Queued }, created_at: now(), updated_at: now(),
@@ -591,15 +582,7 @@ impl Store {
         })
     }
     pub fn claim_next(&self) -> Result<Option<TaskRecord>> {
-        self.transaction(|tx| {
-            let text: Option<String> = tx.query_row("SELECT record_json FROM tasks WHERE status='QUEUED' ORDER BY created_at,task_id LIMIT 1", [], |r| r.get(0)).optional().map_err(internal)?;
-            let Some(text) = text else { return Ok(None); };
-            let mut task: TaskRecord = decode(&text)?;
-            task.last_attempt_id = Some(Uuid::new_v4());
-            let task = transition_in(tx, task, TaskStatus::Running, None)?;
-            tx.execute("INSERT INTO task_attempts(attempt_id,task_id,status,started_at) VALUES(?1,?2,'RUNNING',?3)", params![task.last_attempt_id.map(|id| id.to_string()), task.task_id.to_string(), now()]).map_err(internal)?;
-            Ok(Some(task))
-        })
+        self.claim_next_with_limits(&RuntimeOptions::default())
     }
     pub fn record_pid(&self, attempt: Uuid, pid: u32) -> Result<()> {
         self.read(|c| {

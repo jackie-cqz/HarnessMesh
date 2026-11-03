@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/hmesh-core", "crates/hmesh-store", "crates/hmesh-security", "crates/hmesh-transport", "crates/hmesh-adapters", "crates/hmesh-runtime", "crates/hmesh-daemon", "crates/hmesh-cli", "crates/hmesh-mcp", "test-support/hmesh-fixture", "xtask"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -22,7 +22,7 @@ hyper-util = { version = "=0.1.20", features = ["server-auto", "tokio", "service
 rcgen = "=0.14.8"
 reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "json", "stream"] }
 ring = "=0.17.14"
-rusqlite = { version = "=0.32.1", features = ["bundled"] }
+rusqlite = { version = "=0.32.1", features = ["bundled", "backup"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.151"
