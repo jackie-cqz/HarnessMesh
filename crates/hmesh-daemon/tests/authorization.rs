@@ -75,7 +75,16 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
     let temp = tempfile::tempdir().expect("temp");
     let a = Instance::init(&temp.path().join("a"), NodeConfig::default()).expect("a");
     let c = Instance::init(&temp.path().join("c"), NodeConfig::default()).expect("c");
-    let b = Arc::new(Instance::init(&temp.path().join("b"), NodeConfig::default()).expect("b"));
+    let quota_id = Uuid::new_v4();
+    let mut node_config = NodeConfig::default();
+    node_config.runtime.agent_limits.insert(
+        quota_id,
+        QueueLimits {
+            max_queue_depth: 1,
+            ..Default::default()
+        },
+    );
+    let b = Arc::new(Instance::init(&temp.path().join("b"), node_config).expect("b"));
     let store = Store::open(&b.dir.join("state.sqlite3")).expect("store");
     store.trust_peer(&a.card).expect("trust a");
     store.trust_peer(&c.card).expect("trust c");
@@ -466,6 +475,29 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
         std::fs::read(project.join("out/health.json")).unwrap(),
         br#"{"status":"later-edit"}"#
     );
+    // Router-only test: no executor/model runs. Owner verification uses the same scoped admission caps.
+    let mut quota_config = config.clone();
+    quota_config.agent.name = "quota-fixture".into();
+    quota_config.agent.project_id = "quota-test".into();
+    let mut quota_card = card.clone();
+    quota_card.agent_id = quota_id;
+    quota_card.name = quota_config.agent.name.clone();
+    quota_card.project_ids = vec!["quota-test".into()];
+    store.register_agent(&quota_card, &quota_config).unwrap();
+    let quota_path = format!("/local/agents/{quota_id}/verify");
+    let body = json!({"allow_model":true,"prompt":"synthetic quota request; never executed"});
+    let reserved: TaskRecord = owner.post(&quota_path, &body).await.unwrap();
+    assert!(reserved.last_attempt_id.is_none());
+    assert_eq!(
+        owner
+            .post::<_, TaskRecord>(&quota_path, &body)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::RateLimited
+    );
+    assert_eq!(store.attempt_count(reserved.task_id).unwrap(), 0);
+    store.request_cancel(reserved.task_id).unwrap();
     let audits = store.audits().expect("audits");
     assert!(audits.iter().any(|a| a["action"] == "task.reject"));
     assert!(audits.iter().any(|a| a["action"] == "task.cancel"));

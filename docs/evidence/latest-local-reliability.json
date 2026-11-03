@@ -94,7 +94,8 @@
     "review hash/repeated apply refusal",
     "backup live lock and tamper refusal",
     "original-path identity restore",
-    "onboarding peer denial and changed-preview refusal"
+    "onboarding peer denial and changed-preview refusal",
+    "owner model verification respects scoped queue capacity"
   ],
   "native_startup": "Native runtime CI validates install/status/uninstall/reinstall on disposable Mac/Windows runners; developer-machine checks only generate/parse plans",
   "source_sha256": {
@@ -107,11 +108,11 @@
     "crates/hmesh-runtime/src/workspace.rs": "3cf0e2d6ad0cf146b34e4e669eea1f2b7dd7d14acb04e5bcc1379147826c433a",
     "crates/hmesh-runtime/src/prepare.rs": "0a5df4bffcdd4368c93488b4ca2805cf9c5564bfa39693eb6f7c21d37fc24266",
     "crates/hmesh-security/src/lib.rs": "9aae8a0357129ea9d9cadf201633f586e26d2570bc7503b7be443dd1661ec9e2",
-    "crates/hmesh-daemon/src/lib.rs": "0b3470cef138821dd34ca23025c692661792cd8315d312ea588bcc3106cd2f4c",
+    "crates/hmesh-daemon/src/lib.rs": "824e688877e586544be666959c6b0fb304ee490b5056ef478dd97d193e032391",
     "crates/hmesh-daemon/src/onboarding.rs": "4d64afc4ed1157fc597936c83b124c5388f9034b46aad6750e11d2dfc0196b2a",
     "crates/hmesh-cli/src/main.rs": "3b2eef87deffc913efbc9647728ede87dd990e98d09d27c9f2195e046bc0ad0c",
-    "crates/hmesh-cli/src/maintenance.rs": "18ee8d90798e9a9bfa2726c0e0810de4c713feb697308e618eaafa53841202d2",
-    "crates/hmesh-cli/src/startup.rs": "b29945f051f08668ff7d1923110a0bca8910bccfb52014d25dfcb35e80bc53a5",
+    "crates/hmesh-cli/src/maintenance.rs": "d849f7084c7a7343ae72748754cca16266e5e8b0c62cb0983ab00916f923e944",
+    "crates/hmesh-cli/src/startup.rs": "4940a70c1c400a09c3891bb0a8af70c4bcc773057a8f9e34f0a56eeb8851d623",
     "crates/hmesh-cli/src/panel.rs": "a86eeaaec8c83ba9b45c080bcd411ecdcd384849c2fe4ad50aca208f4275cf38",
     "web/panel/panel.js": "ab1bdddf981f70a9462f8429f0d968bbb91f475042a27023586e58a10cac6b85",
     "web/panel/workflow.js": "f8a6325f3a0571a6ef342a32729a4db1698ce4d2d5ee9f0c2ae42008b41bad29",
@@ -127,5 +128,10 @@
     "large_unicode_reassembly": "passed",
     "owner_only_and_invalid_cursor": "passed"
   },
-  "post_review_targeted_tests": 10
+  "post_review_targeted_tests": 10,
+  "startup_encoding": {
+    "mac": "UTF-8 plist",
+    "windows": "UTF-16LE XML with BOM",
+    "unicode_roundtrip": "passed"
+  }
 }

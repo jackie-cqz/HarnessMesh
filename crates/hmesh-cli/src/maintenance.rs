@@ -112,6 +112,15 @@ fn db_check(path: &Path) -> Result<i64> {
     Ok(version)
 }
 pub fn create(node: &Path, destination: &Path) -> Result<Value> {
+    for name in FILES {
+        let path = node.join(name);
+        if path.exists() {
+            regular(&path)?;
+            if fs::metadata(path)?.len() > budget(name) {
+                bail!("backup input exceeds file budget: {name}");
+            }
+        }
+    }
     let instance = Instance::load(node)?;
     let _lock = instance
         .lock_daemon()
@@ -141,6 +150,9 @@ pub fn create(node: &Path, destination: &Path) -> Result<Value> {
             instance.dir.join(&config.security.policy_file)
         };
         regular(&policy)?;
+        if fs::metadata(&policy)?.len() > budget("policy.toml") {
+            bail!("effective policy exceeds backup budget");
+        }
         let policy_bytes = fs::read(policy)?;
         let policy: hmesh_core::Policy = toml::from_str(std::str::from_utf8(&policy_bytes)?)?;
         policy.validate()?;

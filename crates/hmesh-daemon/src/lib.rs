@@ -1270,11 +1270,11 @@ async fn verify_agent(
     task.limits = body.limits;
     task.validate()?;
     let envelope = Envelope::new(s.instance.card.node_id, "task.submit", task);
-    Ok(Json(s.store.admit(
+    Ok(Json(s.store.admit_with_limits(
         s.instance.card.node_id,
         &envelope,
         false,
-        s.instance.config.runtime.max_queue_depth,
+        &s.instance.config.runtime,
     )?))
 }
 async fn reject_task(

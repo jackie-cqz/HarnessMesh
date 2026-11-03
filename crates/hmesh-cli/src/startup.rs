@@ -33,12 +33,18 @@ fn mac_config(label: &str, binary: &str, node: &str) -> String {
 }
 fn windows_config(sid: &str, binary: &str, node: &str) -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers><Principals><Principal id=\"Owner\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings><Actions Context=\"Owner\"><Exec><Command>{}</Command><Arguments>--data-dir &quot;{}&quot; daemon start</Arguments></Exec></Actions></Task>",
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?><Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{}</UserId></LogonTrigger></Triggers><Principals><Principal id=\"Owner\"><UserId>{}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings><Actions Context=\"Owner\"><Exec><Command>{}</Command><Arguments>--data-dir &quot;{}&quot; daemon start</Arguments></Exec></Actions></Task>",
         xml(sid),
         xml(sid),
         xml(binary),
         xml(node)
     )
+}
+fn windows_bytes(configuration: &str) -> Vec<u8> {
+    std::iter::once(0xfeffu16)
+        .chain(configuration.encode_utf16())
+        .flat_map(u16::to_le_bytes)
+        .collect()
 }
 fn system32(name: &str) -> Result<std::path::PathBuf> {
     Ok(
@@ -226,7 +232,11 @@ pub fn execute(node: &Path, command: &StartupCommand) -> Result<Value> {
         .create_new(true)
         .open(&path)?;
     use std::io::Write;
-    file.write_all(config.as_bytes())?;
+    if cfg!(windows) {
+        file.write_all(&windows_bytes(&config))?;
+    } else {
+        file.write_all(config.as_bytes())?;
+    }
     file.sync_all()?;
     drop(file);
     if cfg!(windows) {
@@ -280,6 +290,23 @@ mod tests {
         assert!(win.contains("LeastPrivilege"));
         assert!(win.contains("&quot;C:\\Node one&quot;"));
         assert!(!win.contains("Password"));
+        let bytes = windows_bytes(&windows_config(
+            "S-1-5-21",
+            "C:\\fixture\\hmesh.exe",
+            "C:\\项目",
+        ));
+        assert_eq!(&bytes[..2], &[0xff, 0xfe]);
+        let decoded = String::from_utf16(
+            &bytes[2..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| u16::from_le_bytes(*b))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(decoded.contains("encoding=\"UTF-16\""));
+        assert!(decoded.contains("项目"));
         assert!(safe("bad\npath").is_err());
         #[cfg(windows)]
         {

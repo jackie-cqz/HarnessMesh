@@ -59,7 +59,7 @@ hmesh --data-dir ORIGINAL_NODE_PATH backup restore --from /private/new-backup
 
 ## 队列与公平调度
 
-已有全局 `max_concurrent_runs` / `max_queue_depth` 继续生效。队列容量包括待审批、排队和未结束执行；重复原请求仍先去重，不会因满队列而变成新任务。
+已有全局 `max_concurrent_runs` / `max_queue_depth` 继续生效。队列容量包括待审批、排队和未结束执行；owner 模型验证任务同样受精确上限约束；重复原请求仍先去重，不会因满队列而变成新任务。
 
 默认每个项目/Agent 最多一个并发、20 个未结束任务。可在 `node.toml` 中精确覆盖，并重启 Daemon 生效：
 
@@ -107,7 +107,7 @@ hmesh --data-dir NODE startup status
 hmesh --data-dir NODE startup uninstall
 ```
 
-`plan` 只输出配置。`install` 显式注册当前用户下次登录时启动此 Node 的 Daemon，不立即启动，不打开面板；不注册系统服务或管理员任务。Mac 使用用户 LaunchAgent，Windows 使用绑定当前用户 SID、InteractiveToken 和最低权限的任务。不会保存账户密码或环境变量密钥。启动后会按原规则处理既有已批准队列，且继续检查授权；不自动重新执行 UNKNOWN。
+`plan` 只输出配置。`install` 显式注册当前用户下次登录时启动此 Node 的 Daemon，不立即启动，不打开面板；不注册系统服务或管理员任务。Mac 使用用户 LaunchAgent，Windows 使用绑定当前用户 SID、InteractiveToken 和最低权限的任务，任务文件以带 BOM 的 UTF-16LE 保存。不会保存账户密码或环境变量密钥。启动后会按原规则处理既有已批准队列，且继续检查授权；不自动重新执行 UNKNOWN。
 
 自启引用安装时的绝对二进制路径，安装后应保留该版本目录。升级时先卸载旧登录注册，完成升级和检查后用新 CLI 重新安装。备份不恢复外部登录注册；恢复节点后单独核对 `startup status`，不要把历史标记当作运行状态。测试不在开发者本机安装自启项。
 
