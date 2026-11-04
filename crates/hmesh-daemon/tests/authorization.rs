@@ -34,6 +34,13 @@ async fn tailnet_router_blocks_every_owner_namespace_even_with_owner_certificate
         "/local/pairs",
         "/local/services",
         "/local/integrations",
+        "/local/templates",
+        "/local/workflows",
+        "/local/diagnostics",
+        "/local/storage",
+        "/local/usage",
+        "/local/budgets",
+        "/local/compatibility",
     ] {
         assert_eq!(
             owner.get::<Value>(path).await.unwrap_err().code,

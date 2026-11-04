@@ -27,6 +27,8 @@ jobs:
         run: cargo build --locked -p hmesh-cli -p hmesh-fixture
       - name: Offline backup, restore and startup planning without models
         run: node scripts/maintenance-smoke.mjs
+      - name: Templates, persisted workflows, diagnostics and usage without models
+        run: node scripts/development-smoke.mjs
       - name: Two-node automated acceptance without models
         run: node scripts/acceptance/local-smoke.mjs
       - name: Bounded repair orchestration with explicit test double
@@ -42,6 +44,9 @@ jobs:
       - name: Panel create, recover and artifact verification without models
         if: runner.os == 'Linux'
         run: npm run test:panel
+      - name: Panel templates, workflows, diagnostics and budgets without models
+        if: runner.os == 'Linux'
+        run: npm run test:development-panel
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

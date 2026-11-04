@@ -1,0 +1,196 @@
+{
+  "schema": 1,
+  "kind": "local-development-workflows",
+  "status": "passed-local",
+  "date": "2026-11-04",
+  "version": "0.0.2",
+  "database_schema": 8,
+  "base_commit": "b5738394dabb8516568a4cc927017eb6a9e505e9",
+  "rust_tests_passed": 110,
+  "node_tests_passed": 14,
+  "format": "passed",
+  "clippy_warnings_denied": "passed",
+  "checks": {
+    "local_tls": {
+      "passed": true,
+      "checks": [
+        {
+          "name": "immutable-templates",
+          "status": "pass"
+        },
+        {
+          "name": "stable-id-and-approval",
+          "status": "pass"
+        },
+        {
+          "name": "origin-restart",
+          "status": "pass"
+        },
+        {
+          "name": "two-stage-separate-approval",
+          "status": "pass"
+        },
+        {
+          "name": "bounded-repair-frozen-contract",
+          "status": "pass"
+        },
+        {
+          "name": "unknown-never-replayed",
+          "status": "pass"
+        },
+        {
+          "name": "cancel-pending",
+          "status": "pass"
+        },
+        {
+          "name": "reported-usage-budget",
+          "status": "pass"
+        },
+        {
+          "name": "structured-diagnostics-export",
+          "status": "pass"
+        },
+        {
+          "name": "compatibility-matrix",
+          "status": "pass"
+        },
+        {
+          "name": "offline-storage-preview",
+          "status": "pass"
+        }
+      ]
+    },
+    "browser_existing": {
+      "passed": true,
+      "checks": [
+        "worktree-diff-review",
+        "queue-wait-reason",
+        "queue-resumes-after-cancel",
+        "completion-snapshot-after-file-edit",
+        "onboarding-reference-preview",
+        "onboarding-idempotent-register",
+        "onboarding-no-policy-or-model",
+        "mobile-onboarding",
+        "navigation",
+        "pending-approval",
+        "request-text-XSS",
+        "reject",
+        "archive",
+        "local-create",
+        "local-approval",
+        "local-verify",
+        "remote-create",
+        "lost-acknowledgement",
+        "original-request-recovery",
+        "no-duplicate-attempt",
+        "remote-verification-fail",
+        "remote-verification-pass",
+        "observation-time",
+        "retire",
+        "restore-unverified",
+        "mobile",
+        "access-gate",
+        "stop-preserves-existing-daemon"
+      ]
+    },
+    "browser_new": {
+      "passed": true,
+      "checks": [
+        {
+          "name": "save-template-from-composer",
+          "status": "pass"
+        },
+        {
+          "name": "lost-ack-reload-recovers-same-workflow",
+          "status": "pass"
+        },
+        {
+          "name": "workflow-approval-and-owner-review",
+          "status": "pass"
+        },
+        {
+          "name": "build-and-cancel-two-stage-workflow",
+          "status": "pass"
+        },
+        {
+          "name": "budget-form-and-unknown-usage",
+          "status": "pass"
+        },
+        {
+          "name": "download-structured-diagnostics",
+          "status": "pass"
+        },
+        {
+          "name": "compatibility-and-storage-view",
+          "status": "pass"
+        },
+        {
+          "name": "mobile-layout",
+          "status": "pass"
+        }
+      ]
+    },
+    "maintenance": {
+      "passed": true,
+      "checks": [
+        "live-lock-refusal",
+        "offline-consistent-backup",
+        "no-overwrite",
+        "same-path-identity-restore",
+        "tamper-refusal",
+        "startup-plan-no-mutation",
+        "native-plist-parser"
+      ]
+    },
+    "mac_package": {
+      "passed": true,
+      "checks": [
+        "archive-extraction",
+        "manifest-hashes",
+        "no-instance-material",
+        "standalone-cli",
+        "standalone-panel",
+        "upgrade-preflight",
+        "actual-launcher",
+        "fresh-panel-and-daemon",
+        "authenticated-snapshot",
+        "owned-shutdown"
+      ]
+    }
+  },
+  "scope": {
+    "real_model_calls": 0,
+    "physical_two_machine_test": false,
+    "existing_nodes_migrated": false,
+    "developer_startup_installed": false,
+    "personal_harness_credentials_used": false,
+    "package_build": "local release working tree; final clean bundles come from PR CI",
+    "cross_platform_ci": "see final PR checks"
+  },
+  "source_sha256": {
+    "Cargo.toml": "a54f72f39291336208202abb338d09614c4f8a6396da6b4ee1d90ec5b94b7236",
+    "Cargo.lock": "b2a5aa6834ac5d552fd49a57626a07c760d725805ed4eed73d24b228fc301506",
+    "crates/hmesh-core/src/development.rs": "47f6c0878795ff9ea3e0f5b5beede7d50005a9485b57fdc9b18c510c77c0ce5e",
+    "crates/hmesh-core/src/lib.rs": "e0ef6fb704adc7a58f1145808e5ed9b40d8ada3f0158cecc00a7f47f34cfcb98",
+    "crates/hmesh-store/migrations/008_development.sql": "1d818731d6742ea975b9641815d1a3ce8aa9fceb209aa0b64b5461d7386ad87c",
+    "crates/hmesh-store/src/development.rs": "e37bb226dcc208caf41dee824ec0055228fcb68f7543988017612332a6c3c936",
+    "crates/hmesh-store/src/lib.rs": "3f3791141ecab449bdf67b611bd9a4749bf701136f73f3f8b6fc6a565acfaae6",
+    "crates/hmesh-adapters/src/protocol.rs": "92d2e850570967c53861d4f56a382222fa3b4a3e9e8d747c036db9a4ac71bf30",
+    "crates/hmesh-adapters/src/compatibility.rs": "a1e10f3dc84043cd0a181a4ebe5d94709539355fea300ff28840a5daec3cf7f1",
+    "crates/hmesh-adapters/src/executable.rs": "39d9ef181844952f67f41c6aa0c59c43d290e97e803befa7b1cb21255cd927b9",
+    "crates/hmesh-daemon/src/development.rs": "d03ee81320fd23d6e33e2f2d223db4d4cd30a5abc9da3d492243b5892f3d83d2",
+    "crates/hmesh-daemon/src/lib.rs": "f8cad0cc0541abb924ed4f8479f3b1a14dbc5d89fd65a5c67bd5561a7e45fee2",
+    "crates/hmesh-runtime/src/lib.rs": "a98a41c60d53b870b8e2c110c1aa1e60677740f2ec89ae54d16a8659577252ec",
+    "crates/hmesh-runtime/src/workspace.rs": "92be27c0a0810302ab3578fa205fcd3bc73c38999245834f92014585cb69c70f",
+    "crates/hmesh-cli/src/main.rs": "e31955fdce85dd3d904269469807568e2f0bec1b23b0a1a8f6f2c4a72f2caf12",
+    "crates/hmesh-cli/src/storage.rs": "b4ad041d2f673d4850145db6008be904e4dcf31cc1e9b7334eaec60a00a993cd",
+    "crates/hmesh-cli/src/panel.rs": "e07e5929fbc92472cc81d550b66cca7bafb05087e527f1bc32f10b60c3bba433",
+    "web/panel/development.js": "957b2ad9724b255fd58b4e94fdca86c13af7dba39c98a5d9b62cb25fe6d93701",
+    "web/panel/workflow.js": "7f076d3cb53b0bb78d26c2a104c2496f7c793720fac456461a08106e750fe6ad",
+    "web/panel/index.html": "d0447974a22f7ee9c0f06d9f4add7fb75c86f30d344a416570208aedee7f78dc",
+    "scripts/development-smoke.mjs": "c9319daf0c911a6d18ee413eb0a57a9e11a3327f6d779c37fdf8aeb5c64cf5bd",
+    "scripts/development-panel-smoke.mjs": "03908e08a507c737c25400f1cabb326e42d7a89c6742e20b67083d2aff805695",
+    ".github/workflows/ci.yml": "6867172969057f32f48e4bf8c7828eb97c7b4e22b5b69ba86ab4b76f5fc5f33d",
+    "scripts/package-runtime.mjs": "83f63193f87313d81a3be98a6e0f040f11b5ae523bd6356432c994cf7b5f7b25"
+  }
+}

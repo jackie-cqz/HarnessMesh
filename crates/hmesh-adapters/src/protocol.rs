@@ -1,3 +1,4 @@
+use hmesh_core::development::UsageTotals;
 use hmesh_core::{ErrorCode, HarnessKind, MeshError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,6 +11,7 @@ pub enum ObservedEvent {
     TextDelta { text: String },
     ToolEvent { name: String, phase: String },
     ApprovalRequested,
+    Usage { usage: UsageTotals },
 }
 
 pub struct ProtocolObserver {
@@ -20,6 +22,8 @@ pub struct ProtocolObserver {
     failed: bool,
     needs_input: bool,
     calls: HashMap<String, String>,
+    usage: UsageTotals,
+    usage_ids: std::collections::HashSet<String>,
 }
 impl ProtocolObserver {
     pub fn new(kind: HarnessKind) -> Self {
@@ -31,6 +35,8 @@ impl ProtocolObserver {
             failed: false,
             needs_input: false,
             calls: HashMap::new(),
+            usage: UsageTotals::default(),
+            usage_ids: std::collections::HashSet::new(),
         }
     }
     pub fn settled(&self) -> bool {
@@ -42,6 +48,9 @@ impl ProtocolObserver {
     pub fn observe(&mut self, record: &Value) -> Vec<ObservedEvent> {
         let mut result = vec![];
         let kind = record.get("type").and_then(Value::as_str).unwrap_or("");
+        if let Some(usage) = self.observe_usage(record, kind) {
+            result.push(ObservedEvent::Usage { usage });
+        }
         match self.kind {
             HarnessKind::Pi => match kind {
                 "agent_start" => result.push(ObservedEvent::Started),
@@ -176,6 +185,72 @@ impl ProtocolObserver {
             },
         }
         result
+    }
+    fn observe_usage(&mut self, record: &Value, kind: &str) -> Option<UsageTotals> {
+        let (value, fields, id, source) = match self.kind {
+            HarnessKind::Pi
+                if kind == "message_end"
+                    && record.pointer("/message/role")?.as_str()? == "assistant" =>
+            {
+                (
+                    record.pointer("/message/usage")?,
+                    ["input", "output", "cacheRead", "cacheWrite", "totalTokens"],
+                    record
+                        .pointer("/message/id")
+                        .or_else(|| record.pointer("/message/timestamp")),
+                    "pi.message_end.usage",
+                )
+            }
+            HarnessKind::Opencode if kind == "step_finish" => (
+                record.pointer("/part/tokens")?,
+                ["input", "output", "/cache/read", "/cache/write", "total"],
+                record.pointer("/part/id"),
+                "opencode.step_finish.tokens",
+            ),
+            // DSH's pinned fixture does not establish a usage schema.
+            _ => return None,
+        };
+        let get = |key: &str| {
+            if key.starts_with('/') {
+                value.pointer(key)
+            } else {
+                value.get(key)
+            }
+        };
+        let values: Vec<Option<u64>> = fields
+            .iter()
+            .map(|f| {
+                get(f)
+                    .and_then(Value::as_u64)
+                    .filter(|n| *n <= 1_000_000_000)
+            })
+            .collect();
+        if values.iter().all(Option::is_none) {
+            return None;
+        }
+        if let Some(id) = id.filter(|v| v.is_string() || v.is_u64())
+            && !self.usage_ids.insert(id.to_string())
+        {
+            return None;
+        }
+        let sum = |old: Option<u64>, new: Option<u64>| {
+            if self.usage.reports > 0 && old.is_none() {
+                None
+            } else {
+                new.map(|n| old.unwrap_or(0).saturating_add(n))
+            }
+        };
+        self.usage.input_tokens = sum(self.usage.input_tokens, values[0]);
+        self.usage.output_tokens = sum(self.usage.output_tokens, values[1]);
+        self.usage.cache_read_tokens = sum(self.usage.cache_read_tokens, values[2]);
+        self.usage.cache_write_tokens = sum(self.usage.cache_write_tokens, values[3]);
+        self.usage.total_tokens = sum(self.usage.total_tokens, values[4]);
+        self.usage.reports += 1;
+        self.usage.source = Some(source.into());
+        Some(self.usage.clone())
+    }
+    pub fn usage(&self) -> &UsageTotals {
+        &self.usage
     }
     pub fn finish(&self, exit_code: Option<i32>) -> Result<()> {
         if self.needs_input {

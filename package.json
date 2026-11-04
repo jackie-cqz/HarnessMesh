@@ -1,6 +1,6 @@
 {
   "name": "harnessmesh-regression-tools",
   "private": true,
-  "scripts": {"test:panel": "node scripts/panel-smoke.mjs"},
+  "scripts": {"test:panel": "node scripts/panel-smoke.mjs", "test:development-panel":"node scripts/development-panel-smoke.mjs"},
   "devDependencies": {"playwright": "1.62.1"}
 }

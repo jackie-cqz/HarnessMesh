@@ -1,6 +1,7 @@
 //! Harness-independent contracts. No network, process or credential access.
 mod network;
 pub use network::is_tailnet_ip;
+pub mod development;
 pub mod managed;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -221,6 +222,9 @@ pub struct TaskSubmit {
     pub limits: RunLimits,
     #[serde(default = "yes")]
     pub requires_approval: bool,
+    /// A restriction, never a tool grant. Omitted on ordinary/legacy requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_tools: Option<Vec<String>>,
 }
 fn yes() -> bool {
     true
@@ -235,6 +239,7 @@ impl TaskSubmit {
             inputs: vec![],
             limits: RunLimits::default(),
             requires_approval: true,
+            expected_tools: None,
         }
     }
     pub fn validate(&self) -> Result<()> {
@@ -242,6 +247,11 @@ impl TaskSubmit {
             return Err(MeshError::input("goal must contain 1..65536 UTF-8 bytes"));
         }
         validate_name(&self.project_id)?;
+        if let Some(tools) = &self.expected_tools
+            && (tools.len() > 32 || tools.iter().any(|t| validate_name(t).is_err()))
+        {
+            return Err(MeshError::input("invalid expected tools"));
+        }
         if !(1..=1800).contains(&self.limits.timeout_seconds)
             || !(1..=MAX_RUN_OUTPUT_BYTES).contains(&self.limits.max_output_bytes)
         {

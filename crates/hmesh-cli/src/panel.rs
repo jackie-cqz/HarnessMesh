@@ -109,6 +109,31 @@ pub async fn run(
         .route("/api/onboarding/register", post(register_onboarding))
         .route("/api/tasks/{id}/workspace", get(workspace_diff))
         .route(
+            "/api/development/compatibility/probe",
+            post(development_probe),
+        )
+        .route(
+            "/api/development/{kind}",
+            get(development_read).post(development_write),
+        )
+        .route(
+            "/api/development/templates/run",
+            post(development_template_run),
+        )
+        .route(
+            "/api/development/workflows/{id}/{action}",
+            post(development_workflow_action),
+        )
+        .route(
+            "/assets/development.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/development.js"),
+                )
+            }),
+        )
+        .route(
             "/",
             get(|| async { Html(include_str!("../../../web/panel/index.html")) }),
         )
@@ -224,10 +249,10 @@ async fn ready_client(instance: &Instance) -> anyhow::Result<Option<Client>> {
         Ok(Ok(status)) => {
             if !status["api_features"]
                 .as_array()
-                .is_some_and(|v| v.iter().any(|x| x == "reliability-v2"))
+                .is_some_and(|v| v.iter().any(|x| x == "development-workflows-v1"))
             {
                 anyhow::bail!(
-                    "existing Daemon needs an explicit update/restart for reliability-v2; it was preserved"
+                    "existing Daemon needs an explicit update/restart for development-workflows-v1; it was preserved"
                 );
             }
             Ok(Some(client))
@@ -528,6 +553,69 @@ async fn service_action(
     Json(body): Json<Value>,
 ) -> Response {
     action(s, "services", id, &name, body, &["restart", "revoke"]).await
+}
+
+async fn development_read(State(s): State<Panel>, Path(kind): Path<String>) -> Response {
+    if ![
+        "templates",
+        "workflows",
+        "diagnostics",
+        "storage",
+        "usage",
+        "budgets",
+        "compatibility",
+    ]
+    .contains(&kind.as_str())
+    {
+        return error(StatusCode::NOT_FOUND, "NOT_FOUND");
+    }
+    mutation(s.client.get::<Value>(&format!("/local/{kind}")).await)
+}
+async fn development_write(
+    State(s): State<Panel>,
+    Path(kind): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let valid = match kind.as_str() {
+        "templates" => {
+            serde_json::from_value::<hmesh_core::development::TaskTemplate>(body.clone()).is_ok()
+        }
+        "workflows" => {
+            serde_json::from_value::<hmesh_core::development::WorkflowSpec>(body.clone()).is_ok()
+        }
+        "budgets" => {
+            serde_json::from_value::<hmesh_core::development::ProjectBudget>(body.clone()).is_ok()
+        }
+        _ => return error(StatusCode::NOT_FOUND, "NOT_FOUND"),
+    };
+    if !valid {
+        return error(StatusCode::BAD_REQUEST, "INVALID_REQUEST");
+    }
+    mutation(s.client.post(&format!("/local/{kind}"), &body).await)
+}
+async fn development_template_run(
+    State(s): State<Panel>,
+    Json(body): Json<hmesh_daemon::TemplateRunRequest>,
+) -> Response {
+    mutation(s.client.post("/local/templates/run", &body).await)
+}
+async fn development_probe(State(s): State<Panel>, Json(body): Json<Value>) -> Response {
+    if body.as_object().is_none_or(|o| o.len() != 1)
+        || body
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .is_none_or(|id| Uuid::parse_str(id).is_err())
+    {
+        return error(StatusCode::BAD_REQUEST, "INVALID_REQUEST");
+    }
+    mutation(s.client.post("/local/compatibility/probe", &body).await)
+}
+async fn development_workflow_action(
+    State(s): State<Panel>,
+    Path((id, name)): Path<(Uuid, String)>,
+    Json(body): Json<Value>,
+) -> Response {
+    action(s, "workflows", id, &name, body, &["cancel", "accept"]).await
 }
 
 #[cfg(test)]
