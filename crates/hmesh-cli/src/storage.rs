@@ -133,6 +133,19 @@ fn plan(instance: &Instance, store: &Store, cutoff: i64, keep: usize) -> Result<
         items,
     })
 }
+fn ordinary_directory(meta: &fs::Metadata) -> Result<()> {
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        bail!("runs root must be an ordinary directory");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 {
+            bail!("runs root must not be a reparse point");
+        }
+    }
+    Ok(())
+}
 fn open(node: &Path) -> Result<(Instance, fs::File, Store)> {
     let instance = Instance::load(node)?;
     let lock = instance
@@ -141,16 +154,7 @@ fn open(node: &Path) -> Result<(Instance, fs::File, Store)> {
     let store = Store::open(&instance.dir.join("state.sqlite3"))?;
     let runs = instance.dir.join("runs");
     if let Ok(meta) = fs::symlink_metadata(&runs) {
-        if !meta.is_dir() || meta.file_type().is_symlink() {
-            bail!("runs root must be an ordinary directory");
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            if meta.file_attributes() & 0x400 != 0 {
-                bail!("runs root must not be a reparse point");
-            }
-        }
+        ordinary_directory(&meta)?;
     }
     Ok((instance, lock, store))
 }

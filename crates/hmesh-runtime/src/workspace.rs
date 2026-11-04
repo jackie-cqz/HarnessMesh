@@ -257,7 +257,23 @@ pub fn prune(store: &Store, id: uuid::Uuid, expected: &str, node: &Path) -> Resu
     }
     let executable = Path::new(record["git"].as_str().context("invalid Git reference")?);
     let scratch = node.join("workspace-prune");
-    git(executable, path, &["add", "--all", "--", "."], &scratch)?;
+    if !git(
+        executable,
+        path,
+        &["diff", "--no-ext-diff", "--no-textconv"],
+        &scratch,
+    )?
+    .is_empty()
+        || !git(
+            executable,
+            path,
+            &["ls-files", "--others", "--exclude-standard"],
+            &scratch,
+        )?
+        .is_empty()
+    {
+        bail!("worktree has unreviewed changes; files and index were preserved");
+    }
     let patch = git(
         executable,
         path,

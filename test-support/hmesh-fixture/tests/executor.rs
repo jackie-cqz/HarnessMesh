@@ -119,6 +119,35 @@ impl Fixture {
     }
 }
 #[tokio::test]
+async fn reported_token_cap_stops_owned_process_and_preserves_usage() {
+    let f = Fixture::new();
+    let b:hmesh_core::development::ProjectBudget=serde_json::from_value(serde_json::json!({"project_id":"fixture","max_runtime_seconds":5,"max_reported_tokens":25,"input_usd_per_million":null,"output_usd_per_million":null,"price_source":null,"price_as_of":null})).unwrap();
+    f.store.set_project_budget(&b).unwrap();
+    let task = f.submit("fixture:usage", 10);
+    let (stop, job) = f.executor();
+    let terminal = f.terminal(task.task_id).await;
+    assert_eq!(terminal.status, TaskStatus::Failed);
+    assert_eq!(terminal.error.unwrap().code, ErrorCode::RateLimited);
+    assert_eq!(f.store.usage(task.task_id).unwrap().total_tokens, Some(40));
+    assert_eq!(f.store.attempt_count(task.task_id).unwrap(), 1);
+    stop.send(true).unwrap();
+    job.await.unwrap();
+}
+#[tokio::test]
+async fn project_walltime_budget_applies_when_no_usage_is_reported() {
+    let f = Fixture::new();
+    let b:hmesh_core::development::ProjectBudget=serde_json::from_value(serde_json::json!({"project_id":"fixture","max_runtime_seconds":1,"max_reported_tokens":25,"input_usd_per_million":null,"output_usd_per_million":null,"price_source":null,"price_as_of":null})).unwrap();
+    f.store.set_project_budget(&b).unwrap();
+    let task = f.submit("fixture:wait", 10);
+    let (stop, job) = f.executor();
+    let terminal = f.terminal(task.task_id).await;
+    assert_eq!(terminal.status, TaskStatus::Failed);
+    assert!(terminal.error.unwrap().message.contains("deadline"));
+    assert!(f.store.usage(task.task_id).unwrap().total_tokens.is_none());
+    stop.send(true).unwrap();
+    job.await.unwrap();
+}
+#[tokio::test]
 async fn completed_snapshot_does_not_follow_later_project_edits_or_new_grants() {
     let f = Fixture::new();
     let task = f.submit("fixture:create", 5);
@@ -238,6 +267,46 @@ async fn worktree_execution_leaves_original_untouched_and_applies_only_reviewed_
             &scratch
         )
         .is_err()
+    );
+    let hash = workspace["patch_sha256"].as_str().unwrap();
+    assert!(
+        hmesh_runtime::workspace::prune(&f.store, task.task_id, "wrong", &f.instance.dir).is_err()
+    );
+    let worktree = std::path::Path::new(workspace["path"].as_str().unwrap());
+    std::fs::write(worktree.join("post-review.txt"), b"new unreviewed work").unwrap();
+    let index_before =
+        std::process::Command::new(f.config.project.git_executable.as_ref().unwrap())
+            .arg("-C")
+            .arg(worktree)
+            .args(["diff", "--cached", "--binary"])
+            .output()
+            .unwrap()
+            .stdout;
+    assert!(
+        hmesh_runtime::workspace::prune(&f.store, task.task_id, hash, &f.instance.dir).is_err()
+    );
+    assert!(worktree.exists());
+    let index_after = std::process::Command::new(f.config.project.git_executable.as_ref().unwrap())
+        .arg("-C")
+        .arg(worktree)
+        .args(["diff", "--cached", "--binary"])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(index_before, index_after, "refused prune changed the index");
+    std::fs::remove_file(worktree.join("post-review.txt")).unwrap();
+    hmesh_runtime::workspace::prune(&f.store, task.task_id, hash, &f.instance.dir).unwrap();
+    assert!(!worktree.exists());
+    assert!(f.config.project.root.join("out/health.json").exists());
+    assert_eq!(
+        f.store.workspace(task.task_id).unwrap().unwrap()["state"],
+        "pruned"
+    );
+    assert!(
+        f.store.workspace(task.task_id).unwrap().unwrap()["patch"]
+            .as_str()
+            .unwrap()
+            .contains("out/health.json")
     );
 }
 #[tokio::test]

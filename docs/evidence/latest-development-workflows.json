@@ -181,9 +181,9 @@
     "crates/hmesh-daemon/src/development.rs": "d03ee81320fd23d6e33e2f2d223db4d4cd30a5abc9da3d492243b5892f3d83d2",
     "crates/hmesh-daemon/src/lib.rs": "f8cad0cc0541abb924ed4f8479f3b1a14dbc5d89fd65a5c67bd5561a7e45fee2",
     "crates/hmesh-runtime/src/lib.rs": "a98a41c60d53b870b8e2c110c1aa1e60677740f2ec89ae54d16a8659577252ec",
-    "crates/hmesh-runtime/src/workspace.rs": "92be27c0a0810302ab3578fa205fcd3bc73c38999245834f92014585cb69c70f",
+    "crates/hmesh-runtime/src/workspace.rs": "1d3531d100f7fdc40efebbb99bb7c6fc0218d4c3c57b487673210f64304b873b",
     "crates/hmesh-cli/src/main.rs": "e31955fdce85dd3d904269469807568e2f0bec1b23b0a1a8f6f2c4a72f2caf12",
-    "crates/hmesh-cli/src/storage.rs": "b4ad041d2f673d4850145db6008be904e4dcf31cc1e9b7334eaec60a00a993cd",
+    "crates/hmesh-cli/src/storage.rs": "a4e450dc3254ad5d5c27b947769b81540a25a0a2c146313b13421b5f4f382071",
     "crates/hmesh-cli/src/panel.rs": "e07e5929fbc92472cc81d550b66cca7bafb05087e527f1bc32f10b60c3bba433",
     "web/panel/development.js": "957b2ad9724b255fd58b4e94fdca86c13af7dba39c98a5d9b62cb25fe6d93701",
     "web/panel/workflow.js": "7f076d3cb53b0bb78d26c2a104c2496f7c793720fac456461a08106e750fe6ad",
@@ -191,6 +191,16 @@
     "scripts/development-smoke.mjs": "c9319daf0c911a6d18ee413eb0a57a9e11a3327f6d779c37fdf8aeb5c64cf5bd",
     "scripts/development-panel-smoke.mjs": "03908e08a507c737c25400f1cabb326e42d7a89c6742e20b67083d2aff805695",
     ".github/workflows/ci.yml": "6867172969057f32f48e4bf8c7828eb97c7b4e22b5b69ba86ab4b76f5fc5f33d",
-    "scripts/package-runtime.mjs": "83f63193f87313d81a3be98a6e0f040f11b5ae523bd6356432c994cf7b5f7b25"
+    "scripts/package-runtime.mjs": "83f63193f87313d81a3be98a6e0f040f11b5ae523bd6356432c994cf7b5f7b25",
+    "test-support/hmesh-fixture/tests/executor.rs": "b9e548b647eb0da8b986e40a2f3bc80ac8d8bf7511a4a0edcc522a0e2ccf25d6",
+    "crates/hmesh-store/tests/development.rs": "1937dccef2908d8250156c1ce6d192249a29ae1fb33f6d2f89f7d78b2604ddb2",
+    "crates/hmesh-core/tests/development.rs": "6a65a88a87f61a00b26da9b7da02a042fedd6cfbd6e7286f2913654743501e88",
+    "crates/hmesh-adapters/tests/development.rs": "91ef2a3855417999d9a396ad560340829a1f76e57daf21ae71e84042cc3832dc"
+  },
+  "review_followup": {
+    "prune_refusal_preserves_files_and_index": "passed",
+    "offline_storage_lock_and_symlink_tests": "3 passed",
+    "clippy_stable_warnings_denied": "passed",
+    "rust_1_90_ci_cfg_lint": "factored directory validation; final PR checks are authoritative"
   }
 }
