@@ -1,4 +1,5 @@
 //! Version-specific harness boundaries. Protocol fixtures are not real-run evidence.
+pub mod compatibility;
 pub mod executable;
 pub mod framing;
 pub mod protocol;

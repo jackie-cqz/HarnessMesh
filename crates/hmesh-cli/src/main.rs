@@ -13,6 +13,7 @@ use uuid::Uuid;
 mod maintenance;
 mod panel;
 mod startup;
+mod storage;
 
 #[derive(Parser)]
 #[command(name = "hmesh", version, about = "Local-first coding harness mesh")]
@@ -26,6 +27,27 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Commands {
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommand,
+    },
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
+    },
+    Usage,
+    Budget {
+        #[command(subcommand)]
+        command: BudgetCommand,
+    },
+    Compatibility {
+        #[arg(long)]
+        agent_id: Option<Uuid>,
+    },
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommand,
+    },
     /// Private, offline Node backups. Never copies external Harness credential files.
     Backup {
         #[command(subcommand)]
@@ -66,6 +88,10 @@ enum Commands {
     Doctor {
         #[arg(long)]
         peer: Option<Uuid>,
+        #[arg(long)]
+        report: bool,
+        #[arg(long, requires = "report")]
+        out: Option<PathBuf>,
     },
     Node {
         #[command(subcommand)]
@@ -120,6 +146,73 @@ enum Commands {
     Audit,
 }
 #[derive(Subcommand)]
+enum TemplateCommand {
+    List,
+    Save {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    Run {
+        template_id: Uuid,
+        #[arg(long)]
+        revision: u32,
+        #[arg(long)]
+        goal: String,
+        #[arg(long)]
+        run_id: Option<Uuid>,
+    },
+}
+#[derive(Subcommand)]
+enum WorkflowCommand {
+    List {
+        #[arg(long)]
+        archived: bool,
+    },
+    Archive {
+        id: Uuid,
+    },
+    Start {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    Show {
+        id: Uuid,
+    },
+    Cancel {
+        id: Uuid,
+    },
+    Accept {
+        id: Uuid,
+    },
+}
+#[derive(Subcommand)]
+enum BudgetCommand {
+    List,
+    Set {
+        #[arg(long)]
+        file: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum StorageCommand {
+    Status,
+    Plan {
+        #[arg(long, default_value_t = 30)]
+        older_than_days: u32,
+        #[arg(long, default_value_t = 20)]
+        keep_latest: usize,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    Apply {
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        sha256: String,
+    },
+    Compact,
+}
+#[derive(Subcommand)]
 enum BackupCommand {
     Create {
         #[arg(long)]
@@ -156,6 +249,12 @@ enum StartupCommand {
 }
 #[derive(Subcommand)]
 enum WorkspaceCommand {
+    /// Remove only an already-applied, unchanged worktree. The stored patch remains.
+    Prune {
+        task_id: Uuid,
+        #[arg(long)]
+        sha256: String,
+    },
     Show {
         task_id: Uuid,
     },
@@ -513,6 +612,18 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         return Ok(None);
     }
     match &cli.command {
+        Commands::Storage { command } => {
+            return Ok(Some(match command {
+                StorageCommand::Status => storage::status(&dir)?,
+                StorageCommand::Plan {
+                    older_than_days,
+                    keep_latest,
+                    out,
+                } => storage::preview(&dir, *older_than_days, *keep_latest, out)?,
+                StorageCommand::Apply { plan, sha256 } => storage::apply(&dir, plan, sha256)?,
+                StorageCommand::Compact => storage::compact(&dir)?,
+            }));
+        }
         Commands::Backup { command } => {
             return Ok(Some(match command {
                 BackupCommand::Create { out } => maintenance::create(&dir, out)?,
@@ -543,6 +654,9 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 .context("stop the Daemon before offline workspace review/apply")?;
             let store = hmesh_store::Store::open(&instance.dir.join("state.sqlite3"))?;
             return Ok(Some(match command {
+                WorkspaceCommand::Prune { task_id, sha256 } => {
+                    hmesh_runtime::workspace::prune(&store, *task_id, sha256, &instance.dir)?
+                }
                 WorkspaceCommand::Show { task_id } => store
                     .workspace(*task_id)?
                     .unwrap_or(json!({"state":"shared"})),
@@ -557,7 +671,17 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         _ => {}
     }
     let instance = Instance::load(&dir)?;
-    if let Commands::Doctor { peer } = &cli.command {
+    if let Commands::Doctor { peer, report, out } = &cli.command {
+        if *report {
+            let value: Value = local_client(&instance)?.get("/local/diagnostics").await?;
+            if let Some(path) = out {
+                write_report(path, &value)?;
+                return Ok(Some(
+                    json!({"exported":path,"sensitive_text_included":false}),
+                ));
+            }
+            return Ok(Some(value));
+        }
         let daemon = match local_client(&instance) {
             Ok(client) => Some(match client.get::<Value>("/local/status").await {
                 Ok(status) => json!({"state":"reachable", "status":status}),
@@ -639,6 +763,91 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
     }
     let client = local_client(&instance)?;
     let value: Value = match cli.command {
+        Commands::Template { command } => match command {
+            TemplateCommand::List => client.get("/local/templates").await?,
+            TemplateCommand::Save { file } => {
+                client
+                    .post(
+                        "/local/templates",
+                        &read_spec::<hmesh_core::development::TaskTemplate>(&file)?,
+                    )
+                    .await?
+            }
+            TemplateCommand::Run {
+                template_id,
+                revision,
+                goal,
+                run_id,
+            } => {
+                client
+                    .post(
+                        "/local/templates/run",
+                        &hmesh_daemon::TemplateRunRequest {
+                            id: run_id.unwrap_or_else(Uuid::new_v4),
+                            template_id,
+                            revision,
+                            goal,
+                        },
+                    )
+                    .await?
+            }
+        },
+        Commands::Workflow { command } => match command {
+            WorkflowCommand::List { archived } => {
+                client
+                    .get(if archived {
+                        "/local/workflows/archived"
+                    } else {
+                        "/local/workflows"
+                    })
+                    .await?
+            }
+            WorkflowCommand::Archive { id } => {
+                client
+                    .post(&format!("/local/workflows/{id}/archive"), &json!({}))
+                    .await?
+            }
+            WorkflowCommand::Start { file } => {
+                client
+                    .post(
+                        "/local/workflows",
+                        &read_spec::<hmesh_core::development::WorkflowSpec>(&file)?,
+                    )
+                    .await?
+            }
+            WorkflowCommand::Show { id } => client.get(&format!("/local/workflows/{id}")).await?,
+            WorkflowCommand::Cancel { id } => {
+                client
+                    .post(&format!("/local/workflows/{id}/cancel"), &json!({}))
+                    .await?
+            }
+            WorkflowCommand::Accept { id } => {
+                client
+                    .post(&format!("/local/workflows/{id}/accept"), &json!({}))
+                    .await?
+            }
+        },
+        Commands::Usage => client.get("/local/usage").await?,
+        Commands::Budget { command } => match command {
+            BudgetCommand::List => client.get("/local/budgets").await?,
+            BudgetCommand::Set { file } => {
+                client
+                    .post(
+                        "/local/budgets",
+                        &read_spec::<hmesh_core::development::ProjectBudget>(&file)?,
+                    )
+                    .await?
+            }
+        },
+        Commands::Compatibility { agent_id } => {
+            if let Some(agent_id) = agent_id {
+                client
+                    .post("/local/compatibility/probe", &json!({"agent_id":agent_id}))
+                    .await?
+            } else {
+                client.get("/local/compatibility").await?
+            }
+        }
         Commands::Daemon {
             command: DaemonCommand::Status,
         } => client.get("/local/status").await?,
@@ -1014,6 +1223,26 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         _ => anyhow::bail!("command not valid in this context"),
     };
     Ok(Some(value))
+}
+fn read_spec<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T> {
+    if fs::metadata(path)?.len() > 1_048_576 {
+        anyhow::bail!("spec exceeds 1 MiB");
+    }
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
+}
+fn write_report(path: &std::path::Path, value: &Value) -> Result<()> {
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(&serde_json::to_vec_pretty(value)?)?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn resolve_id(input: &str, rows: &[Value], id: &str, name: &str, nested: bool) -> Result<Uuid> {

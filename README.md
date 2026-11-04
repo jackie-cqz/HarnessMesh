@@ -2,7 +2,7 @@
 
 Rust runtime for authorized coding-agent tasks between local-first Mesh Nodes.
 
-V0 supports **two independent processes on one Windows computer**, with Pi, DeepSeek Harness and OpenCode as managed subprocesses. A first [Windows → Orion/Linux SSH smoke](docs/ssh-first-smoke.md) has also passed using Pi 1.4.0 and DeepSeek V4 Flash. Full V0.1, Codex and the three-machine Gateway remain later work.
+0.0.2 provides managed Pi, DeepSeek Harness and OpenCode tasks, a local owner panel, immutable artifacts, persistent workflows and maintenance tools. Real Windows↔Mac Tailnet/mTLS and [Windows → Orion/Linux SSH](docs/ssh-first-smoke.md) checkpoints are recorded in the [implementation status](docs/implementation-status.md). Full V0.1/V0.2, Codex and the three-machine Gateway remain later work.
 
 [Direct Tailscale setup for Windows and Mac](docs/quickstart-tailnet.md) supports literal Tailnet IPs, candidate discovery, pinned mTLS and a separate loopback owner API. On Mac, run `node scripts/start-tailnet.mjs` after cloning to build and start a dedicated Node with the local Pi/DeepSeek V4 Flash configuration; SSH is not required. The [real Windows → Mac acceptance](docs/tailnet-mac-smoke.md) passed owner approval, Pi write/read, five-field JSON/hash verification, deduplication, event replay and completed-task recovery after restarting the Windows origin. The [Mac → Windows execution-owner checkpoint](docs/tailnet-reverse-smoke.md) also passed DSH/Pro write/read and independent JSON/hash verification. Mac-origin status, event and verification readback also passed; duplicate submission, recovery, workspace checks and managed-service integration remain separate.
 
@@ -29,6 +29,8 @@ See [V0 quickstart](docs/quickstart-v0.md), [protocol](docs/protocol.md), [secur
 A [local management panel](docs/local-panel.md) supports task creation, owner approval, original-request recovery, scoped artifact verification and Node/Agent/service management. Run `hmesh --data-dir YOUR_NODE_DIR panel` and open the private access link. Owner mTLS credentials stay in the CLI process. Optional `--start-daemon` owns only a Daemon started here; compatible existing Daemons are preserved. [Native runtime packages](docs/runtime-packages.md) run without Rust or a frontend build. Opening the panel does not call models.
 
 [Local reliability and onboarding](docs/local-reliability.md) adds completion-time artifact snapshots, opt-in Git worktrees with reviewed patch application, offline identity-preserving backups, scoped/fair queueing, a reference-only Agent setup wizard, versioned runtime preflight and owner-managed login startup. Schema 7 upgrades require a pre-upgrade backup; old successful tasks remain explicitly marked as current-file verification.
+
+[Reusable development workflows](docs/development-workflows.md) in 0.0.2 (schema 8) add immutable task templates, persistent approval-gated stages and bounded repair, structured diagnostic export, reviewed offline retention, reported usage/project budgets and executable Harness compatibility checks. The owner panel includes development and operations views. Back up an existing Node with its current binary before upgrading; the new panel preserves an older running Daemon and requests an explicit upgrade.
 
 Development checks do not call models or read personal Harness configurations:
 

@@ -80,6 +80,15 @@ async fn main() -> anyhow::Result<()> {
     emit(json!({"type":"response","command":"prompt","success":true}));
     emit(json!({"type":"agent_start"}));
     match prompt {
+        "fixture:unknown" => emit(json!({"type":"agent_settled"})),
+        "fixture:usage" => {
+            emit(
+                json!({"type":"message_end","message":{"id":"fixture-usage","role":"assistant","stopReason":"stop","usage":{"input":30,"output":10,"cacheRead":0,"cacheWrite":0,"totalTokens":40}}}),
+            );
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
         "fixture:create" => {
             std::fs::create_dir_all("out")?;
             std::fs::write(

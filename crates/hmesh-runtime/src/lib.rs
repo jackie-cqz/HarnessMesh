@@ -103,6 +103,7 @@ async fn execute(
     authorize: &ExecutionAuthorizer,
 ) -> Result<()> {
     let (_, config) = store.agent(task.agent_id)?;
+    let budget = store.project_budget(&task.project_id)?;
     let digest = hmesh_security::sha256_hex(&serde_json::to_vec(&config).map_err(failure)?);
     let attempt = task
         .last_attempt_id
@@ -188,7 +189,13 @@ async fn execute(
     let mut output_closed = false;
     let mut cancellation = false;
     let mut run_error = None;
-    let deadline = tokio::time::sleep(Duration::from_secs(task.request.limits.timeout_seconds));
+    let timeout = budget
+        .as_ref()
+        .map_or(task.request.limits.timeout_seconds, |b| {
+            b.max_runtime_seconds
+                .min(task.request.limits.timeout_seconds)
+        });
+    let deadline = tokio::time::sleep(Duration::from_secs(timeout));
     tokio::pin!(deadline);
     let mut inspect = tokio::time::interval(Duration::from_millis(100));
     loop {
@@ -213,6 +220,14 @@ async fn execute(
                 match decoder.push(&buffer[..read]) {
                     Ok(records) => for record in records {
                         for event in observer.observe(&record) {
+                            if let ObservedEvent::Usage{usage}=&event {
+                                let mut persisted=usage.clone();persisted.configured_model=config.adapter.model.clone();persisted.configured_provider=config.adapter.provider.clone();
+                                if let Err(error)=store.record_usage(task.task_id,attempt,&persisted) {run_error=Some(error);break;}
+                                if budget.as_ref().and_then(|b|b.max_reported_tokens).zip(usage.total_tokens).is_some_and(|(cap,total)|total>=cap) {
+                                    run_error=Some(MeshError::new(ErrorCode::RateLimited,"reported token observation cap reached; provider billing may exceed this delayed observation"));
+                                    break;
+                                }
+                            }
                             if let Err(error) = append_observation(store, task.task_id, &mut prepared, event) {
                                 run_error = Some(error);
                                 break;

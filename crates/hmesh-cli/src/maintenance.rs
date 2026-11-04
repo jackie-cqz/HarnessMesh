@@ -106,7 +106,7 @@ fn db_check(path: &Path) -> Result<i64> {
         bail!("database foreign key check failed");
     }
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if !(1..=7).contains(&version) {
+    if !(1..=8).contains(&version) {
         bail!("backup database schema is unsupported by this binary");
     }
     Ok(version)
@@ -351,7 +351,7 @@ pub fn bundle_check(bundle: &Path) -> Result<Value> {
         || numbers.iter().any(|n| n.parse::<u64>().is_err())
         || value["database_schema"]
             .as_i64()
-            .is_none_or(|s| !(1..=7).contains(&s))
+            .is_none_or(|s| !(1..=8).contains(&s))
     {
         bail!("unsupported version/schema metadata");
     }

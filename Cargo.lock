@@ -543,7 +543,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hmesh-adapters"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "hmesh-core",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "hmesh-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "hmesh-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "hmesh-daemon"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "hmesh-fixture"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "hmesh-core",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "hmesh-mcp"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "hmesh-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "hmesh-adapters",
@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "hmesh-security"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "hmesh-store"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "hmesh-core",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "hmesh-transport"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "hmesh-security",

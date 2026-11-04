@@ -207,3 +207,110 @@ pub fn apply(store: &Store, id: uuid::Uuid, expected: &str, scratch: &Path) -> R
     )?;
     Ok(json!({"task_id":id,"state":"applied","patch_sha256":expected,"committed":false}))
 }
+pub fn prune(store: &Store, id: uuid::Uuid, expected: &str, node: &Path) -> Result<Value> {
+    let task = store.task(id)?;
+    if task.status != hmesh_core::TaskStatus::Succeeded {
+        bail!("only successful, already-applied worktrees may be pruned");
+    }
+    let flows: Vec<hmesh_core::development::WorkflowRun> = store.managed_list("workflow")?;
+    if flows.iter().any(|f| {
+        !matches!(f.state.as_str(), "completed" | "cancelled")
+            && f.plans.iter().flatten().any(|p| p.task.task_id == id)
+    }) {
+        bail!("worktree is referenced by an unfinished workflow");
+    }
+    let mut record = store.workspace(id)?.context("no worktree")?;
+    if record["state"] != "applied" || record["patch_sha256"] != expected {
+        bail!("prune requires the exact already-applied patch hash");
+    }
+    let attempt = task.last_attempt_id.context("missing attempt")?;
+    let run = node.join("runs").join(attempt.to_string());
+    let path = Path::new(record["path"].as_str().context("invalid worktree path")?);
+    if !fs::canonicalize(path)?.starts_with(fs::canonicalize(&run)?) {
+        bail!("worktree resolves outside its managed run");
+    }
+    for candidate in [
+        node.to_path_buf(),
+        node.join("runs"),
+        run.clone(),
+        path.to_path_buf(),
+    ] {
+        let metadata = fs::symlink_metadata(candidate)?;
+        if metadata.file_type().is_symlink() {
+            bail!("prune refuses symbolic links");
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                bail!("prune refuses reparse points");
+            }
+        }
+    }
+    if fs::canonicalize(path)? != fs::canonicalize(run.join("workspace"))?
+        || fs::symlink_metadata(&run)?.file_type().is_symlink()
+        || fs::symlink_metadata(node.join("runs"))?
+            .file_type()
+            .is_symlink()
+    {
+        bail!("worktree is outside this managed attempt");
+    }
+    let executable = Path::new(record["git"].as_str().context("invalid Git reference")?);
+    let scratch = node.join("workspace-prune");
+    if !git(
+        executable,
+        path,
+        &["diff", "--no-ext-diff", "--no-textconv"],
+        &scratch,
+    )?
+    .is_empty()
+        || !git(
+            executable,
+            path,
+            &["ls-files", "--others", "--exclude-standard"],
+            &scratch,
+        )?
+        .is_empty()
+    {
+        bail!("worktree has unreviewed changes; files and index were preserved");
+    }
+    let patch = git(
+        executable,
+        path,
+        &[
+            "diff",
+            "--cached",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            record["base_commit"].as_str().context("missing base")?,
+        ],
+        &scratch,
+    )?;
+    if hmesh_security::sha256_hex(&patch) != expected {
+        bail!("worktree changed after review; it was preserved");
+    }
+    let root = Path::new(record["root"].as_str().context("invalid root")?);
+    git(
+        executable,
+        root,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            path.to_str().context("invalid worktree path")?,
+        ],
+        &scratch,
+    )?;
+    record["state"] = json!("pruned");
+    store.workspace_put(id, &record)?;
+    store.audit(
+        None,
+        "workspace.prune",
+        &id.to_string(),
+        "owner-reviewed",
+        uuid::Uuid::new_v4(),
+    )?;
+    Ok(json!({"task_id":id,"state":"pruned","patch_preserved":true}))
+}

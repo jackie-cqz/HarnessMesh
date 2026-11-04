@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/hmesh-core", "crates/hmesh-store", "crates/hmesh-security", "crates/hmesh-transport", "crates/hmesh-adapters", "crates/hmesh-runtime", "crates/hmesh-daemon", "crates/hmesh-cli", "crates/hmesh-mcp", "test-support/hmesh-fixture", "xtask"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"

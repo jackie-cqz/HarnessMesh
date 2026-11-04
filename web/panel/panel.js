@@ -34,7 +34,7 @@ function allTasks() {
 let toastTimer;
 function toast(message) { clearTimeout(toastTimer); $('#toast').textContent=message; $('#toast').hidden=false; toastTimer=setTimeout(()=>$('#toast').hidden=true,6500); }
 function showView(name) {
-  const names={overview:['运行总览','节点、任务与执行状态，尽在一处。'],tasks:['任务','查看执行记录，逐项处理审批与异常。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],services:['服务与连接','观察受管进程、服务租约和转发连接。'],nodes:['配对节点','连接可达性与项目授权分别呈现。']};
+  const names={overview:['运行总览','节点、任务与执行状态，尽在一处。'],tasks:['任务','查看执行记录，逐项处理审批与异常。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],services:['服务与连接','观察受管进程、服务租约和转发连接。'],nodes:['配对节点','连接可达性与项目授权分别呈现。'],development:['开发流程','保存可复用模板，逐阶段执行与核验。'],operations:['诊断与用量','定位失败原因，查看用量与本机资源。']};
   if(!names[name])return;
   state.view=name;
   for(const b of document.querySelectorAll('[data-view]')){b.classList.toggle('selected',b.dataset.view===name);b.setAttribute('aria-current',b.dataset.view===name?'page':'false');}
@@ -106,6 +106,7 @@ function render() {
   renderMetrics();renderMesh();$('#recent-tasks').replaceChildren(table(allTasks().slice(0,6)));
   if(state.view==='tasks')renderTasks();if(state.view==='agents')renderAgents();if(state.view==='services')renderServices();if(state.view==='nodes')renderNodes();
   if(typeof renderWorkflow==='function')renderWorkflow();
+  if(typeof renderDevelopment==='function')renderDevelopment();
 }
 async function refresh() {
   if(state.stopped||state.refreshing||!access)return;state.refreshing=true;$('#refresh').disabled=true;$('#sync-state').textContent='同步中…';

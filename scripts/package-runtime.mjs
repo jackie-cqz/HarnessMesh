@@ -34,7 +34,7 @@ if(win){
  writeFileSync(join(stage,process.platform==='darwin'?'start-mac.command':'start.sh'),launcher,{mode:0o755});
 }
 const files=Object.fromEntries(readdirSync(stage).sort().map(name=>[name,createHash('sha256').update(readFileSync(join(stage,name))).digest('hex')]));
-writeFileSync(join(stage,'manifest.json'),JSON.stringify({schema:1,database_schema:7,version:version.stdout.trim(),commit:revision.stdout.trim(),dirty,platform:process.platform,arch:process.arch,files},null,2)+'\n');
+writeFileSync(join(stage,'manifest.json'),JSON.stringify({schema:1,database_schema:8,version:version.stdout.trim(),commit:revision.stdout.trim(),dirty,platform:process.platform,arch:process.arch,files},null,2)+'\n');
 writeFileSync(join(stage,'SHA256SUMS'),[...Object.entries(files),['manifest.json',createHash('sha256').update(readFileSync(join(stage,'manifest.json'))).digest('hex')]].map(([name,hash])=>hash+'  '+name).join('\n')+'\n');
 const archive=stage+(win?'.zip':'.tar.gz');
 const zipped=win?spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-File',resolve('scripts/package-windows.ps1'),'-Mode','create','-Source',stage,'-Destination',archive],{encoding:'utf8'}):spawnSync('tar',['-czf',archive,'-C',out,basename(stage)],{encoding:'utf8'});

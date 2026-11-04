@@ -1,5 +1,7 @@
 # V0 P0 实施与验收状态
 
+2026-11-04 / 0.0.2 本机开发流程：schema 8 增加不可变模板修订、固定请求的持久阶段工作流与有限修复、完成/取消工作流归档及原 ID 去重、结构化脱敏诊断、离线保留计划与已应用 worktree 清理、诚实用量统计/项目运行预算，以及共用固定版本表的协议矩阵和显式隔离版本检查。面板增加开发流程、诊断与用量入口，并保留创建操作丢失响应后的刷新恢复。本机 110 项 Rust、14 项 Node、36 项浏览器检查、11 个双本机 TLS 阶段、7 项维护及 10 项实际 Mac release 运行包检查通过，fmt/严格 Clippy 通过。无真实模型调用，未迁移既有节点、未修改其授权或在开发者 Mac 安装自启。Windows/macOS/Linux CI 与两平台原生运行包结果以本轮 PR 最终提交检查为准。见 [使用说明](development-workflows.md) 与 [脱敏本机记录](evidence/latest-development-workflows.json)。
+
 0.0.1 本机可靠性与接入：schema 7 增加任务完成时工件快照、按 attempt 绑定的独立 Git worktree 与离线精确 hash 应用、私有一致性备份与原路径恢复、项目/Agent 容量及持久化公平调度、面板接入向导与精确授权预览，以及版本化运行包、升级预检/备份和显式用户登录自启管理。本机 93 项 Rust、14 项 Node、28 项浏览器流程、10 项实际运行包检查通过；既有 mTLS、修复替身和 guardian 不重放流程复测通过。未调用真实模型、未迁移现有运行 Node、未在开发者 Mac 安装自启。原生 Mac/Windows 登录注册生命周期由 Native runtime CI 在一次性 runner 上检查；跨平台结果以对应 PR 的最终提交检查为准。见 [说明](local-reliability.md) 与 [脱敏本机记录](evidence/latest-local-reliability.json)。
 
 

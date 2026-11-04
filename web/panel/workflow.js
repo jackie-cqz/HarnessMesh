@@ -79,7 +79,7 @@ function workflowDetail(task,response){
   for(const a of v.assertions||[])card.append(el('div',a.passed?'assertion good':'assertion bad',`${a.passed?'✓':'×'} ${a.field}`));box.append(card);
  }
  const paths=response.artifacts?.data?.artifacts||[];
- if(!paths.length){box.append(el('p','muted form-note',response.artifacts?.error?`工件列表不可读取：${response.artifacts.error.code}`:response.artifacts?.data?.source==='completion-snapshot'?'当前授权范围内没有可用的完成时工件快照；后补文件不会写入此任务结果。':'执行端尚未授权工件。请由执行端 owner 通过 CLI 授权需要核验的相对路径。'));return box;}
+ if(!paths.length){box.append(el('p','muted form-note',response.artifacts?.error?`工件列表不可读取：${response.artifacts.error.code}`:response.artifacts?.data?.unavailable?.some(e=>e.reason==='purged_by_owner')?'工件快照已由 owner 清理。历史核验与 hash 记录仍保留；当前文件不替代原快照。':response.artifacts?.data?.source==='completion-snapshot'?'当前授权范围内没有可用的完成时工件快照；后补文件不会写入此任务结果。':'执行端尚未授权工件。请由执行端 owner 通过 CLI 授权需要核验的相对路径。'));return box;}
  const form=el('form','verify-form'),label=el('label','form-label','已授权工件'),select=el('select');select.name='artifact';select.setAttribute('aria-label','已授权工件');for(const path of paths)option(select,path,path);label.append(select);
  const expectedLabel=el('label','form-label','预期 JSON 字段'),expected=el('textarea');expected.rows=4;expected.value='{"status":"ok"}';expected.setAttribute('aria-label','预期 JSON');expectedLabel.append(expected);const submit=el('button','button','核验工件');submit.type='submit';const message=el('p','form-note muted');
  form.append(label,expectedLabel,el('p','form-note muted',response.artifacts?.data?.source==='completion-snapshot'?'检查完成时保存的工件快照，不调用模型。执行与核验分别记录。':'历史任务：读取当前授权文件，不是完成时快照。不调用模型。'),message,submit);box.append(form);

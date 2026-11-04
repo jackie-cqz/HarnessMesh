@@ -140,11 +140,7 @@ pub async fn probe(config: &AgentConfig, probe_dir: &Path) -> Result<ProbeReport
     let output = output.await??;
     let _ = diagnostics.await??;
     let version = String::from_utf8(output)?.trim().to_owned();
-    let expected: &[&str] = match config.agent.harness {
-        HarnessKind::Pi => &["0.84.2", "1.4.0"],
-        HarnessKind::Dsh => &["0.2.0-rc.2"],
-        HarnessKind::Opencode => &["1.18.20"],
-    };
+    let expected = crate::compatibility::versions(config.agent.harness);
     let supported = status.success() && expected.contains(&version.as_str());
     Ok(ProbeReport {
         installed: true,

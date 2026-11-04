@@ -10,6 +10,7 @@
   <script src="/assets/panel.js" defer></script>
   <script src="/assets/workflow.js" defer></script>
   <script src="/assets/onboarding.js" defer></script>
+  <script src="/assets/development.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
@@ -21,6 +22,8 @@
       <button class="nav-item" data-view="agents"><span aria-hidden="true">◈</span>Agents</button>
       <button class="nav-item" data-view="services"><span aria-hidden="true">⊞</span>服务与连接</button>
       <button class="nav-item" data-view="nodes"><span aria-hidden="true">⌘</span>配对节点</button>
+      <button class="nav-item" data-view="development"><span aria-hidden="true">⇢</span>开发流程</button>
+      <button class="nav-item" data-view="operations"><span aria-hidden="true">◎</span>诊断与用量</button>
     </nav>
     <div class="sidebar-bottom"><div class="local-scope"><i class="dot"></i>LOCAL CONTROL</div><p>状态来自本机 Daemon<br>审批沿用现有项目授权</p><span class="mono">127.0.0.1 only</span></div>
   </aside>
@@ -32,6 +35,7 @@
         <section class="page-heading"><div><div class="eyebrow">HARNESSMESH / CONTROL ROOM</div><h1 id="page-title">运行总览</h1><p id="page-description">节点、任务与执行状态，尽在一处。</p></div><div class="node-pill"><span class="node-symbol">M</span><span><strong id="local-name">连接中</strong><small id="local-network">读取本机节点</small></span></div></section>
         <div id="alerts" aria-live="polite"></div>
         <div id="pending-submission" aria-live="polite"></div>
+        <div id="development-pending" aria-live="polite"></div>
         <div class="workspace-actions"><button id="new-task" class="button">＋ 新建委派任务</button></div>
         <section id="metrics" class="metrics" aria-label="运行统计"></section>
         <section id="overview-view" class="view">
@@ -41,6 +45,8 @@
         <section id="agents-view" class="view" hidden><div class="toolbar"><div class="segmented" id="agent-filters"><button class="selected" data-agent-filter="active">本机 Agent</button><button data-agent-filter="retired">已退役</button></div><button class="button secondary" id="new-agent">接入项目与 Agent</button></div><div id="agent-list" class="card-grid"></div></section>
         <section id="services-view" class="view" hidden><div class="section-heading"><h2>本机发布的服务</h2><label class="checkbox"><input id="show-inactive" type="checkbox">显示已停止 / 过期</label></div><div id="service-list" class="card-grid"></div><div class="section-heading subheading"><h2>转发连接与隧道</h2><span class="muted">仅展示当前 Daemon 的记录</span></div><div id="connection-list" class="surface"></div></section>
         <section id="nodes-view" class="view" hidden><div id="node-list" class="card-grid"></div><section id="remote-agents" class="surface remote-agents" hidden></section></section>
+        <section id="development-view" class="view" hidden><div class="section-heading"><div><span class="eyebrow">REUSABLE WORK</span><h2>任务模板</h2></div><button id="create-template" class="button secondary">从任务表单保存模板</button></div><p class="list-note">模板保留固定目标、执行限额与验收条件。每个新任务仍需执行端批准。</p><div id="template-list" class="card-grid"></div><div class="section-heading subheading"><h2>多阶段工作流</h2><button id="create-pipeline" class="button">新建工作流</button></div><div id="pipeline-list" class="pipeline-list"></div></section>
+        <section id="operations-view" class="view" hidden><div class="section-heading"><div><span class="eyebrow">LOCAL OPERATIONS</span><h2>运行诊断</h2></div><button id="export-diagnostics" class="button secondary">导出脱敏报告</button></div><div id="diagnostic-list" class="card-grid"></div><div class="section-heading subheading"><h2>用量与项目预算</h2><button id="configure-budget" class="button secondary">设置项目预算</button></div><p class="list-note">未报告的用量显示未知。已报告 token 上限在收到报告后生效，不是供应商费用硬上限；费用按 owner 提供的当前价格估算。</p><div id="usage-list" class="surface"></div><div id="budget-list" class="card-grid subheading"></div><div class="section-heading subheading"><h2>磁盘与保留</h2></div><div id="storage-summary" class="surface"></div><div class="section-heading subheading"><h2>Harness 协议兼容矩阵</h2></div><div id="compatibility-list" class="card-grid"></div><p class="list-note">矩阵运行固定协议 fixture，不调用模型。真实模型和各平台进程行为使用独立验收记录。</p></section>
         <footer><span>HarnessMesh <span class="footer-dot">·</span> 本机管理面板</span><span id="last-observed">等待读取实时状态</span></footer>
       </div>
     </div>
@@ -79,6 +85,7 @@
     <section id="onboard-review" hidden><h3>检查与授权预览</h3><div id="onboard-summary"></div><pre id="onboard-policy" class="goal"></pre></section>
     <p id="onboard-message" class="form-note" role="status"></p><div class="confirm-actions"><button id="onboard-back" type="button" class="button secondary" hidden>修改配置</button><button id="onboard-submit" type="submit" class="button">检查并预览</button></div></form>
   </dialog>
+  <dialog id="development-dialog" class="compose-dialog" aria-labelledby="development-title"><div class="dialog-heading"><div><span class="eyebrow">DEVELOPMENT PLAN</span><h2 id="development-title"></h2></div><button id="close-development" class="icon-button" aria-label="关闭开发表单">×</button></div><div id="development-form-body"></div><p id="development-error" class="alert" hidden></p></dialog>
   <div id="toast" class="toast" role="status" hidden></div>
 </body>
 </html>

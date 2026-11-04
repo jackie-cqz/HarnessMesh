@@ -1,4 +1,5 @@
 //! Owner and peer RPC boundaries. Every request rechecks current trust/policy.
+mod development;
 mod integration;
 mod onboarding;
 mod services;
@@ -11,6 +12,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+pub use development::TemplateRunRequest;
 use hmesh_core::*;
 use hmesh_security::{
     Instance, atomic_write, normalize_fingerprint, validate_card, verify_pair_submission,
@@ -216,6 +218,19 @@ impl AppState {
         }
     }
     fn authorize_execution(&self, task: &TaskRecord) -> Result<()> {
+        if let Some(expected) = &task.request.expected_tools {
+            let (_, config) = self.store.agent(task.agent_id)?;
+            let mut actual = config.project.allowed_tools.clone();
+            let mut expected = expected.clone();
+            actual.sort();
+            expected.sort();
+            if actual != expected {
+                return Err(MeshError::new(
+                    ErrorCode::PermissionDenied,
+                    "Agent tools differ from the reviewed task template",
+                ));
+            }
+        }
         if task.origin_node_id == self.instance.card.node_id {
             return Ok(());
         }
@@ -256,6 +271,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(services::routes())
         .merge(integration::routes())
+        .merge(development::routes())
         .route("/hmesh/v1/hello", get(hello))
         .route("/hmesh/v1/pair/challenge", get(challenge))
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
@@ -396,6 +412,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
         shutdown.subscribe(),
     ));
     let managed = tokio::spawn(services::run(state.clone(), shutdown.subscribe()));
+    let workflows = tokio::spawn(development::run(state.clone(), shutdown.subscribe()));
     let expiry_store = state.store.clone();
     let ttl = instance.config.security.pending_approval_ttl_seconds;
     let mut expiry_stop = shutdown.subscribe();
@@ -435,6 +452,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let _ = shutdown.send(true);
     let _ = runtime.await;
     let _ = managed.await;
+    let _ = workflows.await;
     let _ = expiry.await;
     services::recover(&state_for_cleanup)?;
     signal.abort();
@@ -504,7 +522,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2"],"schema_version":7}),
+        "running":true,"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1"],"schema_version":8}),
     ))
 }
 async fn stop(
@@ -910,6 +928,19 @@ fn admit_task(
     envelope.validate(actor.node_id, "task.submit")?;
     envelope.payload.validate()?;
     let (agent, config) = s.store.agent(envelope.payload.target_agent_id)?;
+    if let Some(expected) = &envelope.payload.expected_tools {
+        let mut actual = config.project.allowed_tools.clone();
+        let mut expected = expected.clone();
+        actual.sort();
+        expected.sort();
+        if actual != expected {
+            return Err(MeshError::new(
+                ErrorCode::PermissionDenied,
+                "Agent tool configuration differs from the template",
+            )
+            .into());
+        }
+    }
     if !agent.probe.installed || !agent.probe.version_supported {
         return Err(ApiError(MeshError::new(
             ErrorCode::AdapterNotSupported,
@@ -1017,13 +1048,19 @@ async fn outgoing_task(
     Json(body): Json<RemoteTask>,
 ) -> ApiResult<TaskRecord> {
     s.owner(&headers, &c)?;
+    dispatch_task(&s, body).await.map(Json)
+}
+async fn dispatch_task(
+    s: &AppState,
+    body: RemoteTask,
+) -> std::result::Result<TaskRecord, ApiError> {
     body.task.validate()?;
     if body.peer_id == s.instance.card.node_id {
         let mut envelope = Envelope::new(s.instance.card.node_id, "task.submit", body.task);
         envelope.request_id = body.request_id;
         let envelope = s.store.remember_outbound(body.peer_id, &envelope)?;
         let task = admit_task(
-            &s,
+            s,
             Actor {
                 node_id: s.instance.card.node_id,
                 owner: true,
@@ -1031,7 +1068,7 @@ async fn outgoing_task(
             envelope,
         )?;
         s.store.cache_outbound(&task)?;
-        return Ok(Json(task));
+        return Ok(task);
     }
     let peer = s.store.peer(body.peer_id)?;
     if peer.status != "trusted" {
@@ -1053,7 +1090,7 @@ async fn outgoing_task(
     let envelope = s.store.remember_outbound(body.peer_id, &envelope)?;
     let task: TaskRecord = client.post("/hmesh/v1/tasks", &envelope).await?;
     s.store.cache_outbound(&task)?;
-    Ok(Json(task))
+    Ok(task)
 }
 async fn recover_request(
     State(s): State<AppState>,
@@ -1409,8 +1446,9 @@ fn artifact_names(s: &AppState, actor: Actor, id: Uuid) -> std::result::Result<V
             })
             .map(|e| e.name.clone())
             .collect();
+        let unavailable:Vec<_>=set.entries.iter().filter(|e|e.bytes.is_none()&&config.project.artifact_paths.contains(&std::path::PathBuf::from(&e.name))).map(|e|json!({"name":e.name,"reason":if e.error.as_deref()==Some("purged_by_owner"){"purged_by_owner"}else{"unavailable_at_completion"}})).collect();
         return Ok(
-            json!({"task_id":id,"artifacts":names,"source":"completion-snapshot","attempt_id":set.attempt_id}),
+            json!({"task_id":id,"artifacts":names,"source":"completion-snapshot","attempt_id":set.attempt_id,"unavailable":unavailable}),
         );
     }
     Ok(
@@ -1493,10 +1531,15 @@ fn verify_task_as(
             .iter()
             .find(|e| std::path::Path::new(&e.name) == body.artifact)
             .ok_or_else(|| ApiError(MeshError::input("artifact was not captured at completion")))?;
-        let bytes = entry
-            .bytes
-            .as_ref()
-            .ok_or_else(|| ApiError(MeshError::input("artifact was unavailable at completion")))?;
+        let bytes = entry.bytes.as_ref().ok_or_else(|| {
+            ApiError(MeshError::input(
+                if entry.error.as_deref() == Some("purged_by_owner") {
+                    "artifact snapshot was purged by owner retention"
+                } else {
+                    "artifact was unavailable at completion"
+                },
+            ))
+        })?;
         let summary = json!({"name":entry.name,"sha256":hmesh_security::sha256_hex(bytes),"size_bytes":bytes.len()});
         let mut evidence =
             hmesh_runtime::verification::verify_bytes(bytes, summary, &body.expected)
