@@ -195,7 +195,8 @@
     "test-support/hmesh-fixture/tests/executor.rs": "b9e548b647eb0da8b986e40a2f3bc80ac8d8bf7511a4a0edcc522a0e2ccf25d6",
     "crates/hmesh-store/tests/development.rs": "1937dccef2908d8250156c1ce6d192249a29ae1fb33f6d2f89f7d78b2604ddb2",
     "crates/hmesh-core/tests/development.rs": "6a65a88a87f61a00b26da9b7da02a042fedd6cfbd6e7286f2913654743501e88",
-    "crates/hmesh-adapters/tests/development.rs": "91ef2a3855417999d9a396ad560340829a1f76e57daf21ae71e84042cc3832dc"
+    "crates/hmesh-adapters/tests/development.rs": "91ef2a3855417999d9a396ad560340829a1f76e57daf21ae71e84042cc3832dc",
+    "test-support/hmesh-fixture/src/main.rs": "fc3b6c489337d6c1b68e91ad16d04bd781276b506d153e19dc5323b31ec623d0"
   },
   "review_followup": {
     "prune_refusal_preserves_files_and_index": "passed",
