@@ -112,7 +112,7 @@ Windows 发送作用于独立项目的任务：
 & $hmesh --data-dir $node task send <Mac-Agent-ID> --peer <Mac-Node-ID> --project tailnet-demo --prompt 'Use write then read to create out/health.json containing {"status":"ok","model":"deepseek-v4-flash"}. Work only in the registered project.'
 ```
 
-Mac 用 `task approve <Task-ID>` 批准，Windows 用 `task watch <Task-ID>` 等待。任务成功后，**Mac owner** 在本机执行 `task verify <Task-ID> --artifact out/health.json --expect-json '{"status":"ok","model":"deepseek-v4-flash"}'`；Windows 用 `task verification <Task-ID>` 读取经 mTLS 返回的核验结果。`task verify` 是执行端本机管理操作，不能在发起端代替 Mac 读取工件。链路暂断时使用相同 request ID 查询/补读，不重新创建副作用任务。
+Mac 用 `task approve <Task-ID>` 批准，Windows 用 `task watch <Task-ID>` 等待。任务成功后，可由 Mac owner 本机执行 `task verify <Task-ID> --artifact out/health.json --expect-json '{"status":"ok","model":"deepseek-v4-flash"}'`。支持核验转发接口的新版本也允许原发起端 Windows 运行同一命令，经既有配对 mTLS 在执行端核验；仍受当前信任、项目/Agent grant 和工件声明约束，不返回文件正文。缺少该接口的旧版仍由执行端 owner 本机核验，Windows 再用 `task verification <Task-ID>` 读取已发布结果。链路暂断时使用相同 request ID 查询/补读，不重新创建副作用任务。
 
 受管服务复用 [HTTP 配置](managed-services.md)，**Tailnet 路径跳过 tunnel add**；后端继续仅在 Mac 回环监听，经 HarnessMesh mTLS 转发到 Windows 的回环 endpoint。服务租约和重启/修复预算不变。
 

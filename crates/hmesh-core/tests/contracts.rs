@@ -3,6 +3,43 @@ use serde_json::json;
 use uuid::Uuid;
 
 #[test]
+fn artifact_contract_is_optional_portable_bounded_and_not_a_file_grant() {
+    let mut task = TaskSubmit::new(Uuid::new_v4(), "fixture", "create an artifact");
+    let old = serde_json::to_value(&task).unwrap();
+    assert!(old.get("expected_artifacts").is_none());
+    assert!(
+        serde_json::from_value::<TaskSubmit>(old)
+            .unwrap()
+            .expected_artifacts
+            .is_none()
+    );
+    task.expected_artifacts = Some(vec!["out/health.json".into()]);
+    task.validate().unwrap();
+    assert_eq!(
+        serde_json::to_value(&task).unwrap()["expected_artifacts"],
+        json!(["out/health.json"])
+    );
+    for path in [
+        "",
+        "../secret",
+        "/absolute",
+        "out/../secret",
+        "C:\\secret",
+        "out\\secret",
+        "out/\nsecret",
+    ] {
+        task.expected_artifacts = Some(vec![path.into()]);
+        assert!(task.validate().is_err(), "{path:?}");
+    }
+    task.expected_artifacts = Some(vec![]);
+    assert!(task.validate().is_err());
+    task.expected_artifacts = Some(vec!["out/a".into(), "out/a".into()]);
+    assert!(task.validate().is_err());
+    task.expected_artifacts = Some((0..17).map(|i| format!("out/{i}").into()).collect());
+    assert!(task.validate().is_err());
+}
+
+#[test]
 fn old_node_config_gets_bounded_pending_approval_expiry() {
     let mut config: NodeConfig = serde_json::from_value(json!({"security": {}})).unwrap();
     assert_eq!(config.security.pending_approval_ttl_seconds, 86400);

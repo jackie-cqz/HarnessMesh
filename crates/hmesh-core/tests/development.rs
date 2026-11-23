@@ -7,6 +7,12 @@ fn template() -> TaskTemplate {
 #[test]
 fn template_parameters_are_literal_and_never_disable_approval() {
     let t = template();
+    assert_eq!(
+        t.task(Uuid::new_v4(), "fixture")
+            .unwrap()
+            .expected_artifacts,
+        Some(vec!["out/health.json".into()])
+    );
     t.validate().unwrap();
     let id = Uuid::new_v4();
     let task = t.task(id, "$(unsafe); `command` {{goal}}").unwrap();

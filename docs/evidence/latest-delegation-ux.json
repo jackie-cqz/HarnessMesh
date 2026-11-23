@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "observed_at": "2026-11-23T11:30:04.586781+00:00",
+  "status": "passed",
+  "scope": "Mac local development: temporary loopback TLS Nodes and explicit fixture, including headless Chrome; Windows operator confirmation deferred by user",
+  "source": {
+    "base_revision": "69032883be996ab15ed6d362f9e6ce0e7012f81e",
+    "working_tree_changes": true
+  },
+  "real_model_calls": 0,
+  "physical_windows_confirmation": false,
+  "existing_tailnet_daemons_restarted": false,
+  "schema_version": 8,
+  "new_database_migration": false,
+  "features": [
+    "read-only preflight and frozen optional completion artifact restrictions; rechecked at submission, approval and execution",
+    "execution and acceptance shown separately; terminal observation, focus/draft preservation across refresh and transient read failure",
+    "local owner approval inbox and credential-free fixed task handoff",
+    "runtime version/capabilities with preserved legacy Daemon read-only mode and manual upgrade guidance"
+  ],
+  "checks": [
+    {
+      "command": "cargo +stable build --locked -p hmesh-cli -p hmesh-fixture",
+      "status": "passed"
+    },
+    {
+      "command": "cargo +stable fmt --all --check",
+      "status": "passed"
+    },
+    {
+      "command": "cargo +stable clippy --locked --workspace --all-targets -- -D warnings",
+      "status": "passed"
+    },
+    {
+      "command": "cargo +stable test --locked --workspace",
+      "status": "passed",
+      "tests_passed": 116
+    },
+    {
+      "command": "npm run test:panel",
+      "status": "passed",
+      "behavior_checks": 28,
+      "fixture_runs": 6
+    },
+    {
+      "command": "npm run test:development-panel",
+      "status": "passed",
+      "behavior_checks": 8
+    },
+    {
+      "command": "node scripts/development-smoke.mjs",
+      "status": "passed",
+      "behavior_checks": 11
+    },
+    {
+      "command": "npm run test:delegation-ux",
+      "status": "passed",
+      "behavior_checks": 14,
+      "fixture_runs": 2
+    }
+  ],
+  "new_browser_checks": [
+    {
+      "name": "runtime-capabilities",
+      "status": "pass"
+    },
+    {
+      "name": "missing-artifact-preflight-has-no-side-effects",
+      "status": "pass"
+    },
+    {
+      "name": "bridge-also-rejects-unmet-artifact-contract",
+      "status": "pass"
+    },
+    {
+      "name": "changed-input-invalidates-preflight",
+      "status": "pass"
+    },
+    {
+      "name": "confirmation-rechecks-current-artifact-grant",
+      "status": "pass"
+    },
+    {
+      "name": "remote-task-contract-and-owner-handoff",
+      "status": "pass"
+    },
+    {
+      "name": "receiver-inbox-and-approval-preflight",
+      "status": "pass"
+    },
+    {
+      "name": "execution-success-is-not-artifact-acceptance",
+      "status": "pass"
+    },
+    {
+      "name": "detail-read-failure-preserves-input-and-recovers",
+      "status": "pass"
+    },
+    {
+      "name": "late-verification-preserves-active-input",
+      "status": "pass"
+    },
+    {
+      "name": "terminal-details-auto-observe-new-verifications",
+      "status": "pass"
+    },
+    {
+      "name": "refresh-also-updates-terminal-details",
+      "status": "pass"
+    },
+    {
+      "name": "legacy-runtime-read-only-presentation",
+      "status": "pass"
+    },
+    {
+      "name": "responsive-task-results",
+      "status": "pass"
+    }
+  ],
+  "visual_review": {
+    "desktop": "inspected fixture terminal task result",
+    "mobile": "inspected 390x844 fixture viewport; one sidebar/main/runtime card",
+    "full_page_capture_limit": "Local Chrome full-page capture contained repeated pixels despite unique DOM; viewport used for visual review"
+  },
+  "ci": {
+    "linux_browser_step_added": true,
+    "remote_workflow_executed": false
+  },
+  "limits": [
+    "No new physical Windows interaction, Tailnet outage or paid model acceptance claimed",
+    "Older running Daemons remain unchanged; updated features require explicit owner upgrade",
+    "Preflight checks current declarations/references; it cannot prove future artifact contents or model authentication",
+    "Configuration hash is an observation; task restrictions freeze tools/artifacts, not all mutable configuration"
+  ],
+  "cli_binary_sha256": "a0e67216ce5b7f7c0220b72757df9d6447204ed9a38b09f765900b58ef9b1b89",
+  "publish_authorization_recheck": {
+    "status": "passed",
+    "boundary": "Authorize current task grant before Agent/artifact metadata lookup",
+    "transport": "real temporary loopback TLS",
+    "ungranted_agent_and_artifact_probes_uniformly_denied": true,
+    "tasks_admitted_during_probes": 0
+  }
+}

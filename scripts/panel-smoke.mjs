@@ -37,7 +37,7 @@ async function create(page,agent,goal,peer,lost=false){
  await page.locator('#compose-goal').fill(goal);
  const id=(await page.locator('#compose-binding').innerText()).split(' ').at(-1);
  if(lost)await page.route('**/api/tasks',async route=>{const response=await route.fetch();assert(response.ok(),'Submission before lost acknowledgement failed');await route.abort('failed');});
- await page.getByRole('button',{name:'审阅并提交',exact:true}).click();await confirm(page);
+ await page.locator('#compose-submit').click();await confirm(page);
  if(lost){await page.locator('#compose-error').waitFor();await page.unroute('**/api/tasks');}
  else await page.locator('#task-detail .detail-id').filter({hasText:id}).waitFor();
  return id;
@@ -67,10 +67,10 @@ try{
  assert(!await page.evaluate(()=>!!window.panelInjected),'Task text executed');
  stage='reject-and-archive';
  await page.locator('#review-pending').click();await page.locator('#task-list .task-title').first().click();await page.locator('#task-detail .detail-id').waitFor();
- assert(await page.locator('#task-detail .goal').innerText()===goal,'Full request missing');
+ assert(await page.locator('#task-detail > pre.goal').innerText()===goal,'Full request missing');
  await page.getByRole('button',{name:'拒绝任务',exact:true}).click();await confirm(page);
  await until(()=>b.mesh.call(['task','show',pending.task_id]).status==='REJECTED');
- await page.locator('#task-detail > .badge').filter({hasText:'已拒绝'}).waitFor();
+ await page.locator('#task-detail .task-outcome > .badge').filter({hasText:'已拒绝'}).waitFor();
  await page.getByRole('button',{name:'归档事件',exact:true}).click();
  const archiveResponse=page.waitForResponse(r=>r.url().endsWith('/archive')&&r.request().method()==='POST');await confirm(page);
  assert((await(await archiveResponse).json()).data.archived_events>0,'Archive did not move events');
@@ -80,7 +80,7 @@ try{
  assert(b.mesh.call(['task','show',localId]).status==='PENDING_APPROVAL','New local task bypassed approval');
  assert(!b.mesh.call(['task','show',localId]).last_attempt_id,'Attempt before approval');
  await page.getByRole('button',{name:'批准执行',exact:true}).click();await confirm(page);await succeeded(b.mesh,localId);
- await page.locator('#task-detail > .badge').filter({hasText:'已完成'}).waitFor();await verify(page,{status:'ok'},'核验通过');
+ await page.locator('#task-detail .task-outcome > .badge').filter({hasText:'执行成功'}).waitFor();await verify(page,{status:'ok'},'核验通过');
  writeFileSync(join(project,'out/health.json'),JSON.stringify({status:'later-edit'}));
  await verify(page,{status:'ok'},'核验通过');assert(await page.locator('#task-detail').innerText().then(t=>t.includes('完成时快照')),'Snapshot source missing');
  await page.locator('[data-close="task-dialog"]').click();
@@ -94,7 +94,7 @@ try{
  assert(b.mesh.call(['task','list']).executions.filter(t=>t.task_id===remoteId).length===1,'Recovery duplicated task');
  assert(!b.mesh.call(['task','show',remoteId]).last_attempt_id,'Recovery bypassed approval');
  b.mesh.call(['task','approve',remoteId]);const remote=await succeeded(b.mesh,remoteId);
- await origin.locator('#task-detail > .badge').filter({hasText:'已完成'}).waitFor();
+ await origin.locator('#task-detail .task-outcome > .badge').filter({hasText:'执行成功'}).waitFor();
  stage='remote-artifact-verification';
  await verify(origin,{status:'wrong'},'核验未通过');await verify(origin,{status:'ok'},'核验通过');
  assert(b.mesh.call(['task','show',remoteId]).last_attempt_id===remote.last_attempt_id,'Verification reran task');
@@ -104,7 +104,7 @@ try{
  const blockingId=await create(page,agent.agent_id,'fixture:wait');await page.getByRole('button',{name:'批准执行',exact:true}).click();await confirm(page);await until(()=>b.mesh.call(['task','show',blockingId]).status==='RUNNING');await page.locator('[data-close="task-dialog"]').click();
  const queuedId=await create(page,agent.agent_id,'fixture:create');await page.getByRole('button',{name:'批准执行',exact:true}).click();await confirm(page);
  await page.locator('#task-detail .queue-note').filter({hasText:'等待全局执行名额'}).waitFor();assert(!b.mesh.call(['task','show',queuedId]).last_attempt_id,'Waiting task started above concurrency cap');
- b.mesh.call(['task','cancel',blockingId]);await until(()=>b.mesh.call(['task','show',blockingId]).status==='CANCELLED');await succeeded(b.mesh,queuedId);await page.locator('#task-detail > .badge').filter({hasText:'已完成'}).waitFor();await page.locator('[data-close="task-dialog"]').click();
+ b.mesh.call(['task','cancel',blockingId]);await until(()=>b.mesh.call(['task','show',blockingId]).status==='CANCELLED');await succeeded(b.mesh,queuedId);await page.locator('#task-detail .task-outcome > .badge').filter({hasText:'执行成功'}).waitFor();await page.locator('[data-close="task-dialog"]').click();
  stage='agent-lifecycle';
  await page.locator('[data-view="agents"]').click();await page.getByRole('button',{name:'退役 Agent',exact:true}).click();await confirm(page);
  await until(()=>b.mesh.call(['agent','retired']).length===1);await page.locator('[data-agent-filter="retired"]').click();

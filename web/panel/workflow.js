@@ -1,15 +1,36 @@
 'use strict';
 const ledgerKey='hmesh.panel.pending.v1';
-let pendingDraft=null,composerDraft=null,composerAgents=[],composerGeneration=0,composerBusy=false;
+let pendingDraft=null,composerDraft=null,composerAgents=[],composerGeneration=0,composerBusy=false,composerPreflight=null,composerCheckGeneration=0;
 try{pendingDraft=JSON.parse(sessionStorage.getItem(ledgerKey)||'null');}catch{}
 function savePending(value){pendingDraft=value;if(value)sessionStorage.setItem(ledgerKey,JSON.stringify(value));else sessionStorage.removeItem(ledgerKey);renderWorkflow();}
-function problem(error){const names={PEER_UNREACHABLE:'执行端暂不可达，请检查节点连接',PERMISSION_DENIED:'当前任务或项目授权不允许此操作',AGENT_UNAVAILABLE:'Agent 暂不可用或尚未完成验证',TASK_CONFLICT:'任务状态或原请求内容发生冲突',INVALID_INPUT:'请求参数无效或本机没有对应请求记录',INVALID_TASK_REQUEST:'请检查目标、任务长度与执行限额'};return `${names[error.code]||error.message}${error.trace_id?` · trace ${error.trace_id}`:''}`;}
+function problem(error){const names={PEER_UNREACHABLE:'执行端暂不可达，请检查节点连接并继续观察原任务',PERMISSION_DENIED:'当前任务、项目或工件授权不允许此操作，请由执行端 owner 检查',AGENT_UNAVAILABLE:'Agent 暂不可用或尚未完成验证',TASK_CONFLICT:'任务状态或原请求内容发生冲突',INVALID_INPUT:'请求参数无效或本机没有对应请求记录',INVALID_TASK_REQUEST:'请检查目标、任务长度与执行限额',TASK_PREFLIGHT_FAILED:'执行条件未通过，未提交或批准任务',PANEL_READ_ONLY:'当前面板只读，请查看运行版本与显式升级步骤',FEATURE_UNAVAILABLE:'当前 Daemon 不支持此能力，请查看运行版本',PREFLIGHT_UNAVAILABLE:'执行条件暂不可读取，请检查执行端连接与版本'};return `${names[error.code]||error.message||error.code}${error.trace_id?` · trace ${error.trace_id}`:''}`;}
+function renderPreflight(box,check,error){
+ box.replaceChildren();box.dataset.ready=check?String(check.ready):'unchecked';
+ if(error){box.append(el('p','form-note',problem(error)));return;}
+ if(!check){box.append(el('p','form-note','尚未预检。提交或批准前会重新检查，不调用模型，也不会增加授权。'));return;}
+ box.append(el('strong','',check.ready?'执行条件预检通过':'执行条件未通过'));
+ const names={PEER_NOT_TRUSTED:['执行节点信任已确认','执行节点尚未配对信任'],TASK_PERMISSION_DENIED:['当前项目任务权限已确认','没有当前项目的任务权限'],PROJECT_MISMATCH:['项目与 Agent 已匹配','项目与 Agent 不匹配'],AGENT_UNSUPPORTED:['Harness 版本与能力已支持','Harness 版本或能力不兼容'],AGENT_NOT_VERIFIED:['Agent 真实运行验证已通过','Agent 尚未通过真实运行验证'],REFERENCES_INVALID:['本机凭据引用已检查','执行端凭据引用无效'],PROJECT_UNAVAILABLE:['执行端项目可用','执行端项目不可用'],TOOLS_MISMATCH:['工具约定已匹配','工具与约定不匹配'],ARTIFACT_NOT_DECLARED:['工件声明已确认','工件未在执行端声明'],PREFLIGHT_UNAVAILABLE:['执行条件可读取','执行条件暂不可读取'],PEER_UNREACHABLE:['执行节点可达','执行节点不可达']};
+ const checks=el('ul','preflight-checks');for(const item of check.checks||[]){const name=names[String(item.code).toUpperCase()]?.[item.passed?0:1]||item.code;checks.append(el('li',item.passed?'good':'bad',`${item.passed?'✓':'×'} ${name}${item.field?` · ${item.field}`:''}`));}box.append(checks);
+ box.append(el('p','form-note muted',check.ready?'这次检查不授权新路径。发送与审批时会再检查当前配置。':'请在执行端保留原配置并处理未通过项，然后重新检查。不要改任务 ID 盲目重试。'));
+ if(check.configuration_sha256)box.append(el('p','mono preflight-digest',`配置摘要 ${check.configuration_sha256}`));
+}
+function composeArtifacts(){return [...new Set($('#compose-artifacts').value.split(',').map(p=>p.trim()).filter(Boolean))];}
+function composerBody(){return {request_id:composerDraft.request_id,peer_id:$('#compose-peer').value,agent_id:$('#compose-agent').value,project_id:$('#compose-project').value,goal:$('#compose-goal').value,timeout_seconds:Number($('#compose-timeout').value),max_output_bytes:Number($('#compose-output').value),expected_artifacts:composeArtifacts()};}
+function invalidateComposerPreflight(){composerCheckGeneration++;composerPreflight=null;renderPreflight($('#compose-preflight'));$('#compose-submit').textContent=pendingDraft?'检查原请求':'预检并审阅';$('#compose-submit').disabled=composerBusy||!canWrite()||!composerAgents.length;}
+function lockComposer(locked){for(const id of ['compose-peer','compose-agent','compose-project','compose-timeout','compose-output','compose-goal','compose-artifacts'])$('#'+id).disabled=locked;}
+async function checkComposer(draft){
+ const generation=++composerCheckGeneration,binding=JSON.stringify(draft);composerPreflight=null;$('#compose-preflight').replaceChildren(el('p','form-note','正在检查执行条件…'));
+ const check=unwrap(await api('/tasks/preflight',{method:'POST',body:binding}));
+ if(generation!==composerCheckGeneration||JSON.stringify(composerBody())!==binding)throw Object.assign(Error('输入已变化，请重新检查当前任务。'),{code:'PREFLIGHT_STALE'});
+ composerPreflight={binding,check};renderPreflight($('#compose-preflight'),check);return check;
+}
 function renderWorkflow(){
  const box=$('#pending-submission');if(!pendingDraft){box.replaceChildren();return;}
- const alert=el('div','alert');alert.append(el('strong','','有一个提交尚未确认。'),el('div','mono',`request ${pendingDraft.request_id}`),el('p','','原请求与草稿已保留。请先检查它的状态，再决定下一步。'),button('检查原请求','text-button',()=>recoverOriginal(pendingDraft.request_id)),button('查看原草稿','text-button',openComposer));box.replaceChildren(alert);
+ const alert=el('div','alert');alert.append(el('strong','','有一个提交尚未确认。'),el('div','mono',`request ${pendingDraft.request_id}`),el('p','','原请求与草稿已保留。请先检查它的状态，再决定下一步。'),button('检查原请求','text-button',()=>recoverOriginal(pendingDraft.request_id)),button('查看原草稿','text-button',openComposer));for(const b of alert.querySelectorAll('button'))b.disabled=!canWrite();box.replaceChildren(alert);
 }
 function option(select,value,text){const o=el('option','',text);o.value=value;select.append(o);}
 async function loadComposerAgents(peer,selectedAgent){
+ invalidateComposerPreflight();
  const generation=++composerGeneration,select=$('#compose-agent');select.replaceChildren();option(select,'','读取 Agent…');select.disabled=true;$('#compose-submit').disabled=true;
  try{
   const local=data('node',{}).node?.node_id;const rows=peer===local?data('agents'):unwrap(await api(`/peers/${peer}/agents`));if(generation!==composerGeneration)return;
@@ -21,19 +42,22 @@ async function loadComposerAgents(peer,selectedAgent){
 }
 function updateProjects(){const p=$('#compose-project');p.replaceChildren();const a=composerAgents.find(a=>a.agent_id===$('#compose-agent').value);for(const project of a?.project_ids||[])option(p,project,project);p.disabled=!!pendingDraft;}
 async function openComposer(){
+ if(!canWrite())return toast('当前面板只读，请查看运行能力。');
  if(!state.snapshot)return;
  const local=data('node',{}).node,select=$('#compose-peer');if(!local)return toast('本机状态暂不可读取。');
  composerDraft=pendingDraft?{...pendingDraft}:{request_id:crypto.randomUUID()};
  select.replaceChildren();option(select,local.node_id,`${local.display_name} · 本机`);for(const p of data('peers').filter(p=>p.status==='trusted'))option(select,p.card.node_id,p.card.display_name+' · '+short(p.card.node_id));
  if(pendingDraft&&!Array.from(select.options).some(o=>o.value===pendingDraft.peer_id))option(select,pendingDraft.peer_id,'原请求节点（当前不可见）');
  select.value=pendingDraft?.peer_id||local.node_id;
- for(const id of ['compose-peer','compose-timeout','compose-output','compose-goal'])$('#'+id).disabled=!!pendingDraft;
+ for(const id of ['compose-peer','compose-timeout','compose-output','compose-goal','compose-artifacts'])$('#'+id).disabled=!!pendingDraft;
  $('#compose-goal').value=pendingDraft?.goal||'';$('#compose-timeout').value=pendingDraft?.timeout_seconds||600;$('#compose-output').value=pendingDraft?.max_output_bytes||16777216;
- $('#compose-binding').textContent=`request ${composerDraft.request_id}`;$('#compose-error').hidden=true;$('#discard-pending').hidden=!pendingDraft;$('#compose-submit').textContent=pendingDraft?'检查原请求':'审阅并提交';
+ $('#compose-artifacts').value=(pendingDraft?.expected_artifacts||[]).join(', ');
+ $('#compose-binding').textContent=`request ${composerDraft.request_id}`;$('#compose-error').hidden=true;$('#discard-pending').hidden=!pendingDraft;$('#compose-submit').textContent=pendingDraft?'检查原请求':'预检并审阅';$('#compose-check').hidden=!!pendingDraft;invalidateComposerPreflight();
  if(!$('#compose-dialog').open)$('#compose-dialog').showModal();await loadComposerAgents(select.value,pendingDraft?.agent_id);
  if(pendingDraft){const project=$('#compose-project');project.replaceChildren();option(project,pendingDraft.project_id,pendingDraft.project_id);$('#compose-submit').disabled=false;}
 }
 async function recoverOriginal(id){
+ if(!canWrite())return toast('当前面板只读，原请求仍保留。请查看运行能力。');
  if(state.actionBusy)return;state.actionBusy=true;
  try{
   if(!await confirmAction('恢复原请求？',`request ${id}\n将使用本机已经持久化的原节点、Agent、目标和限额。接收端按同一 ID 去重，既有任务不会重新执行。尚未接收的请求会沿用原审批要求。`))return;
@@ -43,21 +67,39 @@ async function recoverOriginal(id){
 }
 $('#compose-form').addEventListener('submit',async event=>{
  event.preventDefault();if(composerBusy)return;if(pendingDraft)return recoverOriginal(pendingDraft.request_id);if(!$('#compose-form').reportValidity())return;
- const draft={request_id:composerDraft.request_id,peer_id:$('#compose-peer').value,agent_id:$('#compose-agent').value,project_id:$('#compose-project').value,goal:$('#compose-goal').value,timeout_seconds:Number($('#compose-timeout').value),max_output_bytes:Number($('#compose-output').value)};
+ const draft=composerBody();
  if(new TextEncoder().encode(draft.goal).length>65536)return toast('任务目标最多 65536 UTF-8 字节。');
- composerBusy=true;$('#compose-submit').disabled=true;
+ composerBusy=true;$('#compose-submit').disabled=true;$('#compose-check').disabled=true;$('#compose-error').hidden=true;
+ let dispatched=false;
  try{
-  if(!await confirmAction('提交这一个任务？',`节点：${$('#compose-peer').selectedOptions[0].textContent}\n项目：${draft.project_id}\nAgent：${composerAgents.find(a=>a.agent_id===draft.agent_id)?.name||draft.agent_id}\n执行上限：${draft.timeout_seconds} 秒\n输出额度：${draft.max_output_bytes/1048576} MiB\n\n提交后需要执行端审批。批准后可能调用模型并产生费用。\n\n${draft.goal}`))return;
+  if(!(await checkComposer(draft)).ready)return;
+  if(!await confirmAction('提交这一个任务？',`节点：${$('#compose-peer').selectedOptions[0].textContent}\n项目：${draft.project_id}\nAgent：${composerAgents.find(a=>a.agent_id===draft.agent_id)?.name||draft.agent_id}\n执行上限：${draft.timeout_seconds} 秒\n输出额度：${draft.max_output_bytes/1048576} MiB\n工件验收：${draft.expected_artifacts.join(' · ')||'未设置工件验收'}\n\n提交后需要执行端审批。批准后可能调用模型并产生费用。\n\n${draft.goal}`))return;
+  if(!(await checkComposer(draft)).ready)return;
   // Freeze before dispatch. Failure to persist the draft aborts submission.
   savePending(draft);
-  const task=unwrap(await api('/tasks',{method:'POST',body:JSON.stringify(draft)}));savePending(null);$('#compose-dialog').close();await refresh();await openTask(allTasks().find(t=>t.task_id===task.task_id)||{...task,_request_id:draft.request_id,_direction:draft.peer_id===data('node',{}).node?.node_id?'local':'outbound'});
- }catch(e){$('#compose-error').textContent=`提交未确认：${problem(e)}。请检查原请求，不要创建重复任务。`;$('#compose-error').hidden=false;$('#compose-submit').textContent='检查原请求';$('#discard-pending').hidden=false;for(const id of ['compose-peer','compose-agent','compose-project','compose-timeout','compose-output','compose-goal'])$('#'+id).disabled=true;}
- finally{composerBusy=false;$('#compose-submit').disabled=false;}
+  dispatched=true;
+  const task=unwrap(await api('/tasks',{method:'POST',body:JSON.stringify(draft)}));dispatched=false;savePending(null);$('#compose-dialog').close();await refresh();await openTask(allTasks().find(t=>t.task_id===task.task_id)||{...task,_request_id:draft.request_id,_direction:draft.peer_id===data('node',{}).node?.node_id?'local':'outbound'});
+ }catch(e){
+  const unknown=dispatched&&e.submission_attempted!==false;
+  if(!unknown&&pendingDraft?.request_id===draft.request_id)savePending(null);
+  $('#compose-error').textContent=unknown?`提交未确认：${problem(e)}。请检查原请求，不要创建重复任务。`:`尚未提交：${problem(e)}。处理后可检查同一份草稿。`;$('#compose-error').hidden=false;
+  if(e.preflight){composerPreflight={binding:JSON.stringify(draft),check:e.preflight};renderPreflight($('#compose-preflight'),e.preflight);}
+  else if(!unknown)renderPreflight($('#compose-preflight'),null,{code:e.code||'PREFLIGHT_UNAVAILABLE',message:e.message});
+  $('#compose-submit').textContent=unknown?'检查原请求':'预检并审阅';$('#discard-pending').hidden=!unknown;$('#compose-check').hidden=unknown;lockComposer(unknown);
+ }finally{composerBusy=false;$('#compose-check').disabled=false;$('#compose-submit').disabled=!pendingDraft&&composerPreflight?.check.ready===false;}
 });
+$('#compose-check').addEventListener('click',async()=>{if(composerBusy||pendingDraft||!$('#compose-form').reportValidity())return;composerBusy=true;$('#compose-check').disabled=true;$('#compose-submit').disabled=true;$('#compose-error').hidden=true;try{await checkComposer(composerBody());}catch(e){renderPreflight($('#compose-preflight'),null,{code:e.code||'PREFLIGHT_UNAVAILABLE',message:e.message});}finally{composerBusy=false;$('#compose-check').disabled=false;$('#compose-submit').disabled=composerPreflight?.check.ready!==true;}});
+for(const input of $('#compose-form').querySelectorAll('input,select,textarea')){input.addEventListener('input',invalidateComposerPreflight);input.addEventListener('change',invalidateComposerPreflight);}
 function workflowDetail(task,response){
  const box=el('section','workflow-detail');box.append(meta([['执行节点',task.target_node_id],['原请求 ID',task._request_id||'未绑定本机发起请求']]));const observed=el('p','muted form-note','最近成功观察 '+fullTime(task._observed));observed.id='last-task-observed';box.append(observed);
- if(task._request_id)box.append(button('恢复原请求','button secondary',()=>recoverOriginal(task._request_id)));
+ if(task._request_id&&canWrite())box.append(button('恢复原请求','button secondary',()=>recoverOriginal(task._request_id)));
  const waiting=data('queue',{}).waiting?.find(w=>w.task_id===task.task_id);if(waiting)box.append(el('p','queue-note',queueReason(waiting.reason)));
+ if(task.status==='PENDING_APPROVAL'){
+  const local=task._direction==='local',handoff=el('section','handoff');handoff.id='approval-handoff';
+  handoff.append(el('h3','',local?'本机审批待办':`等待 ${nodeName(task.target_node_id)} 审批`),el('p','form-note',local?`任务来自 ${nodeName(task.origin_node_id)}。先核对完整请求与预检，再由本机 owner 决定。`:'任务尚未开始。请执行端 owner 在自己的电脑上审阅、预检并批准；本机不能代为批准。'));
+  const text=[`HarnessMesh 固定任务交接`,`执行端：${nodeName(task.target_node_id)} (${task.target_node_id})`,`任务：${task.task_id}`,`Agent：${task.agent_id}`,`项目：${task.project_id}`,`工件：${expectedArtifacts(task).join(', ')||'未设置工件验收'}`,`限额：${task.request?.limits?.timeout_seconds} 秒 / ${task.request?.limits?.max_output_bytes} 输出字节`,`在执行端本机终端，将 YOUR_NODE_DIR 换为该节点目录，先审阅完整请求及执行条件，再决定是否批准：`,`hmesh --data-dir YOUR_NODE_DIR task show ${task.task_id}`,`hmesh --data-dir YOUR_NODE_DIR task approve ${task.task_id}`].join('\n');
+  const pre=el('pre','goal',text);pre.id='task-handoff-text';handoff.append(pre);const copy=button('复制固定任务交接说明','button secondary',async()=>{try{await navigator.clipboard.writeText(text);toast('已复制任务说明与执行端本机命令，不含访问凭据。');}catch{toast('复制不可用，可选中上方说明手动复制。');}});copy.id='copy-task-handoff';handoff.append(copy);box.append(handoff);
+ }
  const workspace=response.workspace?.data;
  if(workspace&&workspace.state!=='shared'){
   box.append(el('h3','subheading','独立工作目录'),meta([['状态',workspace.state],['基础 commit',workspace.base_commit],['修改 SHA-256',workspace.patch_sha256]]));
@@ -75,21 +117,22 @@ function workflowDetail(task,response){
  if(task.status!=='SUCCEEDED')return box;
  const history=response.verification?.data||[];box.append(el('h3','subheading','工件核验'));
  for(const v of history.slice(-5).reverse()){
-  const card=el('div','verification-result');card.append(badge(v.passed?'SUCCEEDED':'FAILED'),el('strong','',v.passed?'核验通过':'核验未通过'),meta([['来源',v.source==='completion-snapshot'?'完成时快照':'历史任务 · 当前文件'],['工件',v.artifact?.name],['SHA-256',v.artifact?.sha256],['Attempt',v.attempt_id],['配置摘要',v.configuration_sha256]]));
+  const card=el('div','verification-result');card.append(el('span',`badge ${v.passed?'good':'bad'}`,v.passed?'断言通过':'断言失败'),el('strong','',v.passed?'核验通过':'核验未通过'),meta([['来源',v.source==='completion-snapshot'?'完成时快照':'历史任务 · 当前文件'],['工件',v.artifact?.name],['SHA-256',v.artifact?.sha256],['Attempt',v.attempt_id],['配置摘要',v.configuration_sha256]]));
   for(const a of v.assertions||[])card.append(el('div',a.passed?'assertion good':'assertion bad',`${a.passed?'✓':'×'} ${a.field}`));box.append(card);
  }
  const paths=response.artifacts?.data?.artifacts||[];
  if(!paths.length){box.append(el('p','muted form-note',response.artifacts?.error?`工件列表不可读取：${response.artifacts.error.code}`:response.artifacts?.data?.unavailable?.some(e=>e.reason==='purged_by_owner')?'工件快照已由 owner 清理。历史核验与 hash 记录仍保留；当前文件不替代原快照。':response.artifacts?.data?.source==='completion-snapshot'?'当前授权范围内没有可用的完成时工件快照；后补文件不会写入此任务结果。':'执行端尚未授权工件。请由执行端 owner 通过 CLI 授权需要核验的相对路径。'));return box;}
+ if(!canWrite()){box.append(el('p','form-note muted','当前面板只读。已有核验证据仍可查看；升级前不发送新的核验操作。'));return box;}
  const form=el('form','verify-form'),label=el('label','form-label','已授权工件'),select=el('select');select.name='artifact';select.setAttribute('aria-label','已授权工件');for(const path of paths)option(select,path,path);label.append(select);
  const expectedLabel=el('label','form-label','预期 JSON 字段'),expected=el('textarea');expected.rows=4;expected.value='{"status":"ok"}';expected.setAttribute('aria-label','预期 JSON');expectedLabel.append(expected);const submit=el('button','button','核验工件');submit.type='submit';const message=el('p','form-note muted');
  form.append(label,expectedLabel,el('p','form-note muted',response.artifacts?.data?.source==='completion-snapshot'?'检查完成时保存的工件快照，不调用模型。执行与核验分别记录。':'历史任务：读取当前授权文件，不是完成时快照。不调用模型。'),message,submit);box.append(form);
  form.addEventListener('submit',async event=>{
   event.preventDefault();let value;try{value=JSON.parse(expected.value);if(!value||Array.isArray(value)||typeof value!=='object'||!Object.keys(value).length||Object.keys(value).length>16||new TextEncoder().encode(expected.value).length>8192)throw Error();}catch{return message.textContent='请输入包含 1–16 个字段、最多 8192 字节的 JSON 对象。';}
-  submit.disabled=true;
-  try{const result=unwrap(await api(`/tasks/${task.task_id}/verify`,{method:'POST',body:JSON.stringify({artifact:select.value,expected:value})}));toast(result.passed?'工件核验通过。':'工件核验未通过，请查看字段断言。');state.lastDetail='';await readDetail(state.detailVersion);}catch(e){message.textContent=problem(e);}finally{submit.disabled=false;}
+  submit.disabled=true;state.verificationBusy=true;
+  try{const result=unwrap(await api(`/tasks/${task.task_id}/verify`,{method:'POST',body:JSON.stringify({artifact:select.value,expected:value})}));toast(result.passed?'工件核验通过。':'工件核验未通过，请查看字段断言。');state.lastDetail='';state.verificationBusy=false;await readDetail(state.detailVersion,true);}catch(e){message.textContent=problem(e);}finally{state.verificationBusy=false;submit.disabled=false;}
  });return box;
 }
-function workflowFailure(error,task){const box=el('div');box.append(empty('执行端状态暂不可读取',problem(error)));if(task.request){box.append(el('div','alert',`以下为历史缓存；最后成功观察：${fullTime(task._observed)}`),badge(task.status),el('pre','goal',task.request.goal));}if(task._request_id)box.append(button('恢复原请求','button',()=>recoverOriginal(task._request_id)));return box;}
+function workflowFailure(error,task){const box=el('div');box.append(empty('执行端状态暂不可读取',problem(error)));if(task.request){box.append(el('div','alert',`以下为历史缓存；最后成功观察：${fullTime(task._observed)}`),badge(task.status),el('pre','goal',task.request.goal));}if(task._request_id&&canWrite())box.append(button('恢复原请求','button',()=>recoverOriginal(task._request_id)));return box;}
 $('#new-task').addEventListener('click',openComposer);$('#close-compose').addEventListener('click',()=>$('#compose-dialog').close());$('#compose-peer').addEventListener('change',()=>loadComposerAgents($('#compose-peer').value));$('#compose-agent').addEventListener('change',updateProjects);
 $('#discard-pending').addEventListener('click',async()=>{if(await confirmAction('放弃本地草稿？','这不会取消已经到达执行端的任务。请先检查原请求；放弃后再次新建会得到不同任务 ID。')){savePending(null);$('#compose-dialog').close();}});
 $('#stop-panel').addEventListener('click',async()=>{if(await confirmAction('关闭本次面板？','本次面板启动的 Daemon 会一起正常停止；复用的已有 Daemon 将继续运行。')){try{unwrap(await api('/panel/stop',{method:'POST',body:'{}'}));state.stopped=true;$('#sync-state').textContent='面板已关闭';toast('本次面板正在关闭。');}catch(e){toast(problem(e));}}});

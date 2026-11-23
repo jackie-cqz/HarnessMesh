@@ -103,6 +103,23 @@ async fn execute(
     authorize: &ExecutionAuthorizer,
 ) -> Result<()> {
     let (_, config) = store.agent(task.agent_id)?;
+    // Also check the exact configuration captured for this attempt. A later
+    // allowlist edit must not make an older captured configuration look ready.
+    if task
+        .request
+        .expected_artifacts
+        .as_ref()
+        .is_some_and(|paths| {
+            paths
+                .iter()
+                .any(|path| !config.project.artifact_paths.contains(path))
+        })
+    {
+        return Err(MeshError::new(
+            ErrorCode::PermissionDenied,
+            "required artifact is absent from the captured execution configuration",
+        ));
+    }
     let budget = store.project_budget(&task.project_id)?;
     let digest = hmesh_security::sha256_hex(&serde_json::to_vec(&config).map_err(failure)?);
     let attempt = task

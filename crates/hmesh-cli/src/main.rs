@@ -407,6 +407,10 @@ enum AgentCommand {
 }
 #[derive(Subcommand)]
 enum TaskCommand {
+    /// Inspect the original task against the execution owner's current configuration.
+    Preflight {
+        task_id: Uuid,
+    },
     Archive {
         task_id: Uuid,
     },
@@ -434,6 +438,9 @@ enum TaskCommand {
         timeout: u64,
         #[arg(long, default_value_t = 1048576)]
         max_output_bytes: usize,
+        /// Require this relative artifact to be declared before execution. Repeat for multiple files.
+        #[arg(long = "artifact")]
+        artifacts: Vec<PathBuf>,
     },
     Show {
         task_id: Uuid,
@@ -1022,6 +1029,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 task_id,
                 timeout,
                 max_output_bytes,
+                artifacts,
             } => {
                 let peers: Value = if Uuid::parse_str(&peer).is_ok() {
                     json!([])
@@ -1052,15 +1060,27 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 task.task_id = task_id.unwrap_or(request_id);
                 task.limits.timeout_seconds = timeout;
                 task.limits.max_output_bytes = max_output_bytes;
+                task.expected_artifacts = (!artifacts.is_empty()).then_some(artifacts);
+                let body = RemoteTask {
+                    peer_id: peer,
+                    request_id,
+                    task,
+                };
+                if body.task.expected_artifacts.is_some() {
+                    let report: Value = client.post("/local/tasks/preflight", &body).await?;
+                    if report["ready"] != true {
+                        return Err(MeshError::new(
+                            ErrorCode::PermissionDenied,
+                            "task preflight blocked; no task was submitted",
+                        )
+                        .into());
+                    }
+                }
+                client.post("/local/tasks/submit", &body).await?
+            }
+            TaskCommand::Preflight { task_id } => {
                 client
-                    .post(
-                        "/local/tasks/submit",
-                        &RemoteTask {
-                            peer_id: peer,
-                            request_id,
-                            task,
-                        },
-                    )
+                    .get(&format!("/local/tasks/{task_id}/preflight"))
                     .await?
             }
             TaskCommand::Show { task_id } => client.get(&format!("/local/tasks/{task_id}")).await?,

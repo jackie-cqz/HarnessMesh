@@ -177,6 +177,30 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
         ErrorCode::PermissionDenied
     );
     assert!(store.tasks().expect("tasks").is_empty());
+    // An authenticated but ungranted peer must not learn Agent existence,
+    // tool configuration, or whether an output path is declared.
+    for candidate in [id, Uuid::new_v4()] {
+        for artifact in ["out/health.json", "out/not-declared.json"] {
+            let mut restricted = envelope.clone();
+            restricted.request_id = Uuid::new_v4();
+            restricted.payload.task_id = Uuid::new_v4();
+            restricted.payload.target_agent_id = candidate;
+            restricted.payload.expected_artifacts = Some(vec![artifact.into()]);
+            restricted.payload.expected_tools = Some(vec!["read".into()]);
+            let denied = peer
+                .post::<_, Value>("/hmesh/v1/tasks", &restricted)
+                .await
+                .unwrap_err();
+            assert_eq!(denied.code, ErrorCode::PermissionDenied);
+            assert_eq!(denied.message, "no peer/project/agent task grant");
+        }
+    }
+    assert!(
+        store
+            .tasks()
+            .expect("no admission during probes")
+            .is_empty()
+    );
     assert!(
         peer.get::<Vec<AgentCard>>("/hmesh/v1/agents")
             .await
@@ -229,7 +253,7 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
             .await
             .expect_err("project")
             .code,
-        ErrorCode::ProjectNotFound
+        ErrorCode::PermissionDenied
     );
     let mut injected = serde_json::to_value(&envelope).expect("json");
     injected["payload"]["cwd"] = json!("C:/unregistered");

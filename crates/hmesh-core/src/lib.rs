@@ -225,6 +225,9 @@ pub struct TaskSubmit {
     /// A restriction, never a tool grant. Omitted on ordinary/legacy requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_tools: Option<Vec<String>>,
+    /// Required completion artifacts. This restricts a task; it never grants file access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_artifacts: Option<Vec<PathBuf>>,
 }
 fn yes() -> bool {
     true
@@ -240,6 +243,7 @@ impl TaskSubmit {
             limits: RunLimits::default(),
             requires_approval: true,
             expected_tools: None,
+            expected_artifacts: None,
         }
     }
     pub fn validate(&self) -> Result<()> {
@@ -247,6 +251,27 @@ impl TaskSubmit {
             return Err(MeshError::input("goal must contain 1..65536 UTF-8 bytes"));
         }
         validate_name(&self.project_id)?;
+        if let Some(paths) = &self.expected_artifacts {
+            let unique: std::collections::BTreeSet<_> = paths.iter().collect();
+            if paths.is_empty()
+                || paths.len() > 16
+                || unique.len() != paths.len()
+                || paths.iter().any(|p| {
+                    p.as_os_str().is_empty()
+                        || p.components()
+                            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                        || p.to_str().is_none_or(|s| {
+                            s.len() > 1024
+                                || s.contains(['\\', ':'])
+                                || s.chars().any(char::is_control)
+                        })
+                })
+            {
+                return Err(MeshError::input(
+                    "expected artifacts require 1..16 unique portable relative file paths",
+                ));
+            }
+        }
         if let Some(tools) = &self.expected_tools
             && (tools.len() > 32 || tools.iter().any(|t| validate_name(t).is_err()))
         {
