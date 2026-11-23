@@ -11,7 +11,14 @@ const f=flags(process.argv.slice(2),['--archive','--archive-dir']);
 if(!f['--archive']&&f['--archive-dir']){const dir=resolve(f['--archive-dir']),files=readdirSync(dir).filter(n=>n.endsWith('.zip')||n.endsWith('.tar.gz'));assert(files.length===1,'Expected one archive');f['--archive']=join(dir,files[0]);}
 assert(f['--archive'],'Expected --archive FILE or --archive-dir DIR');
 const root=mkdtempSync(join(tmpdir(),'hmesh-package-')),unpack=join(root,'unpacked');mkdirSync(unpack);
-const win=process.platform==='win32';const extracted=win?spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-File',resolve('scripts/package-windows.ps1'),'-Mode','extract','-Source',resolve(f['--archive']),'-Destination',unpack],{encoding:'utf8'}):spawnSync('tar',['-xzf',resolve(f['--archive']),'-C',unpack],{encoding:'utf8'});assert(extracted.status===0,'Archive extraction failed');
+const win=process.platform==='win32';
+const extracted=win?spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-File',resolve('scripts/package-windows.ps1'),'-Mode','extract','-Source',resolve(f['--archive']),'-Destination',unpack],{encoding:'utf8'}):spawnSync('tar',['-xzf',resolve(f['--archive']),'-C',unpack],{encoding:'utf8'});
+if(extracted.status!==0){
+ // Extraction runs before any Node identity, credential or panel URL exists.
+ // Preserve the tool's actual failure instead of guessing at a runtime defect.
+ const bounded=value=>String(value||'').replace(/#access=[^\s"']+/g,'#access=[REDACTED]').slice(-4000);
+ throw Error('Archive extraction failed: '+JSON.stringify({status:extracted.status,signal:extracted.signal,error_code:extracted.error?.code,stderr:bounded(extracted.stderr),stdout:bounded(extracted.stdout)}));
+}
 const dirs=readdirSync(unpack);assert(dirs.length===1,'Unexpected archive entries');const dir=join(unpack,dirs[0]),manifest=JSON.parse(readFileSync(join(dir,'manifest.json')));
 for(const[name,digest]of Object.entries(manifest.files)){assert(/^[A-Za-z0-9._-]+$/.test(name),'Unexpected bundle filename');assert(createHash('sha256').update(readFileSync(join(dir,name))).digest('hex')===digest,'Bundle hash mismatch');}
 assert(readdirSync(dir).length===Object.keys(manifest.files).length+2,'Unexpected runtime data in package');

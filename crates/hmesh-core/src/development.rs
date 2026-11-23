@@ -67,6 +67,10 @@ impl TaskTemplate {
         task.task_id = id;
         task.limits = self.limits.clone();
         task.expected_tools = self.expected_tools.clone();
+        task.expected_artifacts = self
+            .verification
+            .as_ref()
+            .map(|check| vec![check.artifact.clone()]);
         task.validate()?;
         Ok(task)
     }

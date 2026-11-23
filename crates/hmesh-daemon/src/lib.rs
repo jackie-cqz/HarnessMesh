@@ -1,7 +1,9 @@
 //! Owner and peer RPC boundaries. Every request rechecks current trust/policy.
+mod acceptance;
 mod development;
 mod integration;
 mod onboarding;
+mod preflight;
 mod services;
 use anyhow::Context;
 use axum::{
@@ -41,6 +43,7 @@ pub struct AppState {
     pub store: Store,
     policy: Arc<RwLock<Policy>>,
     handshake_requests: Arc<Mutex<HashMap<i64, usize>>>,
+    acceptance: Arc<Mutex<HashMap<Uuid, Value>>>,
     pub shutdown: watch::Sender<bool>,
 }
 #[derive(Debug)]
@@ -95,6 +98,7 @@ impl AppState {
             store,
             policy: Arc::new(RwLock::new(policy)),
             handshake_requests: Arc::new(Mutex::new(HashMap::new())),
+            acceptance: Arc::new(Mutex::new(HashMap::new())),
             shutdown,
         })
     }
@@ -218,6 +222,7 @@ impl AppState {
         }
     }
     fn authorize_execution(&self, task: &TaskRecord) -> Result<()> {
+        preflight::enforce_artifacts(self, &task.request)?;
         if let Some(expected) = &task.request.expected_tools {
             let (_, config) = self.store.agent(task.agent_id)?;
             let mut actual = config.project.allowed_tools.clone();
@@ -272,6 +277,7 @@ pub fn router(state: AppState) -> Router {
         .merge(services::routes())
         .merge(integration::routes())
         .merge(development::routes())
+        .merge(preflight::routes())
         .route("/hmesh/v1/hello", get(hello))
         .route("/hmesh/v1/pair/challenge", get(challenge))
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
@@ -522,7 +528,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1"],"schema_version":8}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1"],"schema_version":8}),
     ))
 }
 async fn stop(
@@ -927,7 +933,32 @@ fn admit_task(
 ) -> std::result::Result<TaskRecord, ApiError> {
     envelope.validate(actor.node_id, "task.submit")?;
     envelope.payload.validate()?;
+    // Authorize before looking up any Agent configuration or artifact metadata.
+    let decision = if actor.owner {
+        Decision::Allowed
+    } else {
+        s.current_policy().decide(
+            actor.node_id,
+            &envelope.payload.project_id,
+            envelope.payload.target_agent_id,
+            "task.submit",
+        )
+    };
+    if decision == Decision::Denied {
+        s.store.audit(
+            Some(actor.node_id),
+            "task.submit",
+            &envelope.payload.project_id,
+            "denied",
+            envelope.trace_id,
+        )?;
+        return Err(ApiError(MeshError::new(
+            ErrorCode::PermissionDenied,
+            "no peer/project/agent task grant",
+        )));
+    }
     let (agent, config) = s.store.agent(envelope.payload.target_agent_id)?;
+    preflight::enforce_artifacts(s, &envelope.payload)?;
     if let Some(expected) = &envelope.payload.expected_tools {
         let mut actual = config.project.allowed_tools.clone();
         let mut expected = expected.clone();
@@ -951,29 +982,6 @@ fn admit_task(
         return Err(ApiError(MeshError::new(
             ErrorCode::ProjectNotFound,
             "agent is not assigned to this project",
-        )));
-    }
-    let decision = if actor.owner {
-        Decision::Allowed
-    } else {
-        s.current_policy().decide(
-            actor.node_id,
-            &envelope.payload.project_id,
-            agent.agent_id,
-            "task.submit",
-        )
-    };
-    if decision == Decision::Denied {
-        s.store.audit(
-            Some(actor.node_id),
-            "task.submit",
-            &envelope.payload.project_id,
-            "denied",
-            envelope.trace_id,
-        )?;
-        return Err(ApiError(MeshError::new(
-            ErrorCode::PermissionDenied,
-            "no peer/project/agent task grant",
         )));
     }
     if !actor.owner
@@ -1030,8 +1038,15 @@ async fn local_tasks(
     headers: HeaderMap,
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
+    let tasks = s.store.tasks()?;
+    let mut summaries = s.acceptance.lock().map_err(internal)?.clone();
+    // Bound local SQLite work; older rows remain explicitly unobserved in the UI.
+    for task in tasks.iter().rev().take(100) {
+        let evidence = s.store.verifications(task.task_id)?;
+        summaries.insert(task.task_id, acceptance::summary(task, &evidence));
+    }
     Ok(Json(
-        json!({"executions":s.store.tasks()?,"submitted":s.store.outbound_tasks()?}),
+        json!({"executions":tasks,"submitted":s.store.outbound_tasks()?,"acceptance":summaries}),
     ))
 }
 #[derive(Serialize, Deserialize)]
@@ -1217,6 +1232,20 @@ async fn approve_task(
     Path(id): Path<Uuid>,
 ) -> ApiResult<TaskRecord> {
     s.owner(&headers, &c)?;
+    let pending = s.store.task(id)?;
+    if pending.status == TaskStatus::PendingApproval
+        && (pending.request.expected_artifacts.is_some()
+            || pending.request.expected_tools.is_some())
+    {
+        let report =
+            preflight::inspect_task(&s, preflight::origin_actor(&s, &pending), &pending.request)?;
+        if !report.ready {
+            return Err(ApiError(MeshError::new(
+                ErrorCode::PermissionDenied,
+                "task preflight changed before approval; inspect the original task",
+            )));
+        }
+    }
     let task = s
         .store
         .approve_pending(id, s.instance.config.security.pending_approval_ttl_seconds)?;
@@ -1591,11 +1620,25 @@ async fn owner_verifications(
 ) -> ApiResult<Vec<Value>> {
     s.owner(&headers, &c)?;
     if let Some(client) = outbound_client(&s, id)? {
-        Ok(Json(
-            client
-                .get(&format!("/hmesh/v1/tasks/{id}/verification"))
-                .await?,
-        ))
+        let evidence: Vec<Value> = client
+            .get(&format!("/hmesh/v1/tasks/{id}/verification"))
+            .await?;
+        if let Some(task) = s.store.cached_outbound_task(id)? {
+            let mut cache = s.acceptance.lock().map_err(internal)?;
+            if cache.len() >= 256
+                && !cache.contains_key(&id)
+                && let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, v)| v["observed_at"].as_i64().unwrap_or(0))
+                    .map(|(id, _)| *id)
+            {
+                cache.remove(&oldest);
+            }
+            let mut value = acceptance::summary(&task, &evidence);
+            value["cached"] = json!(true);
+            cache.insert(id, value);
+        }
+        Ok(Json(evidence))
     } else {
         Ok(Json(s.store.verifications(id)?))
     }

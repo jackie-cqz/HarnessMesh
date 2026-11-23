@@ -4,6 +4,7 @@ function onboardValue(id){return $('#onboard-'+id).value.trim();}
 function onboardList(id){return onboardValue(id).split(',').map(s=>s.trim()).filter(Boolean);}
 function onboardOptional(id){return onboardValue(id)||null;}
 function openOnboarding(){
+ if(!canWrite())return toast('当前面板只读，请查看运行能力与显式升级步骤。');
  if(onboardingBusy)return toast('接入操作正在完成，请稍后再打开。');
  $('#onboard-fields').hidden=false;
  delete $('#onboard-submit').dataset.complete;

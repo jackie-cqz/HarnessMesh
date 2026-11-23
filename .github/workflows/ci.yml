@@ -47,6 +47,9 @@ jobs:
       - name: Panel templates, workflows, diagnostics and budgets without models
         if: runner.os == 'Linux'
         run: npm run test:development-panel
+      - name: Delegation preflight, approvals, results and compatibility without models
+        if: runner.os == 'Linux'
+        run: npm run test:delegation-ux
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

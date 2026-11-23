@@ -505,6 +505,19 @@ impl Store {
             Ok(())
         })
     }
+    pub fn cached_outbound_task(&self, id: Uuid) -> Result<Option<TaskRecord>> {
+        self.read(|c| {
+            let record: Option<Option<String>> = c
+                .query_row(
+                    "SELECT last_record_json FROM outbound_tasks WHERE task_id=?1",
+                    [id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(internal)?;
+            record.flatten().map(|text| decode(&text)).transpose()
+        })
+    }
     pub fn outbound_tasks(&self) -> Result<Vec<Value>> {
         self.read(|c| {
             let mut q = c.prepare("SELECT task_id,peer_id,last_record_json,request_id,last_observed_at FROM outbound_tasks ORDER BY task_id").map_err(internal)?;
@@ -791,7 +804,7 @@ impl Store {
     }
     pub fn verifications(&self, id: Uuid) -> Result<Vec<Value>> {
         self.read(|c| {
-            let mut q = c.prepare("SELECT evidence_json FROM verifications WHERE task_id=?1 ORDER BY created_at,verification_id").map_err(internal)?;
+            let mut q = c.prepare("SELECT evidence_json FROM verifications WHERE task_id=?1 ORDER BY created_at,rowid").map_err(internal)?;
             q.query_map([id.to_string()],|r|r.get::<_,String>(0)).map_err(internal)?.map(|r|decode(&r.map_err(internal)?)).collect()
         })
     }

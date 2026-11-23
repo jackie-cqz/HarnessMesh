@@ -1,7 +1,7 @@
 //! Loopback browser bridge. Owner TLS credentials never leave this process.
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State, rejection::JsonRejection},
     http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -13,10 +13,24 @@ use hmesh_security::Instance;
 use hmesh_transport::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{net::Ipv4Addr, path::Path as FilePath, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    net::Ipv4Addr,
+    path::{Path as FilePath, PathBuf},
+    process::Stdio,
+    sync::Arc,
+    time::Duration,
+};
 use subtle::ConstantTimeEq;
 use tokio::{net::TcpListener, sync::Semaphore};
 use uuid::Uuid;
+
+const CLI_SCHEMA_VERSION: u64 = 8;
+const KNOWN_FEATURES: &[&str] = &[
+    "panel-task-workflow-v1",
+    "task-preflight-v1",
+    "development-workflows-v1",
+    "reliability-v2",
+];
 
 #[derive(Clone)]
 struct Panel {
@@ -164,10 +178,13 @@ pub async fn run(
                 )
             }),
         )
+        .route("/api/runtime", get(runtime))
         .route("/api/overview", get(overview))
         .route("/api/panel/stop", post(stop_panel))
         .route("/api/tasks", post(create_task))
+        .route("/api/tasks/preflight", post(preflight_task))
         .route("/api/tasks/{id}", get(task))
+        .route("/api/tasks/{id}/preflight", get(existing_task_preflight))
         .route("/api/tasks/{id}/verify", post(verify_artifact))
         .route("/api/requests/{id}/recover", post(recover))
         .route("/api/tasks/{id}/events", get(events))
@@ -246,19 +263,106 @@ async fn ready_client(instance: &Instance) -> anyhow::Result<Option<Client>> {
         return Ok(None);
     };
     match tokio::time::timeout(Duration::from_secs(2), client.get::<Value>("/local/status")).await {
-        Ok(Ok(status)) => {
-            if !status["api_features"]
-                .as_array()
-                .is_some_and(|v| v.iter().any(|x| x == "development-workflows-v1"))
-            {
-                anyhow::bail!(
-                    "existing Daemon needs an explicit update/restart for development-workflows-v1; it was preserved"
-                );
-            }
-            Ok(Some(client))
-        }
+        // A reachable older Daemon is preserved and exposed in compatibility mode.
+        Ok(Ok(_)) => Ok(Some(client)),
         _ => Ok(None),
     }
+}
+
+fn runtime_view(status: Option<&Value>) -> Value {
+    let running = status.is_some_and(|s| s["running"] == true);
+    let features: Vec<&str> = status
+        .and_then(|s| s["api_features"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|feature| KNOWN_FEATURES.contains(feature))
+        .collect();
+    let task_workflow = running && features.contains(&"panel-task-workflow-v1");
+    let task_preflight = running && features.contains(&"task-preflight-v1");
+    let development_workflows = running && features.contains(&"development-workflows-v1");
+    let mode = if !task_workflow || !task_preflight {
+        "read_only"
+    } else if development_workflows {
+        "full"
+    } else {
+        "compatible"
+    };
+    let schema = status.and_then(|s| s["schema_version"].as_u64());
+    // Losing contact with the owner API does not establish that an upgrade is needed.
+    let upgrade_required =
+        running && (mode != "full" || schema.is_some_and(|version| version < CLI_SCHEMA_VERSION));
+    let steps = if upgrade_required {
+        vec![
+            "先确认运行中的 Daemon、节点目录和未结束任务；当前面板不会停止或升级它。",
+            "在该节点本机使用旧版本 CLI 正常停止 Daemon，再创建并检查私有备份。",
+            "使用新运行包执行 upgrade check 和 upgrade prepare，核对平台、文件校验和与数据库版本。",
+            "显式从新版本启动同一节点，重新检查任务和工件；通过 startup status 核对登录自启引用，必要时重新安装。",
+        ]
+    } else {
+        Vec::new()
+    };
+    json!({
+        "cli_version":env!("CARGO_PKG_VERSION"),"cli_schema_version":CLI_SCHEMA_VERSION,
+        "daemon":{
+            "running":running,
+            "version":status.and_then(|s|s["daemon_version"].as_str()).filter(|v|v.len()<=64 && v.starts_with(|c:char|c.is_ascii_digit()) && v.bytes().filter(|c|*c==b'.').count()>=2 && v.bytes().all(|c|c.is_ascii_alphanumeric() || matches!(c,b'.'|b'-'|b'+'))),
+            "pid":status.and_then(|s|s["pid"].as_u64()),
+            "schema_version":schema,
+            "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
+            "api_features":features
+        },
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows},
+        "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
+    })
+}
+async fn current_runtime(s: &Panel) -> Value {
+    let status = tokio::time::timeout(
+        Duration::from_secs(2),
+        s.client.get::<Value>("/local/status"),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok);
+    runtime_view(status.as_ref())
+}
+async fn runtime(State(s): State<Panel>) -> Json<Value> {
+    Json(json!({"data":current_runtime(&s).await}))
+}
+
+fn unavailable(capability: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"error":{"code":"FEATURE_UNAVAILABLE","capability":capability,"automatic_retry":false,"submission_attempted":false}})),
+    )
+        .into_response()
+}
+
+async fn guarded_api(s: &Panel, req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    let write = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
+    let development = path.starts_with("/api/development/");
+    let preflight = path == "/api/tasks/preflight"
+        || (path.starts_with("/api/tasks/") && path.ends_with("/preflight"));
+    if path != "/api/panel/stop" && (write || development || preflight) {
+        // Read capabilities for each protected request, not just panel startup:
+        // an owner can replace/restart a Daemon while this panel remains open.
+        let view = current_runtime(s).await;
+        if write && view["mode"] == "read_only" {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({"error":{"code":"PANEL_READ_ONLY","automatic_retry":false,"submission_attempted":false},"runtime":view})),
+            )
+                .into_response();
+        }
+        if development && view["capabilities"]["development_workflows"] != true {
+            return unavailable("development_workflows");
+        }
+        if preflight && view["capabilities"]["task_preflight"] != true {
+            return unavailable("task_preflight");
+        }
+    }
+    next.run(req).await
 }
 
 fn error(status: StatusCode, code: &str) -> Response {
@@ -303,7 +407,7 @@ async fn guard(State(s): State<Panel>, req: Request, next: Next) -> Response {
         {
             error(StatusCode::FORBIDDEN, "ORIGIN_REQUIRED")
         } else {
-            next.run(req).await
+            guarded_api(&s, req, next).await
         }
     } else {
         next.run(req).await
@@ -421,29 +525,117 @@ struct NewTask {
     goal: String,
     timeout_seconds: u64,
     max_output_bytes: usize,
+    #[serde(default)]
+    expected_artifacts: Option<Vec<PathBuf>>,
 }
-async fn create_task(State(s): State<Panel>, Json(body): Json<NewTask>) -> Response {
+fn remote_task(body: NewTask) -> Result<RemoteTask, MeshError> {
     let mut task = TaskSubmit::new(body.agent_id, &body.project_id, &body.goal);
     task.task_id = body.request_id;
     task.limits = RunLimits {
         timeout_seconds: body.timeout_seconds,
         max_output_bytes: body.max_output_bytes,
     };
-    if task.validate().is_err() {
-        return error(StatusCode::BAD_REQUEST, "INVALID_TASK_REQUEST");
-    }
+    // An empty composer selection means no artifact contract. Explicit empty
+    // contracts remain invalid at the core protocol boundary.
+    task.expected_artifacts = body.expected_artifacts.filter(|paths| !paths.is_empty());
+    task.validate()?;
+    Ok(RemoteTask {
+        peer_id: body.peer_id,
+        request_id: body.request_id,
+        task,
+    })
+}
+fn preflight_view(value: Value) -> Value {
+    let checks: Vec<Value> = value["checks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|check| {
+            let mut safe = json!({"code":check["code"].as_str(),"passed":check["passed"] == true});
+            if let Some(field) = check["field"].as_str() {
+                safe["field"] = json!(field);
+            }
+            safe
+        })
+        .collect();
+    json!({
+        "ready":value["ready"] == true,"agent_id":value["agent_id"].as_str(),
+        "project_id":value["project_id"].as_str(),"requires_approval":value["requires_approval"].as_bool(),
+        "configuration_sha256":value["configuration_sha256"].as_str(),"checks":checks,
+        "observed_at":value["observed_at"].as_i64()
+    })
+}
+fn not_submitted(status: StatusCode, code: &str) -> Response {
+    (
+        status,
+        Json(json!({"error":{"code":code,"automatic_retry":false,"submission_attempted":false}})),
+    )
+        .into_response()
+}
+async fn preflight_task(
+    State(s): State<Panel>,
+    body: Result<Json<NewTask>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return not_submitted(StatusCode::BAD_REQUEST, "INVALID_TASK_REQUEST");
+    };
+    let Ok(request) = remote_task(body) else {
+        return not_submitted(StatusCode::BAD_REQUEST, "INVALID_TASK_REQUEST");
+    };
     mutation(
         s.client
-            .post(
-                "/local/tasks/submit",
-                &RemoteTask {
-                    peer_id: body.peer_id,
-                    request_id: body.request_id,
-                    task,
-                },
-            )
-            .await,
+            .post::<_, Value>("/local/tasks/preflight", &request)
+            .await
+            .map(preflight_view),
     )
+}
+async fn existing_task_preflight(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
+    mutation(
+        s.client
+            .get::<Value>(&format!("/local/tasks/{id}/preflight"))
+            .await
+            .map(preflight_view),
+    )
+}
+fn failed_preflight(preflight: Value) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"error":{"code":"TASK_PREFLIGHT_FAILED","automatic_retry":false,"submission_attempted":false},"preflight":preflight})),
+    )
+        .into_response()
+}
+fn preflight_error(e: MeshError) -> Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({"error":{"code":e.code,"retryable":e.retryable,"trace_id":e.trace_id,"automatic_retry":false,"submission_attempted":false}})),
+    )
+        .into_response()
+}
+async fn create_task(
+    State(s): State<Panel>,
+    body: Result<Json<NewTask>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return not_submitted(StatusCode::BAD_REQUEST, "INVALID_TASK_REQUEST");
+    };
+    let Ok(request) = remote_task(body) else {
+        return not_submitted(StatusCode::BAD_REQUEST, "INVALID_TASK_REQUEST");
+    };
+    let preflight = match s
+        .client
+        .post::<_, Value>("/local/tasks/preflight", &request)
+        .await
+    {
+        Ok(value) => preflight_view(value),
+        Err(e) => return preflight_error(e),
+    };
+    if preflight["ready"] != true
+        || preflight["agent_id"].as_str() != Some(&request.task.target_agent_id.to_string())
+        || preflight["project_id"].as_str() != Some(request.task.project_id.as_str())
+    {
+        return failed_preflight(preflight);
+    }
+    mutation(s.client.post("/local/tasks/submit", &request).await)
 }
 async fn verify_artifact(
     State(s): State<Panel>,
@@ -530,6 +722,21 @@ async fn task_action(
     Path((id, name)): Path<(Uuid, String)>,
     Json(body): Json<Value>,
 ) -> Response {
+    if name == "approve" && body == json!({}) {
+        // The browser's preview is informational. Recheck even legacy tasks
+        // without a frozen contract immediately before dispatching approval.
+        let preflight = match s
+            .client
+            .get::<Value>(&format!("/local/tasks/{id}/preflight"))
+            .await
+        {
+            Ok(value) => preflight_view(value),
+            Err(e) => return preflight_error(e),
+        };
+        if preflight["ready"] != true {
+            return failed_preflight(preflight);
+        }
+    }
     action(
         s,
         "tasks",
