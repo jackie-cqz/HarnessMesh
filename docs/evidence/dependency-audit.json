@@ -1,11 +1,142 @@
 {
   "all_lockfile_targets": true,
-  "cargo_lock_sha256": "fdfb6723f424573017986439323bd1e3d267fce305ca1e1641868533f840ed69",
+  "cargo_lock_sha256": "695bf1c9208b507ee0d5ad5d42a89ba11564eae828e8c6f3e680bf4cb4b1eae7",
   "complete": true,
   "findings": [],
   "provider": "https://api.osv.dev/v1/querybatch",
-  "queried_at_unix_seconds": 1793195958,
-  "registry_packages_checked": 232,
+  "queried_at_unix_seconds": 1795434069,
+  "registry_packages_checked": 230,
   "schema_version": 1,
-  "status": "passed"
+  "status": "passed",
+  "resolution": {
+    "cause": "Six published advisories matched the original lockfile; OSV completed successfully. No transient failure or advisory ignore was used.",
+    "previous_cargo_lock_sha256": "b2a5aa6834ac5d552fd49a57626a07c760d725805ed4eed73d24b228fc301506",
+    "previous_ci_run_id": 45165912212,
+    "previous_ci_job_id": 137662673028,
+    "advisories": [
+      {
+        "id": "RUSTSEC-2026-0459",
+        "package": "libsqlite3-sys",
+        "previous_version": "0.30.1",
+        "fixed_from": "0.39.0",
+        "resolved_version": "0.39.1",
+        "source": "https://rustsec.org/advisories/RUSTSEC-2026-0459.html",
+        "osv_source": "https://osv.dev/vulnerability/RUSTSEC-2026-0459"
+      },
+      {
+        "id": "RUSTSEC-2026-0523",
+        "package": "quinn-proto",
+        "previous_version": "0.11.18",
+        "fixed_from": "0.11.19",
+        "resolved_version": "0.11.19",
+        "source": "https://rustsec.org/advisories/RUSTSEC-2026-0523.html",
+        "osv_source": "https://osv.dev/vulnerability/RUSTSEC-2026-0523"
+      },
+      {
+        "id": "RUSTSEC-2026-0524",
+        "package": "quinn-proto",
+        "previous_version": "0.11.18",
+        "fixed_from": "0.11.19",
+        "resolved_version": "0.11.19",
+        "source": "https://rustsec.org/advisories/RUSTSEC-2026-0524.html",
+        "osv_source": "https://osv.dev/vulnerability/RUSTSEC-2026-0524"
+      },
+      {
+        "id": "RUSTSEC-2026-0538",
+        "package": "quinn-udp",
+        "previous_version": "0.5.15",
+        "fixed_from": "0.5.16",
+        "resolved_version": "0.5.16",
+        "source": "https://rustsec.org/advisories/RUSTSEC-2026-0538.html",
+        "osv_source": "https://osv.dev/vulnerability/RUSTSEC-2026-0538"
+      },
+      {
+        "id": "RUSTSEC-2026-0486",
+        "package": "rustix",
+        "previous_version": "1.1.5",
+        "fixed_from": "1.1.6",
+        "resolved_version": "1.1.6",
+        "source": "https://rustsec.org/advisories/RUSTSEC-2026-0486.html",
+        "osv_source": "https://osv.dev/vulnerability/RUSTSEC-2026-0486"
+      },
+      {
+        "id": "RUSTSEC-2026-0592",
+        "package": "url",
+        "previous_version": "2.5.8",
+        "fixed_from": "2.5.9",
+        "resolved_version": "2.5.9",
+        "source": "https://rustsec.org/advisories/RUSTSEC-2026-0592.html",
+        "osv_source": "https://osv.dev/vulnerability/RUSTSEC-2026-0592"
+      }
+    ],
+    "direct_dependencies": {
+      "rusqlite": {
+        "previous": "0.32.1",
+        "resolved": "0.41.0",
+        "features": [
+          "bundled",
+          "backup",
+          "fallible_uint"
+        ],
+        "bundled_sqlite": "3.54.1",
+        "compatibility_note": "The published fallible_uint feature preserves the existing checked usize/u64 SQL conversion support without application source changes.",
+        "source": "https://crates.io/api/v1/crates/rusqlite/0.41.0"
+      },
+      "url": {
+        "previous": "2.5.8",
+        "resolved": "2.5.9"
+      }
+    },
+    "rust_baseline_unchanged": "1.90",
+    "published_msrv": {
+      "rusqlite": "1.89.0",
+      "libsqlite3-sys": "1.88",
+      "quinn-proto": "1.85",
+      "quinn-udp": "1.85",
+      "rustix": "1.65",
+      "url": "1.63"
+    },
+    "msrv_sources": [
+      "https://crates.io/api/v1/crates/rusqlite/0.41.0",
+      "https://rustsec.org/advisories/RUSTSEC-2026-0459.html"
+    ],
+    "audit_logic_changed": false,
+    "ignored_advisories": []
+  },
+  "local_validation": {
+    "platform": "macOS arm64",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "command": "cargo +stable test --locked -p hmesh-store -p hmesh-runtime -p hmesh-cli",
+    "status": "passed",
+    "tests_passed": 50,
+    "coverage": [
+      "store migrations, admission and completion snapshot rollback",
+      "CLI identity-preserving private backup, restore, lock and tamper handling",
+      "runtime credential-reference handling",
+      "temporary loopback TLS panel and two-node process tests"
+    ],
+    "real_model_calls": 0,
+    "existing_instances_used": false,
+    "cross_platform_ci": "must be observed for the new commit; not established by this local run"
+  },
+  "full_workspace_validation": [
+    {
+      "command": "cargo +stable test --locked --workspace",
+      "status": "passed",
+      "tests_passed": 116
+    },
+    {
+      "command": "cargo +stable clippy --locked --workspace --all-targets -- -D warnings",
+      "status": "passed"
+    },
+    {
+      "command": "cargo +stable build --locked -p hmesh-cli -p hmesh-fixture",
+      "status": "passed"
+    }
+  ],
+  "limitations": [
+    "Local verification used the installed stable Rust toolchain; pinned Rust 1.90 and three-platform CI must be observed on the new commit.",
+    "No advisory was ignored and the audit implementation was unchanged.",
+    "No running Node instance was opened, migrated or restarted; old running Daemons are not patched by this repository change alone."
+  ]
 }
