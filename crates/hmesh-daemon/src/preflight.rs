@@ -85,6 +85,21 @@ pub(super) fn inspect_task(
     actor: Actor,
     task: &TaskSubmit,
 ) -> std::result::Result<Report, ApiError> {
+    inspect_task_with_git(s, actor, task, false)
+}
+
+#[derive(Deserialize)]
+struct InspectQuery {
+    #[serde(default)]
+    observe_git: bool,
+}
+
+fn inspect_task_with_git(
+    s: &AppState,
+    actor: Actor,
+    task: &TaskSubmit,
+    observe_git: bool,
+) -> std::result::Result<Report, ApiError> {
     task.validate()?;
     // Pairing is the trust boundary; the peer access mode selects auto/confirm.
     let decision = s.task_decision(actor);
@@ -140,10 +155,13 @@ pub(super) fn inspect_task(
             field: Some(path.to_string_lossy().into_owned()),
         });
     }
-    let git_version = hmesh_runtime::git_version::inspect(&config, task.git_version.as_ref());
-    if let Some(version) = task.git_version.as_ref() {
+    // Older peers deserialize a strict response. Preserve its shape unless they
+    // ask to observe Git or explicitly send a version restriction.
+    let git_version = (observe_git || task.git_version.is_some())
+        .then(|| hmesh_runtime::git_version::inspect(&config, task.git_version.as_ref()));
+    if let (Some(inspection), Some(version)) = (&git_version, &task.git_version) {
         checks.extend(
-            hmesh_runtime::git_version::version_checks(&config, &git_version, version)
+            hmesh_runtime::git_version::version_checks(&config, inspection, version)
                 .into_iter()
                 .map(|(code, passed)| check(code, passed)),
         );
@@ -156,7 +174,7 @@ pub(super) fn inspect_task(
         configuration_sha256: Some(hmesh_security::sha256_hex(
             &serde_json::to_vec(&config).map_err(internal)?,
         )),
-        git_version: Some(git_version),
+        git_version,
         checks,
         observed_at: now(),
     })
@@ -182,18 +200,20 @@ async fn outgoing(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
+    Query(query): Query<InspectQuery>,
     Json(body): Json<RemoteTask>,
 ) -> ApiResult<Report> {
     s.owner(&headers, &c)?;
     body.task.validate()?;
     if body.peer_id == s.instance.card.node_id {
-        return inspect_task(
+        return inspect_task_with_git(
             &s,
             Actor {
                 node_id: s.instance.card.node_id,
                 owner: true,
             },
             &body.task,
+            query.observe_git,
         )
         .map(Json);
     }
@@ -211,7 +231,12 @@ async fn outgoing(
     .map_err(internal)?;
     let mut envelope = Envelope::new(s.instance.card.node_id, "task.preflight", body.task.clone());
     envelope.request_id = body.request_id;
-    let result = client.post("/hmesh/v1/tasks/preflight", &envelope).await;
+    let path = if query.observe_git {
+        "/hmesh/v1/tasks/preflight?observe_git=true"
+    } else {
+        "/hmesh/v1/tasks/preflight"
+    };
+    let result = client.post(path, &envelope).await;
     Ok(Json(
         result.unwrap_or_else(|error| unavailable(&body.task, error)),
     ))
@@ -220,11 +245,12 @@ async fn incoming(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
+    Query(query): Query<InspectQuery>,
     Json(envelope): Json<Envelope<TaskSubmit>>,
 ) -> ApiResult<Report> {
     let actor = s.actor(&headers, &c)?;
     envelope.validate(actor.node_id, "task.preflight")?;
-    inspect_task(&s, actor, &envelope.payload).map(Json)
+    inspect_task_with_git(&s, actor, &envelope.payload, query.observe_git).map(Json)
 }
 async fn owner_existing(
     State(s): State<AppState>,
@@ -429,7 +455,14 @@ mod tests {
         };
         let report = inspect_task(&state, owner, &task).unwrap();
         assert!(report.ready);
-        assert!(!report.git_version.unwrap().available);
+        assert!(
+            serde_json::to_value(report)
+                .unwrap()
+                .get("git_version")
+                .is_none()
+        );
+        let observed = inspect_task_with_git(&state, owner, &task, true).unwrap();
+        assert!(observed.ready && !observed.git_version.unwrap().available);
         let project = root.path().join("git-project");
         std::fs::create_dir(&project).unwrap();
         let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap())

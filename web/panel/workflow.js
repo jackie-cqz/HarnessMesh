@@ -29,7 +29,8 @@ function lockComposer(locked){
 
 async function checkComposer(draft){
  const generation=++composerCheckGeneration,binding=JSON.stringify(draft);composerPreflight=null;$('#compose-preflight').replaceChildren(el('p','form-note','正在检查执行条件…'));
- const check=unwrap(await api('/tasks/preflight',{method:'POST',body:binding}));
+ const path=hasProjectWork()?'/tasks/preflight?observe_git=true':'/tasks/preflight';
+ const check=unwrap(await api(path,{method:'POST',body:binding}));
  if(generation!==composerCheckGeneration||JSON.stringify(composerBody())!==binding)throw Object.assign(Error('输入已变化，请重新检查当前任务。'),{code:'PREFLIGHT_STALE'});
  projectWork.executor=check.git_version?.current||null;
  if($('#git-mode').value==='current'&&!draft.git_version&&projectWork.executor?.commit)projectWork.currentCommit=projectWork.executor.commit;

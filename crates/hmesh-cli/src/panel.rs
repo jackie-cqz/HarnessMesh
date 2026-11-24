@@ -685,8 +685,14 @@ fn not_submitted(status: StatusCode, code: &str) -> Response {
     )
         .into_response()
 }
+#[derive(Deserialize)]
+struct PreflightOptions {
+    #[serde(default)]
+    observe_git: bool,
+}
 async fn preflight_task(
     State(s): State<Panel>,
+    Query(query): Query<PreflightOptions>,
     body: Result<Json<NewTask>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
@@ -695,9 +701,14 @@ async fn preflight_task(
     let Ok(request) = remote_task(body) else {
         return not_submitted(StatusCode::BAD_REQUEST, "INVALID_TASK_REQUEST");
     };
+    let path = if query.observe_git {
+        "/local/tasks/preflight?observe_git=true"
+    } else {
+        "/local/tasks/preflight"
+    };
     mutation(
         s.client
-            .post::<_, Value>("/local/tasks/preflight", &request)
+            .post::<_, Value>(path, &request)
             .await
             .map(preflight_view),
     )
