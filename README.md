@@ -2,11 +2,13 @@
 
 Rust runtime for authorized coding-agent tasks between local-first Mesh Nodes.
 
+**Use it from any agent.** Add `hmesh mcp` as a stdio MCP server to Claude Code, Codex, Pi or any other MCP client. The agent can then list the agents registered on this computer and on every paired computer, send one of them a task, and get its final reply (`mesh_list_agents`, `mesh_send`, `mesh_wait`). Pairing is the trust boundary: paired computers see each other's agents, and their tasks run immediately unless the receiving owner switches that peer to confirmation (`hmesh peers access <peer> confirm`). See [MCP](docs/mcp.md).
+
 0.0.2 provides managed Pi, DeepSeek Harness and OpenCode tasks, a local owner panel, immutable artifacts, persistent workflows and maintenance tools. Real Windows↔Mac Tailnet/mTLS and [Windows → Orion/Linux SSH](docs/ssh-first-smoke.md) checkpoints are recorded in the [implementation status](docs/implementation-status.md). Full V0.1/V0.2, Codex and the three-machine Gateway remain later work.
 
 [Direct Tailscale setup for Windows and Mac](docs/quickstart-tailnet.md) supports literal Tailnet IPs, candidate discovery, pinned mTLS and a separate loopback owner API. On Mac, run `node scripts/start-tailnet.mjs` after cloning to build and start a dedicated Node with the local Pi/DeepSeek V4 Flash configuration; SSH is not required. The [real Windows → Mac acceptance](docs/tailnet-mac-smoke.md) passed owner approval, Pi write/read, five-field JSON/hash verification, deduplication, event replay and completed-task recovery after restarting the Windows origin. The [Mac → Windows execution-owner checkpoint](docs/tailnet-reverse-smoke.md) also passed DSH/Pro write/read and independent JSON/hash verification. Mac-origin status, event and verification readback also passed; duplicate submission, recovery, workspace checks and managed-service integration remain separate.
 
-[Bidirectional SSH and native MCP delegation](docs/ssh-bidirectional-mcp.md) now pass: execution survives a cut tunnel and origin restart, replay/deduplication remain correct, and Orion Pi uses native MCP to discover and delegate Windows DSH. [MCP setup](docs/mcp.md) is explicitly scoped to owner-enabled running parents; target execution requires independent approval.
+[Bidirectional SSH and native MCP delegation](docs/ssh-bidirectional-mcp.md) now pass: execution survives a cut tunnel and origin restart, replay/deduplication remain correct, and Orion Pi uses native MCP to discover and delegate Windows DSH. That acceptance predates the current MCP model; see [MCP](docs/mcp.md) for today's setup.
 
 The [SSH Todo example](examples/ssh-todo/README.md) runs a Pi-authored API on Orion and a DSH-authored browser client on Windows. Real HTTP, browser operations and backend restart persistence passed; its [acceptance report](docs/evidence/latest-todo-integration.json) also preserves the Pi authoring output-limit failures separately from application test results.
 

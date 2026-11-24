@@ -16,6 +16,7 @@ tokio.workspace = true
 hmesh-transport = { path = "../../crates/hmesh-transport" }
 reqwest.workspace = true
 hmesh-core = { path = "../../crates/hmesh-core" }
+hmesh-mcp = { path = "../../crates/hmesh-mcp" }
 hmesh-store = { path = "../../crates/hmesh-store" }
 hmesh-security = { path = "../../crates/hmesh-security" }
 hmesh-runtime = { path = "../../crates/hmesh-runtime" }

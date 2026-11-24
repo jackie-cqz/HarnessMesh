@@ -241,7 +241,9 @@ impl TaskSubmit {
             goal: goal.into(),
             inputs: vec![],
             limits: RunLimits::default(),
-            requires_approval: true,
+            // The executor decides from its per-peer access mode. A sender may
+            // still opt in to local confirmation by setting this to true.
+            requires_approval: false,
             expected_tools: None,
             expected_artifacts: None,
         }
@@ -340,7 +342,12 @@ pub struct TaskEvent {
 #[serde(default, deny_unknown_fields)]
 pub struct Policy {
     pub default: DefaultPolicy,
+    /// Legacy per-project grants. Paired peers no longer need them; they are
+    /// still parsed so existing policy files keep loading.
     pub grant: Vec<Grant>,
+    /// Pairing is the trust boundary. This only decides whether a paired
+    /// peer's task starts immediately or waits for local confirmation.
+    pub peers: PeerAccessPolicy,
 }
 impl Default for Policy {
     fn default() -> Self {
@@ -349,8 +356,34 @@ impl Default for Policy {
                 action: "deny".into(),
             },
             grant: vec![],
+            peers: PeerAccessPolicy::default(),
         }
     }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PeerAccess {
+    /// Tasks from this paired peer start without a local approval step.
+    #[default]
+    Auto,
+    /// Tasks from this paired peer wait in PENDING_APPROVAL for the local owner.
+    Confirm,
+}
+impl fmt::Display for PeerAccess {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Auto => "auto",
+            Self::Confirm => "confirm",
+        })
+    }
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PeerAccessPolicy {
+    /// Applies to every paired peer without an override.
+    pub default: PeerAccess,
+    /// Per-peer overrides keyed by node ID.
+    pub overrides: std::collections::BTreeMap<Uuid, PeerAccess>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -391,6 +424,22 @@ impl Policy {
         }
         Ok(())
     }
+    /// Access mode for one paired peer.
+    pub fn peer_access(&self, peer: Uuid) -> PeerAccess {
+        self.peers
+            .overrides
+            .get(&peer)
+            .copied()
+            .unwrap_or(self.peers.default)
+    }
+    /// Decision for a task from an already authenticated, trusted peer.
+    pub fn peer_decision(&self, peer: Uuid) -> Decision {
+        match self.peer_access(peer) {
+            PeerAccess::Auto => Decision::Allowed,
+            PeerAccess::Confirm => Decision::ApprovalRequired,
+        }
+    }
+    /// Legacy project-grant evaluation; no longer used for paired peers.
     pub fn decide(&self, peer: Uuid, project: &str, agent: Uuid, action: &str) -> Decision {
         let grants: Vec<_> = self
             .grant
@@ -802,6 +851,42 @@ pub struct PeerView {
     pub visible_agent_count: Option<usize>,
     pub runnable_agent_count: Option<usize>,
     pub services_status: String,
+    /// What this node does with tasks sent by the peer.
+    #[serde(default)]
+    pub access: PeerAccess,
+}
+/// Largest final reply kept in one result event; the full text stays in events.
+pub const MAX_FINAL_TEXT_BYTES: usize = 32 * 1024;
+/// The last assistant reply of a task, without replaying every event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskResult {
+    pub task: TaskRecord,
+    pub final_text: Option<String>,
+    #[serde(default)]
+    pub truncated: bool,
+    /// `result_event`, `assembled_from_events` (older executors) or `none`.
+    pub source: String,
+}
+/// One node in the owner's merged agent directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeshNode {
+    pub node_id: Uuid,
+    pub name: String,
+    pub local: bool,
+    pub reachable: bool,
+    /// For peers: what this node does with tasks the peer sends here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<PeerAccess>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub agents: Vec<AgentCard>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerAccessRequest {
+    pub access: PeerAccess,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

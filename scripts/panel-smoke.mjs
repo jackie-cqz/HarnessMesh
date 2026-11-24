@@ -55,7 +55,7 @@ try{
  const pairing=a.mesh.call(['pair','request','--peer',b.card.endpoint,'--expect-fingerprint',b.card.fingerprint]);
  b.mesh.call(['pair','approve',pairing.request_id,'--expect-fingerprint',a.card.fingerprint]);a.mesh.call(['pair','approve',pairing.request_id,'--expect-fingerprint',b.card.fingerprint]);
  const policy=join(root,'policy.toml');
- writeFileSync(policy,['[default]','action="deny"','[[grant]]','peer="'+a.card.node_id+'"','agent="'+agent.agent_id+'"','project="panel-test"','actions=["agent.read","task.submit"]','require_approval=true',''].join('\n'));b.mesh.call(['policy','--file',policy]);
+ writeFileSync(policy,['[default]','action="deny"','[peers]','default="confirm"','[[grant]]','peer="'+a.card.node_id+'"','agent="'+agent.agent_id+'"','project="panel-test"','actions=["agent.read","task.submit"]','require_approval=true',''].join('\n'));b.mesh.call(['policy','--file',policy]);
  // Explicit test double only, with an empty env allowlist and no credential reference.
  const probe=b.mesh.call(['agent','verify',agent.agent_id,'--allow-model','--prompt','fixture:create']);await succeeded(b.mesh,probe.task_id);
  const goal='<img src=x onerror="window.panelInjected=true"> synthetic pending request';
@@ -75,11 +75,11 @@ try{
  const archiveResponse=page.waitForResponse(r=>r.url().endsWith('/archive')&&r.request().method()==='POST');await confirm(page);
  assert((await(await archiveResponse).json()).data.archived_events>0,'Archive did not move events');
  await page.locator('[data-close="task-dialog"]').click();
- stage='local-create-approve-verify';
+ stage='local-create-run-verify';
  const localId=await create(page,agent.agent_id,'fixture:create');
- assert(b.mesh.call(['task','show',localId]).status==='PENDING_APPROVAL','New local task bypassed approval');
- assert(!b.mesh.call(['task','show',localId]).last_attempt_id,'Attempt before approval');
- await page.getByRole('button',{name:'批准执行',exact:true}).click();await confirm(page);await succeeded(b.mesh,localId);
+ // The owner's own task starts without a self-approval step.
+ assert(b.mesh.call(['task','show',localId]).status!=='PENDING_APPROVAL','Owner task waited for self-approval');
+ await succeeded(b.mesh,localId);
  await page.locator('#task-detail .task-outcome > .badge').filter({hasText:'执行成功'}).waitFor();await verify(page,{status:'ok'},'核验通过');
  writeFileSync(join(project,'out/health.json'),JSON.stringify({status:'later-edit'}));
  await verify(page,{status:'ok'},'核验通过');assert(await page.locator('#task-detail').innerText().then(t=>t.includes('完成时快照')),'Snapshot source missing');
@@ -101,8 +101,8 @@ try{
  assert(a.mesh.call(['task','list']).submitted.find(t=>t.task_id===remoteId).last_observed_at,'No persisted observation');
  await origin.locator('[data-close="task-dialog"]').click();
  stage='queue-wait-and-resume';
- const blockingId=await create(page,agent.agent_id,'fixture:wait');await page.getByRole('button',{name:'批准执行',exact:true}).click();await confirm(page);await until(()=>b.mesh.call(['task','show',blockingId]).status==='RUNNING');await page.locator('[data-close="task-dialog"]').click();
- const queuedId=await create(page,agent.agent_id,'fixture:create');await page.getByRole('button',{name:'批准执行',exact:true}).click();await confirm(page);
+ const blockingId=await create(page,agent.agent_id,'fixture:wait');await until(()=>b.mesh.call(['task','show',blockingId]).status==='RUNNING');await page.locator('[data-close="task-dialog"]').click();
+ const queuedId=await create(page,agent.agent_id,'fixture:create');
  await page.locator('#task-detail .queue-note').filter({hasText:'等待全局执行名额'}).waitFor();assert(!b.mesh.call(['task','show',queuedId]).last_attempt_id,'Waiting task started above concurrency cap');
  b.mesh.call(['task','cancel',blockingId]);await until(()=>b.mesh.call(['task','show',blockingId]).status==='CANCELLED');await succeeded(b.mesh,queuedId);await page.locator('#task-detail .task-outcome > .badge').filter({hasText:'执行成功'}).waitFor();await page.locator('[data-close="task-dialog"]').click();
  stage='agent-lifecycle';
@@ -142,6 +142,6 @@ try{
  await page.locator('#stop-panel').click();await confirm(page);
  await until(()=>owned.find(p=>p.pid===ready.pid)?.exitCode===0,20);
  assert(b.mesh.call(['daemon','status']).running===true,'Stopping a reused panel stopped its Daemon');
- console.log(JSON.stringify({passed:true,model_calls:0,fixture_runs:6,scope:'isolated two-node mTLS and headless browser',checks:['worktree-diff-review','queue-wait-reason','queue-resumes-after-cancel','completion-snapshot-after-file-edit','onboarding-reference-preview','onboarding-idempotent-register','onboarding-no-policy-or-model','mobile-onboarding','navigation','pending-approval','request-text-XSS','reject','archive','local-create','local-approval','local-verify','remote-create','lost-acknowledgement','original-request-recovery','no-duplicate-attempt','remote-verification-fail','remote-verification-pass','observation-time','retire','restore-unverified','mobile','access-gate','stop-preserves-existing-daemon']}));
+ console.log(JSON.stringify({passed:true,model_calls:0,fixture_runs:6,scope:'isolated two-node mTLS and headless browser',checks:['worktree-diff-review','queue-wait-reason','queue-resumes-after-cancel','completion-snapshot-after-file-edit','onboarding-reference-preview','onboarding-idempotent-register','onboarding-no-policy-or-model','mobile-onboarding','navigation','pending-approval','request-text-XSS','reject','archive','local-create','local-runs-without-self-approval','local-verify','remote-create','lost-acknowledgement','original-request-recovery','no-duplicate-attempt','remote-verification-fail','remote-verification-pass','observation-time','retire','restore-unverified','mobile','access-gate','stop-preserves-existing-daemon']}));
 }catch(e){console.error(stage+': '+e.message+' diagnostics='+root);process.exitCode=1;}
 finally{await browser?.close();for(const p of owned.reverse()){if(p.exitCode===null){p.kill();await Promise.race([once(p,'exit'),new Promise(r=>setTimeout(r,3000))]);}}}

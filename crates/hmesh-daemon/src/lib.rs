@@ -203,6 +203,19 @@ impl AppState {
         }
         self.policy.read().map(|p| p.clone()).unwrap_or_default()
     }
+    /// Pairing is the trust boundary: a currently trusted peer may submit, and
+    /// its access mode only decides whether local confirmation is needed.
+    fn task_decision(&self, actor: Actor) -> Decision {
+        if actor.owner {
+            return Decision::Allowed;
+        }
+        match self.store.peer(actor.node_id) {
+            Ok(peer) if peer.status == "trusted" => {
+                self.current_policy().peer_decision(actor.node_id)
+            }
+            _ => Decision::Denied,
+        }
+    }
     fn task_access(&self, actor: Actor, id: Uuid) -> std::result::Result<TaskRecord, ApiError> {
         let task = self.store.task(id)?;
         if actor.owner || actor.node_id == task.origin_node_id {
@@ -240,14 +253,7 @@ impl AppState {
             return Ok(());
         }
         let peer = self.store.peer(task.origin_node_id)?;
-        if peer.status != "trusted"
-            || self.current_policy().decide(
-                task.origin_node_id,
-                &task.project_id,
-                task.agent_id,
-                "task.submit",
-            ) == Decision::Denied
-        {
+        if peer.status != "trusted" {
             self.store.audit(
                 Some(task.origin_node_id),
                 "task.start",
@@ -257,7 +263,7 @@ impl AppState {
             )?;
             return Err(MeshError::new(
                 ErrorCode::PermissionDenied,
-                "peer or project grant was revoked before execution",
+                "peer pairing was revoked before execution",
             ));
         }
         Ok(())
@@ -286,6 +292,7 @@ pub fn router(state: AppState) -> Router {
         .route("/hmesh/v1/tasks", post(submit_task))
         .route("/hmesh/v1/tasks/{id}", get(task))
         .route("/hmesh/v1/tasks/{id}/events", get(events))
+        .route("/hmesh/v1/tasks/{id}/result", get(task_result))
         .route("/hmesh/v1/tasks/{id}/cancel", post(cancel_task))
         .route("/hmesh/v1/tasks/{id}/verification", get(task_verifications))
         .route("/hmesh/v1/tasks/{id}/artifacts", get(peer_task_artifacts))
@@ -299,6 +306,8 @@ pub fn router(state: AppState) -> Router {
         .route("/local/pairs/request", post(outgoing_pair))
         .route("/local/pairs/approve", post(approve_pair))
         .route("/local/peers/{id}/revoke", post(revoke))
+        .route("/local/peers/{id}/access", post(set_peer_access))
+        .route("/local/mesh/agents", get(mesh_agents))
         .route("/local/agents", post(register_agent))
         .route("/local/onboarding/preview", post(onboarding::preview))
         .route("/local/onboarding/register", post(onboarding::register))
@@ -317,6 +326,7 @@ pub fn router(state: AppState) -> Router {
         .route("/local/tasks/{id}", get(owner_task))
         .route("/local/requests/{id}/recover", post(recover_request))
         .route("/local/tasks/{id}/events", get(owner_events))
+        .route("/local/tasks/{id}/result", get(owner_result))
         .route("/local/tasks/{id}/cancel", post(owner_cancel))
         .route("/local/tasks/{id}/verify", post(verify_task))
         .route("/local/tasks/{id}/artifacts", get(owner_task_artifacts))
@@ -396,6 +406,13 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let recovered = store.recover_interrupted()?;
     let (shutdown, receiver) = watch::channel(false);
     let state = AppState::load(instance.clone(), store.clone(), shutdown.clone())?;
+    let legacy = state.current_policy();
+    if !legacy.grant.is_empty() {
+        tracing::warn!(
+            grants = legacy.grant.len(),
+            "policy [[grant]] entries and agent require_remote_task_approval are no longer used: paired peers' tasks run immediately unless set to confirm with `hmesh peers access <peer> confirm`"
+        );
+    }
     services::recover(&state)?;
     atomic_write(
         &instance.dir.join("daemon.json"),
@@ -503,21 +520,10 @@ async fn agents(
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
 ) -> ApiResult<Vec<AgentCard>> {
-    let actor = s.actor(&headers, &c)?;
-    let policy = s.current_policy();
-    Ok(Json(
-        s.store
-            .agents()?
-            .into_iter()
-            .filter(|agent| {
-                actor.owner
-                    || agent.project_ids.iter().any(|project| {
-                        policy.decide(actor.node_id, project, agent.agent_id, "agent.read")
-                            != Decision::Denied
-                    })
-            })
-            .collect(),
-    ))
+    // Any authenticated actor is the owner or a currently trusted peer;
+    // pairing is enough to see this node's registered agents.
+    s.actor(&headers, &c)?;
+    Ok(Json(s.store.agents()?))
 }
 async fn status(
     State(s): State<AppState>,
@@ -550,9 +556,11 @@ async fn peers(
     headers: HeaderMap,
 ) -> ApiResult<Vec<PeerView>> {
     s.owner(&headers, &c)?;
+    let policy = s.current_policy();
     let mut views = vec![];
     for peer in s.store.peers()? {
         let mut view = PeerView {
+            access: policy.peer_access(peer.card.node_id),
             peer: peer.clone(),
             node_connectivity: NodeConnectivity::NotProbed,
             registry_readable: false,
@@ -917,6 +925,125 @@ async fn set_policy(
     )?;
     Ok(Json(policy))
 }
+/// Choose whether one paired peer's tasks start immediately or wait for local
+/// confirmation. Rewrites the policy file; comments in it are not preserved.
+async fn set_peer_access(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PeerAccessRequest>,
+) -> ApiResult<Value> {
+    s.owner(&headers, &c)?;
+    s.store
+        .peer(id)
+        .map_err(|_| MeshError::input("no paired peer has this node ID"))?;
+    let path = policy_path(&s.instance);
+    {
+        // Hold the write lock across read-modify-write so concurrent updates serialize.
+        let mut current = s.policy.write().map_err(internal)?;
+        let mut policy = fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| toml::from_str::<Policy>(&text).ok())
+            .filter(|policy| policy.validate().is_ok())
+            .unwrap_or_else(|| current.clone());
+        if body.access == policy.peers.default {
+            policy.peers.overrides.remove(&id);
+        } else {
+            policy.peers.overrides.insert(id, body.access);
+        }
+        policy.validate()?;
+        atomic_write(
+            &path,
+            toml::to_string_pretty(&policy)
+                .map_err(internal)?
+                .as_bytes(),
+        )
+        .map_err(internal)?;
+        *current = policy;
+    }
+    s.store.audit(
+        Some(s.instance.card.node_id),
+        "peer.access",
+        &id.to_string(),
+        &body.access.to_string(),
+        Uuid::new_v4(),
+    )?;
+    Ok(Json(json!({"peer_id":id,"access":body.access})))
+}
+/// The owner's merged directory: this node's agents plus every trusted peer's.
+async fn mesh_agents(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+) -> ApiResult<Vec<MeshNode>> {
+    s.owner(&headers, &c)?;
+    let policy = s.current_policy();
+    let mut nodes = vec![MeshNode {
+        node_id: s.instance.card.node_id,
+        name: s.instance.card.display_name.clone(),
+        local: true,
+        reachable: true,
+        access: None,
+        error: None,
+        agents: s.store.agents()?,
+    }];
+    let mut lookups = tokio::task::JoinSet::new();
+    for (index, peer) in s
+        .store
+        .peers()?
+        .into_iter()
+        .filter(|peer| peer.status == "trusted")
+        .enumerate()
+    {
+        let instance = s.instance.clone();
+        let access = policy.peer_access(peer.card.node_id);
+        lookups.spawn(async move {
+            let fetched = match Client::new(
+                &instance,
+                &peer.card.endpoint,
+                &peer.card.fingerprint,
+                false,
+                false,
+            ) {
+                Ok(client) => match tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    client.get::<Vec<AgentCard>>("/hmesh/v1/agents"),
+                )
+                .await
+                {
+                    Ok(Ok(agents)) => Ok(agents),
+                    Ok(Err(error)) => Err(error.message),
+                    Err(_) => Err("peer did not answer within 3 seconds".to_owned()),
+                },
+                Err(error) => Err(error.to_string()),
+            };
+            let (reachable, error, agents) = match fetched {
+                Ok(agents) => (true, None, agents),
+                Err(error) => (false, Some(error), vec![]),
+            };
+            (
+                index,
+                MeshNode {
+                    node_id: peer.card.node_id,
+                    name: peer.card.display_name,
+                    local: false,
+                    reachable,
+                    access: Some(access),
+                    error,
+                    agents,
+                },
+            )
+        });
+    }
+    let mut peers = vec![];
+    while let Some(joined) = lookups.join_next().await {
+        peers.push(joined.map_err(internal)?);
+    }
+    peers.sort_by_key(|(index, _)| *index);
+    nodes.extend(peers.into_iter().map(|(_, node)| node));
+    Ok(Json(nodes))
+}
 async fn submit_task(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
@@ -933,17 +1060,8 @@ fn admit_task(
 ) -> std::result::Result<TaskRecord, ApiError> {
     envelope.validate(actor.node_id, "task.submit")?;
     envelope.payload.validate()?;
-    // Authorize before looking up any Agent configuration or artifact metadata.
-    let decision = if actor.owner {
-        Decision::Allowed
-    } else {
-        s.current_policy().decide(
-            actor.node_id,
-            &envelope.payload.project_id,
-            envelope.payload.target_agent_id,
-            "task.submit",
-        )
-    };
+    // A trusted peer may submit; its access mode only selects auto vs confirm.
+    let decision = s.task_decision(actor);
     if decision == Decision::Denied {
         s.store.audit(
             Some(actor.node_id),
@@ -954,7 +1072,7 @@ fn admit_task(
         )?;
         return Err(ApiError(MeshError::new(
             ErrorCode::PermissionDenied,
-            "no peer/project/agent task grant",
+            "sender is not a currently paired peer",
         )));
     }
     let (agent, config) = s.store.agent(envelope.payload.target_agent_id)?;
@@ -993,9 +1111,7 @@ fn admit_task(
             "agent has not passed a local managed-run verification",
         )));
     }
-    let approval = envelope.payload.requires_approval
-        || (!actor.owner && config.project.require_remote_task_approval)
-        || decision == Decision::ApprovalRequired;
+    let approval = envelope.payload.requires_approval || decision == Decision::ApprovalRequired;
     Ok(s.store.admit_with_limits(
         s.instance.card.node_id,
         &envelope,
@@ -1208,6 +1324,125 @@ async fn owner_events(
         Ok(Json(s.store.events(id, query.after)?))
     }
 }
+/// Keep the tail of a long assembled reply, cut on a character boundary.
+fn tail_text(mut text: String) -> (String, bool) {
+    if text.len() <= MAX_FINAL_TEXT_BYTES {
+        return (text, false);
+    }
+    let mut start = text.len() - MAX_FINAL_TEXT_BYTES;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text.drain(..start);
+    (text, true)
+}
+/// Reply text from a result event, or assembled from text deltas for tasks
+/// finished by an executor that predates result events.
+fn result_from_events(task: TaskRecord, events: &[TaskEvent]) -> TaskResult {
+    if let Some(event) = events.iter().rev().find(|e| e.event_type == "result") {
+        return TaskResult {
+            final_text: event.payload["text"].as_str().map(str::to_owned),
+            truncated: event.payload["truncated"].as_bool().unwrap_or(false),
+            source: "result_event".into(),
+            task,
+        };
+    }
+    // Same rule as the runtime: the text after the last tool call, or the last
+    // segment that had text when the run ended on a tool call.
+    let (mut current, mut previous) = (String::new(), String::new());
+    for event in events {
+        match event.payload["type"].as_str() {
+            Some("text_delta") => current.push_str(event.payload["text"].as_str().unwrap_or("")),
+            Some("tool_event") if !current.trim().is_empty() => {
+                previous = std::mem::take(&mut current);
+            }
+            Some("tool_event") => current.clear(),
+            _ => {}
+        }
+    }
+    let text = if current.trim().is_empty() {
+        previous
+    } else {
+        current
+    };
+    let text = text.trim().to_owned();
+    if text.is_empty() {
+        return TaskResult {
+            task,
+            final_text: None,
+            truncated: false,
+            source: "none".into(),
+        };
+    }
+    let (final_text, truncated) = tail_text(text);
+    TaskResult {
+        task,
+        final_text: Some(final_text),
+        truncated,
+        source: "assembled_from_events".into(),
+    }
+}
+fn local_result(s: &AppState, task: TaskRecord) -> std::result::Result<TaskResult, ApiError> {
+    if let Some(event) = s.store.last_event_of_type(task.task_id, "result")? {
+        return Ok(result_from_events(task, &[event]));
+    }
+    let mut events = vec![];
+    let mut after = 0;
+    // Bounded fallback for runs recorded before result events existed.
+    for _ in 0..64 {
+        let page = s.store.events(task.task_id, after)?;
+        let Some(last) = page.last() else { break };
+        after = last.seq;
+        events.extend(page);
+    }
+    Ok(result_from_events(task, &events))
+}
+async fn task_result(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<TaskResult> {
+    let task = s.task_access(s.actor(&headers, &c)?, id)?;
+    Ok(Json(local_result(&s, task)?))
+}
+async fn owner_result(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<TaskResult> {
+    s.owner(&headers, &c)?;
+    let Some(client) = outbound_client(&s, id)? else {
+        return Ok(Json(local_result(&s, s.store.task(id)?)?));
+    };
+    match client
+        .get::<TaskResult>(&format!("/hmesh/v1/tasks/{id}/result"))
+        .await
+    {
+        Ok(result) => Ok(Json(result)),
+        Err(original) => {
+            // Older executors have no result endpoint: rebuild from task + events.
+            let Ok(task) = client
+                .get::<TaskRecord>(&format!("/hmesh/v1/tasks/{id}"))
+                .await
+            else {
+                return Err(ApiError(original));
+            };
+            let mut events = vec![];
+            let mut after = 0;
+            for _ in 0..64 {
+                let page: Vec<TaskEvent> = client
+                    .get(&format!("/hmesh/v1/tasks/{id}/events?after={after}"))
+                    .await?;
+                let Some(last) = page.last() else { break };
+                after = last.seq;
+                events.extend(page);
+            }
+            Ok(Json(result_from_events(task, &events)))
+        }
+    }
+}
 async fn owner_cancel(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
@@ -1389,19 +1624,7 @@ fn artifact_task(
     id: Uuid,
 ) -> std::result::Result<TaskRecord, ApiError> {
     let task = s.task_access(actor, id)?;
-    if !actor.owner
-        && s.current_policy().decide(
-            actor.node_id,
-            &task.project_id,
-            task.agent_id,
-            "task.submit",
-        ) == Decision::Denied
-    {
-        return Err(ApiError(MeshError::new(
-            ErrorCode::PermissionDenied,
-            "current project grant required for artifact verification",
-        )));
-    }
+    // task_access already restricts peers to tasks they originated while trusted.
     if task.status != TaskStatus::Succeeded {
         return Err(ApiError(MeshError::new(
             ErrorCode::TaskConflict,
@@ -1687,5 +1910,76 @@ mod verification_limits_tests {
         assert!(task.validate().is_ok());
         task.limits.max_output_bytes = MAX_RUN_OUTPUT_BYTES + 1;
         assert!(task.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod result_tests {
+    use super::*;
+    fn record() -> TaskRecord {
+        let id = Uuid::new_v4();
+        TaskRecord {
+            task_id: id,
+            origin_node_id: Uuid::new_v4(),
+            target_node_id: Uuid::new_v4(),
+            agent_id: Uuid::new_v4(),
+            project_id: "demo".into(),
+            status: TaskStatus::Succeeded,
+            created_at: 0,
+            updated_at: 0,
+            last_attempt_id: None,
+            request: TaskSubmit::new(Uuid::new_v4(), "demo", "goal"),
+            error: None,
+        }
+    }
+    fn event(seq: i64, event_type: &str, payload: Value) -> TaskEvent {
+        TaskEvent {
+            task_id: Uuid::nil(),
+            seq,
+            event_id: Uuid::new_v4(),
+            attempt_id: None,
+            event_type: event_type.into(),
+            payload,
+            created_at: 0,
+        }
+    }
+    #[test]
+    fn result_event_wins_over_assembled_text() {
+        let events = [
+            event(1, "run", json!({"type":"text_delta","text":"narration"})),
+            event(
+                2,
+                "result",
+                json!({"type":"final_text","text":"answer","truncated":true}),
+            ),
+        ];
+        let result = result_from_events(record(), &events);
+        assert_eq!(result.final_text.as_deref(), Some("answer"));
+        assert!(result.truncated);
+        assert_eq!(result.source, "result_event");
+    }
+    #[test]
+    fn older_executors_get_text_assembled_from_events_keeping_the_tail() {
+        let events = [
+            event(1, "run", json!({"type":"text_delta","text":"Let me "})),
+            event(2, "run", json!({"type":"text_delta","text":"check."})),
+            event(3, "run", json!({"type":"tool_event","name":"read"})),
+            event(4, "run", json!({"type":"text_delta","text":"Done: "})),
+            event(5, "run", json!({"type":"text_delta","text":"42"})),
+        ];
+        let result = result_from_events(record(), &events);
+        // Narration before the last tool call is not part of the reply.
+        assert_eq!(result.final_text.as_deref(), Some("Done: 42"));
+        assert_eq!(result.source, "assembled_from_events");
+        assert!(!result.truncated);
+        // A run that ends on a tool call keeps the last segment with text.
+        let ended_on_tool = result_from_events(record(), &events[..3]);
+        assert_eq!(ended_on_tool.final_text.as_deref(), Some("Let me check."));
+        let none = result_from_events(record(), &[]);
+        assert_eq!((none.final_text, none.source.as_str()), (None, "none"));
+        // Over the limit: the tail is kept, cut on a character boundary.
+        let (tail, truncated) = tail_text("界".repeat(MAX_FINAL_TEXT_BYTES));
+        assert!(truncated && tail.len() <= MAX_FINAL_TEXT_BYTES);
+        assert!(tail.chars().all(|c| c == '界'));
     }
 }

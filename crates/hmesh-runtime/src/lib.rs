@@ -77,17 +77,89 @@ fn append_text(store: &Store, task_id: uuid::Uuid, text: &str) -> Result<()> {
     }
     Ok(())
 }
+/// The final reply is the assistant text after the last tool call; text written
+/// before a tool call is usually narration ("let me check…").
+#[derive(Default)]
+struct ReplyTracker {
+    current: String,
+    previous: String,
+}
+impl ReplyTracker {
+    fn push(&mut self, text: &str) {
+        self.current.push_str(text);
+    }
+    fn tool_boundary(&mut self) {
+        if !self.current.trim().is_empty() {
+            self.previous = std::mem::take(&mut self.current);
+        } else {
+            self.current.clear();
+        }
+    }
+    fn finish(self) -> Option<(String, bool)> {
+        let text = if self.current.trim().is_empty() {
+            self.previous
+        } else {
+            self.current
+        };
+        let mut text = text.trim().to_owned();
+        if text.is_empty() {
+            return None;
+        }
+        // Bound the raw bytes, then the JSON-escaped size: escaping can grow text
+        // up to six times and one event payload must stay under 64 KiB.
+        let mut truncated = false;
+        let mut limit = MAX_FINAL_TEXT_BYTES;
+        loop {
+            if text.len() > limit {
+                let mut end = limit;
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                text.truncate(end);
+                truncated = true;
+            }
+            let encoded = serde_json::to_string(&text).map_or(usize::MAX, |s| s.len());
+            if encoded <= MAX_FINAL_TEXT_ENCODED_BYTES {
+                return Some((text, truncated));
+            }
+            limit = text.len() * MAX_FINAL_TEXT_ENCODED_BYTES / encoded;
+        }
+    }
+}
+/// Escaped JSON size of the reply inside one event, leaving room for the envelope.
+const MAX_FINAL_TEXT_ENCODED_BYTES: usize = 48 * 1024;
+fn append_result(store: &Store, task_id: uuid::Uuid, reply: ReplyTracker) {
+    if let Some((text, truncated)) = reply.finish()
+        && let Err(error) = store.append_event(
+            task_id,
+            "result",
+            json!({"type":"final_text","text":text,"truncated":truncated}),
+        )
+    {
+        // The reply is a convenience copy; the run outcome must not depend on it.
+        tracing::warn!(code=?error.code, "could not record final reply event");
+    }
+}
 fn append_observation(
     store: &Store,
     task_id: uuid::Uuid,
     prepared: &mut prepare::Prepared,
+    reply: &mut ReplyTracker,
     event: ObservedEvent,
 ) -> Result<()> {
     let value = match event {
         ObservedEvent::TextDelta { text } => {
-            return append_text(store, task_id, &prepared.redact_stream(&text));
+            let text = prepared.redact_stream(&text);
+            reply.push(&text);
+            return append_text(store, task_id, &text);
         }
         ObservedEvent::ToolEvent { name, phase } => {
+            // A tool call ends the assistant's text segment: release text the
+            // redactor held back so it lands before the boundary, not after it.
+            let held = prepared.flush_text();
+            reply.push(&held);
+            append_text(store, task_id, &held)?;
+            reply.tool_boundary();
             json!({"type":"tool_event","name":prepared.redact(&name),"phase":prepared.redact(&phase)})
         }
         event => serde_json::to_value(event).map_err(failure)?,
@@ -200,6 +272,7 @@ async fn execute(
     let record_limit = native_record_limit(config.agent.harness, max_output);
     let mut decoder = JsonlDecoder::new(record_limit);
     let mut observer = ProtocolObserver::new(config.agent.harness);
+    let mut reply = ReplyTracker::default();
     let mut output_bytes = 0;
     let mut buffer = [0u8; 8192];
     let mut exited = None;
@@ -245,7 +318,7 @@ async fn execute(
                                     break;
                                 }
                             }
-                            if let Err(error) = append_observation(store, task.task_id, &mut prepared, event) {
+                            if let Err(error) = append_observation(store, task.task_id, &mut prepared, &mut reply, event) {
                                 run_error = Some(error);
                                 break;
                             }
@@ -270,6 +343,7 @@ async fn execute(
         }
     };
     let text = prepared.flush_text();
+    reply.push(&text);
     append_text(store, task.task_id, &text)?;
     store.append_event(
         task.task_id,
@@ -282,6 +356,8 @@ async fn execute(
             "complete_records":decoder.record_count(),
         }),
     )?;
+    // Recorded for every outcome so callers can read the reply without replaying events.
+    append_result(store, task.task_id, reply);
     let diagnostic = prepared.redact(&String::from_utf8_lossy(&diagnostics));
     if !diagnostic.is_empty() {
         hmesh_security::atomic_write(&dir.join("stderr.log"), diagnostic.as_bytes())
@@ -380,4 +456,42 @@ async fn stop_tree(tree: &mut ProcessTree, child: &mut tokio::process::Child) ->
         }
     }
     false
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    #[test]
+    fn reply_is_the_text_after_the_last_tool_call_or_the_last_nonempty_segment() {
+        let mut reply = ReplyTracker::default();
+        reply.push("Let me check.");
+        reply.tool_boundary();
+        reply.push("  Done: 42.  ");
+        assert_eq!(reply.finish(), Some(("Done: 42.".into(), false)));
+        // Ending on a tool call keeps the last segment that had text.
+        let mut reply = ReplyTracker::default();
+        reply.push("Answer first.");
+        reply.tool_boundary();
+        reply.push("   ");
+        reply.tool_boundary();
+        assert_eq!(reply.finish(), Some(("Answer first.".into(), false)));
+        assert_eq!(ReplyTracker::default().finish(), None);
+    }
+
+    #[test]
+    fn reply_fits_one_event_even_when_json_escaping_inflates_it() {
+        // Control characters escape to six bytes each.
+        let mut reply = ReplyTracker::default();
+        reply.push(&"\u{1}".repeat(MAX_FINAL_TEXT_BYTES));
+        let (text, truncated) = reply.finish().unwrap();
+        assert!(truncated);
+        assert!(serde_json::to_string(&text).unwrap().len() <= MAX_FINAL_TEXT_ENCODED_BYTES);
+        // Multi-byte text is cut on a character boundary.
+        let mut reply = ReplyTracker::default();
+        reply.push(&"界".repeat(MAX_FINAL_TEXT_BYTES));
+        let (text, truncated) = reply.finish().unwrap();
+        assert!(truncated && text.len() <= MAX_FINAL_TEXT_BYTES);
+        assert!(text.chars().all(|c| c == '界'));
+    }
 }

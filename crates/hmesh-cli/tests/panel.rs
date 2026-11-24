@@ -433,7 +433,8 @@ async fn runtime_capabilities_refresh_and_preflight_blocks_submission_without_le
             payload["expected_artifacts"]
         );
         assert_eq!(submitted[0]["task"]["task_id"], payload["request_id"]);
-        assert_eq!(submitted[0]["task"]["requires_approval"], true);
+        // The executing node's per-peer access mode decides about approval.
+        assert_eq!(submitted[0]["task"]["requires_approval"], false);
     }
     let existing: Value = get(&format!(
         "/api/tasks/{}/preflight",

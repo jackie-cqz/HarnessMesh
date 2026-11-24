@@ -81,6 +81,23 @@ async fn main() -> anyhow::Result<()> {
     emit(json!({"type":"agent_start"}));
     match prompt {
         "fixture:unknown" => emit(json!({"type":"agent_settled"})),
+        "fixture:reply" => {
+            // Narration, one tool call, then the answer the caller should receive.
+            for delta in ["Let me check ", "the project."] {
+                emit(
+                    json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":delta}}),
+                );
+            }
+            emit(json!({"type":"tool_execution_start","toolName":"read"}));
+            emit(json!({"type":"tool_execution_end","toolName":"read"}));
+            for delta in ["Final answer: ", "the build is green."] {
+                emit(
+                    json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":delta}}),
+                );
+            }
+            emit(json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop"}}));
+            emit(json!({"type":"agent_settled"}));
+        }
         "fixture:usage" => {
             emit(
                 json!({"type":"message_end","message":{"id":"fixture-usage","role":"assistant","stopReason":"stop","usage":{"input":30,"output":10,"cacheRead":0,"cacheWrite":0,"totalTokens":40}}}),

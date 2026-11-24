@@ -66,6 +66,8 @@ impl TaskTemplate {
         );
         task.task_id = id;
         task.limits = self.limits.clone();
+        // Development workflows are approval-gated stage by stage; the sender opts in.
+        task.requires_approval = true;
         task.expected_tools = self.expected_tools.clone();
         task.expected_artifacts = self
             .verification

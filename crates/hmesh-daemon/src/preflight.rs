@@ -61,30 +61,13 @@ pub(super) fn inspect_task(
     task: &TaskSubmit,
 ) -> std::result::Result<Report, ApiError> {
     task.validate()?;
-    let policy = s.current_policy();
-    let decision = if actor.owner {
-        Decision::Allowed
-    } else {
-        policy.decide(
-            actor.node_id,
-            &task.project_id,
-            task.target_agent_id,
-            "task.submit",
-        )
-    };
-    // Do not reveal configuration existence or metadata to an unrelated peer.
-    if !actor.owner
-        && decision == Decision::Denied
-        && policy.decide(
-            actor.node_id,
-            &task.project_id,
-            task.target_agent_id,
-            "agent.read",
-        ) == Decision::Denied
-    {
+    // Pairing is the trust boundary; the peer access mode selects auto/confirm.
+    let decision = s.task_decision(actor);
+    // Do not reveal configuration existence or metadata to an unpaired peer.
+    if decision == Decision::Denied {
         return Err(MeshError::new(
             ErrorCode::PermissionDenied,
-            "no current project/Agent grant for preflight",
+            "sender is not a currently paired peer",
         )
         .into());
     }
@@ -133,9 +116,7 @@ pub(super) fn inspect_task(
         ready: checks.iter().all(|c| c.passed),
         agent_id: agent.agent_id,
         project_id: task.project_id.clone(),
-        requires_approval: task.requires_approval
-            || (!actor.owner && config.project.require_remote_task_approval)
-            || decision == Decision::ApprovalRequired,
+        requires_approval: task.requires_approval || decision == Decision::ApprovalRequired,
         configuration_sha256: Some(hmesh_security::sha256_hex(
             &serde_json::to_vec(&config).map_err(internal)?,
         )),
@@ -306,7 +287,9 @@ mod tests {
 
     #[tokio::test]
     async fn changed_declaration_blocks_approval_and_execution_of_the_original_task() {
-        let (_root, state, task) = fixture();
+        let (_root, state, mut task) = fixture();
+        // The sender opts in to local confirmation so the task waits for approval.
+        task.requires_approval = true;
         state
             .store
             .set_artifact_paths(task.target_agent_id, &["out/health.json".into()])

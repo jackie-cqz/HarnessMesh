@@ -9,8 +9,8 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 hmesh-core = { path = "../hmesh-core" }
-hmesh-store = { path = "../hmesh-store" }
 hmesh-security = { path = "../hmesh-security" }
+hmesh-store = { path = "../hmesh-store" }
 hmesh-transport = { path = "../hmesh-transport" }
 hmesh-daemon = { path = "../hmesh-daemon" }
 serde.workspace = true

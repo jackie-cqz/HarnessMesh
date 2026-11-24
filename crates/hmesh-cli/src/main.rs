@@ -73,6 +73,8 @@ enum Commands {
         #[arg(long)]
         start_daemon: bool,
     },
+    /// Serve the HarnessMesh MCP tools over stdio for any agent (Claude Code, Codex, Pi, …).
+    Mcp,
     Init {
         #[arg(long, default_value = "local-node")]
         name: String,
@@ -116,8 +118,11 @@ enum Commands {
     Agents {
         #[arg(value_parser = ["list"], default_value = "list")]
         action: String,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "all")]
         peer: Option<Uuid>,
+        /// Agents on this node and every paired node.
+        #[arg(long)]
+        all: bool,
     },
     Policy {
         #[arg(long)]
@@ -341,6 +346,13 @@ enum PeersCommand {
         #[arg(long)]
         tailscale_executable: Option<PathBuf>,
     },
+    /// Run this peer's tasks immediately (auto) or wait for local confirmation.
+    Access {
+        /// Peer node ID or display name.
+        peer: String,
+        #[arg(value_parser = ["auto", "confirm"])]
+        mode: String,
+    },
 }
 #[derive(Subcommand)]
 enum PairCommand {
@@ -552,6 +564,11 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             "--data-dir requires an expanded path; use an absolute path instead of ~",
         )
         .into());
+    }
+    if let Commands::Mcp = &cli.command {
+        // stdout carries only MCP frames from here on.
+        hmesh_mcp::serve_stdio(&dir, None).await?;
+        return Ok(None);
     }
     if let Commands::Peers {
         command: PeersCommand::Candidates {
@@ -864,6 +881,37 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         Commands::Peers {
             command: PeersCommand::List,
         } => client.get("/local/peers").await?,
+        Commands::Peers {
+            command: PeersCommand::Access { peer, mode },
+        } => {
+            let peers: Vec<PeerView> = client.get("/local/peers").await?;
+            let matches: Vec<&PeerView> = peers
+                .iter()
+                .filter(|view| {
+                    view.peer.card.node_id.to_string() == peer.to_ascii_lowercase()
+                        || view.peer.card.display_name.eq_ignore_ascii_case(&peer)
+                })
+                .collect();
+            let [view] = matches.as_slice() else {
+                return Err(MeshError::input(if matches.is_empty() {
+                    "no paired peer has that node ID or name"
+                } else {
+                    "several peers share that name; use the node ID"
+                })
+                .into());
+            };
+            let access = if mode == "confirm" {
+                PeerAccess::Confirm
+            } else {
+                PeerAccess::Auto
+            };
+            client
+                .post(
+                    &format!("/local/peers/{}/access", view.peer.card.node_id),
+                    &PeerAccessRequest { access },
+                )
+                .await?
+        }
         Commands::Pair { command } => match command {
             PairCommand::List => client.get("/local/pairs").await?,
             PairCommand::Request {
@@ -985,6 +1033,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 )
                 .await?
         }
+        Commands::Agents { all: true, .. } => client.get("/local/mesh/agents").await?,
         Commands::Agents { peer, .. } => {
             client
                 .get(

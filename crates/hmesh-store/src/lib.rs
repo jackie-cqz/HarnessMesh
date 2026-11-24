@@ -692,6 +692,24 @@ impl Store {
             }
             Ok(result) })
     }
+    /// Latest event of one type, searching live and archived events newest first.
+    pub fn last_event_of_type(&self, id: Uuid, event_type: &str) -> Result<Option<TaskEvent>> {
+        self.read(|c| {
+            let mut q = c
+                .prepare("SELECT event_json FROM (SELECT seq,event_json FROM task_events WHERE task_id=?1 UNION ALL SELECT seq,event_json FROM archived_task_events WHERE task_id=?1) ORDER BY seq DESC LIMIT 256")
+                .map_err(internal)?;
+            let rows = q
+                .query_map(params![id.to_string()], |r| r.get::<_, String>(0))
+                .map_err(internal)?;
+            for row in rows {
+                let event: TaskEvent = decode(&row.map_err(internal)?)?;
+                if event.event_type == event_type {
+                    return Ok(Some(event));
+                }
+            }
+            Ok(None)
+        })
+    }
     pub fn audit(
         &self,
         actor: Option<Uuid>,

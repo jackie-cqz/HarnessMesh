@@ -112,7 +112,7 @@ try {
   worker.mesh.call(['pair', 'approve', pairing.request_id, '--expect-fingerprint', origin.card.fingerprint]);
   origin.mesh.call(['pair', 'approve', pairing.request_id, '--expect-fingerprint', worker.card.fingerprint]);
   const policy = join(root, 'worker-policy.toml');
-  writeFileSync(policy, ['[default]', 'action="deny"', '[[grant]]', `peer="${origin.card.node_id}"`, `agent="${agent.agent_id}"`, 'project="ux-project"', 'actions=["agent.read","task.submit"]', 'require_approval=true', ''].join('\n'));
+  writeFileSync(policy, ['[default]', 'action="deny"', '[peers]', 'default="confirm"', '[[grant]]', `peer="${origin.card.node_id}"`, `agent="${agent.agent_id}"`, 'project="ux-project"', 'actions=["agent.read","task.submit"]', 'require_approval=true', ''].join('\n'));
   worker.mesh.call(['policy', '--file', policy]);
   // --allow-model reaches only this explicitly registered test double, never a real Harness.
   const probe = worker.mesh.call(['agent', 'verify', agent.agent_id, '--allow-model', '--prompt', 'fixture:create']);
@@ -196,7 +196,7 @@ try {
   await confirm(page);
   await page.locator('#task-detail .detail-id').filter({ hasText: id }).waitFor();
   const pending = worker.mesh.call(['task', 'show', id]);
-  assert(pending.status === 'PENDING_APPROVAL' && !pending.last_attempt_id && pending.request.requires_approval, 'Remote task bypassed receiver approval');
+  assert(pending.status === 'PENDING_APPROVAL' && !pending.last_attempt_id, 'Remote task bypassed receiver approval');
   assert(JSON.stringify(pending.request.expected_artifacts) === JSON.stringify(['out/health.json']), 'Submitted artifact contract was not frozen');
   assert(taskPosts === 1 && !await page.locator('#task-approve').count(), 'Origin received a remote approval action or duplicate task POST');
   await page.locator('#approval-handoff').filter({ hasText: 'ux-worker' }).waitFor();

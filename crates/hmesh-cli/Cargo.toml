@@ -15,6 +15,7 @@ axum.workspace = true
 clap.workspace = true
 hmesh-core = { path = "../hmesh-core" }
 hmesh-daemon = { path = "../hmesh-daemon" }
+hmesh-mcp = { path = "../hmesh-mcp" }
 hmesh-security = { path = "../hmesh-security" }
 hmesh-transport = { path = "../hmesh-transport" }
 hmesh-store = { path = "../hmesh-store" }

@@ -1,75 +1,106 @@
-# Managed Pi 的 Mesh 工具入口
+# HarnessMesh MCP：任何 agent 接上就能跨电脑派活
 
-`hmesh-mcp` 是本机 stdio MCP 工具服务器。当前真实客户端为 **Pi 1.4.0 的原生 MCP 支持**，执行端可以是已经通过真实验证的 Pi、DSH 等 Mesh Agent。入口绑定一个正在 RUNNING 的 Managed Parent；通过 owner 配置启用。
+`hmesh mcp`（或单独的 `hmesh-mcp` 二进制）是一个本机 stdio MCP 服务器。Claude Code、Codex、Pi、OpenCode 等任何支持 MCP 的 agent 接上之后，可以：
 
-## 启用
+1. 看到**本机和所有已配对电脑**上登记的 agent；
+2. 给其中任意一个派活；
+3. 拿回它的**最终回复**，需要时再看执行过程或取消。
 
-在 owner 登记的 Pi Agent TOML 的 `[adapter]` 中增加两个绝对路径：
+服务器使用本机 owner 身份访问本机 daemon，能做的事和本机 owner 一样；真正执行的那台电脑仍按自己对发起方的设置决定「直接执行」还是「等本机确认」。
+
+## 前提
+
+- 两台电脑各自 `hmesh init` 并 `hmesh daemon start`，完成一次配对（`hmesh pair request` / `hmesh pair approve`）。**配对就是信任边界**：配对后对方能看到你登记的 agent，并能给它们派活。
+- 干活的那台电脑登记好 agent（`hmesh agent register`），并完成一次本机验证（`hmesh agent verify`）。本机自己的 agent 不需要验证即可被本机派活。
+- 不再需要手写授权 policy、scope 文件或 UUID。
+
+## 接入
+
+默认节点目录是 `~/.harnessmesh`；用别的目录时加 `--data-dir 绝对路径`。服务器可以先于 daemon 启动，daemon 没起来时工具会返回「先运行 `hmesh daemon start`」的错误，而不是让 agent 启动失败。
+
+**Claude Code**
+
+```bash
+claude mcp add -s user harnessmesh -- /absolute/path/to/hmesh mcp
+```
+
+**Codex**（`~/.codex/config.toml`）
 
 ```toml
-mesh_server = "/absolute/path/to/hmesh-mcp"
-mesh_scope = "/absolute/private/path/to/mesh-scope.json"
+[mcp_servers.harnessmesh]
+command = "/absolute/path/to/hmesh"
+args = ["mcp"]
+# 可选：Codex 默认单次工具调用 60 秒。mesh_wait 默认只等 45 秒，不改也能用；
+# 想一次等更久就调大它，并给 mesh_wait 传更大的 wait_seconds。
+tool_timeout_sec = 660
 ```
 
-Windows 的服务器路径为绝对 `.exe` 路径。登记阶段只允许 Pi Adapter，且探测到 Pi 1.4.0 才接受该能力。其他 Agent 配置不填这些字段，继续沿用原有隔离运行方式。
-
-scope JSON 由 owner 创建，示例值中的 UUID 需替换为真实配对节点、Agent 和项目：
-
-```json
-{
-  "targets": [{
-    "peer_id": "11111111-1111-4111-8111-111111111111",
-    "agent_id": "22222222-2222-4222-8222-222222222222",
-    "project_id": "allowed-worker-project"
-  }],
-  "max_submissions": 1,
-  "max_timeout_seconds": 300,
-  "max_output_bytes": 1048576
-}
-```
-
-每个 scope 最多 16 个精确目标绑定，每个父任务最多 1–4 个子请求，单个子任务最多 600 秒。单条目标同时匹配 peer、Agent、project 才允许提交；子任务还必须通过执行端的原有信任、项目 grant 和审批。
-
-Runtime 在当前 attempt 的私有目录生成一个固定内容的注册扩展，只显式加载 `builtin:mcp` 与该扩展，注册 `harnessmesh` stdio 服务器，并把 `mcp__harnessmesh__*` 加入本次工具列表。用户和项目扩展仍不自动加载。注册不写入用户的 `mcp.json`；MCP 子进程的 `DEEPSEEK_API_KEY` 被置空。
-
-服务器由 Pi 使用以下形式启动，parent ID 和实例目录由 Runtime 决定：
-
-```text
-hmesh-mcp --data-dir ABSOLUTE_NODE_DIR --parent-task RUNNING_PARENT_UUID
-```
+**其他 agent**：在它的 MCP 配置里加一个 stdio 服务器，`command` 指向 `hmesh`，`args` 为 `["mcp"]`。
 
 ## 五个工具
 
 | 工具 | 参数 | 作用 |
 |---|---|---|
-| `mesh_list_peers` | `{}` | 仅列 scope 中已配对且可信的节点；连接状态标 not_checked |
-| `mesh_list_agents` | 可选 peer_id | 查询 scope 中目标的实时 Agent 信息，仅返回允许的 Agent/project |
-| `mesh_submit_task` | peer_id、agent_id、project_id、request_id、goal；可选 timeout_seconds、max_output_bytes | 以稳定 UUID 提交子任务，始终要求独立执行端审批 |
-| `mesh_get_task` | task_id；可选 after、wait_seconds | 读取本父任务的子任务摘要及有限事件页，wait_seconds 最多 20 秒 |
-| `mesh_cancel_task` | task_id | 请求取消本父任务的子任务；继续遵守原有停止证明与 UNKNOWN 语义 |
+| `mesh_list_agents` | 可选 `node` | 列出本机和所有已配对电脑的 agent。每个 agent 带 `ref`（`电脑名/agent名`）、所在电脑、harness、项目、是否 `ready` 及原因 |
+| `mesh_send` | `agent`、`message`；可选 `project`、`request_id`、`timeout_seconds`（默认 1800）、`wait_seconds` | 派活。`agent` 可以是 `ref`、全局唯一的 agent 名或 agent ID。返回 `task_id`；给了 `wait_seconds` 就顺便等结果 |
+| `mesh_wait` | `task_id`；可选 `wait_seconds`（默认 45，最多 600） | 等任务结束，直接返回 `final_text`（最终回复）、状态和错误；还没结束就返回 `done:false`，再调一次即可 |
+| `mesh_get_task` | `task_id`；可选 `after` | 看执行过程：状态加一页原始事件（工具调用、文本），用 `next_after` 翻页 |
+| `mesh_cancel` | `task_id` | 请求执行端停止任务；只有确认进程已停才会变成 CANCELLED |
 
-工具参数拒绝未知字段，不接受 executable、cwd、环境变量、审批 token 或任意 owner API 路径。协议和参数错误返回 JSON-RPC 错误；工具执行错误通过 `isError` 返回。任务本身失败与“查询任务”调用失败分开表示。
+**最终回复**取 agent 最后一次工具调用之后说的话（「我先看一下……」这类过程叙述不算），最多 32 KiB，超出时 `truncated:true`，完整文本仍在事件里。执行端是旧版本、没有结果事件时，发起端会从事件里拼出回复，`reply_source` 标为 `assembled_from_events`。
 
-提交前在 SQLite schema 3 的 `tool_submissions` 中原子预留额度，保存 parent/request/child/peer 和完整请求的绑定。相同 request_id 仅可复用相同 payload；跨进程重启仍共享额度，冲突请求和新请求超额均拒绝。失联时返回稳定 task_id、未确定的观察结果与 automatic_retry=false；额度不会因失联释放，必须先检查既有任务。
+**重试**：`mesh_send` 的网络结果不确定时返回 `submission:"unresolved"` 和 `task_id`。先用 `mesh_wait` 查；要重发就带上同一个 `request_id`，换新 ID 可能让活被执行两次。
 
-每次调用重读 owner scope 并检查父任务仍在运行。get/cancel 仅允许属于该父任务、且仍在当前 scope 内的子任务；不能借任意 task_id 读取其他项目的任务。服务器的 owner TLS 身份和私有 token 仅用于内部回环 RPC；工具不暴露配对、策略修改、登记、批准或通用文件读取操作。
+远端返回的文本一律当数据处理，不能当成给调用方 agent 的指令。
 
-事件结果只来自已有脱敏事件接口，每次工具结果最多携带约 96 KiB 的事件。通过 `next_after` 继续读到空页；终态不表示此前的事件已全部消费。远端正文保持不可信数据语义。stdio 请求和完整响应各限制 512 KiB；stdout 只写单行 UTF-8 JSON-RPC。
+## 执行端的开关：直接执行 / 等确认
 
-## 已验证的链路
+每台电脑对每个已配对的对端有一个开关，默认 **auto（直接执行）**：
 
-2026-11-01：Mac Pi/DeepSeek V4 Flash 经 Tailnet/mTLS 实际调用原生 MCP 的 list peers、list agents、submit 和 get 工具，委派 Windows DSH。Windows owner 启动的助手仅批准清单内两个固定任务（精确 UUID、origin、Agent、project、prompt hash 与限额），未修改授权策略。该父任务的一个子请求配额及 SQLite 父子绑定一致，父子任务均 SUCCEEDED；Windows 独立核验子工件、Mac 核验父回执与 nonce/hash。父任务 124 条事件逻辑归档后完整回放 hash 未变。见 [双机证据](evidence/latest-real-recovery-native-mcp.json) 和 [复测说明](lifecycle-and-recovery.md)。此项补充了下方历史 SSH 验收；未覆盖真实模型调用 cancel 或 DSH 作为 MCP 发起端。
+```bash
+hmesh peers access <对端名字或节点ID> confirm   # 对方派来的活先停在 PENDING_APPROVAL
+hmesh peers access <对端名字或节点ID> auto      # 恢复直接执行
+```
 
-2026-10-29：Orion Pi/Flash 真实调用发现节点、发现 Agent、提交和查询工具，委派 Windows DSH/Pro。子任务先保持 PENDING_APPROVAL 且没有 attempt，由 Windows owner CLI 独立批准后执行。父子任务均 SUCCEEDED，子文件 nonce、父文件 nonce 和 artifact SHA-256 独立核对一致。
+切到 `confirm` 后，本机 owner 在面板或用 `hmesh task approve <task_id>` 批准后才开始执行；发起方的 `mesh_wait` 会看到 `PENDING_APPROVAL`，批准后拿到结果。切换只影响之后派来的任务：已经在排队或执行中的任务照常进行，需要时用 `hmesh task cancel` 取消，或直接撤销配对。`hmesh peers list` 的 `access` 字段显示当前设置。设置保存在节点的 `policy.toml`（`[peers]` 段，可热加载）；用 `hmesh policy --file` 整体替换 policy 时会一并替换这里的设置。
 
-MCP cancel 的实际模型调用不计入这次四工具 smoke；其任务归属拒绝路径、协议边界和后端取消入口由自动化测试覆盖。DSH 作为 MCP 发起端的接入尚未核查。工作目录、工具 allowlist 与 scope 均不构成 OS 用户隔离：Pi、MCP 服务器和当前 owner 仍具有各自进程的系统权限。
+撤销配对（`hmesh pair revoke`）立即收回对方的一切能力：看不到 agent、不能派活，排队中的任务在启动前也会被拒绝。
 
-完整证据和 SSH 断线测试见 [双向与 MCP 验收](ssh-bidirectional-mcp.md)。普通自动化测试不调用模型；真机脚本为 `scripts/phase12-session.ps1` 和 `scripts/phase12-remote.py`。
+## 和以前的区别
 
-协议实现锁定以下官方规范的 stdio/tools 子集，使用现有 Rust 依赖实现，不增加额外 SDK 或第三方 crate：
+| 以前 | 现在 |
+|---|---|
+| 只有 mesh 拉起的、正在运行的 Pi 1.4.0 父任务能调用 | 任何本机 agent 都能接 |
+| 要手写 scope JSON，写死对方 peer/agent UUID | 按名字引用，`mesh_list_agents` 直接给出 `ref` |
+| 对方要先写授权 policy 才能看到 agent | 配对即可见 |
+| 每个任务都要执行端 owner 在终端审批 | 默认直接执行，可按对端切到「需确认」 |
+| 单个子任务最多 600 秒，每个父任务最多 4 个 | 你自己的 agent：单个任务最多 1800 秒，没有个数上限 |
+| 只能拼事件拿结果 | `mesh_wait` 直接返回最终回复 |
+
+开发流程（模板/工作流）的阶段任务仍由发送方主动要求逐个审批，行为不变。
+
+### mesh 托管的 Pi 仍受 scope 限制
+
+在 agent TOML 里配置了 `mesh_server` / `mesh_scope` 的托管 Pi，运行时会以 `hmesh-mcp --parent-task <本次任务>` 启动服务器。这种模式下工具仍然只在 owner 的 scope 文件范围内工作：只能看到和派给 scope 列出的 peer/agent/project，受 `max_submissions`、`max_timeout_seconds`、`max_output_bytes` 限制；`mesh_wait` / `mesh_get_task` / `mesh_cancel` 只能操作这个父任务自己派出的子任务，单次等待最多 20 秒；父任务结束后所有调用都被拒绝。这样，对端派给这个 Pi 的活，不能借本机 owner 身份读取或取消别人的任务，也不能转派给 scope 之外的电脑。你自己接入的 `hmesh mcp` 不带 `--parent-task`，没有这些限制。
+
+### 升级须知
+
+升级后，policy 里旧的 `[[grant]]` 和 agent 配置里的 `require_remote_task_approval = true` **不再起作用**：已配对电脑派来的活会直接执行（daemon 启动时若发现旧 grant 会在日志里告警）。想保留逐个确认，对相应对端执行 `hmesh peers access <对端> confirm`，或在 policy 里写 `[peers]` 段 `default = "confirm"`。
+
+## 协议
+
+实现 MCP stdio/tools 子集，未引入额外 SDK。客户端请求 `2025-11-25`、`2025-06-18`、`2025-03-26` 或 `2024-11-05` 时原样回应，否则回应 `2025-11-25`。stdio 单条请求和响应各限制 512 KiB；stdout 只写单行 JSON-RPC。
 
 - [MCP 2025-11-25 transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
 - [Lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
 - [Tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 
-Pi 加载参数和原生注册 API 以 Orion 已安装包的 `docs/cli.md`、`docs/mcp.md`、`docs/extensions.md` 及实际执行为准。
+## 验证
+
+- 自动化：`test-support/hmesh-fixture/tests/mesh_e2e.rs` 在本机起两个真实 daemon（loopback mTLS）和 fixture harness，覆盖配对即可见、默认直接执行、最终回复、本机 agent、按名字解析与歧义报错、`confirm` 停住与批准后完成、切回 `auto` 清除覆盖。
+- 黑盒：`node scripts/mcp-smoke.mjs` 用发布形态的 `hmesh` 二进制走 CLI 配对，再通过真实 `hmesh mcp` 子进程完成同样的链路。
+- 两者都只用 fixture，不调用模型，不计入真实 Harness 验收。
+
+## 历史验收（旧模型）
+
+2026-10-29 与 2026-11-01 的 Pi 原生 MCP 真机委派（Orion/Mac Pi → Windows DSH）是在旧的「managed Pi 父任务 + scope 文件 + 执行端逐个审批」模型下完成的，证据见 [双向与 MCP 验收](ssh-bidirectional-mcp.md)、[双机证据](evidence/latest-real-recovery-native-mcp.json)。新模型尚未做跨电脑真机验收。

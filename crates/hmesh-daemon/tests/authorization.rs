@@ -169,58 +169,50 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
         "task.submit",
         TaskSubmit::new(id, "demo", "must not execute"),
     );
+    assert!(!envelope.payload.requires_approval);
+    // Pairing is the trust boundary: a paired peer sees the registry with no grant.
     assert_eq!(
-        peer.post::<_, Value>("/hmesh/v1/tasks", &envelope)
-            .await
-            .expect_err("default deny")
-            .code,
-        ErrorCode::PermissionDenied
-    );
-    assert!(store.tasks().expect("tasks").is_empty());
-    // An authenticated but ungranted peer must not learn Agent existence,
-    // tool configuration, or whether an output path is declared.
-    for candidate in [id, Uuid::new_v4()] {
-        for artifact in ["out/health.json", "out/not-declared.json"] {
-            let mut restricted = envelope.clone();
-            restricted.request_id = Uuid::new_v4();
-            restricted.payload.task_id = Uuid::new_v4();
-            restricted.payload.target_agent_id = candidate;
-            restricted.payload.expected_artifacts = Some(vec![artifact.into()]);
-            restricted.payload.expected_tools = Some(vec!["read".into()]);
-            let denied = peer
-                .post::<_, Value>("/hmesh/v1/tasks", &restricted)
-                .await
-                .unwrap_err();
-            assert_eq!(denied.code, ErrorCode::PermissionDenied);
-            assert_eq!(denied.message, "no peer/project/agent task grant");
-        }
-    }
-    assert!(
-        store
-            .tasks()
-            .expect("no admission during probes")
-            .is_empty()
-    );
-    assert!(
         peer.get::<Vec<AgentCard>>("/hmesh/v1/agents")
             .await
-            .expect("filtered registry")
-            .is_empty()
+            .expect("registry")
+            .len(),
+        1
     );
-    let policy = Policy {
-        grant: vec![Grant {
-            peer: a.card.node_id,
-            project: "demo".into(),
-            agent: Some(id),
-            actions: vec!["task.submit".into(), "agent.read".into()],
-            require_approval: true,
-        }],
-        ..Policy::default()
-    };
-    owner
-        .post::<_, Policy>("/local/policy", &policy)
+    // Peers cannot change their own access mode; the executing owner chooses it.
+    assert_eq!(
+        peer.post::<_, Value>(
+            &format!("/local/peers/{}/access", a.card.node_id),
+            &json!({"access":"auto"})
+        )
         .await
-        .expect("grant");
+        .unwrap_err()
+        .code,
+        ErrorCode::PermissionDenied
+    );
+    let switched: Value = owner
+        .post(
+            &format!("/local/peers/{}/access", a.card.node_id),
+            &json!({"access":"confirm"}),
+        )
+        .await
+        .expect("confirm this peer");
+    assert_eq!(switched["access"], "confirm");
+    assert!(
+        std::fs::read_to_string(b.dir.join("policy.toml"))
+            .unwrap()
+            .contains(&a.card.node_id.to_string())
+    );
+    assert_eq!(
+        owner
+            .post::<_, Value>(
+                &format!("/local/peers/{}/access", Uuid::new_v4()),
+                &json!({"access":"confirm"})
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
     assert_eq!(
         peer.get::<Vec<AgentCard>>("/hmesh/v1/agents")
             .await
@@ -248,12 +240,13 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
     );
     let mut wrong_project = envelope.clone();
     wrong_project.payload.project_id = "unregistered".into();
+    // An agent only works in its registered project, whoever asks.
     assert_eq!(
         peer.post::<_, Value>("/hmesh/v1/tasks", &wrong_project)
             .await
             .expect_err("project")
             .code,
-        ErrorCode::PermissionDenied
+        ErrorCode::ProjectNotFound
     );
     let mut injected = serde_json::to_value(&envelope).expect("json");
     injected["payload"]["cwd"] = json!("C:/unregistered");
@@ -446,7 +439,8 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
         .post("/local/tasks/submit", &local_request)
         .await
         .unwrap();
-    assert_eq!(submitted.status, TaskStatus::PendingApproval);
+    // The owner's own request needs no approval; no executor runs in this router test.
+    assert_eq!(submitted.status, TaskStatus::Queued);
     let recovered: TaskRecord = owner
         .post(&format!("/local/requests/{request_id}/recover"), &json!({}))
         .await
@@ -466,41 +460,40 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
     let observations = store.outbound_tasks().unwrap();
     assert_eq!(observations[0]["request_id"], request_id.to_string());
     assert!(observations[0]["last_observed_at"].is_i64());
-    // A malformed hot reload retains the previous valid policy. A valid revoke applies immediately.
+    // A malformed hot reload keeps the last valid policy: this peer stays on confirm.
     std::fs::write(b.dir.join("policy.toml"), "not valid [").expect("bad reload");
-    assert_eq!(
-        peer.get::<Vec<AgentCard>>("/hmesh/v1/agents")
-            .await
-            .expect("last valid policy")
-            .len(),
-        1
-    );
+    envelope.request_id = Uuid::new_v4();
+    envelope.payload.task_id = Uuid::new_v4();
+    let still_confirm: TaskRecord = peer
+        .post("/hmesh/v1/tasks", &envelope)
+        .await
+        .expect("last valid policy");
+    assert_eq!(still_confirm.status, TaskStatus::PendingApproval);
+    // A valid policy write applies immediately; the default access mode is auto.
     owner
         .post::<_, Policy>("/local/policy", &Policy::default())
         .await
-        .expect("revoke grant");
-    assert_eq!(
-        peer.get::<Value>(&artifact_path).await.unwrap_err().code,
-        ErrorCode::PermissionDenied
-    );
-    assert_eq!(
-        peer.post::<_, Value>(&verify_path, &check)
-            .await
-            .unwrap_err()
-            .code,
-        ErrorCode::PermissionDenied
-    );
+        .expect("reset access");
     envelope.request_id = Uuid::new_v4();
     envelope.payload.task_id = Uuid::new_v4();
-    assert_eq!(
-        peer.post::<_, Value>("/hmesh/v1/tasks", &envelope)
-            .await
-            .expect_err("revoked grant")
-            .code,
-        ErrorCode::PermissionDenied
-    );
+    let auto: TaskRecord = peer
+        .post("/hmesh/v1/tasks", &envelope)
+        .await
+        .expect("auto access");
+    assert_eq!(auto.status, TaskStatus::Queued);
+    // Revoking the pairing is the one switch that removes every peer capability.
     store.revoke_peer(a.card.node_id).expect("revoke trust");
     assert!(peer.get::<Value>("/hmesh/v1/node").await.is_err());
+    assert!(peer.get::<Value>("/hmesh/v1/agents").await.is_err());
+    assert!(peer.get::<Value>(&artifact_path).await.is_err());
+    assert!(peer.post::<_, Value>(&verify_path, &check).await.is_err());
+    envelope.request_id = Uuid::new_v4();
+    envelope.payload.task_id = Uuid::new_v4();
+    assert!(
+        peer.post::<_, Value>("/hmesh/v1/tasks", &envelope)
+            .await
+            .is_err()
+    );
     assert_eq!(std::fs::read_dir(&project).expect("project").count(), 1);
     assert_eq!(
         std::fs::read(project.join("out/health.json")).unwrap(),

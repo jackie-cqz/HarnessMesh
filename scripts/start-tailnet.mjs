@@ -128,7 +128,7 @@ try {
   const receipt = { node: card, agent, data_dir: nodeDir, project: piConfig ? join(root, 'project') : undefined };
   writeFileSync(join(root, 'startup.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(receipt, null, 2));
-  console.log('Keep this terminal open. Pair by comparing both Node fingerprints; project grants and remote task approvals remain local. Ctrl+C stops only this daemon. No model has been called.');
+  console.log("Keep this terminal open. Pair by comparing both Node fingerprints. Paired peers see this node's agents and their tasks run immediately; use `hmesh peers access <peer> confirm` to require local approval. Ctrl+C stops only this daemon. No model has been called.");
   if (agent) console.log(`Local model verification (optional, billed): ${binary} --data-dir ${JSON.stringify(nodeDir)} agent verify ${agent.agent_id} --allow-model`);
   process.on('SIGINT', stopOwnedDaemon);
   process.on('SIGTERM', stopOwnedDaemon);
