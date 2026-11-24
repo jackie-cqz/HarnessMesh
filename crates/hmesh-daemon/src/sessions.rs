@@ -291,6 +291,17 @@ async fn pump(
     }
 }
 
+/// Stop a session's agent process and forget it, if it is still the
+/// registered one.
+async fn discard(s: &AppState, id: Uuid, live: &Arc<Live>) {
+    if let Ok(mut map) = s.sessions.live.lock()
+        && map.get(&id).is_some_and(|l| Arc::ptr_eq(l, live))
+    {
+        map.remove(&id);
+    }
+    live.conn.shutdown().await;
+}
+
 /// Start (or reuse) the agent process for a session and open or reload the
 /// agent-side session.
 async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result<Arc<Live>> {
@@ -325,6 +336,15 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         .map_err(|_| MeshError::new(ErrorCode::Internal, "session map poisoned"))?
         .insert(record.session_id, live.clone());
     tokio::spawn(pump(s.clone(), record.session_id, live.clone(), messages));
+    // Registered first, checked second: a close that ran while the agent was
+    // starting either sees this process in the map or is seen here.
+    if !s.store.session(record.session_id)?.status.is_open() {
+        discard(s, record.session_id, &live).await;
+        return Err(MeshError::new(
+            ErrorCode::TaskConflict,
+            "the session was closed while its agent was starting",
+        ));
+    }
     let started = async {
         match reload {
             Some(previous) => {
@@ -351,10 +371,7 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
     let (agent_session, note) = match started {
         Ok(started) => started,
         Err(error) => {
-            conn.shutdown().await;
-            if let Ok(mut map) = s.sessions.live.lock() {
-                map.remove(&record.session_id);
-            }
+            discard(s, record.session_id, &live).await;
             return Err(error);
         }
     };
@@ -411,6 +428,19 @@ fn begin_turn(
                 ));
             }
             SessionStatus::Idle => {}
+        }
+        // A delegation a paired computer started stays usable only while
+        // that computer is still paired.
+        if record.origin.root_node_id != s.instance.card.node_id
+            && s.task_decision(Actor {
+                node_id: record.origin.root_node_id,
+                owner: false,
+            }) == Decision::Denied
+        {
+            return Err(MeshError::new(
+                ErrorCode::PermissionDenied,
+                "the computer that started this session is no longer paired",
+            ));
         }
         record.status = SessionStatus::Running;
         if record.title.is_empty() {
@@ -473,6 +503,13 @@ async fn run_turn(s: AppState, id: Uuid, text: String) {
         Ok(live) => live,
         Err(error) => return finish(&s, None, None, Some(error.message)),
     };
+    // Closed (or revoked) while the agent was starting: never send the prompt.
+    if !matches!(
+        s.store.session(id).map(|r| r.status),
+        Ok(SessionStatus::Running)
+    ) {
+        return;
+    }
     if let Ok(mut active) = live.last_active.lock() {
         *active = Instant::now();
     }
@@ -547,7 +584,14 @@ fn answer(
         json!({"key":key,"allow":allow,"by":by}),
     )?;
     if left == 0 {
-        return set_status(s, id, SessionStatus::Running);
+        // Only a turn still waiting goes back to running; a turn that ended
+        // meanwhile stays idle.
+        let mut record = s.store.session(id)?;
+        if record.status == SessionStatus::WaitingPermission {
+            record.status = SessionStatus::Running;
+            save(s, &mut record)?;
+        }
+        return Ok(record);
     }
     s.store.session(id)
 }
@@ -588,6 +632,15 @@ fn cancel(s: &AppState, id: Uuid) -> hmesh_core::Result<SessionRecord> {
 }
 
 fn close_session(s: &AppState, id: Uuid, why: &str) -> hmesh_core::Result<SessionRecord> {
+    // Mark it closed before taking its process: an agent that is still
+    // starting sees the closed status once it is registered (see ensure_live).
+    let mut record = s.store.session(id)?;
+    let newly = record.status != SessionStatus::Closed;
+    if newly {
+        record.status = SessionStatus::Closed;
+        record.pending_message = None;
+        save(s, &mut record)?;
+    }
     let live = s
         .sessions
         .live
@@ -597,11 +650,7 @@ fn close_session(s: &AppState, id: Uuid, why: &str) -> hmesh_core::Result<Sessio
     if let Some(live) = live {
         tokio::spawn(async move { live.conn.shutdown().await });
     }
-    let mut record = s.store.session(id)?;
-    if record.status != SessionStatus::Closed {
-        record.status = SessionStatus::Closed;
-        record.pending_message = None;
-        save(s, &mut record)?;
+    if newly {
         record_event(s, id, "status", json!({"status":"closed","message":why}))?;
     }
     Ok(record)
@@ -807,10 +856,25 @@ pub async fn open(s: &AppState, body: OpenSession) -> std::result::Result<Sessio
                 chain,
                 root_node_id: root,
             };
-            let approver = if kind == OriginKind::Agent {
-                Approver::Auto
-            } else {
-                Approver::Origin
+            let (approver, needs_approval) = match kind {
+                OriginKind::Human => (Approver::Origin, false),
+                // A chain started on this computer acts for its owner.
+                OriginKind::Agent if root == me => (Approver::Auto, false),
+                // A chain a paired computer started follows that computer's
+                // access mode here, however deep the delegation goes.
+                OriginKind::Agent => match s.task_decision(Actor {
+                    node_id: root,
+                    owner: false,
+                }) {
+                    Decision::Allowed => (Approver::Auto, false),
+                    Decision::ApprovalRequired => (Approver::Local, true),
+                    Decision::Denied => {
+                        return Err(err(
+                            ErrorCode::PermissionDenied,
+                            "the computer that started this delegation is no longer paired",
+                        ));
+                    }
+                },
             };
             Ok(open_here(
                 s,
@@ -818,7 +882,7 @@ pub async fn open(s: &AppState, body: OpenSession) -> std::result::Result<Sessio
                 body.agent_id,
                 origin,
                 approver,
-                false,
+                needs_approval,
                 body.message,
             )?)
         }
@@ -864,7 +928,9 @@ async fn wait_events(
             s.store.session_events(id, after, MAX_PAGE_EVENTS)?
         };
         let changed = session.status != first.status || session.updated_at != first.updated_at;
-        if !events.is_empty() || changed || tokio::time::Instant::now() >= deadline {
+        // A turn-end wait on a session that is not working returns at once.
+        let settled = status_only && !session.status.is_busy();
+        if !events.is_empty() || changed || settled || tokio::time::Instant::now() >= deadline {
             let next = events.last().map_or(after, |e| e.seq);
             return Ok(SessionEventPage {
                 session,
@@ -904,12 +970,23 @@ pub async fn run(s: AppState, mut shutdown: watch::Receiver<bool>) {
                 let idle: Vec<(Uuid, Arc<Live>)> = s.sessions.live.lock().map(|map| map.iter().map(|(k, v)| (*k, v.clone())).collect()).unwrap_or_default();
                 for (id, live) in idle {
                     let quiet = live.last_active.lock().map(|t| t.elapsed() >= Duration::from_secs(IDLE_PROCESS_SECONDS)).unwrap_or(false);
-                    let busy = s.store.session(id).map(|r| r.status.is_busy()).unwrap_or(false);
-                    if quiet && !busy {
-                        if let Ok(mut map) = s.sessions.live.lock() { map.remove(&id); }
+                    if !quiet {
+                        continue;
+                    }
+                    // Decide under the turn lock so a turn starting now either
+                    // keeps this process or starts a fresh one.
+                    let taken = {
+                        let Ok(_guard) = s.sessions.starting.lock() else { continue };
+                        let busy = s.store.session(id).map(|r| r.status.is_busy()).unwrap_or(false);
+                        !busy && s.sessions.live.lock().map(|mut map| {
+                            map.get(&id).is_some_and(|l| Arc::ptr_eq(l, &live)) && map.remove(&id).is_some()
+                        }).unwrap_or(false)
+                    };
+                    if taken {
                         live.conn.shutdown().await;
                     }
                 }
+                refresh_remote(&s).await;
             }
         }
     }
@@ -924,10 +1001,13 @@ pub async fn run(s: AppState, mut shutdown: watch::Receiver<bool>) {
     }
 }
 
-/// Close every session a revoked peer opened here.
+/// Close every session a revoked peer started here: the ones it opened and
+/// every session its agents' delegation chains opened on this computer.
 pub fn close_for_peer(s: &AppState, peer: Uuid) {
     for record in s.store.sessions(10_000).unwrap_or_default() {
-        if record.origin.node_id == peer && record.status.is_open() {
+        if (record.origin.node_id == peer || record.origin.root_node_id == peer)
+            && record.status.is_open()
+        {
             let _ = close_session(s, record.session_id, "pairing was revoked");
         }
     }
@@ -997,7 +1077,7 @@ async fn owner_get(
         let record: SessionRecord = peer_client(&s, peer)?
             .get(&format!("/hmesh/v1/sessions/{id}"))
             .await?;
-        s.store.record_remote_session(peer, &record)?;
+        mirror(&s, peer, id, &record)?;
         return Ok(Json(record));
     }
     Ok(Json(s.store.session(id)?))
@@ -1019,22 +1099,63 @@ async fn owner_events(
                 q.status_only
             ))
             .await?;
-        s.store.record_remote_session(peer, &page.session)?;
+        mirror(&s, peer, id, &page.session)?;
         return Ok(Json(page));
     }
     Ok(Json(
         wait_events(&s, id, q.after, q.wait, q.status_only).await?,
     ))
 }
+/// Keep the local copy of a session on a paired computer, refusing an answer
+/// about a different session.
+fn mirror(
+    s: &AppState,
+    peer: Uuid,
+    id: Uuid,
+    record: &SessionRecord,
+) -> std::result::Result<(), ApiError> {
+    if record.session_id != id || record.node_id != peer {
+        return Err(err(
+            ErrorCode::Internal,
+            "the paired computer answered about a different session",
+        ));
+    }
+    s.store.record_remote_session(peer, record)?;
+    Ok(())
+}
 async fn remote_post<B: Serialize>(
     s: &AppState,
     peer: Uuid,
-    path: &str,
+    id: Uuid,
+    action: &str,
     body: &B,
 ) -> std::result::Result<SessionRecord, ApiError> {
-    let record: SessionRecord = peer_client(s, peer)?.post(path, body).await?;
-    s.store.record_remote_session(peer, &record)?;
+    let record: SessionRecord = peer_client(s, peer)?
+        .post(&format!("/hmesh/v1/sessions/{id}/{action}"), body)
+        .await?;
+    mirror(s, peer, id, &record)?;
     Ok(record)
+}
+/// Refresh copies of sessions this computer opened elsewhere that may still be
+/// working, so lists and the running-children limit do not trust stale state.
+async fn refresh_remote(s: &AppState) {
+    let rows = s.store.remote_sessions(10_000).unwrap_or_default();
+    let open = rows
+        .into_iter()
+        .filter(|(_, r)| r.status.is_busy() || r.status == SessionStatus::PendingApproval)
+        .take(50);
+    for (peer, record) in open {
+        let Ok(client) = peer_client(s, peer) else {
+            continue;
+        };
+        let id = record.session_id;
+        let path = format!("/hmesh/v1/sessions/{id}");
+        if let Ok(Ok(fresh)) =
+            tokio::time::timeout(Duration::from_secs(5), client.get::<SessionRecord>(&path)).await
+        {
+            let _ = mirror(s, peer, id, &fresh);
+        }
+    }
 }
 async fn owner_prompt(
     State(s): State<AppState>,
@@ -1045,9 +1166,7 @@ async fn owner_prompt(
 ) -> ApiResult<SessionRecord> {
     s.owner(&headers, &c)?;
     if let Some(peer) = s.store.remote_session_peer(id)? {
-        return Ok(Json(
-            remote_post(&s, peer, &format!("/hmesh/v1/sessions/{id}/prompt"), &body).await?,
-        ));
+        return Ok(Json(remote_post(&s, peer, id, "prompt", &body).await?));
     }
     let from = json!({"node_id":s.instance.card.node_id,"label":null});
     Ok(Json(begin_turn(&s, id, &body.message, from)?))
@@ -1062,13 +1181,7 @@ async fn owner_permission(
     s.owner(&headers, &c)?;
     if let Some(peer) = s.store.remote_session_peer(id)? {
         return Ok(Json(
-            remote_post(
-                &s,
-                peer,
-                &format!("/hmesh/v1/sessions/{id}/permissions/{key}"),
-                &body,
-            )
-            .await?,
+            remote_post(&s, peer, id, &format!("permissions/{key}"), &body).await?,
         ));
     }
     Ok(Json(answer(&s, id, &key, body.allow, "owner")?))
@@ -1081,15 +1194,7 @@ async fn owner_cancel(
 ) -> ApiResult<SessionRecord> {
     s.owner(&headers, &c)?;
     if let Some(peer) = s.store.remote_session_peer(id)? {
-        return Ok(Json(
-            remote_post(
-                &s,
-                peer,
-                &format!("/hmesh/v1/sessions/{id}/cancel"),
-                &json!({}),
-            )
-            .await?,
-        ));
+        return Ok(Json(remote_post(&s, peer, id, "cancel", &json!({})).await?));
     }
     Ok(Json(cancel(&s, id)?))
 }
@@ -1101,15 +1206,7 @@ async fn owner_close(
 ) -> ApiResult<SessionRecord> {
     s.owner(&headers, &c)?;
     if let Some(peer) = s.store.remote_session_peer(id)? {
-        return Ok(Json(
-            remote_post(
-                &s,
-                peer,
-                &format!("/hmesh/v1/sessions/{id}/close"),
-                &json!({}),
-            )
-            .await?,
-        ));
+        return Ok(Json(remote_post(&s, peer, id, "close", &json!({})).await?));
     }
     Ok(Json(close_session(&s, id, "closed by its owner")?))
 }

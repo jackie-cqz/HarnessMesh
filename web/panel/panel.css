@@ -1219,3 +1219,11 @@ select:focus-visible,textarea:focus-visible { outline:2px solid var(--green); ou
 @media(prefers-reduced-motion:reduce){.working{animation:none;color:var(--muted)}}
 /* The session page is a conversation workspace: task-only controls stay on their own pages. */
 #app[data-page="sessions"] .workspace-actions,#app[data-page="sessions"] #runtime-summary[data-mode="full"],#app[data-page="sessions"] #approval-inbox,#app[data-page="sessions"] #pending-submission,#app[data-page="sessions"] #development-pending{display:none}
+.session-agents{display:flex;flex-direction:column;gap:10px}
+.agent-group{display:flex;flex-direction:column;border-left:1px solid var(--line);padding-left:10px}
+.agent-group-name{font-size:11px;color:var(--muted);margin-bottom:2px}
+.agent-row{display:flex;align-items:baseline;justify-content:space-between;gap:8px;border:0;background:transparent;padding:4px 0;text-align:left;color:var(--ink)}
+.agent-row:hover:not(:disabled) .agent-row-name{color:var(--green)}
+.agent-row-name{font-size:13px}
+.agent-row-kind{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.agent-row-empty{font-size:11px;color:var(--muted)}

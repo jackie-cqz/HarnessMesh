@@ -64,7 +64,25 @@ function syncListRow(record){
   Object.assign(target,{status:record.status,turns:record.turns,title:record.title,updated_at:record.updated_at});renderSessionList();
 }
 function needsOwner(s){return (s.status==='pending_approval'&&!s._remote)||(s.status==='waiting_permission'&&mayAnswer(s));}
+// Every agent on this and paired computers, grouped by computer; one click opens a session.
+function renderAgentDirectory(){
+  const box=$('#session-agents');if(!box)return;
+  const groups=conv.nodes.map(n=>{
+    const group=el('div','agent-group');group.append(el('div','agent-group-name',n.local?`${n.name}（本机）`:`${n.name}${n.reachable?'':' · 不可达'}`));
+    const agents=(n.agents||[]).filter(a=>a.availability!=='disabled');
+    if(!agents.length)group.append(el('div','agent-row-empty','没有可用 Agent'));
+    for(const a of agents){
+      const ready=a.probe?.version_supported&&n.reachable,row=el('button','agent-row');row.type='button';row.disabled=!ready||!canWrite();
+      row.append(el('span','agent-row-name',a.name),el('span','agent-row-kind',String(a.harness||'')));
+      row.title=ready?'用这个 Agent 开新会话':'这个 Agent 现在不能用';
+      row.addEventListener('click',()=>openNewSession(n.node_id,a.agent_id));group.append(row);
+    }
+    return group;
+  });
+  box.replaceChildren(...(groups.length?groups:[empty('还没有 Agent','在 Agents 页接入一个已安装的 ACP agent。')]));
+}
 function renderSessionList(){
+  renderAgentDirectory();
   const rows=allSessions(),waiting=rows.filter(needsOwner).length;
   $('#nav-sessions').hidden=!waiting;$('#nav-sessions').textContent=waiting;
   $('#session-list').replaceChildren(...(rows.length?rows.map(s=>{
@@ -193,12 +211,14 @@ function fillAgents(){
   select.replaceChildren(...(agents.length?agents.map(a=>{const o=el('option','',`${a.name}${a.probe?.version_supported?'':'（未通过 ACP 检查）'}`);o.value=a.agent_id;o.disabled=!a.probe?.version_supported;return o;}):[Object.assign(el('option','','这个节点没有可用 Agent'),{value:''})]));
   $('#new-session-hint').textContent=node&&!node.reachable?'这个节点暂时连不上。':node&&!node.local?`对话在 ${node.name} 上运行；工具权限由你在这里回答。`:'对话在本机运行；工具权限由你在这里回答。';
 }
-async function openNewSession(){
+async function openNewSession(nodeId,agentId){
   if(!canWrite())return toast('面板处于只读模式。');
   await loadSessions();
   const select=$('#new-session-node');
   select.replaceChildren(...conv.nodes.map(n=>{const o=el('option','',n.local?`${n.name}（本机）`:`${n.name}${n.reachable?'':'（不可达）'}`);o.value=n.node_id;return o;}));
-  fillAgents();$('#new-session-error').hidden=true;$('#new-session-dialog').showModal();$('#new-session-message').focus();
+  if(typeof nodeId==='string')select.value=nodeId;
+  fillAgents();
+  if(typeof agentId==='string')$('#new-session-agent').value=agentId;$('#new-session-error').hidden=true;$('#new-session-dialog').showModal();$('#new-session-message').focus();
 }
 async function submitNewSession(event){
   event.preventDefault();
@@ -214,7 +234,7 @@ async function submitNewSession(event){
   finally{submit.disabled=false;}
 }
 
-$('#new-session').addEventListener('click',openNewSession);
+$('#new-session').addEventListener('click',()=>openNewSession());
 $('#new-session-node').addEventListener('change',fillAgents);
 $('#new-session-form').addEventListener('submit',submitNewSession);
 $('#composer').addEventListener('submit',sendMessage);

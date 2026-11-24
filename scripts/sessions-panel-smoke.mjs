@@ -53,8 +53,15 @@ try{
  stage='open remote session';
  await page.locator('[data-view="sessions"]').click();
  await page.locator('#conversation-empty').waitFor();
+ // The agent directory lists this computer's and the paired computer's agents.
+ await page.locator('#session-agents .agent-group').filter({hasText:'mac-a（本机）'}).getByText('helper').waitFor();
+ await page.locator('#session-agents .agent-group').filter({hasText:'mac-b'}).getByText('worker').waitFor();
  await page.screenshot({path:join(shots,'sessions-empty.png')});
- await openSession(page,b.card.node_id,remote.agent_id,'fixture:permission');
+ // One click on an agent opens the dialog with it selected.
+ await page.locator('#session-agents .agent-group').filter({hasText:'mac-b'}).getByRole('button',{name:/worker/}).click();
+ await page.waitForFunction(([node,agent])=>document.querySelector('#new-session-dialog').open&&document.querySelector('#new-session-node').value===node&&document.querySelector('#new-session-agent').value===agent,[b.card.node_id,remote.agent_id],{timeout:10000});
+ await page.locator('#new-session-message').fill('fixture:permission');
+ await page.locator('#new-session-submit').click();await page.locator('#new-session-dialog').waitFor({state:'hidden'});
  // The agent on mac-b asks for permission; mac-a opened the session, so mac-a answers.
  stage='answer permission from the opener';
  await page.locator('.permission').getByRole('button',{name:'允许一次'}).waitFor({timeout:30000});
@@ -69,6 +76,12 @@ try{
  await stream(page).getByText('Echo #2: from the panel').waitFor({timeout:30000});
  assert(await page.locator('#conversation-header').getByText('第 2 轮').count()===1,'turn count not shown');
  await page.screenshot({path:join(shots,'sessions-remote.png')});
+ stage='reload keeps the conversation';
+ await page.reload();await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor();
+ await page.locator('[data-view="sessions"]').click();
+ await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();
+ await stream(page).getByText('Echo #2: from the panel').waitFor({timeout:30000});
+ await stream(page).getByText('Permission granted: notes.txt edited.').waitFor();
  stage='agent delegates across computers';
  await openSession(page,a.card.node_id,local.agent_id,'fixture:delegate mac-b/worker fixture:reply');
  await stream(page).getByText(/Delegated to mac-b\/worker: Final answer: the build is green\./).waitFor({timeout:60000});

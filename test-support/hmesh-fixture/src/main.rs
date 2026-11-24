@@ -235,10 +235,22 @@ fn run_acp() -> anyhow::Result<()> {
             continue;
         }
         match method {
-            "initialize" => respond(
-                &id,
-                json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{},"mcpCapabilities":{"http":false,"sse":false}},"authMethods":[],"agentInfo":{"name":"hmesh-fixture","version":"0.84.2"}}),
-            ),
+            "initialize" => {
+                // `--start-delay-ms N` simulates an agent that starts slowly.
+                let args: Vec<String> = std::env::args().collect();
+                if let Some(ms) = args
+                    .iter()
+                    .position(|a| a == "--start-delay-ms")
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|v| v.parse::<u64>().ok())
+                {
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
+                respond(
+                    &id,
+                    json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{},"mcpCapabilities":{"http":false,"sse":false}},"authMethods":[],"agentInfo":{"name":"hmesh-fixture","version":"0.84.2"}}),
+                )
+            }
             "session/new" => {
                 next += 1;
                 let session_id = format!(
