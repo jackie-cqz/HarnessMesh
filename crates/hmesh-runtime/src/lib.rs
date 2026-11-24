@@ -3,6 +3,7 @@ pub mod acp_conn;
 mod prepare;
 pub use prepare::inspect_references;
 pub use prepare::{agent_command, run_secrets};
+pub mod git_version;
 pub mod process_tree;
 pub mod verification;
 pub mod workspace;
@@ -214,6 +215,7 @@ async fn execute(
     }
     // Workspace preparation may take time; recheck the current grant immediately before spawning.
     authorize(task)?;
+    workspace::enforce_prepared(store, task, &config).map_err(failure)?;
     prepared
         .command
         .stdin(Stdio::piped())

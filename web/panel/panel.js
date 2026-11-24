@@ -61,7 +61,7 @@ function renderRuntime(){
 }
 function allTasks() {
   const rows=data('tasks',{}), tasks=new Map();
-  for(const t of rows.submitted||[])tasks.set(t.task_id,{...t.last_observed,task_id:t.task_id,_request_id:t.request_id,_observed:t.last_observed_at,_direction:'outbound',status:t.last_observed?.status||'UNCONFIRMED'});
+  for(const t of rows.submitted||[])tasks.set(t.task_id,{...t.last_observed,task_id:t.task_id,target_node_id:t.peer_id,_source_session_id:t.source_session_id,_request_id:t.request_id,_observed:t.last_observed_at,_direction:'outbound',status:t.last_observed?.status||'UNCONFIRMED'});
   for(const t of rows.executions||[])tasks.set(t.task_id,{...tasks.get(t.task_id),...t,_direction:'local'});
   for(const [id,task]of tasks){const latest=state.details.get(id)?.task;if(latest&&(latest.updated_at||0)>=(task.updated_at||0))tasks.set(id,{...task,...latest});}
   return [...tasks.values()].sort((a,b)=>(b.created_at||0)-(a.created_at||0));
@@ -70,7 +70,7 @@ let toastTimer;
 function toast(message) { clearTimeout(toastTimer); $('#toast').textContent=message; $('#toast').hidden=false; toastTimer=setTimeout(()=>$('#toast').hidden=true,6500); }
 function showView(name) {
   if(['development','operations'].includes(name)&&!hasDevelopment())return toast('此 Daemon 尚不支持开发流程，请查看运行能力与显式升级步骤。');
-  const names={sessions:['会话','和本机、配对电脑上的 Agent 对话；它们也能互相调用。'],overview:['运行总览','节点、任务与执行状态，尽在一处。'],tasks:['任务','查看执行记录，逐项处理审批与异常。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],services:['服务与连接','观察受管进程、服务租约和转发连接。'],nodes:['配对节点','连接可达性与项目授权分别呈现。'],development:['开发流程','保存可复用模板，逐阶段执行与核验。'],operations:['诊断与用量','定位失败原因，查看用量与本机资源。']};
+  const names={sessions:['会话','和本机、配对电脑上的 Agent 对话；它们也能互相调用。'],overview:['运行总览','节点、任务与执行状态，尽在一处。'],inbox:['工作待办','集中查看审批、执行和验收进度。'],tasks:['任务','查看执行记录，逐项处理审批与异常。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],services:['服务与连接','观察受管进程、服务租约和转发连接。'],nodes:['配对节点','连接可达性与项目授权分别呈现。'],development:['开发流程','保存可复用模板，逐阶段执行与核验。'],operations:['诊断与用量','定位失败原因，查看用量与本机资源。']};
   if(!names[name])return;
   state.view=name;$('#app').dataset.page=name;
   for(const b of document.querySelectorAll('[data-view]')){b.classList.toggle('selected',b.dataset.view===name);b.setAttribute('aria-current',b.dataset.view===name?'page':'false');}
@@ -79,6 +79,7 @@ function showView(name) {
   $('#metrics').hidden=name!=='overview';render();
   if(name!=='sessions')$('#new-session')?.classList.remove('selected');
   if(name==='sessions'&&typeof sessionsShown==='function')sessionsShown();
+  if(name==='inbox'&&typeof refreshInbox==='function')refreshInbox();
 }
 function renderMetrics() {
   const rows=allTasks(), localTasks=rows.filter(t=>t._direction==='local'), agents=data('agents'), peers=data('peers');
@@ -152,20 +153,22 @@ function render() {
   renderRuntime();renderMetrics();renderMesh();$('#recent-tasks').replaceChildren(table(allTasks().slice(0,6)));
   if(state.view==='tasks')renderTasks();if(state.view==='agents')renderAgents();if(state.view==='services')renderServices();if(state.view==='nodes')renderNodes();if(typeof renderSessions==='function')renderSessions();
   if(typeof renderWorkflow==='function')renderWorkflow();
+  if(typeof renderInbox==='function')renderInbox();
+  if(typeof renderSessionWork==='function')renderSessionWork();
   if(typeof renderDevelopment==='function'&&hasDevelopment())renderDevelopment();else $('#development-pending').replaceChildren();
 }
 async function refresh() {
   if(state.stopped||state.refreshing||!access)return;state.refreshing=true;$('#refresh').disabled=true;$('#sync-state').textContent='同步中…';
   try {
-    const [snapshot,runtime]=await Promise.all([api('/overview'),api('/runtime').then(unwrap).catch(()=>null)]);state.snapshot=snapshot;state.runtime=runtime;const node=data('node',{});$('#access-gate').hidden=true;$('#app').hidden=false;
+    const [snapshot,runtime]=await Promise.all([api('/overview'),api('/runtime').then(unwrap).catch(()=>null)]);state.snapshot=snapshot;state.runtime=runtime;if(typeof noteInboxOverviewError==='function')noteInboxOverviewError(null);const node=data('node',{});$('#access-gate').hidden=true;$('#app').hidden=false;
     $('#local-name').textContent=node.node?.display_name||'Daemon 不可读取';$('#local-network').textContent=node.network==='tailscale'?'Tailnet 直连':node.network?'仅本机回环':'Daemon 不可达';
     const names={node:'本机 Daemon',peers:'配对节点',agents:'Agent',retired:'退役 Agent',tasks:'任务',services:'服务',connections:'连接',tunnels:'隧道'};
     const failures=Object.entries(names).filter(([key])=>state.snapshot[key]?.error).map(([key,name])=>`${name}: ${state.snapshot[key].error.code}`);
     $('#alerts').replaceChildren(...(failures.length?[el('div','alert',`部分状态暂不可读取。${failures.join('；')}`)]:[]));
     $('#sync-state').textContent=failures.length?'部分数据不可用':'已同步 · 10 秒刷新';$('#last-observed').textContent=`最后观察 ${fullTime(state.snapshot.observed_at)}`;render();
     if($('#task-dialog').open&&state.selected)await Promise.all([readDetail(state.detailVersion),loadEvents(state.detailVersion)]);
-  }catch(e){$('#sync-state').textContent='连接中断';$('#alerts').replaceChildren(el('div','alert',`读取失败：${e.message}。页面可能保留上次观察结果，未自动重试任何操作。`));}
-  finally{state.refreshing=false;$('#refresh').disabled=false;}
+  }catch(e){if(typeof noteInboxOverviewError==='function')noteInboxOverviewError(e);$('#sync-state').textContent='连接中断';$('#alerts').replaceChildren(el('div','alert',`读取失败：${e.message}。页面可能保留上次观察结果，未自动重试任何操作。`));}
+  finally{state.refreshing=false;$('#refresh').disabled=false;if(typeof renderInbox==='function')renderInbox();if(state.view==='inbox'&&typeof refreshInbox==='function')refreshInbox();}
 }
 function confirmAction(title,description) {
   return new Promise(resolve=>{const dialog=$('#confirm-dialog');$('#confirm-title').textContent=title;$('#confirm-description').textContent=description;let accepted=false;const yes=()=>{accepted=true;dialog.close();};const no=()=>dialog.close();const done=()=>{$('#confirm-accept').removeEventListener('click',yes);$('#confirm-cancel').removeEventListener('click',no);resolve(accepted);};$('#confirm-accept').addEventListener('click',yes);$('#confirm-cancel').addEventListener('click',no);dialog.addEventListener('close',done,{once:true});dialog.showModal();$('#confirm-cancel').focus();});

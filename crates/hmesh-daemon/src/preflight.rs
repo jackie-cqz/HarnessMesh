@@ -17,6 +17,8 @@ pub struct Report {
     pub project_id: String,
     pub requires_approval: bool,
     pub configuration_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_version: Option<hmesh_runtime::git_version::GitInspection>,
     pub checks: Vec<Check>,
     pub observed_at: i64,
 }
@@ -26,6 +28,17 @@ pub fn routes() -> Router<AppState> {
         .route("/local/tasks/{id}/preflight", get(owner_existing))
         .route("/hmesh/v1/tasks/preflight", post(incoming))
         .route("/hmesh/v1/tasks/{id}/preflight", get(peer_existing))
+        .route("/local/agents/{id}/git", get(owner_git))
+}
+async fn owner_git(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<hmesh_runtime::git_version::GitInspection> {
+    s.owner(&headers, &c)?;
+    let (_, config) = s.store.agent(id)?;
+    Ok(Json(hmesh_runtime::git_version::inspect(&config, None)))
 }
 fn check(code: &str, passed: bool) -> Check {
     Check {
@@ -46,6 +59,18 @@ pub(super) fn enforce_artifacts(s: &AppState, task: &TaskSubmit) -> Result<()> {
                 "required completion artifact is not declared by the execution owner",
             ));
         }
+    }
+    Ok(())
+}
+pub(super) fn enforce_version(s: &AppState, task: &TaskSubmit) -> Result<()> {
+    if let Some(version) = &task.git_version {
+        let (_, config) = s.store.agent(task.target_agent_id)?;
+        hmesh_runtime::git_version::enforce(&config, version).map_err(|_| {
+            MeshError::new(
+                ErrorCode::PermissionDenied,
+                "execution repository does not meet the task Git version restriction",
+            )
+        })?;
     }
     Ok(())
 }
@@ -71,6 +96,7 @@ pub(super) fn inspect_task(
         )
         .into());
     }
+    super::validate_source_session(s, actor, task)?;
     let (agent, config) = s.store.agent(task.target_agent_id)?;
     let mut checks = vec![
         check(
@@ -89,8 +115,10 @@ pub(super) fn inspect_task(
         ),
         check(
             "AGENT_NOT_VERIFIED",
-            agent.probe.managed_run == "passed"
-                && matches!(agent.availability.as_str(), "idle" | "busy"),
+            !matches!(agent.availability.as_str(), "disabled" | "retired")
+                && (actor.owner
+                    || (agent.probe.managed_run == "passed"
+                        && matches!(agent.availability.as_str(), "idle" | "busy"))),
         ),
         check(
             "REFERENCES_INVALID",
@@ -112,6 +140,14 @@ pub(super) fn inspect_task(
             field: Some(path.to_string_lossy().into_owned()),
         });
     }
+    let git_version = hmesh_runtime::git_version::inspect(&config, task.git_version.as_ref());
+    if let Some(version) = task.git_version.as_ref() {
+        checks.extend(
+            hmesh_runtime::git_version::version_checks(&config, &git_version, version)
+                .into_iter()
+                .map(|(code, passed)| check(code, passed)),
+        );
+    }
     Ok(Report {
         ready: checks.iter().all(|c| c.passed),
         agent_id: agent.agent_id,
@@ -120,6 +156,7 @@ pub(super) fn inspect_task(
         configuration_sha256: Some(hmesh_security::sha256_hex(
             &serde_json::to_vec(&config).map_err(internal)?,
         )),
+        git_version: Some(git_version),
         checks,
         observed_at: now(),
     })
@@ -136,6 +173,7 @@ fn unavailable(task: &TaskSubmit, error: MeshError) -> Report {
         project_id: task.project_id.clone(),
         requires_approval: true,
         configuration_sha256: None,
+        git_version: None,
         checks: vec![check(code, false)],
         observed_at: now(),
     }
@@ -378,5 +416,120 @@ mod tests {
                     .iter()
                     .any(|c| c.code == "TOOLS_MISMATCH" && !c.passed)
         );
+    }
+
+    #[tokio::test]
+    async fn git_observations_are_optional_but_restrictions_block_admission_approval_and_execution()
+    {
+        let (root, state, mut task) = fixture();
+        task.expected_artifacts = None;
+        let owner = Actor {
+            node_id: state.instance.card.node_id,
+            owner: true,
+        };
+        let report = inspect_task(&state, owner, &task).unwrap();
+        assert!(report.ready);
+        assert!(!report.git_version.unwrap().available);
+        let project = root.path().join("git-project");
+        std::fs::create_dir(&project).unwrap();
+        let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .filter(|p| p.is_absolute())
+            .map(|p| p.join(if cfg!(windows) { "git.exe" } else { "git" }))
+            .find(|p| p.is_file())
+            .unwrap();
+        let git = |args: &[&str]| {
+            let result = std::process::Command::new(&executable)
+                .arg("-C")
+                .arg(&project)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(result.status.success());
+            String::from_utf8(result.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-b", "main"]);
+        git(&["commit", "--allow-empty", "-m", "first"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        let (mut card, mut config) = state.store.agent(task.target_agent_id).unwrap();
+        card.agent_id = Uuid::new_v4();
+        card.project_ids = vec!["git-fixture".into()];
+        card.name = "git-fixture".into();
+        config.agent.name = "git-fixture".into();
+        config.agent.project_id = "git-fixture".into();
+        config.project.root = project.clone();
+        config.project.git_executable = Some(executable.clone());
+        state.store.register_agent(&card, &config).unwrap();
+        task.target_agent_id = card.agent_id;
+        task.project_id = "git-fixture".into();
+        task.git_version = Some(GitVersionRequirement::Current {
+            expected_commit: Some("0".repeat(40)),
+            require_clean: false,
+        });
+        let report = inspect_task(&state, owner, &task).unwrap();
+        assert!(!report.ready);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.code == "GIT_COMMIT_MISMATCH" && !c.passed)
+        );
+        assert_eq!(report.git_version.unwrap().current.unwrap().commit, first);
+        assert!(
+            admit_task(
+                &state,
+                owner,
+                Envelope::new(owner.node_id, "task.submit", task.clone())
+            )
+            .is_err()
+        );
+        assert!(state.store.tasks().unwrap().is_empty());
+        task.git_version = Some(GitVersionRequirement::Current {
+            expected_commit: Some(first),
+            require_clean: false,
+        });
+        task.requires_approval = true;
+        assert!(inspect_task(&state, owner, &task).unwrap().ready);
+        let admitted = admit_task(
+            &state,
+            owner,
+            Envelope::new(owner.node_id, "task.submit", task),
+        )
+        .unwrap();
+        git(&["commit", "--allow-empty", "-m", "changed before approval"]);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.instance.owner_token())
+                .parse()
+                .unwrap(),
+        );
+        let connection = ConnectionIdentity {
+            address: "127.0.0.1:1234".parse().unwrap(),
+            fingerprint: Some(state.instance.card.fingerprint.clone()),
+        };
+        assert!(
+            approve_task(
+                State(state.clone()),
+                Extension(connection),
+                headers,
+                Path(admitted.task_id)
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            state.store.task(admitted.task_id).unwrap().status,
+            TaskStatus::PendingApproval
+        );
+        assert!(enforce_version(&state, &admitted.request).is_err());
+        assert!(state.store.workspace(admitted.task_id).unwrap().is_none());
     }
 }

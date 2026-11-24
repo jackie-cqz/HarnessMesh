@@ -2,8 +2,10 @@
 mod network;
 pub use network::is_tailnet_ip;
 pub mod development;
+mod git_version;
 pub mod managed;
 pub mod sessions;
+pub use git_version::{GitVersionRequirement, GitVersionState};
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
@@ -302,6 +304,14 @@ pub struct TaskInput {
     pub value: String,
 }
 
+/// An exact JSON subset to check against a declared completion artifact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskAcceptanceContract {
+    pub artifact: PathBuf,
+    pub expected: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskSubmit {
@@ -321,6 +331,16 @@ pub struct TaskSubmit {
     /// Required completion artifacts. This restricts a task; it never grants file access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_artifacts: Option<Vec<PathBuf>>,
+    /// Optional execution version restriction, never an instruction to fetch code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_version: Option<GitVersionRequirement>,
+    /// Informational origin repository observation frozen with the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_git: Option<GitVersionState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_contract: Option<TaskAcceptanceContract>,
 }
 fn yes() -> bool {
     true
@@ -339,6 +359,10 @@ impl TaskSubmit {
             requires_approval: false,
             expected_tools: None,
             expected_artifacts: None,
+            git_version: None,
+            origin_git: None,
+            source_session_id: None,
+            acceptance_contract: None,
         }
     }
     pub fn validate(&self) -> Result<()> {
@@ -346,6 +370,27 @@ impl TaskSubmit {
             return Err(MeshError::input("goal must contain 1..65536 UTF-8 bytes"));
         }
         validate_name(&self.project_id)?;
+        if let Some(version) = &self.git_version {
+            version.validate()?;
+        }
+        if let Some(origin) = &self.origin_git {
+            origin.validate()?;
+        }
+        if let Some(contract) = &self.acceptance_contract
+            && (!self
+                .expected_artifacts
+                .as_ref()
+                .is_some_and(|paths| paths.contains(&contract.artifact))
+                || contract
+                    .expected
+                    .as_object()
+                    .is_none_or(|object| object.is_empty() || object.len() > 16)
+                || contract.expected.to_string().len() > 8192)
+        {
+            return Err(MeshError::input(
+                "acceptance requires a declared artifact and 1..16 expected JSON fields within 8192 bytes",
+            ));
+        }
         if let Some(paths) = &self.expected_artifacts {
             let unique: std::collections::BTreeSet<_> = paths.iter().collect();
             if paths.is_empty()
