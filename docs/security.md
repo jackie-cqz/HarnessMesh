@@ -34,8 +34,9 @@ HarnessMesh 只通过 [Agent Client Protocol](https://agentclientprotocol.com) �
 
 - **会话设置**（模型、模式、思考强度）走 ACP 的 `session/set_config_option`，只有打开会话的那台电脑能改，只在两轮之间改；值由 agent 自己校验。用户的选择记在会话上，agent 进程重启、`session/load` 之后再设一次（有的 agent 重新载入后会回到默认值）。
 - **模型服务**（每个 agent：用它自己的登录 / API key / 自定义地址、默认模型、额外环境变量）只能由本机 owner 通过 `/local/agents/{id}/service` 设置，存在 `<数据目录>/agent-secrets/<agent id>.json`（目录 0700、文件 0600，原子写入），和节点私钥同一级保护；没有对应的 peer 接口，配对电脑只看到 `service_configured` 和默认模型名，看不到 key。接口只写不读：返回值只说「已设置」和长度足够时的末 4 位。
-- 启动 agent 进程时按类型换成环境变量：OpenCode 用 `OPENCODE_CONFIG_CONTENT` 注入一个 `hmesh` 服务商（key 放在单独的 `HMESH_OPENCODE_API_KEY` 里，配置文本里只有 `{env:…}` 引用；标题等小请求也走同一个地址），Claude Code 用 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`，Codex 用 `OPENAI_API_KEY` / `OPENAI_BASE_URL`，其他类型只有额外环境变量。冲突的继承变量会被去掉。**不改用户自己的 agent 配置文件**。
+- 启动 agent 进程时按类型换成环境变量：OpenCode 用 `OPENCODE_CONFIG_CONTENT` 注入一个 `hmesh` 服务商（key 放在单独的 `HMESH_OPENCODE_API_KEY` 里，配置文本里只有 `{env:…}` 引用；模型列表里的模型都注册进去，并用 `enabled_providers` 让会话只在这些模型之间切换，不会切到用户自己 OpenCode 账号下的模型；标题等小请求也走同一个地址），Claude Code 用 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`，Codex 用 `OPENAI_API_KEY` / `OPENAI_BASE_URL`，其他类型只有额外环境变量。冲突的继承变量会被去掉。**不改用户自己的 agent 配置文件**。
 - 注入的 key 和额外变量（8 个字符以上）加入脱敏名单，不会出现在会话事件、最终回复和数据库里。`PATH`、`HOME` 等系统变量和 `HMESH_` 开头的变量不能被覆盖。改了模型服务后，新会话和已有会话的下一轮会用新的进程。
+- **测试连接**（`/local/agents/{id}/service/test`，同样只有本机 owner 能调，没有 peer 接口）会把 key 发给填写的地址：只在 owner 点按钮或运行 `hmesh agent service … --test` 时发生。先请求模型列表（`GET {地址}/models`，Claude Code 是 `GET {地址}/v1/models`），不花 token；列不出来才用默认模型发一次最小的请求（Chat 接口 `max_tokens=1`；Claude Code 走 Anthropic `/v1/messages`；Codex 只认 Responses，走 `POST {地址}/responses`，`max_output_tokens=16`）；key 被拒（401/403）或连不上就直接报告，不再发第二次。不跟随重定向（避免把 key 带到别的地址），回环地址不走代理，整次测试 13 秒内结束。返回值、报错和审计记录（`agent.service.test`，只记模式和成败）里都不含 key，服务商回包里如果引用了 key 也会被替换。
 
 ## MCP 服务器的权限
 

@@ -23,6 +23,10 @@ pub struct AgentServiceView {
     pub base_url: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    /// Models offered through a custom endpoint, default model first. Only
+    /// OpenCode uses a list; other agents report their own models.
+    #[serde(default)]
+    pub models: Vec<String>,
     pub api_key: SecretHint,
     #[serde(default)]
     pub env: Vec<EnvHint>,
@@ -71,6 +75,10 @@ pub struct SetAgentService {
     pub base_url: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    /// The complete model list for a custom endpoint (OpenCode only); the
+    /// default model is added when missing.
+    #[serde(default)]
+    pub models: Vec<String>,
     /// A new key. Omitted keeps the stored key; an empty string removes it.
     #[serde(default)]
     pub api_key: Option<String>,
@@ -79,4 +87,42 @@ pub struct SetAgentService {
     /// removed.
     #[serde(default)]
     pub env: BTreeMap<String, Option<String>>,
+}
+
+/// Check whether settings reach their model service, before or after saving
+/// them. Fields left out are taken from the stored settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestAgentService {
+    pub mode: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// A key typed but not saved yet; omitted uses the stored key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Model to try when the service cannot list its models.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// The service answered its model list.
+pub const TESTED_BY_MODELS: &str = "models";
+/// The service did not list its models; one minimal request was sent.
+pub const TESTED_BY_REQUEST: &str = "request";
+
+/// What a connection test found. Never contains the key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceTestResult {
+    pub ok: bool,
+    /// `models` or `request`; absent when nothing could be checked.
+    #[serde(default)]
+    pub method: Option<String>,
+    /// The address that was called last.
+    pub endpoint: String,
+    pub latency_ms: u64,
+    /// Models the service listed, when it did.
+    #[serde(default)]
+    pub models: Vec<String>,
+    pub message: String,
 }

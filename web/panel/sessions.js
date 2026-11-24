@@ -362,12 +362,60 @@ const serviceModes={
 };
 const service={agent:null,view:null};
 function hintText(hint,empty){return hint?.set?`已设置${hint.last4?` · 末 4 位 ${hint.last4}`:''}，留空保持不变`:empty;}
+// OpenCode is the agent that takes a model list (for a custom address).
+// The daemon stores at most this many.
+const SERVICE_MAX_MODELS=100;
+function serviceTakesList(mode){return service.agent?.harness==='opencode'&&mode==='custom';}
+// Its own login has nothing to test; OpenCode's own service is tested inside OpenCode.
+function serviceTestable(mode){return state.runtime?.capabilities?.agent_service_test===true&&mode!=='agent_login'&&!(service.agent?.harness==='opencode'&&mode==='api_key');}
 function setServiceMode(mode){
   $('#service-modes').dataset.mode=mode;
   for(const b of $('#service-modes').children)b.setAttribute('aria-checked',String(b.dataset.mode===mode));
   $('#service-key-label').hidden=mode==='agent_login';$('#service-url-label').hidden=mode!=='custom';
   $('#service-url').required=mode==='custom';
-  $('#service-model').placeholder=mode==='custom'?'这个地址上的模型名，必填':'不填就用 Agent 自己的默认';
+  $('#service-model').placeholder=serviceTakesList(mode)?'不填就用下面第一个':mode==='custom'?'这个地址上的模型名':'不填就用 Agent 自己的默认';
+  $('#service-model-list-label').hidden=!serviceTakesList(mode);
+  $('#service-test-row').hidden=!serviceTestable(mode);
+  showServiceTest(null);
+}
+function serviceModelList(){return [...new Set($('#service-model-list').value.split('\n').map(m=>m.trim()).filter(Boolean))];}
+function serviceDatalist(names){
+  const seen=new Set();
+  $('#service-models').replaceChildren(...names.filter(n=>n.value&&!seen.has(n.value)&&seen.add(n.value)).map(n=>{const o=document.createElement('option');o.value=n.value;if(n.name)o.label=n.name;return o;}));
+}
+function showServiceTest(result){
+  const out=$('#service-test-result'),fill=$('#service-fill');
+  service.tested=result?.models||[];fill.hidden=true;
+  if(!result){out.className='muted';out.textContent='先查模型列表，不花 token；列不出来才发一次很小的请求';return;}
+  const took=` · ${result.latency_ms} ms`;
+  if(result.ok&&result.method==='models'){
+    // Listing models proves the address answers; some services list them without checking the key.
+    const chosen=$('#service-model').value.trim();
+    const missing=chosen&&result.models.length&&!result.models.includes(chosen)?`；默认模型 ${chosen} 不在其中`:'';
+    out.className='ok';out.textContent=`能连上，这个服务列出了 ${result.models.length} 个模型${missing}${took}`;
+    if(result.models.length){
+      serviceDatalist([...result.models.map(value=>({value})),...[...$('#service-models').options].map(o=>({value:o.value,name:o.label}))]);
+      // Offer only models the list does not already have, and only while they fit.
+      const listed=serviceModelList(),fresh=result.models.filter(m=>!listed.includes(m));
+      if(serviceTakesList($('#service-modes').dataset.mode)&&fresh.length){
+        // The daemon also puts the default model first when it is missing.
+        const extra=chosen&&!listed.includes(chosen)&&!fresh.includes(chosen)?1:0;
+        if(listed.length+fresh.length+extra<=SERVICE_MAX_MODELS){service.tested=fresh;fill.hidden=false;fill.textContent=`填入 ${fresh.length} 个模型`;}
+        else out.textContent+=`。超过 ${SERVICE_MAX_MODELS} 个，请挑几个手动填进「可切换的模型」`;
+      }
+    }
+  }else if(result.ok){out.className='ok';out.textContent=`能连上，模型能正常回复${took}`;}
+  else{out.className='failed';out.textContent=`没连上：${result.message}`;}
+}
+async function testService(){
+  const mode=$('#service-modes').dataset.mode,key=$('#service-key').value.trim();
+  const body={mode,base_url:mode==='custom'?$('#service-url').value.trim()||null:null,model:$('#service-model').value.trim()||serviceModelList()[0]||null};
+  if(key)body.api_key=key;
+  const run=$('#service-test');run.disabled=true;run.textContent='测试中…';
+  $('#service-test-result').className='muted';$('#service-test-result').textContent='正在连接…';$('#service-fill').hidden=true;
+  try{showServiceTest(unwrap(await api(`/agents/${service.agent.agent_id}/service/test`,{method:'POST',body:JSON.stringify(body)})));}
+  catch(e){$('#service-test-result').className='failed';$('#service-test-result').textContent=`没有测试：${e.message||e.code}`;}
+  finally{run.disabled=false;run.textContent='测试连接';}
 }
 function serviceEnvRow(name='',hint=null){
   const row=el('div','service-env-row'),key=document.createElement('input'),value=document.createElement('input'),remove=button('删除','ghost small',()=>row.remove());
@@ -388,8 +436,9 @@ async function openService(agent){
   }));
   $('#service-key').value='';$('#service-key').placeholder=hintText(v.api_key,'粘贴你的 key');
   $('#service-url').value=v.base_url||'';$('#service-model').value=v.default_model||'';
+  $('#service-model-list').value=(v.models||[]).join('\n');
   const models=(agent.config_options||[]).find(o=>o.category==='model')?.choices||[];
-  $('#service-models').replaceChildren(...models.map(c=>{const o=document.createElement('option');o.value=c.value;o.label=c.name;return o;}));
+  serviceDatalist([...(v.models||[]).map(value=>({value})),...models.map(c=>({value:c.value,name:c.name}))]);
   $('#service-env').replaceChildren(...v.env.map(e=>serviceEnvRow(e.name,e.value)));
   $('#service-env-box').open=v.env.length>0;
   $('#service-injected').hidden=!v.injected.length;$('#service-injected').textContent=`启动 ${agent.name} 时会设置：${v.injected.join('、')}`;
@@ -408,7 +457,7 @@ async function saveService(event){
     const name=row.querySelector('.env-name').value.trim(),value=row.querySelector('.env-value').value;
     if(name)env[name]=value?value:(row.dataset.existing===name?null:'');
   }
-  const body={mode,base_url:mode==='custom'?$('#service-url').value.trim()||null:null,default_model:$('#service-model').value.trim()||null,env};
+  const body={mode,base_url:mode==='custom'?$('#service-url').value.trim()||null:null,default_model:$('#service-model').value.trim()||null,models:serviceTakesList(mode)?serviceModelList():[],env};
   if(mode!=='agent_login'&&key)body.api_key=key;
   $('#service-save').disabled=true;$('#service-message').textContent='';
   try{
@@ -422,6 +471,12 @@ $('#service-form').addEventListener('submit',saveService);
 $('#service-cancel').addEventListener('click',closeService);
 $('#close-service').addEventListener('click',closeService);
 $('#service-dialog').addEventListener('close',()=>{$('#service-key').value='';});
+$('#service-test').addEventListener('click',testService);
+$('#service-fill').addEventListener('click',()=>{
+  const merged=[...new Set([...serviceModelList(),...service.tested])];
+  $('#service-model-list').value=merged.join('\n');$('#service-fill').hidden=true;
+  $('#service-test-result').textContent+=`，已填入`;
+});
 $('#service-env-add').addEventListener('click',()=>{$('#service-env').append(serviceEnvRow());$('#service-env').lastChild.querySelector('input').focus();});
 
 $('#new-session').addEventListener('click',()=>startNew());

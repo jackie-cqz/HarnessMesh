@@ -9,7 +9,9 @@ use axum::{
     routing::{get, post},
 };
 use hmesh_adapters::acp;
-use hmesh_core::service::{AgentServiceView, MODE_AGENT_LOGIN, SetAgentService};
+use hmesh_core::service::{
+    AgentServiceView, MODE_AGENT_LOGIN, ServiceTestResult, SetAgentService, TestAgentService,
+};
 use hmesh_core::sessions::*;
 use hmesh_core::*;
 use hmesh_runtime::acp_conn::{AcpConnection, AgentMessage};
@@ -1701,6 +1703,31 @@ async fn owner_set_service(
     );
     Ok(Json(service_view(&s, agent)?))
 }
+/// Check whether (possibly unsaved) settings reach the model service. Only
+/// this computer's owner may do this: it sends the key to the address given.
+async fn owner_test_service(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(agent): Path<Uuid>,
+    Json(body): Json<TestAgentService>,
+) -> ApiResult<ServiceTestResult> {
+    s.owner(&headers, &c)?;
+    let (card, _) = s.store.agent(agent)?;
+    let existing = service::load(&s.instance.dir, agent).map_err(crate::internal)?;
+    let mode = body.mode.clone();
+    let target = service::test_target(card.harness, existing.as_ref(), body)
+        .map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+    let result = crate::service_test::run(target).await;
+    let _ = s.store.audit(
+        Some(s.instance.card.node_id),
+        "agent.service.test",
+        &agent.to_string(),
+        &format!("{mode} {}", if result.ok { "ok" } else { "failed" }),
+        Uuid::new_v4(),
+    );
+    Ok(Json(result))
+}
 
 // ---- HTTP: paired peers ----
 
@@ -1871,6 +1898,7 @@ pub fn routes() -> Router<AppState> {
             "/local/agents/{id}/service",
             get(owner_get_service).post(owner_set_service),
         )
+        .route("/local/agents/{id}/service/test", post(owner_test_service))
         .route("/hmesh/v1/sessions", post(peer_open))
         .route("/hmesh/v1/sessions/{id}", get(peer_get))
         .route("/hmesh/v1/sessions/{id}/events", get(peer_events))

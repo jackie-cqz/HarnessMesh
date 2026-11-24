@@ -103,7 +103,9 @@
         <label id="service-key-label" class="full-field">API key<input id="service-key" type="password" autocomplete="off" spellcheck="false" maxlength="8192"></label>
         <label id="service-url-label" class="full-field">地址<input id="service-url" type="url" placeholder="https://api.example.com/v1" maxlength="2048"></label>
         <label class="full-field">默认模型<input id="service-model" list="service-models" maxlength="256" placeholder="不填就用 Agent 自己的默认"><datalist id="service-models"></datalist></label>
+        <label id="service-model-list-label" class="full-field" hidden>可切换的模型<textarea id="service-model-list" rows="3" spellcheck="false" placeholder="每行一个模型名。会话里只能在这些模型之间切换；默认模型会自动放在第一个"></textarea></label>
       </div>
+      <div id="service-test-row" class="service-test" hidden><button id="service-test" type="button" class="button secondary small">测试连接</button><span id="service-test-result" class="muted" role="status"></span><button id="service-fill" type="button" class="button secondary small" hidden></button></div>
       <details id="service-env-box" class="service-env"><summary>额外环境变量</summary><div id="service-env"></div><button id="service-env-add" type="button" class="button secondary small">添加一个</button></details>
       <p class="form-note muted">key 只存在这台电脑上，不会传给配对的电脑，存下后也不会再显示。改完后，新开的会话和已有会话的下一轮都会用新设置。</p>
       <p id="service-injected" class="form-note muted" hidden></p>

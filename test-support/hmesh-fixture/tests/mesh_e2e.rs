@@ -859,6 +859,349 @@ async fn set_service(owner: &Owner, agent: Uuid, body: Value) -> service::AgentS
         .unwrap()
 }
 
+/// A model service on loopback that records every request it receives:
+/// `/listed` lists two models, `/unlisted` has no model list but answers
+/// chat requests, `/locked` rejects the key (quoting it back), and
+/// `/anthropic` lists models the Anthropic way.
+#[derive(Debug, Clone)]
+struct Seen {
+    method: String,
+    path: String,
+    authorization: String,
+    api_key: String,
+    body: String,
+}
+async fn fake_model_service() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Seen>>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Seen>::new()));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let log = log.clone();
+            tokio::spawn(async move {
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                let (head, body) = loop {
+                    let n = stream.read(&mut buffer).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    bytes.extend_from_slice(&buffer[..n]);
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let head = text[..end].to_owned();
+                        let length = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if text.len() >= end + 4 + length {
+                            break (head, text[end + 4..end + 4 + length].to_owned());
+                        }
+                    }
+                };
+                let mut lines = head.lines();
+                let mut first = lines.next().unwrap_or_default().split(' ');
+                let method = first.next().unwrap_or_default().to_owned();
+                let path = first.next().unwrap_or_default().to_owned();
+                let header = |name: &str| {
+                    head.lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case(name).then(|| v.trim().to_owned())
+                        })
+                        .unwrap_or_default()
+                };
+                let authorization = header("authorization");
+                let api_key = header("x-api-key");
+                log.lock().unwrap().push(Seen {
+                    method: method.clone(),
+                    path: path.clone(),
+                    authorization: authorization.clone(),
+                    api_key,
+                    body,
+                });
+                let (status, reply) = match (method.as_str(), path.as_str()) {
+                    ("GET", "/listed/v1/models") => (
+                        "200 OK",
+                        r#"{"object":"list","data":[{"id":"m-one"},{"id":"m-two"}]}"#.to_owned(),
+                    ),
+                    ("POST", "/unlisted/v1/chat/completions" | "/unlisted/v1/responses") => (
+                        "200 OK",
+                        r#"{"choices":[{"message":{"content":"p"}}]}"#.to_owned(),
+                    ),
+                    ("GET", "/locked/v1/models") => (
+                        "401 Unauthorized",
+                        format!(r#"{{"error":"invalid key: {authorization}"}}"#),
+                    ),
+                    ("GET", p) if p.starts_with("/anthropic/v1/models") => (
+                        "200 OK",
+                        r#"{"data":[{"id":"claude-fake","type":"model"}],"has_more":false}"#
+                            .to_owned(),
+                    ),
+                    ("GET", "/slow/v1/models") => {
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        ("200 OK", r#"{"data":[]}"#.to_owned())
+                    }
+                    // Points at a model list that would succeed, if followed.
+                    ("GET", "/redirect/v1/models") => ("302 Found", String::new()),
+                    _ => ("404 Not Found", "not here".to_owned()),
+                };
+                let location = if status.starts_with("302") {
+                    "Location: /listed/v1/models\r\n"
+                } else {
+                    ""
+                };
+                let _ = stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\n{location}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                            reply.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            });
+        }
+    });
+    (base, seen)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn model_lists_reach_opencode_and_connection_tests_ask_for_models_first() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "node-a");
+    let b = init(root.path(), "node-b");
+    Store::open(&a.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&b.card)
+        .unwrap();
+    Store::open(&b.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&a.card)
+        .unwrap();
+    let opencode = register_as(
+        &a,
+        &root.path().join("opencode"),
+        "opencode",
+        "opencode",
+        &[],
+    );
+    let claude = register_as(
+        &a,
+        &root.path().join("claude"),
+        "claude",
+        "claude-code",
+        &[],
+    );
+    let codex = register_as(&a, &root.path().join("codex"), "codex", "codex", &[]);
+    let (base, seen) = fake_model_service().await;
+    let daemon_a = Daemon::start(&a.dir);
+    let daemon_b = Daemon::start(&b.dir);
+    daemon_a.ready().await;
+    daemon_b.ready().await;
+    let owner = daemon_a.owner();
+    let key = "sk-fake-service-0123456789";
+    let test_path = format!("/local/agents/{opencode}/service/test");
+    let test = |body: Value| {
+        let owner = &owner;
+        let path = &test_path;
+        async move {
+            owner
+                .post::<_, service::ServiceTestResult>(path, &body)
+                .await
+                .unwrap()
+        }
+    };
+    let take = || std::mem::take(&mut *seen.lock().unwrap());
+
+    // Before saving: the typed key is tried, the model list comes back, and
+    // one request is enough.
+    let listed =
+        test(json!({"mode":"custom","base_url":format!("{base}/listed/v1/"),"api_key":key})).await;
+    assert!(listed.ok, "{listed:?}");
+    assert_eq!(listed.method.as_deref(), Some("models"));
+    assert_eq!(listed.models, ["m-one", "m-two"]);
+    let requests = take();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(
+        (requests[0].method.as_str(), requests[0].path.as_str()),
+        ("GET", "/listed/v1/models")
+    );
+    assert_eq!(requests[0].authorization, format!("Bearer {key}"));
+
+    // Save the list; the agent process gets every model and only them.
+    let saved = set_service(
+        &owner,
+        opencode,
+        json!({"mode":"custom","base_url":format!("{base}/unlisted/v1"),"api_key":key,"models":["m-one","m-two"]}),
+    )
+    .await;
+    assert_eq!(saved.default_model.as_deref(), Some("m-one"));
+    assert_eq!(saved.models, ["m-one", "m-two"]);
+    let session = open(
+        &owner,
+        json!({"agent_id":opencode,"message":"fixture:env OPENCODE_CONFIG_CONTENT"}),
+    )
+    .await;
+    let (done, _) = turn_done(&owner, session.session_id, 1).await;
+    let text = done.last_final_text.unwrap();
+    let config: Value = serde_json::from_str(text.split_once("value=").unwrap().1)
+        .unwrap_or_else(|_| panic!("{text}"));
+    assert_eq!(config["enabled_providers"], json!(["hmesh"]));
+    let offered: Vec<&String> = config["provider"]["hmesh"]["models"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(offered, ["m-one", "m-two"]);
+    assert!(!text.contains(key), "{text}");
+
+    // With the stored key: no model list, so one minimal request follows.
+    let unlisted = test(json!({"mode":"custom","base_url":format!("{base}/unlisted/v1")})).await;
+    assert!(unlisted.ok, "{unlisted:?}");
+    assert_eq!(unlisted.method.as_deref(), Some("request"));
+    let requests = take();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|r| (r.method.as_str(), r.path.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("GET", "/unlisted/v1/models"),
+            ("POST", "/unlisted/v1/chat/completions")
+        ]
+    );
+    let body: Value = serde_json::from_str(&requests[1].body).unwrap();
+    assert_eq!(
+        (body["model"].clone(), body["max_tokens"].clone()),
+        (json!("m-one"), json!(1))
+    );
+    assert_eq!(requests[1].authorization, format!("Bearer {key}"));
+
+    // A rejected key is reported at once, without a second request, and the
+    // service quoting the key back does not show it.
+    let locked = test(json!({"mode":"custom","base_url":format!("{base}/locked/v1")})).await;
+    assert!(!locked.ok);
+    assert_eq!(take().len(), 1);
+    let shown = serde_json::to_string(&locked).unwrap();
+    assert!(
+        shown.contains("401") && shown.contains("[REDACTED]") && !shown.contains(key),
+        "{shown}"
+    );
+    // A redirect is not followed: the key never reaches the other address.
+    let redirected = test(json!({"mode":"custom","base_url":format!("{base}/redirect/v1")})).await;
+    assert!(!redirected.ok, "{redirected:?}");
+    let requests = take();
+    assert!(
+        requests.iter().all(|r| r.path.starts_with("/redirect/")),
+        "{requests:?}"
+    );
+    // Nothing reachable at all.
+    let closed = format!("http://127.0.0.1:{}/v1", free_port());
+    let unreachable = test(json!({"mode":"custom","base_url":closed})).await;
+    assert!(
+        !unreachable.ok && unreachable.method.is_none(),
+        "{unreachable:?}"
+    );
+    // A service that never answers ends the test before the owner's own
+    // request to the daemon gives up.
+    let started = Instant::now();
+    let slow = test(json!({"mode":"custom","base_url":format!("{base}/slow/v1")})).await;
+    assert!(
+        !slow.ok && slow.message.contains("in time") && started.elapsed() < Duration::from_secs(15),
+        "{slow:?} after {:?}",
+        started.elapsed()
+    );
+    take();
+    // Its own login has nothing to test.
+    let login = owner
+        .post::<_, Value>(&test_path, &json!({"mode":"agent_login"}))
+        .await
+        .unwrap_err();
+    assert_eq!(login.code, ErrorCode::InvalidInput);
+
+    // Codex speaks only the Responses API, so its minimal request goes there.
+    let responses = owner
+        .post::<_, service::ServiceTestResult>(
+            &format!("/local/agents/{codex}/service/test"),
+            &json!({"mode":"custom","base_url":format!("{base}/unlisted/v1"),"api_key":key,"model":"m-one"}),
+        )
+        .await
+        .unwrap();
+    assert!(responses.ok, "{responses:?}");
+    let requests = take();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|r| (r.method.as_str(), r.path.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("GET", "/unlisted/v1/models"),
+            ("POST", "/unlisted/v1/responses")
+        ]
+    );
+    let body: Value = serde_json::from_str(&requests[1].body).unwrap();
+    assert_eq!(body["max_output_tokens"], json!(16));
+
+    // Claude Code through a custom endpoint speaks Anthropic with a bearer token.
+    let anthropic = owner
+        .post::<_, service::ServiceTestResult>(
+            &format!("/local/agents/{claude}/service/test"),
+            &json!({"mode":"custom","base_url":format!("{base}/anthropic"),"api_key":key}),
+        )
+        .await
+        .unwrap();
+    assert!(anthropic.ok, "{anthropic:?}");
+    assert_eq!(anthropic.models, ["claude-fake"]);
+    let requests = take();
+    assert!(
+        requests[0].path.starts_with("/anthropic/v1/models"),
+        "{requests:?}"
+    );
+    assert_eq!(requests[0].authorization, format!("Bearer {key}"));
+    assert!(requests[0].api_key.is_empty());
+
+    // A paired computer cannot test, and its attempt reaches no service.
+    let as_peer =
+        hmesh_transport::Client::new(&b, &a.card.endpoint, &a.card.fingerprint, false, false)
+            .unwrap();
+    assert_eq!(
+        as_peer
+            .post::<_, Value>(
+                &test_path,
+                &json!({"mode":"custom","base_url":format!("{base}/listed/v1")})
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    assert!(take().is_empty());
+    // The audit trail says a test happened, never the key.
+    let audit: Value = owner.get("/local/audit").await.unwrap();
+    let audit = audit.to_string();
+    assert!(
+        audit.contains("agent.service.test") && !audit.contains(key),
+        "{audit}"
+    );
+    daemon_a.stop().await;
+    daemon_b.stop().await;
+    for name in ["state.sqlite3", "state.sqlite3-wal"] {
+        if let Ok(bytes) = std::fs::read(a.dir.join(name)) {
+            assert!(!String::from_utf8_lossy(&bytes).contains(key), "{name}");
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn session_settings_follow_their_opener_and_survive_restarts() {
     let root = tempfile::tempdir().unwrap();

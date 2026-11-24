@@ -441,6 +441,18 @@ enum AgentCommand {
         /// Model new sessions start with; an empty value removes it.
         #[arg(long)]
         default_model: Option<String>,
+        /// OpenCode with a custom endpoint: offer this model (repeatable;
+        /// the complete list). Without --model the stored list is kept.
+        #[arg(long = "model")]
+        models: Vec<String>,
+        /// Remove the model list, keeping only the default model.
+        #[arg(long, conflicts_with = "models")]
+        clear_models: bool,
+        /// After any change, check that the settings reach the model service:
+        /// its model list is asked for first, and only if it cannot list them
+        /// is one minimal request sent with the default model.
+        #[arg(long)]
+        test: bool,
         /// Read a new API key from standard input (one line).
         #[arg(long)]
         api_key_stdin: bool,
@@ -1166,6 +1178,9 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                     mode,
                     base_url,
                     default_model,
+                    models,
+                    clear_models,
+                    test,
                     api_key_stdin,
                     clear_api_key,
                     env,
@@ -1178,13 +1193,15 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             let changing = mode.is_some()
                 || base_url.is_some()
                 || default_model.is_some()
+                || !models.is_empty()
+                || clear_models
                 || api_key_stdin
                 || clear_api_key
                 || !env.is_empty()
                 || !keep_env.is_empty()
                 || clear_env;
-            if !changing {
-                serde_json::to_value(current)?
+            let service = if !changing {
+                current
             } else {
                 let api_key = if clear_api_key {
                     Some(String::new())
@@ -1221,18 +1238,45 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                     }
                     map
                 };
+                let mode = mode.unwrap_or(current.mode);
+                // A stored model list only carries over while the endpoint stays custom.
+                let models = if clear_models {
+                    vec![]
+                } else if !models.is_empty() {
+                    models
+                } else if mode == hmesh_core::service::MODE_CUSTOM {
+                    current.models
+                } else {
+                    vec![]
+                };
                 client
-                    .post(
+                    .post::<_, hmesh_core::service::AgentServiceView>(
                         &path,
                         &json!({
-                            "mode":mode.unwrap_or(current.mode),
+                            "mode":mode,
                             "base_url":base_url.or(current.base_url),
                             "default_model":default_model.or(current.default_model),
+                            "models":models,
                             "api_key":api_key,
                             "env":env,
                         }),
                     )
                     .await?
+            };
+            if test {
+                let result: Value = client
+                    .post(
+                        &format!("{path}/test"),
+                        &json!({
+                            "mode":service.mode,
+                            "base_url":service.base_url,
+                            "model":service.default_model,
+                        }),
+                    )
+                    .await?;
+                json!({"service":service,"test":result})
+            } else {
+                serde_json::to_value(service)?
             }
         }
         Commands::Agents { all: true, .. } => client.get("/local/mesh/agents").await?,
