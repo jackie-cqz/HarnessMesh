@@ -3,6 +3,7 @@ mod network;
 pub use network::is_tailnet_ip;
 pub mod development;
 pub mod managed;
+pub mod sessions;
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
@@ -115,12 +116,101 @@ impl TaskStatus {
     }
 }
 
+/// Which agent an Agent registration launches. Every kind is driven over the
+/// Agent Client Protocol (ACP); the kind only selects default launch arguments
+/// and how the agent is labelled. `acp` is any other ACP agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HarnessKind {
+    /// Pi through the `pi-acp` adapter.
     Pi,
+    /// DSH has no ACP mode; kept so older registrations still load.
     Dsh,
+    /// OpenCode's built-in `opencode acp`.
     Opencode,
+    /// Claude Code through the `claude-agent-acp` adapter.
+    #[serde(rename = "claude-code")]
+    ClaudeCode,
+    /// Codex through the `codex-acp` adapter.
+    Codex,
+    /// Any other ACP agent; `adapter.args` gives its launch arguments.
+    Acp,
+}
+impl HarnessKind {
+    /// Arguments that start the agent in ACP mode when the configuration does
+    /// not list its own.
+    pub fn default_acp_args(self) -> &'static [&'static str] {
+        match self {
+            Self::Opencode => &["acp"],
+            _ => &[],
+        }
+    }
+    /// The command that speaks ACP for this agent, as its package installs it.
+    pub fn acp_command(self) -> Option<&'static str> {
+        match self {
+            Self::Opencode => Some("opencode"),
+            Self::ClaudeCode => Some("claude-agent-acp"),
+            Self::Codex => Some("codex-acp"),
+            Self::Pi => Some("pi-acp"),
+            Self::Dsh | Self::Acp => None,
+        }
+    }
+    /// What to install for this agent's ACP command (HarnessMesh never installs it).
+    pub fn acp_package(self) -> Option<&'static str> {
+        match self {
+            Self::Opencode => Some("opencode-ai"),
+            Self::ClaudeCode => Some("@agentclientprotocol/claude-agent-acp"),
+            Self::Codex => Some("@zed-industries/codex-acp"),
+            Self::Pi => Some("pi-acp"),
+            Self::Dsh | Self::Acp => None,
+        }
+    }
+}
+
+/// An ACP agent command found on this computer's PATH.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetectedAgent {
+    pub harness: HarnessKind,
+    pub command: String,
+    /// Absolute path as found on PATH (usable as `adapter.executable`).
+    pub executable: std::path::PathBuf,
+}
+
+/// Look for the known ACP agent commands on PATH. Nothing is run or installed.
+pub fn detect_installed_agents() -> Vec<DetectedAgent> {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return vec![];
+    };
+    let directories: Vec<std::path::PathBuf> = std::env::split_paths(&paths)
+        .filter(|p| p.is_absolute())
+        .collect();
+    let suffixes: &[&str] = if cfg!(windows) {
+        &[".cmd", ".exe", ""]
+    } else {
+        &[""]
+    };
+    [
+        HarnessKind::Opencode,
+        HarnessKind::ClaudeCode,
+        HarnessKind::Codex,
+        HarnessKind::Pi,
+    ]
+    .into_iter()
+    .filter_map(|harness| {
+        let command = harness.acp_command()?;
+        directories.iter().find_map(|dir| {
+            suffixes.iter().find_map(|suffix| {
+                let path = dir.join(format!("{command}{suffix}"));
+                path.is_file().then(|| DetectedAgent {
+                    harness,
+                    command: command.to_owned(),
+                    executable: path,
+                })
+            })
+        })
+    })
+    .collect()
 }
 impl fmt::Display for HarnessKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -128,6 +218,9 @@ impl fmt::Display for HarnessKind {
             Self::Pi => "pi",
             Self::Dsh => "dsh",
             Self::Opencode => "opencode",
+            Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
+            Self::Acp => "acp",
         })
     }
 }
@@ -241,7 +334,9 @@ impl TaskSubmit {
             goal: goal.into(),
             inputs: vec![],
             limits: RunLimits::default(),
-            requires_approval: true,
+            // The executor decides from its per-peer access mode. A sender may
+            // still opt in to local confirmation by setting this to true.
+            requires_approval: false,
             expected_tools: None,
             expected_artifacts: None,
         }
@@ -340,7 +435,12 @@ pub struct TaskEvent {
 #[serde(default, deny_unknown_fields)]
 pub struct Policy {
     pub default: DefaultPolicy,
+    /// Legacy per-project grants. Paired peers no longer need them; they are
+    /// still parsed so existing policy files keep loading.
     pub grant: Vec<Grant>,
+    /// Pairing is the trust boundary. This only decides whether a paired
+    /// peer's task starts immediately or waits for local confirmation.
+    pub peers: PeerAccessPolicy,
 }
 impl Default for Policy {
     fn default() -> Self {
@@ -349,8 +449,34 @@ impl Default for Policy {
                 action: "deny".into(),
             },
             grant: vec![],
+            peers: PeerAccessPolicy::default(),
         }
     }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PeerAccess {
+    /// Tasks from this paired peer start without a local approval step.
+    #[default]
+    Auto,
+    /// Tasks from this paired peer wait in PENDING_APPROVAL for the local owner.
+    Confirm,
+}
+impl fmt::Display for PeerAccess {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Auto => "auto",
+            Self::Confirm => "confirm",
+        })
+    }
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PeerAccessPolicy {
+    /// Applies to every paired peer without an override.
+    pub default: PeerAccess,
+    /// Per-peer overrides keyed by node ID.
+    pub overrides: std::collections::BTreeMap<Uuid, PeerAccess>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -391,6 +517,22 @@ impl Policy {
         }
         Ok(())
     }
+    /// Access mode for one paired peer.
+    pub fn peer_access(&self, peer: Uuid) -> PeerAccess {
+        self.peers
+            .overrides
+            .get(&peer)
+            .copied()
+            .unwrap_or(self.peers.default)
+    }
+    /// Decision for a task from an already authenticated, trusted peer.
+    pub fn peer_decision(&self, peer: Uuid) -> Decision {
+        match self.peer_access(peer) {
+            PeerAccess::Auto => Decision::Allowed,
+            PeerAccess::Confirm => Decision::ApprovalRequired,
+        }
+    }
+    /// Legacy project-grant evaluation; no longer used for paired peers.
     pub fn decide(&self, peer: Uuid, project: &str, agent: Uuid, action: &str) -> Decision {
         let grants: Vec<_> = self
             .grant
@@ -603,64 +745,77 @@ fn shared_workspace() -> String {
 #[serde(deny_unknown_fields)]
 pub struct AdapterOptions {
     pub executable: PathBuf,
+    /// Launch arguments; omitted means the harness kind's ACP default
+    /// (`opencode acp`, none for adapters such as `claude-agent-acp`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
     #[serde(default)]
     pub node_executable: Option<PathBuf>,
+    /// Retired: only the old Pi adapter used it. Rejected by `validate`.
     #[serde(default)]
     pub models_file: Option<PathBuf>,
+    /// Informational; ACP agents use the model chosen in their own settings.
     #[serde(default)]
     pub model: Option<String>,
+    /// Informational; ACP agents use the provider chosen in their own settings.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Retired: only the old Pi adapter used it. Rejected by `validate`.
     #[serde(default)]
     pub credential_source: Option<PathBuf>,
+    /// Environment variables whose values are redacted from output and must be
+    /// present before a run starts. The agent inherits the daemon environment.
     #[serde(default)]
     pub env_allowlist: Vec<String>,
+    /// Retired: sessions now receive `hmesh mcp` automatically.
     #[serde(default)]
     pub mesh_server: Option<PathBuf>,
+    /// Retired: sessions now receive `hmesh mcp` automatically.
     #[serde(default)]
     pub mesh_scope: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MeshTarget {
-    pub peer_id: Uuid,
-    pub agent_id: Uuid,
-    pub project_id: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MeshToolScope {
-    pub targets: Vec<MeshTarget>,
-    pub max_submissions: usize,
-    pub max_timeout_seconds: u64,
-    pub max_output_bytes: usize,
-}
-impl MeshToolScope {
-    pub fn validate(&self) -> Result<()> {
-        if self.targets.is_empty()
-            || self.targets.len() > 16
-            || !(1..=4).contains(&self.max_submissions)
-            || !(1..=600).contains(&self.max_timeout_seconds)
-            || !(1..=MAX_RUN_OUTPUT_BYTES).contains(&self.max_output_bytes)
-        {
-            return Err(MeshError::input("invalid owner-selected Mesh tool scope"));
-        }
-        for target in &self.targets {
-            validate_name(&target.project_id)?;
-        }
-        Ok(())
-    }
-}
 impl AgentConfig {
+    /// Arguments that start this agent in ACP mode.
+    pub fn launch_args(&self) -> Vec<String> {
+        if self.adapter.args.is_empty() {
+            self.agent
+                .harness
+                .default_acp_args()
+                .iter()
+                .map(|a| (*a).to_owned())
+                .collect()
+        } else {
+            self.adapter.args.clone()
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.agent.name)?;
         validate_name(&self.agent.project_id)?;
-        if self.adapter.mesh_server.is_some() != self.adapter.mesh_scope.is_some()
-            || (self.adapter.mesh_server.is_some() && self.agent.harness != HarnessKind::Pi)
+        if self.agent.harness == HarnessKind::Dsh {
+            return Err(MeshError::input(
+                "DSH has no Agent Client Protocol mode; register an ACP agent such as OpenCode or Claude Code",
+            ));
+        }
+        if self.adapter.credential_source.is_some() || self.adapter.models_file.is_some() {
+            return Err(MeshError::input(
+                "credential_source and models_file belonged to the retired Pi adapter; ACP agents use their own login and model settings",
+            ));
+        }
+        if self.adapter.mesh_server.is_some() || self.adapter.mesh_scope.is_some() {
+            return Err(MeshError::input(
+                "mesh_server and mesh_scope are retired; every session receives hmesh mcp automatically",
+            ));
+        }
+        if self.adapter.args.len() > 32
+            || self
+                .adapter
+                .args
+                .iter()
+                .any(|a| a.len() > 1024 || a.contains('\0'))
         {
             return Err(MeshError::input(
-                "Mesh tools require both owner-selected paths and the Pi adapter",
+                "at most 32 launch arguments of up to 1 KiB each are allowed",
             ));
         }
         if self.agent.mode != "managed"
@@ -802,6 +957,42 @@ pub struct PeerView {
     pub visible_agent_count: Option<usize>,
     pub runnable_agent_count: Option<usize>,
     pub services_status: String,
+    /// What this node does with tasks sent by the peer.
+    #[serde(default)]
+    pub access: PeerAccess,
+}
+/// Largest final reply kept in one result event; the full text stays in events.
+pub const MAX_FINAL_TEXT_BYTES: usize = 32 * 1024;
+/// The last assistant reply of a task, without replaying every event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskResult {
+    pub task: TaskRecord,
+    pub final_text: Option<String>,
+    #[serde(default)]
+    pub truncated: bool,
+    /// `result_event`, `assembled_from_events` (older executors) or `none`.
+    pub source: String,
+}
+/// One node in the owner's merged agent directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeshNode {
+    pub node_id: Uuid,
+    pub name: String,
+    pub local: bool,
+    pub reachable: bool,
+    /// For peers: what this node does with tasks the peer sends here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<PeerAccess>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub agents: Vec<AgentCard>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerAccessRequest {
+    pub access: PeerAccess,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

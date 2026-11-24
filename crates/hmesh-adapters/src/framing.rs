@@ -1,14 +1,12 @@
-use hmesh_core::{ErrorCode, HarnessKind, MeshError, Result};
+use hmesh_core::{ErrorCode, MeshError, Result};
 use serde_json::Value;
 
-/// Native snapshots/tool arguments are larger than normalized Mesh events. The
-/// task's cumulative stdout budget remains a separate, potentially tighter cap.
-pub fn native_record_limit(kind: HarnessKind, output_budget: usize) -> usize {
-    let adapter_limit = match kind {
-        HarnessKind::Pi => 4 * 1024 * 1024,
-        HarnessKind::Dsh | HarnessKind::Opencode => 1024 * 1024,
-    };
-    adapter_limit.min(output_budget)
+/// Largest single ACP frame accepted from an agent (tool inputs and diffs can
+/// be large). The task's cumulative stdout budget remains a separate,
+/// potentially tighter cap.
+pub const MAX_ACP_FRAME_BYTES: usize = 4 * 1024 * 1024;
+pub fn native_record_limit(output_budget: usize) -> usize {
+    MAX_ACP_FRAME_BYTES.min(output_budget)
 }
 
 /// LF is the only delimiter. Unicode line separators are valid JSON string data.

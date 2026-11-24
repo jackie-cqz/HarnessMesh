@@ -70,13 +70,15 @@ let toastTimer;
 function toast(message) { clearTimeout(toastTimer); $('#toast').textContent=message; $('#toast').hidden=false; toastTimer=setTimeout(()=>$('#toast').hidden=true,6500); }
 function showView(name) {
   if(['development','operations'].includes(name)&&!hasDevelopment())return toast('此 Daemon 尚不支持开发流程，请查看运行能力与显式升级步骤。');
-  const names={overview:['运行总览','节点、任务与执行状态，尽在一处。'],tasks:['任务','查看执行记录，逐项处理审批与异常。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],services:['服务与连接','观察受管进程、服务租约和转发连接。'],nodes:['配对节点','连接可达性与项目授权分别呈现。'],development:['开发流程','保存可复用模板，逐阶段执行与核验。'],operations:['诊断与用量','定位失败原因，查看用量与本机资源。']};
+  const names={sessions:['会话','和本机、配对电脑上的 Agent 对话；它们也能互相调用。'],overview:['运行总览','节点、任务与执行状态，尽在一处。'],tasks:['任务','查看执行记录，逐项处理审批与异常。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],services:['服务与连接','观察受管进程、服务租约和转发连接。'],nodes:['配对节点','连接可达性与项目授权分别呈现。'],development:['开发流程','保存可复用模板，逐阶段执行与核验。'],operations:['诊断与用量','定位失败原因，查看用量与本机资源。']};
   if(!names[name])return;
-  state.view=name;
+  state.view=name;$('#app').dataset.page=name;
   for(const b of document.querySelectorAll('[data-view]')){b.classList.toggle('selected',b.dataset.view===name);b.setAttribute('aria-current',b.dataset.view===name?'page':'false');}
   for(const view of document.querySelectorAll('.view'))view.hidden=view.id!==`${name}-view`;
   $('#page-title').textContent=names[name][0];$('#breadcrumb').textContent=names[name][0];$('#page-description').textContent=names[name][1];
   $('#metrics').hidden=name!=='overview';render();
+  if(name!=='sessions')$('#new-session')?.classList.remove('selected');
+  if(name==='sessions'&&typeof sessionsShown==='function')sessionsShown();
 }
 function renderMetrics() {
   const rows=allTasks(), localTasks=rows.filter(t=>t._direction==='local'), agents=data('agents'), peers=data('peers');
@@ -113,7 +115,7 @@ function renderTasks() {
 function meta(pairs) { const dl=el('dl','entity-meta');for(const [key,value]of pairs)dl.append(el('dt','',key),el('dd','',value??'—'));return dl; }
 function agentCard(agent,remote=false) {
   const card=el('article','entity-card'),top=el('div','entity-top'),title=el('div');title.append(el('h3','entity-name',agent.name),el('div','entity-harness',String(agent.harness||'').toUpperCase()));top.append(title,badge(agent.availability));
-  card.append(top,meta([['项目',agent.project_ids?.join(' / ')],['模型验证',agent.probe?.managed_run==='passed'?'已通过':agent.probe?.managed_run||'未验证'],['Harness 版本',agent.probe?.version||'—']]),el('div','entity-id',agent.agent_id));
+  card.append(top,meta([['项目',agent.project_ids?.join(' / ')],['ACP 检查',agent.probe?.protocol_probe==='acp_initialize_passed'?'已通过':'未通过'],['版本',agent.probe?.version||'—']]),el('div','entity-id',agent.agent_id));
   if(!remote&&canWrite()){const actions=el('div','entity-actions'),retired=state.agentFilter==='retired';actions.append(button(retired?'恢复 Agent':'退役 Agent','button secondary',()=>act('agents',agent.agent_id,retired?'restore':'retire',retired?'恢复 Agent？':'退役 Agent？',`${agent.name}\n${retired?'恢复后需通过 CLI 显式重新验证模型；不会自动调用模型。':'有未结束任务时服务端会拒绝退役。历史任务会保留。'}`)));card.append(actions);}return card;
 }
 function renderAgents() {
@@ -133,7 +135,7 @@ function renderServices() {
 }
 function renderMesh() {
   const node=data('node',{}).node,peers=data('peers');const nodes=[];
-  if(node)nodes.push({name:node.display_name,subtitle:'THIS NODE · 本机',online:true,local:true});
+  if(node)nodes.push({name:node.display_name,subtitle:'本机',online:true,local:true});
   for(const p of peers)nodes.push({name:p.card.display_name,subtitle:p.card.endpoint,online:p.node_connectivity==='online'});
   $('#mesh-nodes').replaceChildren(...(nodes.length?nodes.map(n=>{const r=el('div','mesh-node'),info=el('div','mesh-info');info.append(el('strong','',n.name),el('small','',n.local?n.subtitle:(n.online?'mTLS · 可达':'暂不可达')));const icon=el('span','mesh-icon',n.local?'M':'↗');r.append(icon,info,el('i',`dot ${n.online?'':'offline'}`));return r;}):[empty('等待读取节点')]));
 }
@@ -148,7 +150,7 @@ async function loadRemote(peer) {
 function render() {
   if(!state.snapshot)return;
   renderRuntime();renderMetrics();renderMesh();$('#recent-tasks').replaceChildren(table(allTasks().slice(0,6)));
-  if(state.view==='tasks')renderTasks();if(state.view==='agents')renderAgents();if(state.view==='services')renderServices();if(state.view==='nodes')renderNodes();
+  if(state.view==='tasks')renderTasks();if(state.view==='agents')renderAgents();if(state.view==='services')renderServices();if(state.view==='nodes')renderNodes();if(typeof renderSessions==='function')renderSessions();
   if(typeof renderWorkflow==='function')renderWorkflow();
   if(typeof renderDevelopment==='function'&&hasDevelopment())renderDevelopment();else $('#development-pending').replaceChildren();
 }
@@ -156,7 +158,7 @@ async function refresh() {
   if(state.stopped||state.refreshing||!access)return;state.refreshing=true;$('#refresh').disabled=true;$('#sync-state').textContent='同步中…';
   try {
     const [snapshot,runtime]=await Promise.all([api('/overview'),api('/runtime').then(unwrap).catch(()=>null)]);state.snapshot=snapshot;state.runtime=runtime;const node=data('node',{});$('#access-gate').hidden=true;$('#app').hidden=false;
-    $('#local-name').textContent=node.node?.display_name||'Daemon 不可读取';$('#local-network').textContent=node.network==='tailscale'?'TAILNET / OWNER LOCAL':node.network?'LOOPBACK / OWNER LOCAL':'RPC UNAVAILABLE';
+    $('#local-name').textContent=node.node?.display_name||'Daemon 不可读取';$('#local-network').textContent=node.network==='tailscale'?'Tailnet 直连':node.network?'仅本机回环':'Daemon 不可达';
     const names={node:'本机 Daemon',peers:'配对节点',agents:'Agent',retired:'退役 Agent',tasks:'任务',services:'服务',connections:'连接',tunnels:'隧道'};
     const failures=Object.entries(names).filter(([key])=>state.snapshot[key]?.error).map(([key,name])=>`${name}: ${state.snapshot[key].error.code}`);
     $('#alerts').replaceChildren(...(failures.length?[el('div','alert',`部分状态暂不可读取。${failures.join('；')}`)]:[]));
@@ -170,7 +172,7 @@ function confirmAction(title,description) {
 }
 async function act(kind,id,name,title,description) {
   if(!canWrite())return toast('当前面板只读，请查看运行能力与升级步骤。');
-  if(state.actionBusy)return;state.actionBusy=true;
+  const release=await claimAction();
   try {
     if(kind==='tasks'&&name==='approve'){const check=unwrap(await api(`/tasks/${id}/preflight`));if(!check.ready)throw Object.assign(Error('执行条件未通过，请检查工件声明与 Agent 配置。'),{code:'TASK_PREFLIGHT_FAILED',preflight:check});}
     if(!await confirmAction(title,description))return;
@@ -178,7 +180,14 @@ async function act(kind,id,name,title,description) {
     await api(`/${kind}/${id}/${name}`,{method:'POST',body:'{}'});
     toast('操作已提交，正在读取最新状态。');await refresh();if(state.selected&&$('#task-dialog').open)await readDetail(state.detailVersion);
   } catch(e){toast(e.preflight?'执行条件未通过，任务未批准。请查看预检结果。':`操作未确认：${e.message}。先刷新检查状态，请勿重复提交。`);if(e.preflight&&state.selected?.task_id===id){state.lastDetail='';await readDetail(state.detailVersion);}}
-  finally{state.actionBusy=false;}
+  finally{release();}
+}
+// One owner action at a time. A click while another action is still finishing
+// waits for it instead of being dropped.
+async function claimAction(){
+  while(state.actionBusy)await state.actionDone;
+  let release;state.actionBusy=true;state.actionDone=new Promise(resolve=>{release=resolve;});
+  return ()=>{state.actionBusy=false;release();};
 }
 async function openTask(task) {
   state.selected=task;state.cursor=0;state.events=0;const version=++state.detailVersion;

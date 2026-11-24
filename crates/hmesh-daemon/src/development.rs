@@ -582,14 +582,10 @@ async fn probe_compatibility(
     let probe = result.map_err(|_| {
         ApiError(MeshError::new(
             ErrorCode::AgentUnavailable,
-            "isolated version entry failed; no model was called",
+            "the agent could not be started for an ACP initialize check; no model was called",
         ))
     })?;
-    let known = hmesh_adapters::compatibility::versions(card.harness);
-    let version = probe
-        .version
-        .as_ref()
-        .filter(|v| known.contains(&v.as_str()));
+    let version = probe.version.as_ref();
     s.store.audit(
         Some(s.instance.card.node_id),
         "compatibility.probe",

@@ -11,6 +11,7 @@ use std::{
 use uuid::Uuid;
 mod development;
 mod reliability;
+mod sessions;
 use reliability::scoped_admission;
 pub use reliability::{ArtifactSet, SnapshotEntry};
 
@@ -39,7 +40,7 @@ impl Store {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(internal)?;
-        if !(0..=8).contains(&version) {
+        if !(0..=9).contains(&version) {
             return Err(MeshError::new(
                 ErrorCode::UnsupportedVersion,
                 "unsupported database schema; refusing to alter it",
@@ -49,7 +50,7 @@ impl Store {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )
         .map_err(internal)?;
-        if version < 8 {
+        if version < 9 {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(internal)?;
@@ -62,6 +63,7 @@ impl Store {
                 include_str!("../migrations/006_observation.sql"),
                 include_str!("../migrations/007_reliability.sql"),
                 include_str!("../migrations/008_development.sql"),
+                include_str!("../migrations/009_sessions.sql"),
             ];
             for migration in migrations.iter().skip(version as usize) {
                 tx.execute_batch(migration).map_err(internal)?;
@@ -619,41 +621,6 @@ impl Store {
             .map_err(internal)
         })
     }
-    pub fn reserve_tool_submission(
-        &self,
-        parent: Uuid,
-        request: Uuid,
-        peer: Uuid,
-        task: &TaskSubmit,
-        maximum: usize,
-    ) -> Result<()> {
-        task.validate()?;
-        self.transaction(|tx| {
-            if task_in(tx,parent)?.status != TaskStatus::Running {
-                return Err(MeshError::new(ErrorCode::PermissionDenied,"Mesh tools require an active parent run"));
-            }
-            let payload=encode(task)?;
-            let old:Option<(String,String)>=tx.query_row("SELECT peer_id,payload_json FROM tool_submissions WHERE parent_task_id=?1 AND request_id=?2",params![parent.to_string(),request.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(internal)?;
-            if let Some((old_peer,old_payload))=old {
-                if old_peer != peer.to_string() || old_payload != payload {return Err(MeshError::new(ErrorCode::TaskConflict,"delegation request reused with different payload"));}
-                return Ok(());
-            }
-            let count:usize=tx.query_row("SELECT COUNT(*) FROM tool_submissions WHERE parent_task_id=?1",[parent.to_string()],|r|r.get(0)).map_err(internal)?;
-            if maximum == 0 || count>=maximum {return Err(MeshError::new(ErrorCode::RateLimited,"parent delegation budget exhausted; no automatic retry"));}
-            tx.execute("INSERT INTO tool_submissions VALUES(?1,?2,?3,?4,?5)",params![parent.to_string(),request.to_string(),task.task_id.to_string(),peer.to_string(),payload]).map_err(|_|MeshError::new(ErrorCode::TaskConflict,"child task already belongs to a delegation"))?;
-            append_in(tx,&task_in(tx,parent)?,"delegation",json!({"child_task_id":task.task_id,"peer_id":peer,"request_id":request,"status":"reserved"}))?;
-            Ok(())
-        })
-    }
-    pub fn tool_child_allowed(&self, parent: Uuid, child: Uuid) -> Result<bool> {
-        self.read(|c|c.query_row("SELECT EXISTS(SELECT 1 FROM tool_submissions WHERE parent_task_id=?1 AND child_task_id=?2)",params![parent.to_string(),child.to_string()],|r|r.get(0)).map_err(internal))
-    }
-    pub fn tool_child_target(&self, parent: Uuid, child: Uuid) -> Result<Option<MeshTarget>> {
-        self.read(|c|{
-            let row:Option<(String,String)>=c.query_row("SELECT peer_id,payload_json FROM tool_submissions WHERE parent_task_id=?1 AND child_task_id=?2",params![parent.to_string(),child.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(internal)?;
-            row.map(|(peer,payload)|{let task:TaskSubmit=decode(&payload)?;Ok(MeshTarget{peer_id:Uuid::parse_str(&peer).map_err(internal)?,agent_id:task.target_agent_id,project_id:task.project_id})}).transpose()
-        })
-    }
     pub fn recover_interrupted(&self) -> Result<usize> {
         self.transaction(|tx| {
             let mut q = tx.prepare("SELECT record_json FROM tasks WHERE status IN ('RUNNING','CANCELLING','WAITING_INPUT')").map_err(internal)?;
@@ -691,6 +658,24 @@ impl Store {
                 result.push(decode(&text)?);
             }
             Ok(result) })
+    }
+    /// Latest event of one type, searching live and archived events newest first.
+    pub fn last_event_of_type(&self, id: Uuid, event_type: &str) -> Result<Option<TaskEvent>> {
+        self.read(|c| {
+            let mut q = c
+                .prepare("SELECT event_json FROM (SELECT seq,event_json FROM task_events WHERE task_id=?1 UNION ALL SELECT seq,event_json FROM archived_task_events WHERE task_id=?1) ORDER BY seq DESC LIMIT 256")
+                .map_err(internal)?;
+            let rows = q
+                .query_map(params![id.to_string()], |r| r.get::<_, String>(0))
+                .map_err(internal)?;
+            for row in rows {
+                let event: TaskEvent = decode(&row.map_err(internal)?)?;
+                if event.event_type == event_type {
+                    return Ok(Some(event));
+                }
+            }
+            Ok(None)
+        })
     }
     pub fn audit(
         &self,

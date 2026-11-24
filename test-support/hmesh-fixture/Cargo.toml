@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 hmesh-daemon = { path = "../../crates/hmesh-daemon" }
+hmesh-mcp = { path = "../../crates/hmesh-mcp" }
 serde_json.workspace = true
 tokio.workspace = true
 

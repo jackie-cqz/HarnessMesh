@@ -15,6 +15,9 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy --component rustfmt
+      - name: Syntax-check every Node script
+        shell: bash
+        run: for f in scripts/*.mjs scripts/*/*.mjs; do node --check "$f"; done
       - name: Tailnet startup configuration tests
         run: node --test scripts/tailnet-config.test.mjs scripts/acceptance/protocol.test.mjs
       - name: Format
@@ -29,6 +32,8 @@ jobs:
         run: node scripts/maintenance-smoke.mjs
       - name: Templates, persisted workflows, diagnostics and usage without models
         run: node scripts/development-smoke.mjs
+      - name: MCP discovery, dispatch, peer access and final replies without models
+        run: node scripts/mcp-smoke.mjs
       - name: Two-node automated acceptance without models
         run: node scripts/acceptance/local-smoke.mjs
       - name: Bounded repair orchestration with explicit test double

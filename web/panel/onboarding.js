@@ -12,8 +12,25 @@ function openOnboarding(){
  onboardingBody=null;onboardingPreview=null;
  const peers=$('#onboard-peer');peers.replaceChildren();option(peers,'','仅本机使用');for(const p of data('peers').filter(p=>p.status==='trusted'))option(peers,p.card.node_id,`${p.card.display_name} · ${short(p.card.node_id)}`);
  $('#onboard-dialog').showModal();
+ detectAgents();
+}
+// Installed ACP commands found on this computer; HarnessMesh never installs agents.
+let detectedAgents=[];
+async function detectAgents(){
+ try{detectedAgents=unwrap(await api('/agents/detect'))||[];}catch{detectedAgents=[];}
+ fillDetected();
+}
+function fillDetected(){
+ const harness=onboardValue('harness'),found=detectedAgents.find(a=>a.harness===harness),input=$('#onboard-executable');
+ $('#onboard-args-label').hidden=harness!=='acp';
+ if(found&&(!input.value||input.dataset.auto==='1')){input.value=found.executable;input.dataset.auto='1';}
+ else if(!found&&input.dataset.auto==='1'){input.value='';input.dataset.auto='';}
+ const names={opencode:'opencode',['claude-code']:'claude-agent-acp',codex:'codex-acp',pi:'pi-acp'};
+ $('#onboard-detected').textContent=harness==='acp'?'填写能以 ACP 方式启动的命令和参数。':found?`已在本机找到 ${found.command}。`:`本机 PATH 里没有 ${names[harness]}；请先自行安装，或填写它的绝对路径。`;
 }
 $('#new-agent').addEventListener('click',openOnboarding);
+$('#onboard-harness').addEventListener('change',fillDetected);
+$('#onboard-executable').addEventListener('input',()=>{$('#onboard-executable').dataset.auto='';});
 $('#close-onboard').addEventListener('click',()=>$('#onboard-dialog').close());
 $('#onboard-workspace').addEventListener('change',()=>{$('#onboard-git-label').hidden=onboardValue('workspace')!=='git-worktree';$('#onboard-git').required=onboardValue('workspace')==='git-worktree';});
 $('#onboard-back').addEventListener('click',()=>{onboardingPreview=null;$('#onboard-fields').hidden=false;$('#onboard-fields').disabled=false;$('#onboard-review').hidden=true;$('#onboard-back').hidden=true;$('#onboard-submit').textContent='检查并预览';$('#onboard-submit').disabled=false;});
@@ -21,10 +38,10 @@ $('#onboard-form').addEventListener('submit',async event=>{
  event.preventDefault();if(onboardingBusy)return;onboardingBusy=true;$('#onboard-submit').disabled=true;$('#onboard-message').textContent='';
  try{
   if(!onboardingPreview){
-   onboardingBody={agent_id:crypto.randomUUID(),peer_id:onboardOptional('peer'),config:{agent:{name:onboardValue('name'),harness:onboardValue('harness'),project_id:onboardValue('project'),mode:'managed'},project:{root:onboardValue('root'),allowed_tools:onboardList('tools'),artifact_paths:onboardList('artifacts'),require_remote_task_approval:true,workspace_mode:onboardValue('workspace'),git_executable:onboardValue('workspace')==='git-worktree'?onboardOptional('git'):null},adapter:{executable:onboardValue('executable'),node_executable:onboardOptional('node'),model:onboardValue('model'),provider:onboardValue('provider'),credential_source:onboardOptional('credential'),models_file:onboardOptional('models'),env_allowlist:onboardList('env')}}};
+   onboardingBody={agent_id:crypto.randomUUID(),peer_id:onboardOptional('peer'),config:{agent:{name:onboardValue('name'),harness:onboardValue('harness'),project_id:onboardValue('project'),mode:'managed'},project:{root:onboardValue('root'),allowed_tools:onboardList('tools'),artifact_paths:onboardList('artifacts'),require_remote_task_approval:true,workspace_mode:onboardValue('workspace'),git_executable:onboardValue('workspace')==='git-worktree'?onboardOptional('git'):null},adapter:{executable:onboardValue('executable'),args:onboardValue('harness')==='acp'?onboardValue('args').split(/\s+/).filter(Boolean):[],env_allowlist:onboardList('env')}}};
    onboardingPreview=unwrap(await api('/onboarding/preview',{method:'POST',body:JSON.stringify(onboardingBody)}));
    onboardingBody.expected_sha256=onboardingPreview.configuration_sha256;$('#onboard-fields').disabled=true;$('#onboard-fields').hidden=true;$('#onboard-review').hidden=false;$('#onboard-back').hidden=false;
-   $('#onboard-summary').replaceChildren(meta([['项目',onboardingPreview.project_id],['目录',onboardingPreview.project_root],['Agent',onboardingPreview.agent_id],['Harness',onboardingPreview.harness],['模型',onboardingPreview.model],['工作目录',onboardingPreview.workspace_mode],['工具',onboardingBody.config.project.allowed_tools.join(' · ')],['工件',onboardingBody.config.project.artifact_paths.join(' · ')||'无'],['凭据文件引用',onboardingBody.config.adapter.credential_source||'未选择'],['模型文件引用',onboardingBody.config.adapter.models_file||'未选择'],['环境变量引用',onboardingBody.config.adapter.env_allowlist.join(' · ')||'未选择'],['本机引用检查','已通过；未调用模型']]));$('#onboard-policy').textContent=onboardingPreview.policy_preview;$('#onboard-submit').textContent='登记此 Agent';
+   $('#onboard-summary').replaceChildren(meta([['项目',onboardingPreview.project_id],['目录',onboardingPreview.project_root],['Agent',onboardingPreview.agent_id],['Agent 类型',onboardingPreview.harness],['工作目录',onboardingPreview.workspace_mode],['工具',onboardingBody.config.project.allowed_tools.join(' · ')],['工件',onboardingBody.config.project.artifact_paths.join(' · ')||'无'],['启动命令',[onboardingBody.config.adapter.executable,...onboardingBody.config.adapter.args].join(' ')],['环境变量引用',onboardingBody.config.adapter.env_allowlist.join(' · ')||'未选择'],['本机检查','ACP 握手前检查已通过；未调用模型']]));$('#onboard-policy').textContent=onboardingPreview.policy_preview;$('#onboard-submit').textContent='登记此 Agent';
   }else{
    if(!await confirmAction('登记这个 Agent？',`${onboardingPreview.name}\n项目：${onboardingPreview.project_id}\n目录：${onboardingPreview.project_root}\n\n会检查 Harness 版本；不会调用模型或应用授权策略。`))return;
    const result=unwrap(await api('/onboarding/register',{method:'POST',body:JSON.stringify(onboardingBody)}));

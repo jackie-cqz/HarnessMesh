@@ -1,33 +1,186 @@
-use hmesh_adapters::{JsonlDecoder, ProtocolObserver, native_record_limit};
-use hmesh_core::{ErrorCode, HarnessKind};
-use serde_json::json;
+use hmesh_adapters::acp::{self, Incoming};
+use hmesh_adapters::{AcpTaskDriver, JsonlDecoder, ObservedEvent, native_record_limit};
+use hmesh_core::ErrorCode;
+use serde_json::{Value, json};
+use std::path::Path;
+
+fn driver(allowed: &[&str]) -> AcpTaskDriver {
+    let allowed: Vec<String> = allowed.iter().map(|s| (*s).to_owned()).collect();
+    AcpTaskDriver::new(Path::new("/project"), "do it", vec![], &allowed)
+}
+fn initialized(driver: &mut AcpTaskDriver) {
+    let first = driver.take_outbound();
+    assert_eq!(first[0]["method"], "initialize");
+    assert_eq!(first[0]["params"]["protocolVersion"], 1);
+    assert_eq!(
+        first[0]["params"]["clientCapabilities"]["fs"]["readTextFile"],
+        false
+    );
+    driver.observe(&json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}));
+    let new = driver.take_outbound();
+    assert_eq!(new[0]["method"], "session/new");
+    assert_eq!(new[0]["params"]["cwd"], "/project");
+    // mcpServers is required by session/new even when empty.
+    assert_eq!(new[0]["params"]["mcpServers"], json!([]));
+    let events = driver.observe(&json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}));
+    assert!(matches!(events[..], [ObservedEvent::Started]));
+    let prompt = driver.take_outbound();
+    assert_eq!(prompt[0]["method"], "session/prompt");
+    assert_eq!(prompt[0]["params"]["sessionId"], "s1");
+    assert_eq!(
+        prompt[0]["params"]["prompt"],
+        json!([{"type":"text","text":"do it"}])
+    );
+}
+fn update(update: Value) -> Value {
+    json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":update}})
+}
 
 #[test]
-fn pinned_protocol_fixtures_complete_only_at_the_correct_boundary() {
-    for (kind, source) in [
-        (
-            HarnessKind::Pi,
-            include_str!("../../../tests/fixtures/pi-0.84.2.jsonl"),
-        ),
-        (
-            HarnessKind::Dsh,
-            include_str!("../../../tests/fixtures/dsh-0.2.0-rc.2.jsonl"),
-        ),
-        (
-            HarnessKind::Opencode,
-            include_str!("../../../tests/fixtures/opencode-1.18.20.jsonl"),
-        ),
+fn a_turn_succeeds_only_when_the_prompt_ends_with_end_turn() {
+    let mut d = driver(&["read"]);
+    initialized(&mut d);
+    let events = d.observe(&update(
+        json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}),
+    ));
+    assert!(matches!(&events[..], [ObservedEvent::TextDelta { text }] if text == "hello"));
+    assert!(!d.settled());
+    assert_eq!(d.finish().unwrap_err().code, ErrorCode::TaskUnknown);
+    d.observe(&json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}));
+    assert!(d.settled());
+    d.finish().expect("finished turn");
+}
+
+#[test]
+fn other_stop_reasons_and_errors_fail_the_run() {
+    for (reason, code) in [
+        ("refusal", ErrorCode::AgentUnavailable),
+        ("max_tokens", ErrorCode::AgentUnavailable),
+        ("cancelled", ErrorCode::TaskUnknown),
     ] {
-        let mut decoder = JsonlDecoder::new(65536);
-        let mut observer = ProtocolObserver::new(kind);
-        for record in decoder.push(source.as_bytes()).expect("fixture JSONL") {
-            observer.observe(&record);
-        }
-        decoder.finish().expect("complete records");
-        observer
-            .finish(Some(0))
-            .expect("successful fixture outcome");
+        let mut d = driver(&[]);
+        initialized(&mut d);
+        d.observe(&json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":reason}}));
+        assert!(d.settled());
+        assert_eq!(d.finish().unwrap_err().code, code, "{reason}");
     }
+    let mut d = driver(&[]);
+    d.take_outbound();
+    d.observe(&json!({"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"auth required"}}));
+    let error = d.finish().unwrap_err();
+    assert!(error.message.contains("initialize") && error.message.contains("auth required"));
+    let mut d = driver(&[]);
+    d.take_outbound();
+    d.observe(&json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":2}}));
+    assert_eq!(d.finish().unwrap_err().code, ErrorCode::AdapterNotSupported);
+}
+
+#[test]
+fn tool_calls_become_start_and_end_events() {
+    let mut d = driver(&["read"]);
+    initialized(&mut d);
+    let start = d.observe(&update(json!({"sessionUpdate":"tool_call","toolCallId":"t1","title":"Read file","kind":"read","status":"pending"})));
+    assert!(
+        matches!(&start[..], [ObservedEvent::ToolEvent { name, phase }] if name == "read" && phase == "tool_execution_start")
+    );
+    assert!(
+        d.observe(&update(
+            json!({"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"in_progress"})
+        ))
+        .is_empty()
+    );
+    let end = d.observe(&update(
+        json!({"sessionUpdate":"tool_call_update","toolCallId":"t1","status":"completed"}),
+    ));
+    assert!(
+        matches!(&end[..], [ObservedEvent::ToolEvent { name, phase }] if name == "read" && phase == "tool_execution_end")
+    );
+}
+
+#[test]
+fn permission_requests_follow_the_project_allowlist() {
+    let mut d = driver(&["read", "write", "edit"]);
+    initialized(&mut d);
+    let options = json!([{"optionId":"yes","name":"Allow once","kind":"allow_once"},{"optionId":"always","name":"Always","kind":"allow_always"},{"optionId":"no","name":"Reject","kind":"reject_once"}]);
+    d.observe(&json!({"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t1","kind":"edit"},"options":options}}));
+    let answer = d.take_outbound();
+    assert_eq!(answer[0]["id"], "p1");
+    assert_eq!(
+        answer[0]["result"]["outcome"],
+        json!({"outcome":"selected","optionId":"yes"})
+    );
+    // A shell command is outside this allowlist: refused, and the run needed input.
+    let events = d.observe(&json!({"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t2","kind":"execute"},"options":options}}));
+    assert!(matches!(events[..], [ObservedEvent::ApprovalRequested]));
+    assert_eq!(
+        d.take_outbound()[0]["result"]["outcome"],
+        json!({"outcome":"selected","optionId":"no"})
+    );
+    d.observe(&json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}));
+    assert_eq!(d.finish().unwrap_err().code, ErrorCode::FailedNeedsInput);
+}
+
+#[test]
+fn unoffered_client_methods_get_method_not_found() {
+    let mut d = driver(&[]);
+    initialized(&mut d);
+    d.observe(&json!({"jsonrpc":"2.0","id":9,"method":"fs/read_text_file","params":{"path":"/etc/passwd"}}));
+    let answer = d.take_outbound();
+    assert_eq!(answer[0]["id"], 9);
+    assert_eq!(answer[0]["error"]["code"], -32601);
+}
+
+#[test]
+fn usage_comes_from_the_prompt_response() {
+    let mut d = driver(&[]);
+    initialized(&mut d);
+    let events = d.observe(&json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","usage":{"inputTokens":30,"outputTokens":10,"totalTokens":40,"cachedReadTokens":2}}}));
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            ObservedEvent::Usage { usage } => Some(usage.clone()),
+            _ => None,
+        })
+        .expect("usage");
+    assert_eq!(usage.total_tokens, Some(40));
+    assert_eq!(usage.cache_read_tokens, Some(2));
+    assert_eq!(usage.cache_write_tokens, None);
+    // Out-of-range or textual numbers are never invented into totals.
+    assert!(
+        acp::usage_from_prompt(&json!({"usage":{"inputTokens":"30","totalTokens":2000000000u64}}))
+            .is_none()
+    );
+}
+
+#[test]
+fn frames_classify_as_responses_requests_and_notifications() {
+    assert_eq!(
+        acp::classify(&json!({"jsonrpc":"2.0","id":4,"result":{}})),
+        Some(Incoming::Response {
+            id: 4,
+            result: Ok(json!({}))
+        })
+    );
+    assert!(matches!(
+        acp::classify(
+            &json!({"jsonrpc":"2.0","id":"x","method":"session/request_permission","params":{}})
+        ),
+        Some(Incoming::Request { .. })
+    ));
+    assert!(matches!(
+        acp::classify(&json!({"jsonrpc":"2.0","method":"session/update","params":{}})),
+        Some(Incoming::Notification { .. })
+    ));
+    // Permission choice never picks a remembered option when a one-time one exists.
+    let only_always = [json!({"optionId":"a","kind":"allow_always"})];
+    assert_eq!(
+        acp::permission_outcome(&only_always, true)["outcome"]["optionId"],
+        "a"
+    );
+    assert_eq!(
+        acp::permission_outcome(&only_always, false)["outcome"],
+        json!({"outcome":"cancelled"})
+    );
 }
 
 #[test]
@@ -54,91 +207,23 @@ fn malformed_truncated_and_overlong_jsonl_are_rejected() {
 #[test]
 fn native_frames_are_bounded_independently_of_mesh_event_size() {
     let budget = 8 * 1024 * 1024;
-    assert_eq!(
-        native_record_limit(HarnessKind::Pi, budget),
-        4 * 1024 * 1024
-    );
-    for kind in [HarnessKind::Pi, HarnessKind::Dsh, HarnessKind::Opencode] {
-        assert_eq!(native_record_limit(kind, 32768), 32768);
-        let record = serde_json::to_vec(&json!({"snapshot":"中".repeat(50000)})).unwrap();
-        assert!(record.len() > 65536);
-        let mut decoder = JsonlDecoder::new(native_record_limit(kind, budget));
-        let mut decoded = vec![];
-        for chunk in record.chunks(8191) {
-            decoded.extend(decoder.push(chunk).expect("fragmented large snapshot"));
-        }
-        decoded.extend(decoder.push(b"\n").unwrap());
-        assert_eq!(decoded.len(), 1);
-        assert_eq!(decoded[0]["snapshot"], "中".repeat(50000));
-        assert_eq!(decoder.largest_record_bytes(), record.len());
-        assert_eq!(decoder.record_count(), 1);
-        decoder.finish().unwrap();
+    assert_eq!(native_record_limit(budget), 4 * 1024 * 1024);
+    assert_eq!(native_record_limit(32768), 32768);
+    let record = serde_json::to_vec(&json!({"snapshot":"中".repeat(50000)})).unwrap();
+    assert!(record.len() > 65536);
+    let mut decoder = JsonlDecoder::new(native_record_limit(budget));
+    let mut decoded = vec![];
+    for chunk in record.chunks(8191) {
+        decoded.extend(decoder.push(chunk).expect("fragmented large snapshot"));
     }
+    decoded.extend(decoder.push(b"\n").unwrap());
+    assert_eq!(decoded.len(), 1);
+    assert_eq!(decoded[0]["snapshot"], "中".repeat(50000));
+    assert_eq!(decoder.largest_record_bytes(), record.len());
+    decoder.finish().unwrap();
     let record = br#"{"x":1}"#;
-    let mut decoder = JsonlDecoder::new(record.len());
-    decoder.push(record).unwrap();
-    assert_eq!(decoder.push(b"\n").unwrap(), vec![json!({"x":1})]);
     let mut over = JsonlDecoder::new(record.len());
     over.push(record).unwrap();
     let error = over.push(b" ").expect_err("one byte beyond limit");
     assert_eq!(error.code, ErrorCode::RateLimited);
-}
-
-#[test]
-fn pi_prompt_ack_and_agent_end_do_not_prove_success() {
-    let mut observer = ProtocolObserver::new(HarnessKind::Pi);
-    observer.observe(&json!({"type":"response","command":"prompt","success":true}));
-    observer.observe(&json!({"type":"agent_end"}));
-    assert_eq!(
-        observer.finish(Some(0)).expect_err("not settled").code,
-        ErrorCode::TaskUnknown
-    );
-    observer
-        .observe(&json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop"}}));
-    observer.observe(&json!({"type":"agent_settled"}));
-    observer
-        .finish(Some(0))
-        .expect("settled successful assistant");
-}
-
-#[test]
-fn dsh_final_does_not_override_nonzero_exit_or_error() {
-    let mut observer = ProtocolObserver::new(HarnessKind::Dsh);
-    observer.observe(&json!({"type":"final","text":"done"}));
-    assert!(observer.finish(Some(1)).is_err());
-    observer.observe(&json!({"type":"error","message":"failed"}));
-    assert!(observer.finish(Some(0)).is_err());
-}
-
-#[test]
-fn pi_internal_retry_uses_last_assistant_outcome_without_closing_input_early() {
-    let mut observer = ProtocolObserver::new(HarnessKind::Pi);
-    observer.observe(
-        &json!({"type":"message_end","message":{"role":"assistant","stopReason":"error"}}),
-    );
-    assert!(!observer.failed_or_waiting());
-    assert!(!observer.settled());
-    observer
-        .observe(&json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop"}}));
-    observer.observe(&json!({"type":"agent_settled"}));
-    observer.finish(Some(0)).expect("successful internal retry");
-    observer.observe(
-        &json!({"type":"message_end","message":{"role":"assistant","stopReason":"error"}}),
-    );
-    assert!(observer.finish(Some(0)).is_err());
-}
-
-#[test]
-fn opencode_tool_step_is_not_a_successful_final_and_permissions_do_not_auto_approve() {
-    let mut observer = ProtocolObserver::new(HarnessKind::Opencode);
-    observer.observe(&json!({"type":"step_finish","part":{"reason":"tool-calls"}}));
-    assert!(observer.finish(Some(0)).is_err());
-    observer.observe(&json!({"type":"error","error":{"name":"PermissionRejectedError"}}));
-    assert_eq!(
-        observer
-            .finish(Some(0))
-            .expect_err("approval required")
-            .code,
-        ErrorCode::FailedNeedsInput
-    );
 }

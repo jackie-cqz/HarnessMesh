@@ -1,22 +1,75 @@
-//! This matrix is executable fixture evidence, never evidence of a model run.
-use crate::{JsonlDecoder, ProtocolObserver};
-use hmesh_core::HarnessKind;
+//! Executable ACP contract checks run against scripted frames. This matrix is
+//! fixture evidence of the client's protocol handling, never of a model run.
+use crate::{AcpTaskDriver, JsonlDecoder};
 use serde_json::{Value, json};
-pub fn versions(kind: HarnessKind) -> &'static [&'static str] {
-    match kind {
-        HarnessKind::Pi => &["0.84.2", "1.4.0"],
-        HarnessKind::Dsh => &["0.2.0-rc.2"],
-        HarnessKind::Opencode => &["1.18.20"],
+use std::path::Path;
+
+fn driver() -> AcpTaskDriver {
+    AcpTaskDriver::new(Path::new("/project"), "hello", vec![], &["read".into()])
+}
+fn feed(driver: &mut AcpTaskDriver, frames: &[Value]) {
+    for frame in frames {
+        driver.observe(frame);
     }
 }
+fn handshake() -> Vec<Value> {
+    vec![
+        json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}),
+        json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"s"}}),
+    ]
+}
+/// Scripted ACP turns covering success, framing and every refusal path.
 pub fn matrix() -> Value {
-    let rows:Vec<_>=[(HarnessKind::Pi,include_str!("../../../tests/fixtures/pi-0.84.2.jsonl")),(HarnessKind::Dsh,include_str!("../../../tests/fixtures/dsh-0.2.0-rc.2.jsonl")),(HarnessKind::Opencode,include_str!("../../../tests/fixtures/opencode-1.18.20.jsonl"))].into_iter().map(|(kind,source)| {
-        let mut decoder=JsonlDecoder::new(65536);let mut observer=ProtocolObserver::new(kind);
-        let valid=decoder.push(source.as_bytes()).map(|rs|{for r in rs {observer.observe(&r);}}).is_ok()&&decoder.finish().is_ok()&&observer.finish(Some(0)).is_ok();
-        let mut fragmented=JsonlDecoder::new(65536);let mut o=ProtocolObserver::new(kind);let mut fragments=true;
-        for byte in source.as_bytes() {match fragmented.push(&[*byte]) {Ok(rs)=>for r in rs {o.observe(&r);},Err(_)=>fragments=false,}}
-        let fragment_pass=fragments&&fragmented.finish().is_ok()&&o.finish(Some(0)).is_ok();
-        json!({"harness":kind,"approved_versions":versions(kind),"fixture_success":valid,"fragmented_protocol":fragment_pass,"nonzero_exit_rejected":observer.finish(Some(1)).is_err(),"missing_completion_rejected":ProtocolObserver::new(kind).finish(Some(0)).is_err(),"malformed_json_rejected":JsonlDecoder::new(128).push(b"invalid\n").is_err(),"oversized_frame_rejected":JsonlDecoder::new(4).push(b"12345").is_err(),"usage_schema":match kind{HarnessKind::Pi=>"message_end.usage",HarnessKind::Opencode=>"step_finish.tokens",HarnessKind::Dsh=>"not_established"},"real_model":"not_checked","native_cancel":"requires_process_regression"})
-    }).collect();
-    json!({"evidence":"synthetic-protocol-fixtures","rows":rows,"real_model_called":false})
+    let mut ok = driver();
+    let mut frames = handshake();
+    frames.push(json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done"}}}}));
+    frames.push(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}));
+    feed(&mut ok, &frames);
+    let success = ok.finish().is_ok();
+
+    let wire: String = frames.iter().map(|f| format!("{f}\n")).collect();
+    let mut decoder = JsonlDecoder::new(1024 * 1024);
+    let mut fragmented = driver();
+    for chunk in wire.as_bytes().chunks(7) {
+        for frame in decoder.push(chunk).unwrap_or_default() {
+            fragmented.observe(&frame);
+        }
+    }
+    let fragments = fragmented.finish().is_ok() && decoder.finish().is_ok();
+
+    let mut unfinished = driver();
+    feed(&mut unfinished, &handshake());
+    let mut refused = driver();
+    let mut refusal = handshake();
+    refusal.push(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"refusal"}}));
+    feed(&mut refused, &refusal);
+    let mut wrong_version = driver();
+    feed(
+        &mut wrong_version,
+        &[json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":99}})],
+    );
+    let mut asked = driver();
+    let mut ask = handshake();
+    ask.push(json!({"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"t","kind":"execute"},"options":[{"optionId":"no","name":"Reject","kind":"reject_once"}]}}));
+    ask.push(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}));
+    feed(&mut asked, &ask);
+
+    json!({
+        "protocol":"acp",
+        "protocol_version":crate::acp::PROTOCOL_VERSION,
+        "rows":[{
+            "harness":"acp",
+            "fixture_success":success,
+            "fragmented_protocol":fragments,
+            "missing_completion_rejected":unfinished.finish().is_err(),
+            "refusal_rejected":refused.finish().is_err(),
+            "protocol_version_mismatch_rejected":wrong_version.finish().is_err(),
+            "disallowed_tool_needs_input":asked.finish().is_err(),
+            "malformed_json_rejected":JsonlDecoder::new(128).push(b"invalid\n").is_err(),
+            "oversized_frame_rejected":JsonlDecoder::new(4).push(b"12345").is_err(),
+            "usage_schema":"session/prompt result.usage",
+            "real_model":"not_checked",
+        }],
+        "real_model_called":false
+    })
 }

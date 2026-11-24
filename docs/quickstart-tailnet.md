@@ -1,53 +1,38 @@
 # Windows ↔ Mac：Tailscale 直连
 
-两台电脑各自在本机启动 HarnessMesh。任务、事件、产物核验和受管 HTTP RPC 使用 Tailnet TCP + TLS 1.3/mTLS，不需要 SSH。候选可达、Node 信任、项目授权和 Agent 可运行状态分别记录。
+两台电脑各自在本机启动 HarnessMesh。会话、任务、事件、产物核验和受管 HTTP RPC 使用 Tailnet TCP + TLS 1.3/mTLS，不需要 SSH。配对之后，在任一台电脑的面板「会话」页就能直接和另一台电脑上的 agent 对话。
 
-2026-10-30 已完成 [Windows → Mac 的真实 Pi/Flash 任务](tailnet-mac-smoke.md)：本机批准、write/read、五字段 JSON/hash、同请求去重和事件补读通过。[Mac → Windows 的 DSH/Pro 执行端检查](tailnet-reverse-smoke.md) 也已通过 write/read 和独立 JSON/hash；Mac 发起端的反向读取/补读结论、完整工作区测试和前后端受管服务联调仍待独立验收。
+下面的历史记录早于 ACP 迁移：2026-10-30 已完成 [Windows → Mac 的真实 Pi/Flash 任务](tailnet-mac-smoke.md)：本机批准、write/read、五字段 JSON/hash、同请求去重和事件补读通过。[Mac → Windows 的 DSH/Pro 执行端检查](tailnet-reverse-smoke.md) 也已通过 write/read 和独立 JSON/hash；Mac 发起端的反向读取/补读结论、完整工作区测试和前后端受管服务联调仍待独立验收。
 
-## Mac 启动
+## 启动（Mac、Windows、Linux 相同）
 
-需要 Node.js 20+、通过 rustup 安装的 Rust stable >= 1.90、已登录的 Tailscale，以及已配置 `deepseek/deepseek-v4-flash` 的 Pi。当前 Pi Adapter 的协议基线是 0.84.2 / 1.4.0；其他版本会明确显示 unsupported，不自动绕过探测。
+需要 Node.js 20+、通过 rustup 安装的 Rust stable >= 1.90、已登录的 Tailscale，以及你自己装好并登录过的 ACP agent（任选：`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`）。HarnessMesh 不会安装 agent；`hmesh agent detect` 会列出本机找到了哪些、缺的该怎么装。
 
 ```sh
 git clone https://github.com/jackie-cqz/HarnessMesh.git
 cd HarnessMesh
-node scripts/start-tailnet.mjs
+node scripts/start-tailnet.mjs --name mac-a
 ```
 
-私密仓库使用 Mac 已配置的 GitHub 身份。脚本编译 CLI，从本机 Tailscale 状态选择确切 IP，创建独立 Node、项目和 Pi Agent，再保持前台运行。保持终端打开；Ctrl+C 正常停止本次 Daemon。不调用模型、不修改系统网络、SSH、Pi 登录配置或原项目。重复启动受 Daemon 锁保护，已有身份不会被重新生成。
+脚本编译 CLI，从本机 Tailscale 状态选择确切 IP，创建独立 Node 和项目目录，把本机已安装的每个 ACP agent 登记为 `<名字>-<类型>`（例如 `mac-a-opencode`、`mac-a-claude-code`），再保持前台运行。登记只做一次 ACP `initialize` 握手，不调用模型，不读取、不复制任何凭据：agent 用它自己的登录和模型设置。保持终端打开；Ctrl+C 正常停止本次 Daemon。
 
-默认目录和配置：
+常用选项：
 
-- Node：仓库内 `.hmesh-v0/tailnet-darwin/node`，在本机 Tailnet IP 和 `127.0.0.1` 分别监听 39880。
-- 项目：`.hmesh-v0/tailnet-darwin/project`，仅 read/write/edit，允许核验 `out/health.json`，远端任务必须批准。
-- Pi：解析 PATH 中 `pi` 的符号链接和 managed install 启动器，定位实际 JavaScript 入口，使用运行脚本的 Node 解释器。
-- Agent 名称包含配置摘要；相同配置复用登记，配置变更创建新登记，需 owner 为新 Agent 显式更新授权，不自动扩大已有 grant。独立配置文件按该名称保存。
-- 模型：引用 `~/.pi/agent/models.json` 的 Flash 定义。凭据优先引用本机 `~/.pi/agent/auth.json` 中有效的 DeepSeek API key，其次使用 `DEEPSEEK_API_KEY`，最后可直接引用 `models.json` 中的字面 API key（不复制密钥、不执行命令）；当前只支持 DeepSeek API key，不导入 OAuth。
+- `--agents opencode,claude-code`：只登记这些；列出的某个没装就报错，不会去装。
+- `--project /absolute/dir`：agent 工作的项目目录（默认 `<root>/project`）。
+- `--root`、`--port`（默认 39880）、`--tailscale-executable`、`--skip-build`，完整说明见 `--help`。
 
-路径不同可传展开后的绝对路径：
+默认 Node 目录是仓库内 `.hmesh-v0/tailnet-<平台>/node`。启动后打开面板：
 
 ```sh
-node scripts/start-tailnet.mjs \
-  --pi /absolute/path/to/pi \
-  --models "$HOME/.pi/agent/models.json" \
-  --credential-source "$HOME/.pi/agent/auth.json"
+./target/debug/hmesh --data-dir "$PWD/.hmesh-v0/tailnet-darwin/node" panel
 ```
 
-Tailscale CLI 自动发现常规位置。Mac App Store 版使用 `/Applications/Tailscale.app/Contents/MacOS/Tailscale` 并设置 `TAILSCALE_BE_CLI=1`；也可传 `--tailscale-executable /absolute/path`。完整选项见 `node scripts/start-tailnet.mjs --help`。已有二进制可加 `--skip-build`。
-
-启动输出和私有 `startup.json` 包含 Node Card、完整 fingerprint、Agent ID 和路径。Pi 登记只做版本探测，初始 `unverified` 正常。另开 Mac 终端，明确运行一次真实模型验证（会产生模型费用）：
-
-凭据引用须包含 `deepseek` 下的 `type = "api_key"` 和有效 `key`；仅存在 auth.json 不代表符合该格式。本次首次验证曾因此失败，Mac owner 后来选择正确凭据引用并重新登记 Agent。手动重新登记后，以最新 Agent ID 和精确项目授权为准，旧 startup.json 中的 Agent ID 不会自动更新；不要把模型密钥复制到发起端。
-
-```sh
-HM="$PWD/target/debug/hmesh"
-MAC_NODE="$PWD/.hmesh-v0/tailnet-darwin/node"
-"$HM" --data-dir "$MAC_NODE" agent verify <Mac-Agent-ID> --allow-model
-```
+Tailscale CLI 自动发现常规位置。Mac App Store 版使用 `/Applications/Tailscale.app/Contents/MacOS/Tailscale` 并设置 `TAILSCALE_BE_CLI=1`；也可传 `--tailscale-executable /absolute/path`。
 
 ## Windows 启动和候选
 
-在仓库内执行同一个脚本。Windows 只启动 Node，不自动新增或更改现有 DSH/Pi Agent：
+在仓库内执行同一个脚本，同样只登记本机已安装的 ACP agent：
 
 ```powershell
 node .\scripts\start-tailnet.mjs
@@ -88,31 +73,17 @@ Windows 批准反向请求：
 & $hmesh --data-dir $node pair approve <Mac请求ID> --expect-fingerprint <Mac指纹>
 ```
 
-Mac owner 新建 `mac-policy.toml`，将 UUID 换成实际值：
+配对完成后不需要写 policy：两边都能看到对方的 agent。在 Windows 打开面板，进入「会话」→「新会话」，电脑选 Mac、Agent 选 `mac-a-opencode` 之类，写第一条消息即可。agent 要用工具时，权限请求出现在**你打开会话的那台电脑**的面板里，点「允许一次」或「拒绝」。
 
-```toml
-[default]
-action = "deny"
-[[grant]]
-peer = "<Windows-Node-ID>"
-agent = "<Mac-Agent-ID>"
-project = "tailnet-demo"
-actions = ["agent.read", "task.submit"]
-require_approval = true
-```
-
-```sh
-"$HM" --data-dir "$MAC_NODE" policy --file "$PWD/mac-policy.toml"
-```
-
-Windows 发送作用于独立项目的任务：
+只用命令行时：
 
 ```powershell
-& $hmesh --data-dir $node agents list --peer <Mac-Node-ID>
-& $hmesh --data-dir $node task send <Mac-Agent-ID> --peer <Mac-Node-ID> --project tailnet-demo --prompt 'Use write then read to create out/health.json containing {"status":"ok","model":"deepseek-v4-flash"}. Work only in the registered project.'
+& $hmesh --data-dir $node agents list --all
+& $hmesh --data-dir $node session open --agent <Mac-Agent-ID> --peer <Mac-Node-ID> --message "Summarize this project in three bullet points."
+& $hmesh --data-dir $node session events <Session-ID> --wait 10
 ```
 
-Mac 用 `task approve <Task-ID>` 批准，Windows 用 `task watch <Task-ID>` 等待。任务成功后，可由 Mac owner 本机执行 `task verify <Task-ID> --artifact out/health.json --expect-json '{"status":"ok","model":"deepseek-v4-flash"}'`。支持核验转发接口的新版本也允许原发起端 Windows 运行同一命令，经既有配对 mTLS 在执行端核验；仍受当前信任、项目/Agent grant 和工件声明约束，不返回文件正文。缺少该接口的旧版仍由执行端 owner 本机核验，Windows 再用 `task verification <Task-ID>` 读取已发布结果。链路暂断时使用相同 request ID 查询/补读，不重新创建副作用任务。
+想让 Mac 先批准再开始，在 Mac 上执行 `hmesh peers access <Windows节点> confirm`；之后 Windows 打开的会话会停在「等待批准」，Mac 在面板或用 `hmesh session approve <Session-ID>` 批准。发出消息就会调用模型并可能产生费用。
 
 受管服务复用 [HTTP 配置](managed-services.md)，**Tailnet 路径跳过 tunnel add**；后端继续仅在 Mac 回环监听，经 HarnessMesh mTLS 转发到 Windows 的回环 endpoint。服务租约和重启/修复预算不变。
 
@@ -138,4 +109,4 @@ node scripts/check-tailnet-local.mjs --run-local-network
 
 启动配置的无模型回归检查：`node --test scripts/tailnet-config.test.mjs`。
 
-Mac 若终端 PATH 中没有 Node、但 Pi 安装器已提供运行时，可用 `sh scripts/start-tailnet.sh`。开发与验收边界汇总见 [Mac development baseline](mac-development-baseline.md)。
+Mac 若终端 PATH 中没有 Node，可用 `sh scripts/start-tailnet.sh`，它会再找一遍常见的 Node 位置。开发与验收边界汇总见 [Mac development baseline](mac-development-baseline.md)。
