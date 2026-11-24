@@ -77,6 +77,7 @@ function showView(name) {
   for(const view of document.querySelectorAll('.view'))view.hidden=view.id!==`${name}-view`;
   $('#page-title').textContent=names[name][0];$('#breadcrumb').textContent=names[name][0];$('#page-description').textContent=names[name][1];
   $('#metrics').hidden=name!=='overview';render();
+  if(name!=='sessions')$('#new-session')?.classList.remove('selected');
   if(name==='sessions'&&typeof sessionsShown==='function')sessionsShown();
 }
 function renderMetrics() {
@@ -134,7 +135,7 @@ function renderServices() {
 }
 function renderMesh() {
   const node=data('node',{}).node,peers=data('peers');const nodes=[];
-  if(node)nodes.push({name:node.display_name,subtitle:'THIS NODE · 本机',online:true,local:true});
+  if(node)nodes.push({name:node.display_name,subtitle:'本机',online:true,local:true});
   for(const p of peers)nodes.push({name:p.card.display_name,subtitle:p.card.endpoint,online:p.node_connectivity==='online'});
   $('#mesh-nodes').replaceChildren(...(nodes.length?nodes.map(n=>{const r=el('div','mesh-node'),info=el('div','mesh-info');info.append(el('strong','',n.name),el('small','',n.local?n.subtitle:(n.online?'mTLS · 可达':'暂不可达')));const icon=el('span','mesh-icon',n.local?'M':'↗');r.append(icon,info,el('i',`dot ${n.online?'':'offline'}`));return r;}):[empty('等待读取节点')]));
 }
@@ -149,7 +150,7 @@ async function loadRemote(peer) {
 function render() {
   if(!state.snapshot)return;
   renderRuntime();renderMetrics();renderMesh();$('#recent-tasks').replaceChildren(table(allTasks().slice(0,6)));
-  if(state.view==='tasks')renderTasks();if(state.view==='agents')renderAgents();if(state.view==='services')renderServices();if(state.view==='nodes')renderNodes();if(state.view==='sessions'&&typeof renderSessions==='function')renderSessions();
+  if(state.view==='tasks')renderTasks();if(state.view==='agents')renderAgents();if(state.view==='services')renderServices();if(state.view==='nodes')renderNodes();if(typeof renderSessions==='function')renderSessions();
   if(typeof renderWorkflow==='function')renderWorkflow();
   if(typeof renderDevelopment==='function'&&hasDevelopment())renderDevelopment();else $('#development-pending').replaceChildren();
 }
@@ -157,7 +158,7 @@ async function refresh() {
   if(state.stopped||state.refreshing||!access)return;state.refreshing=true;$('#refresh').disabled=true;$('#sync-state').textContent='同步中…';
   try {
     const [snapshot,runtime]=await Promise.all([api('/overview'),api('/runtime').then(unwrap).catch(()=>null)]);state.snapshot=snapshot;state.runtime=runtime;const node=data('node',{});$('#access-gate').hidden=true;$('#app').hidden=false;
-    $('#local-name').textContent=node.node?.display_name||'Daemon 不可读取';$('#local-network').textContent=node.network==='tailscale'?'TAILNET / OWNER LOCAL':node.network?'LOOPBACK / OWNER LOCAL':'RPC UNAVAILABLE';
+    $('#local-name').textContent=node.node?.display_name||'Daemon 不可读取';$('#local-network').textContent=node.network==='tailscale'?'Tailnet 直连':node.network?'仅本机回环':'Daemon 不可达';
     const names={node:'本机 Daemon',peers:'配对节点',agents:'Agent',retired:'退役 Agent',tasks:'任务',services:'服务',connections:'连接',tunnels:'隧道'};
     const failures=Object.entries(names).filter(([key])=>state.snapshot[key]?.error).map(([key,name])=>`${name}: ${state.snapshot[key].error.code}`);
     $('#alerts').replaceChildren(...(failures.length?[el('div','alert',`部分状态暂不可读取。${failures.join('；')}`)]:[]));

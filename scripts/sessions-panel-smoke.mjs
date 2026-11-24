@@ -31,15 +31,17 @@ async function panel(node){
  const[line]=await Promise.race([once(lines,'line'),new Promise((_,reject)=>{const t=setTimeout(()=>reject(Error('Panel startup timeout')),20000);t.unref();})]);
  lines.close();return JSON.parse(line);
 }
-async function openSession(page,nodeId,agentId,message){
- await page.locator('#new-session').click();
- await page.locator('#new-session-node').selectOption(nodeId);
- await page.locator('#new-session-agent').selectOption(agentId);
- await page.locator('#new-session-message').fill(message);
- await page.locator('#new-session-submit').click();
- await page.locator('#new-session-dialog').waitFor({state:'hidden'});
+// Pick an agent in the sidebar, then send the first message from the new-session screen.
+async function openSession(page,group,agentName,message){
+ await page.locator('#session-agents .session-group').filter({has:page.locator('.session-group-name',{hasText:new RegExp('^'+group+'$')})}).getByRole('button',{name:new RegExp(agentName)}).click();
+ await page.locator('#conversation-empty').waitFor();
+ await page.locator('#hero-target').filter({hasText:agentName}).waitFor();
+ await page.locator('#hero-input').fill(message);
+ await page.locator('#hero-send').click();
+ await page.locator('#conversation').waitFor();
 }
 const stream=page=>page.locator('#conversation-stream');
+const settle=page=>page.waitForTimeout(400);
 try{
  const a=await node('mac-a'),b=await node('mac-b');
  const local=register(a,'helper'),remote=register(b,'worker');
@@ -50,59 +52,71 @@ try{
  browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1440,height:960}});
  const problems=[];page.on('pageerror',e=>problems.push(e.message));page.on('console',m=>{if(m.type()==='error')problems.push(m.text());});
  await page.goto(ready.url);await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor();
+ stage='sidebar lists both computers\' agents';
+ await page.locator('#session-agents .session-group').filter({hasText:'mac-a（本机）'}).getByText('helper').waitFor();
+ await page.locator('#session-agents .session-group').filter({hasText:'mac-b'}).getByText('worker').waitFor();
+ await settle(page);await page.screenshot({path:join(shots,'overview-light.png')});
+ await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
+ assert(await page.locator('#hero-agents .agent-chip').count()===2,'new-session screen does not offer both agents');
+ await settle(page);await page.screenshot({path:join(shots,'sessions-empty.png')});
  stage='open remote session';
- await page.locator('[data-view="sessions"]').click();
- await page.locator('#conversation-empty').waitFor();
- // The agent directory lists this computer's and the paired computer's agents.
- await page.locator('#session-agents .agent-group').filter({hasText:'mac-a（本机）'}).getByText('helper').waitFor();
- await page.locator('#session-agents .agent-group').filter({hasText:'mac-b'}).getByText('worker').waitFor();
- await page.screenshot({path:join(shots,'sessions-empty.png')});
- // One click on an agent opens the dialog with it selected.
- await page.locator('#session-agents .agent-group').filter({hasText:'mac-b'}).getByRole('button',{name:/worker/}).click();
- await page.waitForFunction(([node,agent])=>document.querySelector('#new-session-dialog').open&&document.querySelector('#new-session-node').value===node&&document.querySelector('#new-session-agent').value===agent,[b.card.node_id,remote.agent_id],{timeout:10000});
- await page.locator('#new-session-message').fill('fixture:permission');
- await page.locator('#new-session-submit').click();await page.locator('#new-session-dialog').waitFor({state:'hidden'});
+ await openSession(page,'mac-b','worker','fixture:permission');
  // The agent on mac-b asks for permission; mac-a opened the session, so mac-a answers.
  stage='answer permission from the opener';
- await page.locator('.permission').getByRole('button',{name:'允许一次'}).waitFor({timeout:30000});
+ await page.locator('#permission-dock .permission').getByRole('button',{name:'允许一次'}).waitFor({timeout:30000});
  await page.screenshot({path:join(shots,'sessions-permission.png')});
- await page.locator('.permission').getByRole('button',{name:'允许一次'}).click();
+ await page.locator('#permission-dock .permission').getByRole('button',{name:'允许一次'}).click();
  await stream(page).getByText('Permission granted: notes.txt edited.').waitFor({timeout:30000});
  await stream(page).getByText('已允许（打开者）').waitFor();
+ assert(await page.locator('#permission-dock .permission').count()===0,'answered request still docked');
  stage='follow-up turn';
  await page.waitForFunction(()=>!document.querySelector('#composer-send').disabled);
  await page.locator('#composer-input').fill('fixture:echo from the panel');
  await page.locator('#composer-send').click();
  await stream(page).getByText('Echo #2: from the panel').waitFor({timeout:30000});
- assert(await page.locator('#conversation-header').getByText('第 2 轮').count()===1,'turn count not shown');
+ await page.locator('#conversation-meta').getByText('第 2 轮').waitFor();
+ // Tool calls are collapsed rows that open to show their details.
+ const tool=stream(page).locator('details.tool').first();
+ await tool.locator('summary').click();assert(await tool.evaluate(d=>d.open),'tool row did not expand');
  await page.screenshot({path:join(shots,'sessions-remote.png')});
  stage='reload keeps the conversation';
  await page.reload();await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor();
- await page.locator('[data-view="sessions"]').click();
  await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();
  await stream(page).getByText('Echo #2: from the panel').waitFor({timeout:30000});
  await stream(page).getByText('Permission granted: notes.txt edited.').waitFor();
  stage='agent delegates across computers';
- await openSession(page,a.card.node_id,local.agent_id,'fixture:delegate mac-b/worker fixture:reply');
+ await openSession(page,'mac-a（本机）','helper','fixture:delegate mac-b/worker fixture:reply');
  await stream(page).getByText(/Delegated to mac-b\/worker: Final answer: the build is green\./).waitFor({timeout:60000});
- // The child session the agent opened on mac-b is listed with its caller.
- await page.locator('[data-view="sessions"]').click();
- const child=page.locator('.session-row').filter({hasText:'由 mac-a / helper 调用'});
+ // The session the agent opened on mac-b is listed with its caller.
+ const child=page.locator('.session-row[title*="由 mac-a / helper 调用"]');
  await until(async()=>{await page.evaluate(()=>loadSessions());return (await child.count())>0;},30,'child session not listed');
  await page.screenshot({path:join(shots,'sessions-delegation.png')});
  await child.first().click();
- await page.locator('#conversation-header').getByText('工具权限自动允许').waitFor();
- await page.locator('.conversation-chain').getByText(/调用链：mac-a.* → mac-b/).waitFor();
+ await page.locator('#conversation-meta').getByText('工具权限自动允许').waitFor();
+ await page.locator('.conversation-chain').getByText(/调用链：mac-a → mac-b/).waitFor();
  stage='stop and close';
  await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();
+ await page.waitForFunction(()=>!document.querySelector('#composer-send').disabled);
  await page.locator('#composer-input').fill('fixture:wait');await page.locator('#composer-send').click();
  await page.getByRole('button',{name:'停止本轮'}).click();
  await stream(page).getByText('本轮已停止').waitFor({timeout:30000});
  await page.getByRole('button',{name:'关闭会话'}).click();await page.getByRole('button',{name:'确认',exact:true}).click();
  await page.locator('#conversation-header .badge').filter({hasText:'已关闭'}).waitFor();
  assert(await page.locator('#composer-send').isDisabled(),'closed session still accepts messages');
+ stage='dark theme';
+ await page.emulateMedia({colorScheme:'dark'});
+ await page.locator('.session-row').filter({hasText:'fixture:reply'}).first().click();
+ await stream(page).getByText(/Final answer/).first().waitFor();
+ const shade=await page.evaluate(()=>{const lum=c=>{const m=c.match(/[\d.]+/g).map(Number);return (0.2126*m[0]+0.7152*m[1]+0.0722*m[2])/255;};return {page:lum(getComputedStyle(document.body).backgroundColor),sidebar:lum(getComputedStyle(document.querySelector('.sidebar')).backgroundColor),text:lum(getComputedStyle(document.querySelector('.msg.agent .msg-text')).color)};});
+ assert(shade.page<0.1&&shade.sidebar<0.15&&shade.sidebar>=shade.page&&shade.text>0.8,`dark theme not applied: ${JSON.stringify(shade)}`);
+ await settle(page);await page.screenshot({path:join(shots,'sessions-dark.png')});
+ await page.locator('#new-session').click();await settle(page);await page.screenshot({path:join(shots,'hero-dark.png')});
+ await page.locator('[data-view="overview"]').click();await settle(page);await page.screenshot({path:join(shots,'overview-dark.png')});
+ await page.locator('[data-view="agents"]').click();await settle(page);await page.screenshot({path:join(shots,'agents-dark.png')});
+ await page.emulateMedia({colorScheme:'light'});
  stage='narrow window';
- await page.setViewportSize({width:720,height:900});await page.screenshot({path:join(shots,'sessions-narrow.png'),fullPage:true});
+ await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();
+ await page.setViewportSize({width:720,height:900});await settle(page);await page.screenshot({path:join(shots,'sessions-narrow.png'),fullPage:true});
  assert(problems.length===0,`browser errors: ${problems.join(' | ')}`);
  console.log(JSON.stringify({ok:true,screenshots:shots}));
 }catch(e){console.error(`sessions panel smoke failed at ${stage}: ${e.stack||e}`);process.exitCode=1;}
