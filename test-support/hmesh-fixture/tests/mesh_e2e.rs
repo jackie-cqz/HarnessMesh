@@ -35,16 +35,25 @@ fn register_named(instance: &Instance, project: &Path, name: &str) -> Uuid {
     register_with_args(instance, project, name, &[])
 }
 fn register_with_args(instance: &Instance, project: &Path, name: &str, args: &[&str]) -> Uuid {
+    register_as(instance, project, name, "acp", args)
+}
+fn register_as(
+    instance: &Instance,
+    project: &Path,
+    name: &str,
+    harness: &str,
+    args: &[&str],
+) -> Uuid {
     std::fs::create_dir_all(project).unwrap();
     let config: AgentConfig = serde_json::from_value(json!({
-        "agent":{"name":name,"harness":"acp","project_id":if name == "fixture" { "demo".to_owned() } else { format!("demo-{name}") }},
+        "agent":{"name":name,"harness":harness,"project_id":if name == "fixture" { "demo".to_owned() } else { format!("demo-{name}") }},
         "project":{"root":project,"allowed_tools":["read","write","edit"]},
         "adapter":{"executable":env!("CARGO_BIN_EXE_hmesh-fixture"),"args":args,"provider":"fixture","model":"fixture"}
     }))
     .unwrap();
     let agent_id = Uuid::new_v4();
     let card: AgentCard = serde_json::from_value(json!({
-        "agent_id":agent_id,"node_id":instance.card.node_id,"name":name,"harness":"acp","project_ids":[if name == "fixture" { "demo".to_owned() } else { format!("demo-{name}") }],"availability":"idle","capabilities":[],
+        "agent_id":agent_id,"node_id":instance.card.node_id,"name":name,"harness":harness,"project_ids":[if name == "fixture" { "demo".to_owned() } else { format!("demo-{name}") }],"availability":"idle","capabilities":[],
         "probe":{"installed":true,"version":"test-fixture","version_supported":true,"protocol_probe":"fixture","authentication":"not_applicable_test_fixture","managed_run":"passed","streaming":"fixture","cancel":"not_checked","session_resume":"not_checked","unavailable_reason":null}
     }))
     .unwrap();
@@ -805,5 +814,413 @@ async fn closing_while_the_agent_starts_never_runs_the_turn() {
     );
     assert_eq!(page.session.status, SessionStatus::Closed);
     assert_eq!(page.session.turns, 0);
+    daemon.stop().await;
+}
+
+fn fnv(text: &str) -> u64 {
+    text.bytes().fold(0xcbf29ce484222325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+    })
+}
+async fn configure(
+    owner: &Owner,
+    id: Uuid,
+    config_id: &str,
+    value: Value,
+) -> std::result::Result<SessionRecord, MeshError> {
+    owner
+        .post(
+            &format!("/local/sessions/{id}/config"),
+            &json!({"config_id":config_id,"value":value}),
+        )
+        .await
+}
+async fn prompt(owner: &Owner, id: Uuid, message: &str) {
+    let _: SessionRecord = owner
+        .post(
+            &format!("/local/sessions/{id}/prompt"),
+            &json!({"message":message}),
+        )
+        .await
+        .unwrap();
+}
+fn current(record: &SessionRecord, id: &str) -> Value {
+    record
+        .config_options
+        .iter()
+        .find(|o| o.id == id)
+        .map(|o| o.current.clone())
+        .unwrap_or(Value::Null)
+}
+async fn set_service(owner: &Owner, agent: Uuid, body: Value) -> service::AgentServiceView {
+    owner
+        .post(&format!("/local/agents/{agent}/service"), &body)
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_settings_follow_their_opener_and_survive_restarts() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "node-a");
+    let b = init(root.path(), "node-b");
+    Store::open(&a.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&b.card)
+        .unwrap();
+    Store::open(&b.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&a.card)
+        .unwrap();
+    let agent = register_fixture(&b, &root.path().join("project-b"));
+    let daemon_a = Daemon::start(&a.dir);
+    let daemon_b = Daemon::start(&b.dir);
+    daemon_a.ready().await;
+    daemon_b.ready().await;
+    let owner_a = daemon_a.owner();
+    let owner_b = daemon_b.owner();
+
+    // node-a opens a session on node-b's agent with a model chosen up front.
+    let opened = open(
+        &owner_a,
+        json!({"agent_id":agent,"peer_id":b.card.node_id,"message":"fixture:config","config":{"model":"fixture-large"}}),
+    )
+    .await;
+    let id = opened.session_id;
+    let (done, _) = turn_done(&owner_a, id, 1).await;
+    assert_eq!(
+        done.last_final_text.as_deref(),
+        Some("model=fixture-large mode=ask effort=low")
+    );
+    // The settings the agent offers are shown, including one the large model added.
+    let ids: Vec<&str> = done.config_options.iter().map(|o| o.id.as_str()).collect();
+    assert_eq!(ids, ["model", "mode", "effort"]);
+    // The agent's own defaults are cached for the next new session.
+    let nodes: Vec<MeshNode> = owner_a.get("/local/mesh/agents").await.unwrap();
+    let cached = &nodes.iter().find(|n| !n.local).unwrap().agents[0].config_options;
+    assert_eq!(cached[0].current, json!("fixture-small"));
+
+    // The opener changes settings between turns.
+    let changed = configure(&owner_a, id, "mode", json!("code"))
+        .await
+        .unwrap();
+    assert_eq!(current(&changed, "mode"), json!("code"));
+    let changed = configure(&owner_a, id, "effort", json!("high"))
+        .await
+        .unwrap();
+    assert_eq!(current(&changed, "effort"), json!("high"));
+    let bad = configure(&owner_a, id, "mode", json!("nope"))
+        .await
+        .unwrap_err();
+    assert_eq!(bad.code, ErrorCode::InvalidInput, "{}", bad.message);
+    let unknown = configure(&owner_a, id, "colour", json!("red"))
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.code, ErrorCode::InvalidInput, "{}", unknown.message);
+    // node-b's owner runs the agent but did not open the session.
+    let denied = configure(&owner_b, id, "mode", json!("ask"))
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code, ErrorCode::PermissionDenied);
+    // Not through the peer route either.
+    let bypass = owner_b
+        .post::<_, SessionRecord>(
+            &format!("/hmesh/v1/sessions/{id}/config"),
+            &json!({"config_id":"mode","value":"ask"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(bypass.code, ErrorCode::PermissionDenied);
+    // Nor may node-a change a session node-b's owner opened there.
+    let own = open(&owner_b, json!({"agent_id":agent})).await;
+    let as_peer =
+        hmesh_transport::Client::new(&a, &b.card.endpoint, &b.card.fingerprint, false, false)
+            .unwrap();
+    let refused = as_peer
+        .post::<_, SessionRecord>(
+            &format!("/hmesh/v1/sessions/{}/config", own.session_id),
+            &json!({"config_id":"mode","value":"code"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::PermissionDenied);
+
+    // While a turn runs, settings wait.
+    prompt(&owner_a, id, "fixture:wait").await;
+    until(&owner_a, id, |s, _| s.status.is_busy()).await;
+    let busy = configure(&owner_a, id, "mode", json!("ask"))
+        .await
+        .unwrap_err();
+    assert_eq!(busy.code, ErrorCode::TaskConflict);
+    let _ = post(&owner_a, &format!("/local/sessions/{id}/cancel")).await;
+    turn_done(&owner_a, id, 2).await;
+
+    // After node-b restarts, the agent reloads the conversation with its
+    // default settings; the chosen ones are applied again.
+    daemon_b.stop().await;
+    let daemon_b = Daemon::start(&b.dir);
+    daemon_b.ready().await;
+    prompt(&owner_a, id, "fixture:config").await;
+    let (again, events) = turn_done(&owner_a, id, 3).await;
+    assert_eq!(
+        again.last_final_text.as_deref(),
+        Some("model=fixture-large mode=code effort=high")
+    );
+    assert_eq!(
+        events.iter().filter(|e| e.kind == "config_changed").count(),
+        2,
+        "{events:#?}"
+    );
+    daemon_a.stop().await;
+    daemon_b.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn model_service_settings_reach_the_agent_redacted_and_stay_on_its_computer() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "node-a");
+    let b = init(root.path(), "node-b");
+    Store::open(&a.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&b.card)
+        .unwrap();
+    Store::open(&b.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&a.card)
+        .unwrap();
+    let agent = register_fixture(&a, &root.path().join("project"));
+    let claude = register_as(
+        &a,
+        &root.path().join("claude"),
+        "claude",
+        "claude-code",
+        &[],
+    );
+    let daemon_a = Daemon::start(&a.dir);
+    let daemon_b = Daemon::start(&b.dir);
+    daemon_a.ready().await;
+    daemon_b.ready().await;
+    let owner = daemon_a.owner();
+    let path = format!("/local/agents/{agent}/service");
+
+    let fresh: service::AgentServiceView = owner.get(&path).await.unwrap();
+    assert_eq!((fresh.mode.as_str(), fresh.modes.len()), ("agent_login", 1));
+    // A generic ACP agent takes only extra variables, not key modes.
+    let refused = owner
+        .post::<_, service::AgentServiceView>(
+            &path,
+            &json!({"mode":"api_key","api_key":"sk-0123456789"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InvalidInput);
+    let secret = "fixture-secret-0123456789";
+    let view = set_service(
+        &owner,
+        agent,
+        json!({"mode":"agent_login","default_model":"fixture-large","env":{"FIXTURE_SERVICE_TOKEN":secret}}),
+    )
+    .await;
+    assert_eq!(view.env[0].value.last4.as_deref(), Some("6789"));
+    let shown = serde_json::to_string(&owner.get::<Value>(&path).await.unwrap()).unwrap();
+    assert!(!shown.contains(secret), "{shown}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let file = a.dir.join("agent-secrets").join(format!("{agent}.json"));
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // The agent process sees the value; recorded output does not.
+    let first = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:env FIXTURE_SERVICE_TOKEN"}),
+    )
+    .await;
+    let (done, events) = turn_done(&owner, first.session_id, 1).await;
+    let expected = format!(
+        "FIXTURE_SERVICE_TOKEN len={} fnv={:016x} value=[REDACTED]",
+        secret.len(),
+        fnv(secret)
+    );
+    assert_eq!(done.last_final_text.as_deref(), Some(expected.as_str()));
+    assert!(!serde_json::to_string(&events).unwrap().contains(secret));
+    // An agent error that quotes the value is redacted too.
+    prompt(
+        &owner,
+        first.session_id,
+        "fixture:fail-env FIXTURE_SERVICE_TOKEN",
+    )
+    .await;
+    let (failed, events) = until(&owner, first.session_id, |s, e| {
+        !s.status.is_busy() && e.iter().any(|e| e.kind == "error")
+    })
+    .await;
+    let error = failed.last_error.unwrap_or_default();
+    assert!(
+        error.contains("[REDACTED]") && !error.contains(secret),
+        "{error}"
+    );
+    assert!(!serde_json::to_string(&events).unwrap().contains(secret));
+    // The default model applies to new sessions; an explicit choice wins.
+    prompt(&owner, first.session_id, "fixture:config").await;
+    let (configured, _) = turn_done(&owner, first.session_id, 2).await;
+    assert_eq!(
+        configured.last_final_text.as_deref(),
+        Some("model=fixture-large mode=ask effort=low")
+    );
+    let chosen = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:config","config":{"model":"fixture-small"}}),
+    )
+    .await;
+    let (chosen, _) = turn_done(&owner, chosen.session_id, 1).await;
+    assert_eq!(
+        chosen.last_final_text.as_deref(),
+        Some("model=fixture-small mode=ask")
+    );
+
+    // A changed value reaches a session that is already open on its next turn.
+    let rotated = "fixture-rotated-987654321";
+    set_service(
+        &owner,
+        agent,
+        json!({"mode":"agent_login","default_model":"fixture-large","env":{"FIXTURE_SERVICE_TOKEN":rotated}}),
+    )
+    .await;
+    prompt(
+        &owner,
+        first.session_id,
+        "fixture:env FIXTURE_SERVICE_TOKEN",
+    )
+    .await;
+    let (after, _) = turn_done(&owner, first.session_id, 3).await;
+    let after = after.last_final_text.unwrap();
+    assert!(
+        after.contains(&format!("fnv={:016x}", fnv(rotated))),
+        "{after}"
+    );
+    // A model the agent does not offer is reported, and the agent keeps its own.
+    set_service(
+        &owner,
+        agent,
+        json!({"mode":"agent_login","default_model":"no-such-model","env":{"FIXTURE_SERVICE_TOKEN":null}}),
+    )
+    .await;
+    let missing = open(&owner, json!({"agent_id":agent,"message":"fixture:config"})).await;
+    let (missing, events) = turn_done(&owner, missing.session_id, 1).await;
+    assert_eq!(
+        missing.last_final_text.as_deref(),
+        Some("model=fixture-small mode=ask")
+    );
+    assert!(
+        events.iter().any(|e| e.kind == "status"
+            && e.payload["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("did not accept the setting model"))),
+        "{events:#?}"
+    );
+
+    // Claude Code receives its key in its own variable.
+    let key = "sk-ant-fixture-0123456789";
+    let claude_view = set_service(&owner, claude, json!({"mode":"api_key","api_key":key})).await;
+    assert_eq!(claude_view.injected, ["ANTHROPIC_API_KEY"]);
+    let asked = open(
+        &owner,
+        json!({"agent_id":claude,"message":"fixture:env ANTHROPIC_API_KEY"}),
+    )
+    .await;
+    let (asked, _) = turn_done(&owner, asked.session_id, 1).await;
+    assert_eq!(
+        asked.last_final_text,
+        Some(format!(
+            "ANTHROPIC_API_KEY len={} fnv={:016x} value=[REDACTED]",
+            key.len(),
+            fnv(key)
+        ))
+    );
+
+    // A paired computer sees that a service is configured, never the values,
+    // and cannot read or change them.
+    let nodes: Vec<MeshNode> = daemon_b.owner().get("/local/mesh/agents").await.unwrap();
+    let listed = serde_json::to_string(&nodes).unwrap();
+    assert!(
+        !listed.contains(key) && !listed.contains(rotated),
+        "{listed}"
+    );
+    let remote = nodes.iter().find(|n| !n.local).unwrap();
+    let card = remote.agents.iter().find(|c| c.agent_id == claude).unwrap();
+    assert!(card.service_configured);
+    let as_peer =
+        hmesh_transport::Client::new(&b, &a.card.endpoint, &a.card.fingerprint, false, false)
+            .unwrap();
+    assert!(as_peer.get::<Value>(&path).await.is_err());
+    assert!(
+        as_peer
+            .post::<_, Value>(&path, &json!({"mode":"agent_login"}))
+            .await
+            .is_err()
+    );
+    daemon_a.stop().await;
+    daemon_b.stop().await;
+    // Nothing the daemon stored holds the values.
+    for name in ["state.sqlite3", "state.sqlite3-wal"] {
+        if let Ok(bytes) = std::fs::read(a.dir.join(name)) {
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(!text.contains(secret) && !text.contains(key), "{name}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_waits_while_a_setting_changes() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "solo");
+    let agent = register_with_args(
+        &a,
+        &root.path().join("project"),
+        "slow-settings",
+        &["--config-delay-ms", "1500"],
+    );
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    let session = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:echo one"}),
+    )
+    .await;
+    let id = session.session_id;
+    turn_done(&owner, id, 1).await;
+    // While the agent is switching, a new message and another change wait.
+    let switching = {
+        let owner = daemon.owner();
+        tokio::spawn(async move { configure(&owner, id, "mode", json!("code")).await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let early = owner
+        .post::<_, SessionRecord>(
+            &format!("/local/sessions/{id}/prompt"),
+            &json!({"message":"fixture:config"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(early.code, ErrorCode::TaskConflict, "{}", early.message);
+    let second = configure(&owner, id, "model", json!("fixture-large"))
+        .await
+        .unwrap_err();
+    assert_eq!(second.code, ErrorCode::TaskConflict);
+    let switched = switching.await.unwrap().unwrap();
+    assert_eq!(current(&switched, "mode"), json!("code"));
+    // Afterwards the turn runs with the new setting.
+    prompt(&owner, id, "fixture:config").await;
+    let (done, _) = turn_done(&owner, id, 2).await;
+    assert_eq!(
+        done.last_final_text.as_deref(),
+        Some("model=fixture-small mode=code")
+    );
     daemon.stop().await;
 }

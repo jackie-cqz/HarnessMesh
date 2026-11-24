@@ -20,6 +20,8 @@ cargo +stable build --locked -p hmesh-cli
 - 「停止本轮」发 ACP `session/cancel`，会话保留；「关闭会话」停掉 agent 进程，不能再继续。
 - 别的电脑在 `confirm` 模式下打开的会话显示「等待批准」，在这里批准或拒绝；侧栏「会话」旁的数字是等你处理的会话数。
 - agent 通过 `hmesh mcp` 打开的子会话也在列表里，标出调用者和调用链。
+- 输入框下面是 agent 报上来的会话设置（模型、模式、思考强度）：新会话发第一条消息前就能选（用的是这个 agent 上次报的选项），会话里两轮之间可以切，切换会记在对话里。只有打开会话的电脑能改。
+- 「Agents」页每个本机 agent 有「模型服务」：用它自己的登录、API key 或自定义地址，以及默认模型和额外环境变量。key 只存在这台电脑上，保存后不再显示，只给末 4 位；配对电脑只看到「已配置」。CLI 对应 `hmesh agent service <agent> --mode … --api-key-stdin` 和 `hmesh session config <session> <setting> <value>`；额外变量用 `--env NAME`，值取自这条命令自己的同名环境变量，不出现在命令行和 shell 历史里（`--keep-env NAME` 保留已存的值，`--clear-env` 全部删除）。
 
 页面用长轮询跟随当前会话（每次最多 10 秒），切换会话或离开页面就停止。
 

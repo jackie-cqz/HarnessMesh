@@ -540,7 +540,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1"],"schema_version":9}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","agent-settings-v1"],"schema_version":9}),
     ))
 }
 async fn stop(
@@ -769,6 +769,9 @@ async fn register_config(
         availability: "unverified".into(),
         capabilities: config.agent.display_capabilities.clone(),
         probe,
+        config_options: vec![],
+        service_configured: false,
+        default_model: config.adapter.model.clone(),
     };
     s.store.register_agent(&card, &config)?;
     Ok(card)
@@ -846,6 +849,11 @@ async fn update_agent(
     card.probe = probe;
     card.name = config.agent.name.clone();
     card.harness = config.agent.harness;
+    card.default_model = hmesh_runtime::service::load(&s.instance.dir, id)
+        .ok()
+        .flatten()
+        .and_then(|v| v.default_model_value(config.agent.harness))
+        .or_else(|| config.adapter.model.clone());
     card.availability = "unverified".into();
     card.probe.authentication = "not_checked".into();
     card.probe.managed_run = "not_checked".into();

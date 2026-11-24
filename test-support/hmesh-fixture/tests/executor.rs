@@ -74,6 +74,9 @@ impl Fixture {
                 session_resume: "not_checked".into(),
                 unavailable_reason: None,
             },
+            config_options: vec![],
+            service_configured: false,
+            default_model: None,
         };
         let store = Store::open(&instance.dir.join("state.sqlite3")).expect("store");
         store.register_agent(&agent, &config).expect("register");

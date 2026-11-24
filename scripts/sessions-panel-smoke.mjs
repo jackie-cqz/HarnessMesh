@@ -79,11 +79,31 @@ try{
  const tool=stream(page).locator('details.tool').first();
  await tool.locator('summary').click();assert(await tool.evaluate(d=>d.open),'tool row did not expand');
  await page.screenshot({path:join(shots,'sessions-remote.png')});
+ stage='switch the model between turns';
+ // The agent offers its settings; the opener switches them between turns.
+ await page.locator('#composer-settings select[aria-label="模型"]').selectOption('fixture-large');
+ await stream(page).getByText('已切换模型：fixture-large').waitFor({timeout:30000});
+ // The large model adds a reasoning setting.
+ await page.locator('#composer-settings select[aria-label="思考强度"]').waitFor({timeout:30000});
+ await page.waitForFunction(()=>!document.querySelector('#composer-send').disabled);
+ await page.locator('#composer-input').fill('fixture:config');await page.locator('#composer-send').click();
+ await stream(page).getByText('model=fixture-large mode=ask effort=low').waitFor({timeout:30000});
+ await settle(page);await page.screenshot({path:join(shots,'settings-composer.png')});
  stage='reload keeps the conversation';
  await page.reload();await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor();
  await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();
  await stream(page).getByText('Echo #2: from the panel').waitFor({timeout:30000});
  await stream(page).getByText('Permission granted: notes.txt edited.').waitFor();
+ stage='new session with chosen settings';
+ // Settings the agent offered last time can be chosen before the first message.
+ await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
+ await page.locator('#hero-agents .agent-chip').filter({hasText:'worker'}).click();
+ const heroModel=page.locator('#hero-settings select[aria-label="模型"]');await heroModel.waitFor({timeout:30000});
+ await heroModel.selectOption('fixture-large');await page.locator('#hero-settings select[aria-label="模式"]').selectOption('code');
+ await settle(page);await page.screenshot({path:join(shots,'settings-hero.png')});
+ await page.locator('#hero-input').fill('fixture:config');await page.locator('#hero-send').click();
+ await page.locator('#conversation').waitFor();
+ await stream(page).getByText('model=fixture-large mode=code effort=low').waitFor({timeout:30000});
  stage='agent delegates across computers';
  await openSession(page,'mac-a（本机）','helper','fixture:delegate mac-b/worker fixture:reply');
  await stream(page).getByText(/Delegated to mac-b\/worker: Final answer: the build is green\./).waitFor({timeout:60000});
@@ -103,6 +123,30 @@ try{
  await page.getByRole('button',{name:'关闭会话'}).click();await page.getByRole('button',{name:'确认',exact:true}).click();
  await page.locator('#conversation-header .badge').filter({hasText:'已关闭'}).waitFor();
  assert(await page.locator('#composer-send').isDisabled(),'closed session still accepts messages');
+ stage='model service on the agents page';
+ const secret='fixture-secret-0123456789';
+ await page.locator('[data-view="agents"]').click();
+ const helperCard=page.locator('#agent-list .entity-card').filter({hasText:'helper'});
+ await helperCard.getByRole('button',{name:'模型服务'}).click();
+ await page.locator('#service-dialog[open]').waitFor();
+ await page.locator('#service-env-box summary').click();await page.locator('#service-env-add').click();
+ const envRow=page.locator('#service-env .service-env-row').last();
+ await envRow.locator('.env-name').fill('FIXTURE_SERVICE_TOKEN');await envRow.locator('.env-value').fill(secret);
+ await page.locator('#service-model').fill('fixture-large');
+ await settle(page);await page.screenshot({path:join(shots,'service-dialog.png')});
+ await page.locator('#service-save').click();
+ await helperCard.getByText('已配置').waitFor({timeout:30000});
+ // Reopened, the value is gone; only its last characters are shown.
+ await helperCard.getByRole('button',{name:'模型服务'}).click();
+ await page.locator('#service-dialog[open]').waitFor();
+ const hint=await page.locator('#service-env .env-value').first().getAttribute('placeholder');
+ assert(hint.includes(secret.slice(-4))&&await page.locator('#service-env .env-value').first().inputValue()==='','stored value shown again: '+hint);
+ assert(!(await page.content()).includes(secret),'secret visible in the page');
+ await page.locator('#service-cancel').click();
+ // The agent process receives it; the conversation shows it redacted.
+ await openSession(page,'mac-a（本机）','helper','fixture:env FIXTURE_SERVICE_TOKEN');
+ await stream(page).getByText(/FIXTURE_SERVICE_TOKEN len=25 fnv=[0-9a-f]{16} value=\[REDACTED\]/).waitFor({timeout:30000});
+ assert(!(await page.content()).includes(secret),'secret visible in the conversation');
  stage='dark theme';
  await page.emulateMedia({colorScheme:'dark'});
  await page.locator('.session-row').filter({hasText:'fixture:reply'}).first().click();
@@ -113,6 +157,9 @@ try{
  await page.locator('#new-session').click();await settle(page);await page.screenshot({path:join(shots,'hero-dark.png')});
  await page.locator('[data-view="overview"]').click();await settle(page);await page.screenshot({path:join(shots,'overview-dark.png')});
  await page.locator('[data-view="agents"]').click();await settle(page);await page.screenshot({path:join(shots,'agents-dark.png')});
+ await page.locator('#agent-list .entity-card').filter({hasText:'helper'}).getByRole('button',{name:'模型服务'}).click();
+ await page.locator('#service-dialog[open]').waitFor();await settle(page);await page.screenshot({path:join(shots,'service-dialog-dark.png')});
+ await page.locator('#service-cancel').click();
  await page.emulateMedia({colorScheme:'light'});
  stage='narrow window';
  await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();

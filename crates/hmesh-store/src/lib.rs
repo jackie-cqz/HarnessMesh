@@ -334,6 +334,33 @@ impl Store {
             Ok(())
         })
     }
+    /// Change facts kept on an agent's card (not its configuration).
+    pub fn update_agent_card(
+        &self,
+        id: Uuid,
+        change: impl FnOnce(&mut AgentCard),
+    ) -> Result<AgentCard> {
+        self.transaction(|tx| {
+            let text: Option<String> = tx
+                .query_row(
+                    "SELECT card_json FROM agents WHERE agent_id=?1",
+                    [id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(internal)?;
+            let mut card: AgentCard = decode(&text.ok_or_else(|| {
+                MeshError::new(ErrorCode::AgentUnavailable, "agent not registered")
+            })?)?;
+            change(&mut card);
+            tx.execute(
+                "UPDATE agents SET card_json=?1 WHERE agent_id=?2",
+                params![encode(&card)?, id.to_string()],
+            )
+            .map_err(internal)?;
+            Ok(card)
+        })
+    }
     pub fn agents(&self) -> Result<Vec<AgentCard>> {
         self.read(|c| {
             let mut q = c

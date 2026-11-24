@@ -2,8 +2,9 @@
 pub mod acp_conn;
 mod prepare;
 pub use prepare::inspect_references;
-pub use prepare::{agent_command, run_secrets};
+pub use prepare::{agent_command, apply_env, run_secrets};
 pub mod process_tree;
+pub mod service;
 pub mod verification;
 pub mod workspace;
 use hmesh_adapters::{JsonlDecoder, ObservedEvent, native_record_limit};
@@ -202,6 +203,12 @@ async fn execute(
     let dir = data_dir.join("runs").join(attempt.to_string());
     let config = workspace::prepare(store, task, &config, &dir).map_err(failure)?;
     let mut prepared = prepare::prepare(&config, task, &dir).map_err(failure)?;
+    if let Some(service) = service::load(data_dir, task.agent_id).map_err(failure)? {
+        let env = service
+            .launch_env(config.agent.harness)
+            .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
+        prepared.add_service(&env, service.secrets());
+    }
     if store.task(task.task_id)?.status == TaskStatus::Cancelling {
         store.transition(task.task_id, TaskStatus::Cancelled, None)?;
         return Ok(());

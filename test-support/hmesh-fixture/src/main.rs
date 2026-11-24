@@ -55,6 +55,78 @@ struct Session {
     cwd: PathBuf,
     mcp_servers: Vec<Value>,
     history: Vec<(String, String)>,
+    /// Session settings. Like OpenCode, they are not kept across
+    /// `session/load`: a reloaded session starts from the defaults.
+    settings: Settings,
+}
+#[derive(Clone)]
+struct Settings {
+    model: String,
+    mode: String,
+    effort: String,
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            model: "fixture-small".into(),
+            mode: "ask".into(),
+            effort: "low".into(),
+        }
+    }
+}
+impl Settings {
+    /// ACP `configOptions`; the large model adds a reasoning-effort setting.
+    fn options(&self) -> Value {
+        let select = |id: &str, name: &str, category: &str, current: &str, choices: &[&str]| {
+            json!({"id":id,"name":name,"category":category,"type":"select","currentValue":current,
+                "options":choices.iter().map(|c| json!({"value":c,"name":c})).collect::<Vec<_>>()})
+        };
+        let mut options = vec![
+            select(
+                "model",
+                "Model",
+                "model",
+                &self.model,
+                &["fixture-small", "fixture-large"],
+            ),
+            select("mode", "Mode", "mode", &self.mode, &["ask", "code"]),
+        ];
+        if self.model == "fixture-large" {
+            options.push(select(
+                "effort",
+                "Effort",
+                "thought_level",
+                &self.effort,
+                &["low", "high"],
+            ));
+        }
+        Value::Array(options)
+    }
+    fn set(&mut self, id: &str, value: &str) -> Result<(), String> {
+        let offered = self.options();
+        let option = offered
+            .as_array()
+            .and_then(|o| o.iter().find(|o| o["id"] == id))
+            .ok_or_else(|| format!("Invalid params: unknown setting {id}"))?;
+        if !option["options"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c["value"] == value))
+        {
+            return Err(format!("Invalid params: {id} has no choice {value}"));
+        }
+        match id {
+            "model" => self.model = value.into(),
+            "mode" => self.mode = value.into(),
+            _ => self.effort = value.into(),
+        }
+        Ok(())
+    }
+}
+/// FNV-1a, so tests can check an environment value without seeing it.
+fn fnv(text: &str) -> u64 {
+    text.bytes().fold(0xcbf29ce484222325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+    })
 }
 fn state_dir() -> PathBuf {
     std::env::temp_dir().join("hmesh-fixture-sessions")
@@ -265,10 +337,44 @@ fn run_acp() -> anyhow::Result<()> {
                     cwd: PathBuf::from(params["cwd"].as_str().unwrap_or(".")),
                     mcp_servers: params["mcpServers"].as_array().cloned().unwrap_or_default(),
                     history: vec![],
+                    settings: Settings::default(),
                 };
                 save(&session_id, &session);
+                let options = session.settings.options();
                 sessions.insert(session_id.clone(), session);
-                respond(&id, json!({"sessionId":session_id}));
+                respond(&id, json!({"sessionId":session_id,"configOptions":options}));
+            }
+            "session/set_config_option" => {
+                // `--config-delay-ms N` simulates an agent slow to switch.
+                let args: Vec<String> = std::env::args().collect();
+                if let Some(ms) = args
+                    .iter()
+                    .position(|a| a == "--config-delay-ms")
+                    .and_then(|i| args.get(i + 1))
+                    .and_then(|v| v.parse::<u64>().ok())
+                {
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
+                let session_id = params["sessionId"].as_str().unwrap_or("").to_owned();
+                let Some(session) = sessions.get_mut(&session_id) else {
+                    fail(&id, -32002, "unknown session");
+                    continue;
+                };
+                let value = params["value"].as_str().unwrap_or_default();
+                match session
+                    .settings
+                    .set(params["configId"].as_str().unwrap_or_default(), value)
+                {
+                    Ok(()) => {
+                        let options = session.settings.options();
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"config_option_update","configOptions":options}),
+                        );
+                        respond(&id, json!({"configOptions":options}));
+                    }
+                    Err(message) => fail(&id, -32602, &message),
+                }
             }
             "session/load" => {
                 let session_id = params["sessionId"].as_str().unwrap_or("").to_owned();
@@ -294,9 +400,10 @@ fn run_acp() -> anyhow::Result<()> {
                                     .cloned()
                                     .unwrap_or_default(),
                                 history,
+                                settings: Settings::default(),
                             },
                         );
-                        respond(&id, json!({}));
+                        respond(&id, json!({"configOptions":Settings::default().options()}));
                     }
                     None => fail(&id, -32002, "unknown session"),
                 }
@@ -495,6 +602,38 @@ fn run_acp() -> anyhow::Result<()> {
                     }
                     _ if prompt.starts_with("fixture:echo ") => {
                         let text = format!("Echo #{turn}: {}", &prompt["fixture:echo ".len()..]);
+                        reply(session, &text);
+                        end_turn(&id);
+                    }
+                    "fixture:config" => {
+                        let s = session.settings.clone();
+                        let mut text = format!("model={} mode={}", s.model, s.mode);
+                        if s.model == "fixture-large" {
+                            text.push_str(&format!(" effort={}", s.effort));
+                        }
+                        reply(session, &text);
+                        end_turn(&id);
+                    }
+                    _ if prompt.starts_with("fixture:fail-env ") => {
+                        // An agent error that quotes its environment.
+                        let name = prompt["fixture:fail-env ".len()..].trim();
+                        let value = std::env::var(name).unwrap_or_default();
+                        fail(
+                            &id,
+                            -32603,
+                            &format!("provider rejected credential {value}"),
+                        );
+                    }
+                    _ if prompt.starts_with("fixture:env ") => {
+                        let name = prompt["fixture:env ".len()..].trim();
+                        let text = match std::env::var(name) {
+                            Ok(value) => format!(
+                                "{name} len={} fnv={:016x} value={value}",
+                                value.len(),
+                                fnv(&value)
+                            ),
+                            Err(_) => format!("{name} unset"),
+                        };
                         reply(session, &text);
                         end_turn(&id);
                     }

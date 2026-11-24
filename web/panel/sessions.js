@@ -4,7 +4,7 @@
 // screen with an agent picker. Agent and peer text is always set as text.
 const sessionLabels={pending_approval:'等待批准',idle:'空闲',running:'进行中',waiting_permission:'等待授权',closed:'已关闭'};
 const sessionTone={pending_approval:'warn',idle:'good',running:'live',waiting_permission:'warn',closed:''};
-const conv={list:null,nodes:[],selected:null,cursor:0,events:[],record:null,remote:false,generation:0,busy:false,listLoading:false,target:null,openTools:new Set(),openThoughts:new Set()};
+const conv={list:null,nodes:[],selected:null,cursor:0,events:[],record:null,remote:false,generation:0,busy:false,listLoading:false,target:null,openTools:new Set(),openThoughts:new Set(),heroConfig:{},settingBusy:false};
 
 // Daemon notes are English; show them in the panel's language (null hides them).
 const sessionNotes=[
@@ -21,7 +21,11 @@ const sessionNotes=[
   [/^cancel requested/,'已请求停止'],
   [/^the turn was interrupted because HarnessMesh restarted/,'HarnessMesh 重启，这一轮被中断'],
 ];
-function noteText(message){for(const [pattern,text]of sessionNotes)if(pattern.test(message||''))return text;return message;}
+function noteText(message){
+  const refused=/^the agent did not accept the setting (\S+) = "?([^":]*)"?/.exec(message||'');
+  if(refused)return `Agent 没接受设置 ${refused[1]} = ${refused[2]}，保持它自己的选择`;
+  for(const [pattern,text]of sessionNotes)if(pattern.test(message||''))return text;return message;
+}
 function icon(name,size=''){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('class',`icon ${size}`.trim());svg.setAttribute('aria-hidden','true');const use=document.createElementNS('http://www.w3.org/2000/svg','use');use.setAttribute('href',`#i-${name}`);svg.append(use);return svg;}
 function sessionBadge(status){return el('span',`badge ${sessionTone[status]||''}`,sessionLabels[status]||status||'未知');}
 function localNodeId(){return data('node',{}).node?.node_id;}
@@ -130,33 +134,84 @@ for(const label of document.querySelectorAll('.side-label'))label.addEventListen
 function readyAgents(){return conv.nodes.flatMap(n=>(n.agents||[]).filter(a=>a.availability!=='disabled'&&a.probe?.version_supported&&n.reachable).map(a=>({node:n,agent:a})));}
 function startNew(nodeId,agentId){
   conv.selected=null;conv.record=null;conv.generation++;
-  if(nodeId&&agentId)conv.target={node:nodeId,agent:agentId};
+  if(nodeId&&agentId&&(conv.target?.node!==nodeId||conv.target?.agent!==agentId)){conv.target={node:nodeId,agent:agentId};conv.heroConfig={};}
   if(state.view!=='sessions')showView('sessions');else renderConversation();
   renderSessionList();$('#hero-input').focus();
 }
+// The settings a new session starts with: the agent's own defaults, its
+// default model when it offers it, then what was picked here.
+function heroDefaults(agent){
+  const values={};
+  for(const o of agent?.config_options||[]){
+    values[o.id]=o.current;
+    if(o.category==='model'&&agent.default_model&&(o.choices||[]).some(c=>c.value===agent.default_model))values[o.id]=agent.default_model;
+  }
+  return values;
+}
 function renderHero(){
   const ready=readyAgents();
-  if(!conv.target||!ready.some(r=>r.node.node_id===conv.target.node&&r.agent.agent_id===conv.target.agent)){const first=ready.find(r=>r.node.local)||ready[0];conv.target=first?{node:first.node.node_id,agent:first.agent.agent_id}:null;}
+  if(!conv.target||!ready.some(r=>r.node.node_id===conv.target.node&&r.agent.agent_id===conv.target.agent)){const first=ready.find(r=>r.node.local)||ready[0];conv.target=first?{node:first.node.node_id,agent:first.agent.agent_id}:null;conv.heroConfig={};}
   $('#hero-agents').replaceChildren(...(ready.length?ready.map(({node,agent})=>{
     const chip=el('button','agent-chip'),on=conv.target?.node===node.node_id&&conv.target?.agent===agent.agent_id;chip.type='button';chip.setAttribute('role','radio');chip.setAttribute('aria-checked',String(on));
     chip.append(icon('bot','sm'),el('span','',agent.name));if(!node.local)chip.append(el('small','',node.name));
-    chip.addEventListener('click',()=>{conv.target={node:node.node_id,agent:agent.agent_id};renderHero();$('#hero-input').focus();});
+    chip.addEventListener('click',()=>{if(!on){conv.target={node:node.node_id,agent:agent.agent_id};conv.heroConfig={};}renderHero();$('#hero-input').focus();});
     return chip;
   }):[el('div','side-empty','没有可用的 Agent。先在 Agents 页接入一个已安装的 ACP agent。')]));
   const target=ready.find(r=>r.node.node_id===conv.target?.node&&r.agent.agent_id===conv.target?.agent);
   $('#hero-target').replaceChildren(...(target?[icon('bot','xs'),el('span','',`${target.agent.name} · ${target.node.local?'本机':target.node.name}`)]:[]));
+  const values={...heroDefaults(target?.agent),...conv.heroConfig},box=$('#hero-settings');
+  box.hidden=!settingsSupported()||!target;
+  renderSettings(box,target?.agent.config_options,values,!canWrite(),(id,value)=>{conv.heroConfig[id]=value;renderHero();},JSON.stringify([conv.target,target?.agent.config_options,values]));
   $('#hero-send').disabled=!target||!canWrite();
 }
 async function submitNew(event){
   event.preventDefault();
   const target=conv.target,message=$('#hero-input').value.trim(),node=conv.nodes.find(n=>n.node_id===target?.node);
   if(!target||!node||!message)return;
+  const agent=(node.agents||[]).find(a=>a.agent_id===target.agent),defaults=heroDefaults(agent);
+  // Only choices that differ from what the agent would start with.
+  const config=Object.fromEntries(Object.entries(conv.heroConfig).filter(([id,value])=>defaults[id]!==value));
   $('#hero-send').disabled=true;$('#hero-error').hidden=true;
   try{
-    const record=unwrap(await api('/sessions',{method:'POST',body:JSON.stringify({agent_id:target.agent,peer_id:node.local?null:node.node_id,message})}));
-    $('#hero-input').value='';await loadSessions();selectSession({...record,_remote:!node.local});
+    const record=unwrap(await api('/sessions',{method:'POST',body:JSON.stringify({agent_id:target.agent,peer_id:node.local?null:node.node_id,message,...(Object.keys(config).length?{config}:{})})}));
+    $('#hero-input').value='';conv.heroConfig={};await loadSessions();selectSession({...record,_remote:!node.local});
   }catch(e){$('#hero-error').textContent=`没有打开：${e.message||e.code}`;$('#hero-error').hidden=false;}
   finally{$('#hero-send').disabled=false;}
+}
+
+// ---- Session settings (model, mode, reasoning) ----
+const settingOrder={model:0,mode:1,thought_level:2,model_config:3};
+const settingNames={model:'模型',mode:'模式',thought_level:'思考强度',model_config:'模型参数'};
+function settingsSupported(){return state.runtime?.capabilities?.agent_settings===true;}
+function settingControl(option,value,disabled,onChange){
+  if(option.kind==='boolean'){
+    const toggle=el('button','setting-pill toggle');toggle.type='button';toggle.disabled=disabled;toggle.setAttribute('aria-pressed',String(value===true));
+    toggle.append(el('span','',option.name));toggle.addEventListener('click',()=>onChange(option.id,value!==true));return toggle;
+  }
+  const pill=el('label','setting-pill'),select=document.createElement('select'),groups=new Map();
+  if(option.category&&option.category!=='model')pill.append(el('span','setting-label',settingNames[option.category]||option.name));
+  select.disabled=disabled;select.setAttribute('aria-label',settingNames[option.category]||option.name);
+  for(const choice of option.choices||[]){
+    const item=el('option','',choice.name);item.value=choice.value;item.selected=choice.value===value;
+    if(choice.group){if(!groups.has(choice.group)){const g=document.createElement('optgroup');g.label=choice.group;groups.set(choice.group,g);select.append(g);}groups.get(choice.group).append(item);}
+    else select.append(item);
+  }
+  select.addEventListener('change',()=>onChange(option.id,select.value));
+  pill.title=`${settingNames[option.category]||option.name}：${(option.choices||[]).find(c=>c.value===value)?.name||value}`;
+  pill.append(select,icon('chevron-down','xs'));return pill;
+}
+// Rebuilt only when something changed, so an open dropdown is not replaced
+// by a background refresh.
+function renderSettings(box,options,values,disabled,onChange,key){
+  if(box.dataset.key===key)return;box.dataset.key=key;
+  const shown=[...(options||[])].filter(o=>o.kind==='boolean'||(o.choices||[]).length>1).sort((a,b)=>(settingOrder[a.category]??9)-(settingOrder[b.category]??9));
+  box.replaceChildren(...shown.map(o=>settingControl(o,values?.[o.id]??o.current,disabled,onChange)));
+}
+async function changeSetting(id,value){
+  if(!conv.selected||conv.settingBusy)return;conv.settingBusy=true;renderConversation();
+  try{const record=unwrap(await api(`/sessions/${conv.selected}/config`,{method:'POST',body:JSON.stringify({config_id:id,value})}));conv.record={...conv.record,...record};}
+  catch(e){toast(`没有切换：${e.message||e.code}`);$('#composer-settings').dataset.key='';}
+  finally{conv.settingBusy=false;renderConversation();}
 }
 
 // ---- Conversation ----
@@ -247,6 +302,10 @@ function renderConversation(){
       if(reason||!['end_turn'].includes(p.stop_reason))col.append(el('div','event-note center',reason||`本轮结束（${p.stop_reason}）`));
     }else if(e.kind==='error'){const n=el('div','event-note bad');n.append(icon('x-circle','sm'),el('span','',noteText(p.message)||'出错了'));col.append(n);}
     else if(e.kind==='status'){const t=noteText(p.message);if(t!==null)col.append(el('div','event-note center',t||sessionLabels[p.status]||p.status));}
+    else if(e.kind==='config_changed'){
+      const option=(s.config_options||[]).find(o=>o.id===p.config_id);
+      col.append(el('div','event-note center',`已切换${settingNames[option?.category]||p.name||p.config_id}：${p.value_name??p.value}`));
+    }
   }
   const open=openPermissions();
   if(s.status==='running'&&!open.size)col.append(el('div','working','正在处理…'));
@@ -263,10 +322,16 @@ function renderConversation(){
   }));
   const busy=s.status==='running'||s.status==='waiting_permission',send=$('#composer-send'),input=$('#composer-input');
   send.replaceChildren(icon(busy?'square':'send'));send.classList.toggle('stop',busy);send.setAttribute('aria-label',busy?'停止本轮':'发送');
-  send.disabled=!canWrite()||conv.busy||!(busy||s.status==='idle');
+  send.disabled=!canWrite()||conv.busy||conv.settingBusy||!(busy||s.status==='idle');
   input.disabled=s.status==='closed'||!canWrite();
   input.placeholder=s.status==='closed'?'会话已关闭':s.status==='pending_approval'?'等对方电脑批准后才能继续':busy?`${s.agent_name} 正在处理，可以先写下一条`:`回复 ${s.agent_name}…`;
   $('#composer-target').replaceChildren(icon('bot','xs'),el('span','',`${s.agent_name} · ${conv.remote?shortNode(s.node_id):'本机'}`));
+  // Settings change between turns, and only by whoever opened the session.
+  const opener=conv.remote||s.origin?.node_id===localNodeId(),settings=$('#composer-settings');
+  const locked=!canWrite()||busy||conv.settingBusy||s.status==='closed'||!opener;
+  settings.hidden=!settingsSupported();
+  settings.title=!opener?`这个会话由 ${nodeLabel(s.origin?.node_id)} 打开，设置由对方改`:busy?'这一轮结束后可以切换':'';
+  renderSettings(settings,s.config_options,null,locked,changeSetting,JSON.stringify([s.session_id,s.config_options,locked]));
 }
 async function sessionAction(name){
   try{const record=unwrap(await api(`/sessions/${conv.selected}/${name}`,{method:'POST',body:'{}'}));conv.record={...conv.record,...record};renderConversation();loadSessions();}
@@ -286,6 +351,78 @@ async function sendMessage(event){
   catch(e){toast(`发送失败：${e.message||e.code}`);}
   finally{conv.busy=false;renderConversation();loadSessions();}
 }
+
+// ---- Model service per agent (Agents page) ----
+// Keys go to the local daemon once and are never shown again; the dialog
+// only learns whether one is stored and its last four characters.
+const serviceModes={
+  agent_login:['用它自己的登录','用 Agent 自己的账号和设置，这里什么都不加'],
+  api_key:['API key','用你的 key 连它平常用的服务'],
+  custom:['自定义地址','连一个你指定的模型服务地址'],
+};
+const service={agent:null,view:null};
+function hintText(hint,empty){return hint?.set?`已设置${hint.last4?` · 末 4 位 ${hint.last4}`:''}，留空保持不变`:empty;}
+function setServiceMode(mode){
+  $('#service-modes').dataset.mode=mode;
+  for(const b of $('#service-modes').children)b.setAttribute('aria-checked',String(b.dataset.mode===mode));
+  $('#service-key-label').hidden=mode==='agent_login';$('#service-url-label').hidden=mode!=='custom';
+  $('#service-url').required=mode==='custom';
+  $('#service-model').placeholder=mode==='custom'?'这个地址上的模型名，必填':'不填就用 Agent 自己的默认';
+}
+function serviceEnvRow(name='',hint=null){
+  const row=el('div','service-env-row'),key=document.createElement('input'),value=document.createElement('input'),remove=button('删除','ghost small',()=>row.remove());
+  key.className='env-name';key.value=name;key.placeholder='变量名，如 HTTPS_PROXY';key.maxLength=128;key.setAttribute('aria-label','变量名');
+  value.className='env-value';value.type='password';value.autocomplete='off';value.placeholder=hintText(hint,'值');value.setAttribute('aria-label','变量值');
+  row.dataset.existing=name;row.append(key,value,remove);return row;
+}
+async function openService(agent){
+  try{service.view=unwrap(await api(`/agents/${agent.agent_id}/service`));}catch(e){return toast(`读取模型服务失败：${e.message||e.code}`);}
+  service.agent=agent;const v=service.view;
+  $('#service-title').textContent=`${agent.name} 的模型服务`;$('#service-subtitle').textContent=v.modes.length>1?String(agent.harness||''):`${agent.harness||''} · 用它自己的登录，这里可以设默认模型和额外环境变量`;
+  // A type with only its own login has nothing to choose between.
+  $('#service-modes').hidden=v.modes.length<2;
+  $('#service-modes').replaceChildren(...v.modes.map(mode=>{
+    const b=el('button','service-mode');b.type='button';b.dataset.mode=mode;b.setAttribute('role','radio');
+    b.append(el('strong','',serviceModes[mode]?.[0]||mode),el('span','',serviceModes[mode]?.[1]||''));
+    b.addEventListener('click',()=>setServiceMode(mode));return b;
+  }));
+  $('#service-key').value='';$('#service-key').placeholder=hintText(v.api_key,'粘贴你的 key');
+  $('#service-url').value=v.base_url||'';$('#service-model').value=v.default_model||'';
+  const models=(agent.config_options||[]).find(o=>o.category==='model')?.choices||[];
+  $('#service-models').replaceChildren(...models.map(c=>{const o=document.createElement('option');o.value=c.value;o.label=c.name;return o;}));
+  $('#service-env').replaceChildren(...v.env.map(e=>serviceEnvRow(e.name,e.value)));
+  $('#service-env-box').open=v.env.length>0;
+  $('#service-injected').hidden=!v.injected.length;$('#service-injected').textContent=`启动 ${agent.name} 时会设置：${v.injected.join('、')}`;
+  $('#service-message').textContent='';setServiceMode(v.mode);
+  $('#service-dialog').showModal();$('#service-modes').querySelector('[aria-checked="true"]')?.focus();
+}
+function closeService(){
+  // Typed secrets do not stay in the page.
+  $('#service-key').value='';for(const input of document.querySelectorAll('#service-env .env-value'))input.value='';
+  if($('#service-dialog').open)$('#service-dialog').close();
+}
+async function saveService(event){
+  event.preventDefault();
+  const mode=$('#service-modes').dataset.mode,key=$('#service-key').value.trim(),env={};
+  for(const row of $('#service-env').children){
+    const name=row.querySelector('.env-name').value.trim(),value=row.querySelector('.env-value').value;
+    if(name)env[name]=value?value:(row.dataset.existing===name?null:'');
+  }
+  const body={mode,base_url:mode==='custom'?$('#service-url').value.trim()||null:null,default_model:$('#service-model').value.trim()||null,env};
+  if(mode!=='agent_login'&&key)body.api_key=key;
+  $('#service-save').disabled=true;$('#service-message').textContent='';
+  try{
+    service.view=unwrap(await api(`/agents/${service.agent.agent_id}/service`,{method:'POST',body:JSON.stringify(body)}));
+    closeService();toast(`已保存 ${service.agent.name} 的模型服务`);
+    await refresh();loadSessions();
+  }catch(e){$('#service-message').textContent=`没有保存：${e.message||e.code}`;}
+  finally{$('#service-save').disabled=false;}
+}
+$('#service-form').addEventListener('submit',saveService);
+$('#service-cancel').addEventListener('click',closeService);
+$('#close-service').addEventListener('click',closeService);
+$('#service-dialog').addEventListener('close',()=>{$('#service-key').value='';});
+$('#service-env-add').addEventListener('click',()=>{$('#service-env').append(serviceEnvRow());$('#service-env').lastChild.querySelector('input').focus();});
 
 $('#new-session').addEventListener('click',()=>startNew());
 $('#hero-composer').addEventListener('submit',submitNew);

@@ -55,6 +55,9 @@ jobs:
       - name: Delegation preflight, approvals, results and compatibility without models
         if: runner.os == 'Linux'
         run: npm run test:delegation-ux
+      - name: Sessions, settings and model service across two computers without models
+        if: runner.os == 'Linux'
+        run: npm run test:sessions-panel
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

@@ -24,11 +24,18 @@ HTTP 桥接每次重查当前信任和服务租约，缓冲响应释放前再次
 
 ## Agent 运行机制（ACP）
 
-HarnessMesh 只通过 [Agent Client Protocol](https://agentclientprotocol.com) 驱动 agent：以参数数组直接启动 owner 登记的 ACP 命令（`opencode acp`、`claude-agent-acp`、`codex-acp`、`pi-acp` 或其他），工作目录为登记的项目目录，不拼 shell 命令。远端不能改变命令、cwd、环境或参数。agent 用它自己的登录和模型设置；HarnessMesh 不读取、不复制、不导入任何凭据文件（旧的 `credential_source` / `models_file` 已移除并会被拒绝）。owner 在 `env_allowlist` 里列出的环境变量缺失时，启动前失败。
+HarnessMesh 只通过 [Agent Client Protocol](https://agentclientprotocol.com) 驱动 agent：以参数数组直接启动 owner 登记的 ACP 命令（`opencode acp`、`claude-agent-acp`、`codex-acp`、`pi-acp` 或其他），工作目录为登记的项目目录，不拼 shell 命令。远端不能改变命令、cwd、环境或参数。默认 agent 用它自己的登录和模型设置；HarnessMesh 不读取、不复制、不导入任何 agent 的凭据文件（旧的 `credential_source` / `models_file` 已移除并会被拒绝），只有 owner 在「模型服务」里给的值会以环境变量交给 agent（见下）。owner 在 `env_allowlist` 里列出的环境变量缺失时，启动前失败。
 
 客户端在 `initialize` 里声明不提供文件系统和终端能力，agent 用自己的工具读写项目。agent 的每个 `session/request_permission` 都由会话的回答方决定（见上节）；一次性任务只允许 owner 在 `allowed_tools` 里列出的工具类别，其余一律拒绝并以 `FAILED_NEEDS_INPUT` 结束。**固定工作目录和权限回答不构成 OS 文件系统沙箱**；agent 进程拥有当前用户的底层权限，只应登记可信项目。
 
 每个打开的会话对应一个长驻 agent 进程，空闲 10 分钟后停止，下次发消息时重新启动并用 `session/load` 续上对话（agent 不支持时明确提示上下文丢失）。登记 agent 只做一次 `initialize` 握手，不创建会话、不调用模型。
+
+### 会话设置和模型服务
+
+- **会话设置**（模型、模式、思考强度）走 ACP 的 `session/set_config_option`，只有打开会话的那台电脑能改，只在两轮之间改；值由 agent 自己校验。用户的选择记在会话上，agent 进程重启、`session/load` 之后再设一次（有的 agent 重新载入后会回到默认值）。
+- **模型服务**（每个 agent：用它自己的登录 / API key / 自定义地址、默认模型、额外环境变量）只能由本机 owner 通过 `/local/agents/{id}/service` 设置，存在 `<数据目录>/agent-secrets/<agent id>.json`（目录 0700、文件 0600，原子写入），和节点私钥同一级保护；没有对应的 peer 接口，配对电脑只看到 `service_configured` 和默认模型名，看不到 key。接口只写不读：返回值只说「已设置」和长度足够时的末 4 位。
+- 启动 agent 进程时按类型换成环境变量：OpenCode 用 `OPENCODE_CONFIG_CONTENT` 注入一个 `hmesh` 服务商（key 放在单独的 `HMESH_OPENCODE_API_KEY` 里，配置文本里只有 `{env:…}` 引用；标题等小请求也走同一个地址），Claude Code 用 `ANTHROPIC_API_KEY` 或 `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`，Codex 用 `OPENAI_API_KEY` / `OPENAI_BASE_URL`，其他类型只有额外环境变量。冲突的继承变量会被去掉。**不改用户自己的 agent 配置文件**。
+- 注入的 key 和额外变量（8 个字符以上）加入脱敏名单，不会出现在会话事件、最终回复和数据库里。`PATH`、`HOME` 等系统变量和 `HMESH_` 开头的变量不能被覆盖。改了模型服务后，新会话和已有会话的下一轮会用新的进程。
 
 ## MCP 服务器的权限
 
