@@ -5,6 +5,7 @@ mod integration;
 mod onboarding;
 mod preflight;
 mod services;
+mod sessions;
 use anyhow::Context;
 use axum::{
     Json, Router,
@@ -45,6 +46,7 @@ pub struct AppState {
     handshake_requests: Arc<Mutex<HashMap<i64, usize>>>,
     acceptance: Arc<Mutex<HashMap<Uuid, Value>>>,
     pub shutdown: watch::Sender<bool>,
+    sessions: Arc<sessions::Sessions>,
 }
 #[derive(Debug)]
 pub struct ApiError(pub MeshError);
@@ -100,6 +102,7 @@ impl AppState {
             handshake_requests: Arc::new(Mutex::new(HashMap::new())),
             acceptance: Arc::new(Mutex::new(HashMap::new())),
             shutdown,
+            sessions: Arc::default(),
         })
     }
     fn actor(
@@ -284,6 +287,7 @@ pub fn router(state: AppState) -> Router {
         .merge(integration::routes())
         .merge(development::routes())
         .merge(preflight::routes())
+        .merge(sessions::routes())
         .route("/hmesh/v1/hello", get(hello))
         .route("/hmesh/v1/pair/challenge", get(challenge))
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
@@ -436,6 +440,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     ));
     let managed = tokio::spawn(services::run(state.clone(), shutdown.subscribe()));
     let workflows = tokio::spawn(development::run(state.clone(), shutdown.subscribe()));
+    let session_manager = tokio::spawn(sessions::run(state.clone(), shutdown.subscribe()));
     let expiry_store = state.store.clone();
     let ttl = instance.config.security.pending_approval_ttl_seconds;
     let mut expiry_stop = shutdown.subscribe();
@@ -476,6 +481,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let _ = runtime.await;
     let _ = managed.await;
     let _ = workflows.await;
+    let _ = session_manager.await;
     let _ = expiry.await;
     services::recover(&state_for_cleanup)?;
     signal.abort();
@@ -534,7 +540,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1"],"schema_version":8}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1"],"schema_version":9}),
     ))
 }
 async fn stop(
@@ -709,6 +715,7 @@ async fn revoke(
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
     s.store.revoke_peer(id)?;
+    sessions::close_for_peer(&s, id);
     s.store.audit(
         Some(s.instance.card.node_id),
         "pair.revoke",

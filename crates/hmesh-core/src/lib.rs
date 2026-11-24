@@ -3,6 +3,7 @@ mod network;
 pub use network::is_tailnet_ip;
 pub mod development;
 pub mod managed;
+pub mod sessions;
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,

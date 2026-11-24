@@ -1,6 +1,8 @@
 //! Persistent queue executor and bounded, individually tracked managed runs.
+pub mod acp_conn;
 mod prepare;
 pub use prepare::inspect_references;
+pub use prepare::{agent_command, run_secrets};
 pub mod process_tree;
 pub mod verification;
 pub mod workspace;

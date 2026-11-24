@@ -75,7 +75,7 @@ async fn server_starts_before_the_daemon_and_stdout_carries_only_json_rpc() {
     let records = records(&result);
     assert_eq!(records.len(), 4);
     assert_eq!(records[0]["error"]["code"], -32700);
-    assert_eq!(records[2]["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(records[2]["result"]["tools"].as_array().unwrap().len(), 6);
     let listed = &records[3]["result"];
     assert_eq!(listed["isError"], true);
     assert_eq!(
@@ -90,12 +90,12 @@ async fn server_starts_before_the_daemon_and_stdout_carries_only_json_rpc() {
     );
 }
 #[tokio::test]
-async fn parent_task_mode_refuses_to_start_without_an_active_scoped_parent() {
-    // The runtime passes --parent-task for managed Pi runs; an unknown or
-    // inactive parent must never fall back to unrestricted owner tools.
+async fn session_mode_refuses_to_start_without_an_open_session() {
+    // HarnessMesh passes --session for the agents it runs; an unknown session
+    // must never fall back to the unbound owner tools.
     let (_root, dir) = fixture(true);
-    let parent = Uuid::new_v4().to_string();
-    let result = run(&dir, &["--parent-task", &parent], handshake().as_bytes()).await;
+    let session = Uuid::new_v4().to_string();
+    let result = run(&dir, &["--session", &session], handshake().as_bytes()).await;
     assert!(!result.status.success());
     assert!(result.stdout.is_empty());
 }

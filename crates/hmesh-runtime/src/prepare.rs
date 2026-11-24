@@ -83,7 +83,7 @@ pub(crate) fn native_path(path: &Path) -> PathBuf {
 }
 /// Values to keep out of recorded output: the configured environment
 /// references plus secret-looking variables the agent inherits.
-pub(crate) fn run_secrets(config: &AgentConfig) -> Vec<String> {
+pub fn run_secrets(config: &AgentConfig) -> Vec<String> {
     let mut secrets: Vec<String> = config
         .adapter
         .env_allowlist

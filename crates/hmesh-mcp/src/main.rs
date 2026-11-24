@@ -6,16 +6,15 @@ struct Args {
     /// Node directory; defaults to ~/.harnessmesh like the `hmesh` CLI.
     #[arg(long)]
     data_dir: Option<std::path::PathBuf>,
-    /// Set by the runtime for a managed Pi parent run: confines the tools to
-    /// that run's owner scope file, budget and own child tasks.
+    /// Set by HarnessMesh for an agent session: the tools act for that session.
     #[arg(long, hide = true)]
-    parent_task: Option<uuid::Uuid>,
+    session: Option<uuid::Uuid>,
 }
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let args = Args::parse();
     let dir = args.data_dir.unwrap_or_else(hmesh_mcp::default_data_dir);
-    match hmesh_mcp::serve_stdio(&dir, args.parent_task).await {
+    match hmesh_mcp::serve_stdio(&dir, args.session).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("hmesh-mcp stopped: {error}");

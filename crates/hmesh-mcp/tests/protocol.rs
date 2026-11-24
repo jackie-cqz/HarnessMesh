@@ -55,8 +55,9 @@ async fn handshake_tool_list_notifications_and_errors_follow_mcp_boundaries() {
             "mesh_list_agents",
             "mesh_send",
             "mesh_wait",
-            "mesh_get_task",
-            "mesh_cancel"
+            "mesh_get_session",
+            "mesh_cancel",
+            "mesh_close"
         ]
     );
     assert!(
@@ -72,7 +73,7 @@ async fn handshake_tool_list_notifications_and_errors_follow_mcp_boundaries() {
     assert_eq!(response["result"]["isError"], false);
     assert_eq!(response["result"]["structuredContent"]["agents"], json!([]));
     let denied = server
-        .handle(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"mesh_wait","arguments":{"task_id":Uuid::new_v4()}}}))
+        .handle(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"mesh_wait","arguments":{"session_id":Uuid::new_v4()}}}))
         .await
         .unwrap();
     assert_eq!(denied["result"]["isError"], true);
@@ -110,37 +111,43 @@ async fn older_client_protocol_versions_are_echoed_and_unknown_ones_get_the_late
 #[test]
 fn tools_reject_arbitrary_execution_options_invalid_ids_and_unbounded_requests() {
     assert!(parse_call("mesh_list_agents", json!({"token":"not-accepted"})).is_err());
-    assert!(parse_call("mesh_get_task", json!({"task_id":"not-uuid"})).is_err());
+    assert!(parse_call("mesh_get_session", json!({"session_id":"not-uuid"})).is_err());
     assert!(
         parse_call(
-            "mesh_get_task",
-            json!({"task_id":Uuid::new_v4(),"after":-1})
+            "mesh_get_session",
+            json!({"session_id":Uuid::new_v4(),"after":-1})
         )
         .is_err()
     );
     assert!(
         parse_call(
             "mesh_wait",
-            json!({"task_id":Uuid::new_v4(),"wait_seconds":601})
+            json!({"session_id":Uuid::new_v4(),"wait_seconds":601})
         )
         .is_err()
     );
     let mut args = json!({"agent":"windows/pi-backend","message":"write a fixture"});
     assert!(parse_call("mesh_send", args.clone()).is_ok());
+    // Either a new session (agent) or a follow-up (session_id), never both.
+    args["session_id"] = json!(Uuid::new_v4());
+    assert!(parse_call("mesh_send", args.clone()).is_err());
+    args.as_object_mut().unwrap().remove("agent");
+    assert!(parse_call("mesh_send", args.clone()).is_ok());
+    args.as_object_mut().unwrap().remove("session_id");
+    assert!(parse_call("mesh_send", args.clone()).is_err());
+    args["agent"] = json!("windows/pi-backend");
     args["executable"] = json!("arbitrary.exe");
     assert!(parse_call("mesh_send", args.clone()).is_err());
     args.as_object_mut().unwrap().remove("executable");
-    args["timeout_seconds"] = json!(1801);
+    args["wait_seconds"] = json!(601);
     assert!(parse_call("mesh_send", args.clone()).is_err());
-    args["timeout_seconds"] = json!(1800);
-    args["project"] = json!("../escape");
-    assert!(parse_call("mesh_send", args.clone()).is_err());
-    args.as_object_mut().unwrap().remove("project");
+    args["wait_seconds"] = json!(600);
     args["message"] = json!("中".repeat(30000));
     assert!(parse_call("mesh_send", args.clone()).is_err());
     args["message"] = json!("   ");
     assert!(parse_call("mesh_send", args).is_err());
-    // Old scoped tool names are gone.
+    // Task-era tool names are gone.
+    assert!(parse_call("mesh_get_task", json!({"task_id":Uuid::new_v4()})).is_err());
     assert!(parse_call("mesh_submit_task", json!({})).is_err());
 }
 
@@ -220,5 +227,9 @@ fn agent_references_resolve_by_node_and_name_id_or_unique_name() {
 #[test]
 fn invalid_arguments_report_the_reason() {
     let missing = parse_call("mesh_send", json!({"message":"hi"})).unwrap_err();
-    assert!(missing.message.contains("agent"), "{}", missing.message);
+    assert!(
+        missing.message.contains("agent") && missing.message.contains("session_id"),
+        "{}",
+        missing.message
+    );
 }

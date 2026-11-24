@@ -556,6 +556,17 @@ async fn main() -> anyhow::Result<()> {
     if args.first().map(String::as_str) == Some("--daemon") {
         return hmesh_daemon::run(std::path::Path::new(&args[1])).await;
     }
+    // Stands in for `hmesh --data-dir <dir> mcp --session <id>` when tests run
+    // the daemon in-process (HMESH_MCP_COMMAND points here).
+    if args.len() >= 3 && args[0] == "--data-dir" && args[2] == "mcp" {
+        let session = args
+            .iter()
+            .position(|a| a == "--session")
+            .and_then(|i| args.get(i + 1))
+            .map(|id| id.parse())
+            .transpose()?;
+        return hmesh_mcp::serve_stdio(std::path::Path::new(&args[1]), session).await;
+    }
     if args.iter().any(|a| a == "--version") {
         println!("0.84.2");
         return Ok(());

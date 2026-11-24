@@ -24,7 +24,7 @@ use subtle::ConstantTimeEq;
 use tokio::{net::TcpListener, sync::Semaphore};
 use uuid::Uuid;
 
-const CLI_SCHEMA_VERSION: u64 = 8;
+const CLI_SCHEMA_VERSION: u64 = 9;
 const KNOWN_FEATURES: &[&str] = &[
     "panel-task-workflow-v1",
     "task-preflight-v1",

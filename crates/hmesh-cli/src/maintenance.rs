@@ -106,7 +106,7 @@ fn db_check(path: &Path) -> Result<i64> {
         bail!("database foreign key check failed");
     }
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if !(1..=8).contains(&version) {
+    if !(1..=9).contains(&version) {
         bail!("backup database schema is unsupported by this binary");
     }
     Ok(version)

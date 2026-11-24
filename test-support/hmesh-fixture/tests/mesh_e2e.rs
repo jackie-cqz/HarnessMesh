@@ -1,6 +1,8 @@
-//! Two real daemons on loopback mTLS, the stock MCP server and the fixture
-//! harness. Exercises discovery, dispatch, per-peer access and final replies.
-//! Never calls a model and never counts as real Harness evidence.
+//! Two real daemons on loopback mTLS, the stock MCP server and the fixture ACP
+//! agent. Exercises sessions across computers: discovery, multi-turn
+//! conversations, permission routing, agent-to-agent delegation and its
+//! limits, per-peer access and revocation. Never calls a model.
+use hmesh_core::sessions::*;
 use hmesh_core::*;
 use hmesh_mcp::{OwnerBackend, Protocol};
 use hmesh_security::Instance;
@@ -25,19 +27,18 @@ fn init(root: &Path, name: &str) -> Instance {
     config.node.listen_port = free_port();
     Instance::init(&root.join(name), config).unwrap()
 }
-/// A verified fixture agent; `require_remote_task_approval` keeps its legacy
-/// default (true) to prove it no longer forces approval.
+/// A fixture ACP agent that passed its initialize check.
 fn register_fixture(instance: &Instance, project: &Path) -> Uuid {
     std::fs::create_dir_all(project).unwrap();
     let config: AgentConfig = serde_json::from_value(json!({
-        "agent":{"name":"fixture-pi","harness":"pi","project_id":"demo"},
+        "agent":{"name":"fixture","harness":"acp","project_id":"demo"},
         "project":{"root":project,"allowed_tools":["read","write","edit"]},
         "adapter":{"executable":env!("CARGO_BIN_EXE_hmesh-fixture"),"provider":"fixture","model":"fixture"}
     }))
     .unwrap();
     let agent_id = Uuid::new_v4();
     let card: AgentCard = serde_json::from_value(json!({
-        "agent_id":agent_id,"node_id":instance.card.node_id,"name":"fixture-pi","harness":"pi","project_ids":["demo"],"availability":"idle","capabilities":[],
+        "agent_id":agent_id,"node_id":instance.card.node_id,"name":"fixture","harness":"acp","project_ids":["demo"],"availability":"idle","capabilities":[],
         "probe":{"installed":true,"version":"test-fixture","version_supported":true,"protocol_probe":"fixture","authentication":"not_applicable_test_fixture","managed_run":"passed","streaming":"fixture","cancel":"not_checked","session_resume":"not_checked","unavailable_reason":null}
     }))
     .unwrap();
@@ -110,8 +111,60 @@ async fn call(mcp: &mut Protocol<OwnerBackend>, name: &str, arguments: Value) ->
     reply["result"]["structuredContent"].clone()
 }
 
+type Owner = hmesh_transport::Client;
+
+async fn open(owner: &Owner, body: Value) -> SessionRecord {
+    owner.post("/local/sessions", &body).await.unwrap()
+}
+async fn post(owner: &Owner, path: &str) -> SessionRecord {
+    owner.post(path, &json!({})).await.unwrap()
+}
+async fn page(owner: &Owner, id: Uuid, after: u64, wait: u64) -> SessionEventPage {
+    owner
+        .get(&format!(
+            "/local/sessions/{id}/events?after={after}&wait={wait}"
+        ))
+        .await
+        .unwrap()
+}
+/// Follow a session until `done` holds for it; returns its events so far.
+async fn until(
+    owner: &Owner,
+    id: Uuid,
+    done: impl Fn(&SessionRecord, &[SessionEvent]) -> bool,
+) -> (SessionRecord, Vec<SessionEvent>) {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut events = vec![];
+    let mut after = 0;
+    loop {
+        let next = page(owner, id, after, 5).await;
+        after = next.next;
+        events.extend(next.events);
+        if done(&next.session, &events) {
+            return (next.session, events);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session {id} stuck: {:?} {events:#?}",
+            next.session.status
+        );
+    }
+}
+async fn turn_done(owner: &Owner, id: Uuid, turns: u64) -> (SessionRecord, Vec<SessionEvent>) {
+    until(owner, id, |s, _| {
+        s.turns >= turns && !s.status.is_busy() || s.status == SessionStatus::Closed
+    })
+    .await
+}
+fn kinds(events: &[SessionEvent]) -> Vec<&str> {
+    events.iter().map(|e| e.kind.as_str()).collect()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn any_agent_lists_paired_agents_dispatches_without_approval_and_reads_the_final_reply() {
+async fn sessions_span_paired_computers_with_delegation_permissions_and_access_rules() {
+    // The daemons run in this process, so the injected `hmesh mcp` server is
+    // the fixture binary's stand-in mode.
+    unsafe { std::env::set_var("HMESH_MCP_COMMAND", env!("CARGO_BIN_EXE_hmesh-fixture")) };
     let root = tempfile::tempdir().unwrap();
     let a = init(root.path(), "node-a");
     let b = init(root.path(), "node-b");
@@ -123,15 +176,17 @@ async fn any_agent_lists_paired_agents_dispatches_without_approval_and_reads_the
         .unwrap()
         .trust_peer(&a.card)
         .unwrap();
-    register_fixture(&a, &root.path().join("project-a"));
+    let local_agent = register_fixture(&a, &root.path().join("project-a"));
     let remote_agent = register_fixture(&b, &root.path().join("project-b"));
     let daemon_a = Daemon::start(&a.dir);
     let daemon_b = Daemon::start(&b.dir);
     daemon_a.ready().await;
     daemon_b.ready().await;
+    let owner_a = daemon_a.owner();
+    let owner_b = daemon_b.owner();
     let mut mcp = initialized(&a.dir).await;
 
-    // Pairing alone makes node-b's agents visible; no policy grant was written.
+    // Pairing alone makes node-b's agents visible.
     let listed = call(&mut mcp, "mesh_list_agents", json!({})).await;
     let refs: Vec<&str> = listed["agents"]
         .as_array()
@@ -139,120 +194,292 @@ async fn any_agent_lists_paired_agents_dispatches_without_approval_and_reads_the
         .iter()
         .map(|agent| agent["ref"].as_str().unwrap())
         .collect();
-    assert_eq!(refs, ["node-a/fixture-pi", "node-b/fixture-pi"]);
-    let remote = &listed["agents"][1];
-    assert_eq!(remote["local"], false);
-    assert_eq!(remote["ready"], true);
-    assert_eq!(remote["agent_id"], remote_agent.to_string());
-    assert_eq!(listed["nodes"][1]["reachable"], true);
+    assert_eq!(refs, ["node-a/fixture", "node-b/fixture"]);
+    assert_eq!(listed["agents"][1]["ready"], true, "{listed}");
 
-    // Default access is auto: the task is never parked for approval.
-    let sent = call(
+    // An MCP client opens a session on the paired computer and keeps talking
+    // in it: the agent remembers the conversation (turn numbers grow).
+    let first = call(
         &mut mcp,
         "mesh_send",
-        json!({"agent":"node-b/fixture-pi","message":"fixture:reply"}),
+        json!({"agent":"node-b/fixture","message":"fixture:reply","wait_seconds":60}),
     )
     .await;
-    assert_ne!(sent["status"], "PENDING_APPROVAL", "{sent}");
-    let task_id = sent["task_id"].as_str().unwrap().to_owned();
-    let done = call(
+    assert_eq!(first["done"], true, "{first}");
+    assert_eq!(first["final_text"], "Final answer: the build is green.");
+    assert_eq!(first["agent"], "node-b/fixture");
+    let remote_session: Uuid = first["session_id"].as_str().unwrap().parse().unwrap();
+    let second = call(
         &mut mcp,
-        "mesh_wait",
-        json!({"task_id":task_id,"wait_seconds":60}),
+        "mesh_send",
+        json!({"session_id":remote_session,"message":"fixture:echo again","wait_seconds":60}),
     )
     .await;
-    assert_eq!(done["done"], true, "{done}");
-    assert_eq!(done["status"], "SUCCEEDED");
-    assert_eq!(done["final_text"], "Final answer: the build is green.");
-    assert_eq!(done["reply_source"], "result_event");
-    // The full text, narration included, is still in the event log.
-    let events = call(&mut mcp, "mesh_get_task", json!({"task_id":task_id})).await;
-    let text: String = events["events"]
+    assert_eq!(second["final_text"], "Echo #2: again", "{second}");
+    assert_eq!(second["turns"], 2);
+    let progress = call(
+        &mut mcp,
+        "mesh_get_session",
+        json!({"session_id":remote_session}),
+    )
+    .await;
+    let seen: Vec<&str> = progress["events"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["payload"]["type"] == "text_delta")
-        .map(|e| e["payload"]["text"].as_str().unwrap())
+        .map(|e| e["kind"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        text,
-        "Let me check the project.Final answer: the build is green."
-    );
+    for kind in [
+        "user_message",
+        "agent_message_chunk",
+        "tool_call",
+        "turn_end",
+    ] {
+        assert!(seen.contains(&kind), "{kind} missing from {seen:?}");
+    }
+    // The session lives on node-b; node-a keeps a mirror of it.
+    let on_b: SessionRecord = owner_b
+        .get(&format!("/local/sessions/{remote_session}"))
+        .await
+        .unwrap();
+    assert_eq!(on_b.origin.node_id, a.card.node_id);
+    assert_eq!(on_b.origin.kind, OriginKind::Human);
+    assert_eq!(on_b.approver, Approver::Origin);
+    let listed_a: Value = owner_a.get("/local/sessions").await.unwrap();
+    assert_eq!(listed_a["remote"][0]["peer_id"], b.card.node_id.to_string());
 
-    // Local agents are reachable through the same tools, with send+wait in one call.
-    let local = call(
-        &mut mcp,
-        "mesh_send",
-        json!({"agent":"node-a/fixture-pi","message":"fixture:reply","wait_seconds":60}),
+    // A person on node-a drives node-b's agent and answers its permission
+    // request from node-a: whoever opened the session approves.
+    let asked = open(
+        &owner_a,
+        json!({"agent_id":remote_agent,"peer_id":b.card.node_id,"message":"fixture:permission"}),
     )
     .await;
-    assert_eq!(local["status"], "SUCCEEDED", "{local}");
-    assert_eq!(local["final_text"], "Final answer: the build is green.");
+    let (waiting, events) = until(&owner_a, asked.session_id, |s, _| {
+        s.status == SessionStatus::WaitingPermission
+    })
+    .await;
+    assert_eq!(waiting.approver, Approver::Origin);
+    let request = events
+        .iter()
+        .find(|e| e.kind == "permission_request")
+        .expect("permission request reached node-a");
+    let key = request.payload["key"].as_str().unwrap();
+    // node-b only lets the opener answer through the peer API.
+    let _: SessionRecord = owner_a
+        .post(
+            &format!("/local/sessions/{}/permissions/{key}", asked.session_id),
+            &json!({"allow":true}),
+        )
+        .await
+        .unwrap();
+    let (done, events) = turn_done(&owner_a, asked.session_id, 1).await;
+    assert_eq!(
+        done.last_final_text.as_deref(),
+        Some("Permission granted: notes.txt edited.")
+    );
+    assert!(kinds(&events).contains(&"permission_resolved"));
 
-    // node-b switches node-a to confirm: new tasks wait for node-b's owner.
-    let switched: Value = daemon_b
-        .owner()
+    // Agents call each other: node-a's agent delegates to node-b's agent
+    // through its own injected `hmesh mcp`. node-b runs the child session
+    // with automatic permission answers (node-a's access is auto).
+    let parent = open(
+        &owner_a,
+        json!({"agent_id":local_agent,"message":"fixture:delegate node-b/fixture fixture:permission"}),
+    )
+    .await;
+    let (parent_done, _) = turn_done(&owner_a, parent.session_id, 1).await;
+    assert!(
+        parent_done
+            .last_final_text
+            .as_deref()
+            .is_some_and(|t| t
+                .ends_with("Delegated to node-b/fixture: Permission granted: notes.txt edited.")),
+        "{parent_done:?}"
+    );
+    let children: Value = owner_b.get("/local/sessions").await.unwrap();
+    let child: SessionRecord = serde_json::from_value(
+        children["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["origin"]["kind"] == "agent")
+            .cloned()
+            .expect("child session on node-b"),
+    )
+    .unwrap();
+    assert_eq!(child.approver, Approver::Auto);
+    assert_eq!(child.origin.chain.len(), 1);
+    assert_eq!(child.origin.chain[0].session_id, parent.session_id);
+    assert_eq!(child.origin.label.as_deref(), Some("node-a / fixture"));
+
+    // An agent may not call itself again on the same chain.
+    let looped = open(
+        &owner_a,
+        json!({"agent_id":local_agent,"message":"fixture:delegate node-a/fixture fixture:reply"}),
+    )
+    .await;
+    let (looped, _) = turn_done(&owner_a, looped.session_id, 1).await;
+    let text = looped.last_final_text.unwrap();
+    assert!(
+        text.contains("Delegation failed:") && text.contains("loop"),
+        "{text}"
+    );
+    // A session node-a opened on node-b may use node-b's agents but cannot
+    // carry node-b's identity on to further computers.
+    let hop = open(
+        &owner_a,
+        json!({"agent_id":remote_agent,"peer_id":b.card.node_id,"message":"fixture:delegate node-a/fixture fixture:reply"}),
+    )
+    .await;
+    let (hop, _) = turn_done(&owner_a, hop.session_id, 1).await;
+    let text = hop.last_final_text.unwrap();
+    assert!(
+        text.contains("Delegation failed:") && text.contains("only call agents on this computer"),
+        "{text}"
+    );
+
+    // node-b switches node-a to confirm: new sessions wait for node-b's owner.
+    let _: Value = owner_b
         .post(
             &format!("/local/peers/{}/access", a.card.node_id),
             &json!({"access":"confirm"}),
         )
         .await
         .unwrap();
-    assert_eq!(switched["access"], "confirm");
-    let peers: Vec<PeerView> = daemon_b.owner().get("/local/peers").await.unwrap();
-    assert_eq!(peers[0].access, PeerAccess::Confirm);
-    // A bare name is ambiguous between the two nodes and submits nothing.
-    let ambiguous = mcp
-        .handle(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"mesh_send","arguments":{"agent":"fixture-pi","message":"fixture:reply"}}}))
-        .await
-        .unwrap();
-    assert_eq!(ambiguous["result"]["isError"], true);
-    let message = ambiguous["result"]["structuredContent"]["error"]["message"]
-        .as_str()
-        .unwrap();
-    assert!(message.contains("node-a/fixture-pi") && message.contains("node-b/fixture-pi"));
     let parked = call(
         &mut mcp,
         "mesh_send",
-        json!({"agent":"node-b/fixture-pi","message":"fixture:reply"}),
+        json!({"agent":"node-b/fixture","message":"fixture:reply","wait_seconds":1}),
     )
     .await;
-    assert_eq!(parked["status"], "PENDING_APPROVAL", "{parked}");
-    let parked_id = parked["task_id"].as_str().unwrap().to_owned();
-    let still = call(
-        &mut mcp,
-        "mesh_wait",
-        json!({"task_id":parked_id,"wait_seconds":1}),
-    )
-    .await;
-    assert_eq!(still["done"], false);
-    assert_eq!(still["status"], "PENDING_APPROVAL");
-    let _: TaskRecord = daemon_b
-        .owner()
-        .post(&format!("/local/tasks/{parked_id}/approve"), &json!({}))
+    assert_eq!(parked["status"], "pending_approval", "{parked}");
+    let parked_id: Uuid = parked["session_id"].as_str().unwrap().parse().unwrap();
+    // The opener cannot prompt it before approval.
+    let early = owner_a
+        .post::<_, SessionRecord>(
+            &format!("/local/sessions/{parked_id}/prompt"),
+            &json!({"message":"fixture:reply"}),
+        )
         .await
-        .unwrap();
+        .unwrap_err();
+    assert_eq!(early.code, ErrorCode::ApprovalRequired);
+    let _ = post(&owner_b, &format!("/local/sessions/{parked_id}/approve")).await;
     let approved = call(
         &mut mcp,
         "mesh_wait",
-        json!({"task_id":parked_id,"wait_seconds":60}),
+        json!({"session_id":parked_id,"wait_seconds":60}),
     )
     .await;
-    assert_eq!(approved["status"], "SUCCEEDED", "{approved}");
-    assert_eq!(approved["final_text"], "Final answer: the build is green.");
+    assert_eq!(
+        approved["final_text"], "Final answer: the build is green.",
+        "{approved}"
+    );
 
-    // Back to auto: removes the override instead of writing the default.
-    let _: Value = daemon_b
-        .owner()
+    // Revoking the pairing closes every session node-a opened on node-b.
+    let _: Value = owner_b
         .post(
-            &format!("/local/peers/{}/access", a.card.node_id),
-            &json!({"access":"auto"}),
+            &format!("/local/peers/{}/revoke", a.card.node_id),
+            &json!({}),
         )
         .await
         .unwrap();
-    let policy = std::fs::read_to_string(b.dir.join("policy.toml")).unwrap();
-    assert!(!policy.contains(&a.card.node_id.to_string()), "{policy}");
+    let after: SessionRecord = owner_b
+        .get(&format!("/local/sessions/{remote_session}"))
+        .await
+        .unwrap();
+    assert_eq!(after.status, SessionStatus::Closed);
+    let refused = owner_a
+        .post::<_, SessionRecord>(
+            &format!("/local/sessions/{remote_session}/prompt"),
+            &json!({"message":"fixture:reply"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused.code,
+            ErrorCode::PermissionDenied | ErrorCode::Unauthenticated | ErrorCode::PeerUnreachable
+        ),
+        "{refused:?}"
+    );
 
     daemon_a.stop().await;
     daemon_b.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_survives_a_daemon_restart_and_turns_can_be_cancelled() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "solo");
+    let agent = register_fixture(&a, &root.path().join("project"));
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    let session = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:echo one"}),
+    )
+    .await;
+    let (first, _) = turn_done(&owner, session.session_id, 1).await;
+    assert_eq!(first.last_final_text.as_deref(), Some("Echo #1: one"));
+    // A second prompt while a turn runs is refused, then the turn is cancelled.
+    let _: SessionRecord = owner
+        .post(
+            &format!("/local/sessions/{}/prompt", session.session_id),
+            &json!({"message":"fixture:wait"}),
+        )
+        .await
+        .unwrap();
+    let busy = owner
+        .post::<_, SessionRecord>(
+            &format!("/local/sessions/{}/prompt", session.session_id),
+            &json!({"message":"fixture:reply"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(busy.code, ErrorCode::TaskConflict);
+    let _ = post(
+        &owner,
+        &format!("/local/sessions/{}/cancel", session.session_id),
+    )
+    .await;
+    let (cancelled, _) = turn_done(&owner, session.session_id, 2).await;
+    assert_eq!(cancelled.last_stop_reason.as_deref(), Some("cancelled"));
+    daemon.stop().await;
+
+    // After a restart the agent reloads the conversation (session/load).
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    let _: SessionRecord = owner
+        .post(
+            &format!("/local/sessions/{}/prompt", session.session_id),
+            &json!({"message":"fixture:echo two"}),
+        )
+        .await
+        .unwrap();
+    let (second, events) = turn_done(&owner, session.session_id, 3).await;
+    assert_eq!(second.last_final_text.as_deref(), Some("Echo #3: two"));
+    assert!(
+        events.iter().any(|e| e.kind == "status"
+            && e.payload["message"] == "the agent reloaded this conversation"),
+        "{events:#?}"
+    );
+    // Closing stops the agent; a closed session takes no more prompts.
+    let closed = post(
+        &owner,
+        &format!("/local/sessions/{}/close", session.session_id),
+    )
+    .await;
+    assert_eq!(closed.status, SessionStatus::Closed);
+    let refused = owner
+        .post::<_, SessionRecord>(
+            &format!("/local/sessions/{}/prompt", session.session_id),
+            &json!({"message":"fixture:reply"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::TaskConflict);
+    daemon.stop().await;
 }

@@ -74,7 +74,11 @@ enum Commands {
         start_daemon: bool,
     },
     /// Serve the HarnessMesh MCP tools over stdio for any agent (Claude Code, Codex, Pi, …).
-    Mcp,
+    Mcp {
+        /// Set by HarnessMesh for the agent sessions it runs.
+        #[arg(long, hide = true)]
+        session: Option<uuid::Uuid>,
+    },
     Init {
         #[arg(long, default_value = "local-node")]
         name: String,
@@ -565,9 +569,9 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         )
         .into());
     }
-    if let Commands::Mcp = &cli.command {
+    if let Commands::Mcp { session } = &cli.command {
         // stdout carries only MCP frames from here on.
-        hmesh_mcp::serve_stdio(&dir, None).await?;
+        hmesh_mcp::serve_stdio(&dir, *session).await?;
         return Ok(None);
     }
     if let Commands::Peers {
