@@ -4,7 +4,7 @@ pub use prepare::inspect_references;
 pub mod process_tree;
 pub mod verification;
 pub mod workspace;
-use hmesh_adapters::{JsonlDecoder, ObservedEvent, ProtocolObserver, native_record_limit};
+use hmesh_adapters::{JsonlDecoder, ObservedEvent, native_record_limit};
 use hmesh_core::*;
 use hmesh_store::Store;
 use process_tree::ProcessTree;
@@ -241,20 +241,12 @@ async fn execute(
         .stdin
         .take()
         .ok_or_else(|| failure("missing harness stdin"))?;
-    input
-        .write_all(&prepared.input)
-        .await
-        .map_err(|_| failure("could not deliver managed prompt"))?;
-    input
-        .flush()
-        .await
-        .map_err(|_| failure("could not flush managed prompt"))?;
-    let mut input = if config.agent.harness == HarnessKind::Pi {
-        Some(input)
-    } else {
-        drop(input);
-        None
-    };
+    // ACP is bidirectional: stdin stays open for requests and for answers to
+    // the agent's permission requests until the turn settles.
+    for frame in prepared.driver.take_outbound() {
+        write_frame(&mut input, &frame).await?;
+    }
+    let mut input = Some(input);
     let mut stdout = child
         .stdout
         .take()
@@ -269,9 +261,8 @@ async fn execute(
         let _ = stderr.take(max_output as u64).read_to_end(&mut data).await;
         data
     });
-    let record_limit = native_record_limit(config.agent.harness, max_output);
+    let record_limit = native_record_limit(max_output);
     let mut decoder = JsonlDecoder::new(record_limit);
-    let mut observer = ProtocolObserver::new(config.agent.harness);
     let mut reply = ReplyTracker::default();
     let mut output_bytes = 0;
     let mut buffer = [0u8; 8192];
@@ -279,6 +270,8 @@ async fn execute(
     let mut output_closed = false;
     let mut cancellation = false;
     let mut run_error = None;
+    // Agents need not exit when stdin closes; stop them shortly after the turn.
+    let mut settled_at: Option<tokio::time::Instant> = None;
     let timeout = budget
         .as_ref()
         .map_or(task.request.limits.timeout_seconds, |b| {
@@ -299,7 +292,8 @@ async fn execute(
             }
             _ = inspect.tick() => { if let Err(error)=tree.refresh() { run_error=Some(MeshError::new(ErrorCode::TaskUnknown,format!("owned descendant tracking failed: {error}"))); break; }
                 if store.task(task.task_id)?.status == TaskStatus::Cancelling { cancellation = true; break; }
-                if let Err(error) = authorize(task) { run_error = Some(error); break; } }
+                if let Err(error) = authorize(task) { run_error = Some(error); break; }
+                if settled_at.is_some_and(|at| at.elapsed() >= SETTLED_EXIT_GRACE) { break; } }
             _ = &mut deadline => { run_error = Some(failure("managed run deadline exceeded")); break; }
             status = child.wait(), if exited.is_none() => { exited = Some(status.map_err(|_| failure("cannot observe harness exit"))?); }
             read = stdout.read(&mut buffer), if !output_closed => {
@@ -309,7 +303,7 @@ async fn execute(
                 if output_bytes > max_output { run_error = Some(MeshError::new(ErrorCode::RateLimited, "managed stdout exceeded output limit")); break; }
                 match decoder.push(&buffer[..read]) {
                     Ok(records) => for record in records {
-                        for event in observer.observe(&record) {
+                        for event in prepared.driver.observe(&record) {
                             if let ObservedEvent::Usage{usage}=&event {
                                 let mut persisted=usage.clone();persisted.configured_model=config.adapter.model.clone();persisted.configured_provider=config.adapter.provider.clone();
                                 if let Err(error)=store.record_usage(task.task_id,attempt,&persisted) {run_error=Some(error);break;}
@@ -324,7 +318,16 @@ async fn execute(
                             }
                         }
                         if run_error.is_some() { break; }
-                        if config.agent.harness == HarnessKind::Pi && (observer.settled() || observer.failed_or_waiting()) { input.take(); }
+                        if let Some(stdin) = input.as_mut() {
+                            for frame in prepared.driver.take_outbound() {
+                                if let Err(error) = write_frame(stdin, &frame).await { run_error = Some(error); break; }
+                            }
+                        }
+                        if run_error.is_some() { break; }
+                        if prepared.driver.settled() && settled_at.is_none() {
+                            input.take();
+                            settled_at = Some(tokio::time::Instant::now());
+                        }
                     },
                     Err(error) => { run_error = Some(error); break; }
                 }
@@ -402,9 +405,21 @@ async fn execute(
     }
     let result = match run_error {
         Some(error) => Err(error),
-        None => decoder
-            .finish()
-            .and_then(|_| observer.finish(exited.and_then(|s| s.code()))),
+        None => decoder.finish().and_then(|_| {
+            prepared.driver.finish().map_err(|error| {
+                // An agent that crashed mid-turn failed; one that exited
+                // cleanly without answering leaves the outcome unknown.
+                match exited.and_then(|s| s.code()) {
+                    Some(code) if code != 0 && error.code == ErrorCode::TaskUnknown => {
+                        MeshError::new(
+                            ErrorCode::AgentUnavailable,
+                            format!("the agent exited with code {code} before finishing the turn"),
+                        )
+                    }
+                    _ => error,
+                }
+            })
+        }),
     };
     let current = store.task(task.task_id)?;
     if current.status == TaskStatus::Cancelling {
@@ -437,6 +452,23 @@ async fn execute(
         }
     }
     Ok(())
+}
+/// How long an agent may keep running after its turn settled and stdin closed.
+const SETTLED_EXIT_GRACE: Duration = Duration::from_secs(3);
+async fn write_frame(
+    stdin: &mut tokio::process::ChildStdin,
+    frame: &serde_json::Value,
+) -> Result<()> {
+    let mut line = serde_json::to_vec(frame).map_err(failure)?;
+    line.push(b'\n');
+    stdin
+        .write_all(&line)
+        .await
+        .map_err(|_| failure("could not deliver an ACP message to the agent"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|_| failure("could not flush an ACP message to the agent"))
 }
 async fn stop_tree(tree: &mut ProcessTree, child: &mut tokio::process::Child) -> bool {
     if tree.terminate().is_err() {

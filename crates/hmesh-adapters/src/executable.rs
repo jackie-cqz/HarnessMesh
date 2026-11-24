@@ -1,12 +1,16 @@
 use anyhow::{Context, Result, bail};
 use hmesh_core::{AgentConfig, HarnessKind, ProbeReport};
+use serde_json::Value;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, process::Command};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    process::Command,
+};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedExecutable {
@@ -51,9 +55,12 @@ fn resolve_with_node(
     if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("ps1") {
         let parent = executable.parent().context("missing shim directory")?;
         let relative = match kind {
-            HarnessKind::Pi => "node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+            HarnessKind::Pi => "node_modules/pi-acp/dist/index.js",
             HarnessKind::Dsh => "node_modules/@deepseek-ai/dsh/lib/bin.js",
             HarnessKind::Opencode => "node_modules/opencode-ai/bin/opencode.exe",
+            HarnessKind::ClaudeCode | HarnessKind::Codex | HarnessKind::Acp => {
+                bail!("configure the agent's real JS entry or native executable, not a shell shim")
+            }
         };
         entry = parent.join(relative);
         if !entry.is_file() {
@@ -95,130 +102,124 @@ fn resolve_with_node(
     }
 }
 
-/// This checks an isolated version entry, never calls a model or reads auth files.
+/// How long an agent may take to answer `initialize` during registration.
+/// Adapters started through `npx` can need several seconds.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Start the agent in ACP mode, send `initialize`, record what it reports and
+/// stop it. No session is created and no model is called.
 pub async fn probe(config: &AgentConfig, probe_dir: &Path) -> Result<ProbeReport> {
     config.validate()?;
     let executable = resolve_configured_executable(config)?;
     std::fs::create_dir_all(probe_dir)?;
     let mut command = executable.command();
-    isolated_environment(&mut command, config.agent.harness, probe_dir, &[])?;
     command
-        .arg("--version")
-        .current_dir(probe_dir)
-        .stdin(Stdio::null())
+        .args(config.launch_args())
+        .current_dir(&config.project.root)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .context("harness version process failed to start")?;
+    let mut child = command.spawn().context("agent process failed to start")?;
+    let mut stdin = child.stdin.take().context("missing stdin")?;
     let stdout = child.stdout.take().context("missing stdout")?;
-    let stderr = child.stderr.take().context("missing stderr")?;
-    let output = tokio::spawn(async move {
-        let mut bytes = vec![];
-        stdout
-            .take(8192)
-            .read_to_end(&mut bytes)
-            .await
-            .map(|_| bytes)
-    });
-    let diagnostics = tokio::spawn(async move {
-        let mut bytes = vec![];
-        stderr
-            .take(8192)
-            .read_to_end(&mut bytes)
-            .await
-            .map(|_| bytes)
-    });
-    let status = match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
-        Ok(result) => result?,
-        Err(_) => {
-            child.kill().await?;
-            bail!("harness version probe timed out");
+    let mut line = crate::acp::initialize_request(1).to_string();
+    line.push('\n');
+    let answer = tokio::time::timeout(PROBE_TIMEOUT, async move {
+        stdin.write_all(line.as_bytes()).await?;
+        stdin.flush().await?;
+        let mut lines = BufReader::new(stdout.take(4 * 1024 * 1024)).lines();
+        while let Some(line) = lines.next_line().await? {
+            let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if let Some(crate::acp::Incoming::Response { id: 1, result }) =
+                crate::acp::classify(&frame)
+            {
+                return Ok::<_, std::io::Error>(Some(result));
+            }
         }
-    };
-    let output = output.await??;
-    let _ = diagnostics.await??;
-    let version = String::from_utf8(output)?.trim().to_owned();
-    let expected = crate::compatibility::versions(config.agent.harness);
-    let supported = status.success() && expected.contains(&version.as_str());
-    Ok(ProbeReport {
+        Ok(None)
+    })
+    .await;
+    let _ = child.kill().await;
+    let unavailable = |reason: &str| ProbeReport {
         installed: true,
-        version: Some(version),
-        version_supported: supported,
-        protocol_probe: if supported {
-            "version_entry_passed"
-        } else {
-            "unsupported_version"
-        }
-        .into(),
+        version: None,
+        version_supported: false,
+        protocol_probe: "acp_initialize_failed".into(),
         authentication: "not_checked".into(),
         managed_run: "not_checked".into(),
         streaming: "not_checked".into(),
         cancel: "not_checked".into(),
-        session_resume: "not_supported_in_v0".into(),
-        unavailable_reason: if supported {
-            Some("real managed run not verified".into())
+        session_resume: "not_checked".into(),
+        unavailable_reason: Some(reason.into()),
+    };
+    let result = match answer {
+        Ok(Ok(Some(Ok(result)))) => result,
+        Ok(Ok(Some(Err(message)))) => {
+            return Ok(unavailable(&format!(
+                "the agent rejected ACP initialize: {message}"
+            )));
+        }
+        Ok(_) => {
+            return Ok(unavailable(
+                "the agent exited without answering ACP initialize; check that it is started in ACP mode (for example `opencode acp` or `claude-agent-acp`)",
+            ));
+        }
+        Err(_) => {
+            return Ok(unavailable(&format!(
+                "the agent did not answer ACP initialize within {} s; check that it is started in ACP mode (for example `opencode acp` or `claude-agent-acp`)",
+                PROBE_TIMEOUT.as_secs()
+            )));
+        }
+    };
+    let protocol = result.get("protocolVersion").and_then(Value::as_u64);
+    let supported = protocol == Some(crate::acp::PROTOCOL_VERSION);
+    let info = |key: &str| {
+        result
+            .pointer(&format!("/agentInfo/{key}"))
+            .and_then(Value::as_str)
+            .map(|s| s.chars().take(128).collect::<String>())
+    };
+    let capabilities = &result["agentCapabilities"];
+    let resumable = capabilities.get("loadSession").and_then(Value::as_bool) == Some(true);
+    let needs_login = result
+        .get("authMethods")
+        .and_then(Value::as_array)
+        .is_some_and(|m| !m.is_empty());
+    Ok(ProbeReport {
+        installed: true,
+        version: info("version"),
+        version_supported: supported,
+        protocol_probe: if supported {
+            "acp_initialize_passed".into()
         } else {
-            Some("installed version has no approved protocol fixture".into())
+            format!(
+                "acp_protocol_{}",
+                protocol.map_or("unknown".into(), |p| p.to_string())
+            )
         },
+        authentication: if needs_login {
+            "agent_offers_login_methods".into()
+        } else {
+            "not_checked".into()
+        },
+        managed_run: "not_checked".into(),
+        streaming: "not_checked".into(),
+        cancel: "not_checked".into(),
+        session_resume: if resumable {
+            "supported".into()
+        } else {
+            "not_supported".into()
+        },
+        unavailable_reason: Some(if supported {
+            match info("name") {
+                Some(name) => format!("{name} answered ACP initialize; no session has run yet"),
+                None => "agent answered ACP initialize; no session has run yet".into(),
+            }
+        } else {
+            format!("agent speaks ACP protocol {protocol:?}; version 1 is required")
+        }),
     })
-}
-
-pub fn isolated_environment(
-    command: &mut Command,
-    kind: HarnessKind,
-    root: &Path,
-    allowlist: &[String],
-) -> Result<()> {
-    command.env_clear();
-    for name in [
-        "PATH",
-        "SystemRoot",
-        "WINDIR",
-        "ComSpec",
-        "PATHEXT",
-        "TEMP",
-        "TMP",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "LANG",
-        "LC_ALL",
-    ] {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-    for name in allowlist {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-    match kind {
-        HarnessKind::Pi => {
-            command
-                .env("PI_CODING_AGENT_DIR", root.join("config"))
-                .env("PI_CODING_AGENT_SESSION_DIR", root.join("sessions"))
-                .env("NODE_COMPILE_CACHE", root.join("node-cache"))
-                .env("PI_OFFLINE", "1")
-                .env("PI_TELEMETRY", "0");
-        }
-        HarnessKind::Dsh => {
-            command.env("DSH_HOME", root.join("dsh"));
-        }
-        HarnessKind::Opencode => {
-            command
-                .env("XDG_CONFIG_HOME", root.join("config"))
-                .env("XDG_DATA_HOME", root.join("data"))
-                .env("XDG_CACHE_HOME", root.join("cache"))
-                .env("XDG_STATE_HOME", root.join("state"))
-                .env("OPENCODE_CONFIG_DIR", root.join("config/opencode"))
-                .env("OPENCODE_DISABLE_AUTOUPDATE", "true")
-                .env("OPENCODE_DISABLE_MODELS_FETCH", "true")
-                .env("OPENCODE_DISABLE_DEFAULT_PLUGINS", "true")
-                .env("OPENCODE_DISABLE_LSP_DOWNLOAD", "true");
-        }
-    }
-    Ok(())
 }

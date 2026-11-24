@@ -230,13 +230,13 @@ mod tests {
         let (shutdown, _) = watch::channel(false);
         let state = AppState::load(instance, store, shutdown).unwrap();
         let config: AgentConfig = serde_json::from_value(json!({
-            "agent":{"name":"preflight-fixture","harness":"dsh","project_id":"fixture","mode":"managed"},
+            "agent":{"name":"preflight-fixture","harness":"acp","project_id":"fixture","mode":"managed"},
             "project":{"root":root.path(),"allowed_tools":["read","write"],"artifact_paths":["out/existing.json"]},
             "adapter":{"executable":std::env::current_exe().unwrap()}
         })).unwrap();
         let id = Uuid::new_v4();
         let card: AgentCard = serde_json::from_value(json!({
-            "agent_id":id,"node_id":state.instance.card.node_id,"name":"preflight-fixture","harness":"dsh","project_ids":["fixture"],"availability":"idle","capabilities":[],
+            "agent_id":id,"node_id":state.instance.card.node_id,"name":"preflight-fixture","harness":"acp","project_ids":["fixture"],"availability":"idle","capabilities":[],
             "probe":{"installed":true,"version":"fixture","version_supported":true,"protocol_probe":"fixture","authentication":"fixture","managed_run":"passed","streaming":"fixture","cancel":"fixture","session_resume":"fixture","unavailable_reason":null}
         })).unwrap();
         state.store.register_agent(&card, &config).unwrap();

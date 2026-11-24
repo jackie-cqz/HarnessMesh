@@ -115,12 +115,35 @@ impl TaskStatus {
     }
 }
 
+/// Which agent an Agent registration launches. Every kind is driven over the
+/// Agent Client Protocol (ACP); the kind only selects default launch arguments
+/// and how the agent is labelled. `acp` is any other ACP agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HarnessKind {
+    /// Pi through the `pi-acp` adapter.
     Pi,
+    /// DSH has no ACP mode; kept so older registrations still load.
     Dsh,
+    /// OpenCode's built-in `opencode acp`.
     Opencode,
+    /// Claude Code through the `claude-agent-acp` adapter.
+    #[serde(rename = "claude-code")]
+    ClaudeCode,
+    /// Codex through the `codex-acp` adapter.
+    Codex,
+    /// Any other ACP agent; `adapter.args` gives its launch arguments.
+    Acp,
+}
+impl HarnessKind {
+    /// Arguments that start the agent in ACP mode when the configuration does
+    /// not list its own.
+    pub fn default_acp_args(self) -> &'static [&'static str] {
+        match self {
+            Self::Opencode => &["acp"],
+            _ => &[],
+        }
+    }
 }
 impl fmt::Display for HarnessKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -128,6 +151,9 @@ impl fmt::Display for HarnessKind {
             Self::Pi => "pi",
             Self::Dsh => "dsh",
             Self::Opencode => "opencode",
+            Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
+            Self::Acp => "acp",
         })
     }
 }
@@ -652,20 +678,32 @@ fn shared_workspace() -> String {
 #[serde(deny_unknown_fields)]
 pub struct AdapterOptions {
     pub executable: PathBuf,
+    /// Launch arguments; omitted means the harness kind's ACP default
+    /// (`opencode acp`, none for adapters such as `claude-agent-acp`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
     #[serde(default)]
     pub node_executable: Option<PathBuf>,
+    /// Retired: only the old Pi adapter used it. Rejected by `validate`.
     #[serde(default)]
     pub models_file: Option<PathBuf>,
+    /// Informational; ACP agents use the model chosen in their own settings.
     #[serde(default)]
     pub model: Option<String>,
+    /// Informational; ACP agents use the provider chosen in their own settings.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Retired: only the old Pi adapter used it. Rejected by `validate`.
     #[serde(default)]
     pub credential_source: Option<PathBuf>,
+    /// Environment variables whose values are redacted from output and must be
+    /// present before a run starts. The agent inherits the daemon environment.
     #[serde(default)]
     pub env_allowlist: Vec<String>,
+    /// Retired: sessions now receive `hmesh mcp` automatically.
     #[serde(default)]
     pub mesh_server: Option<PathBuf>,
+    /// Retired: sessions now receive `hmesh mcp` automatically.
     #[serde(default)]
     pub mesh_scope: Option<PathBuf>,
 }
@@ -702,14 +740,46 @@ impl MeshToolScope {
     }
 }
 impl AgentConfig {
+    /// Arguments that start this agent in ACP mode.
+    pub fn launch_args(&self) -> Vec<String> {
+        if self.adapter.args.is_empty() {
+            self.agent
+                .harness
+                .default_acp_args()
+                .iter()
+                .map(|a| (*a).to_owned())
+                .collect()
+        } else {
+            self.adapter.args.clone()
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.agent.name)?;
         validate_name(&self.agent.project_id)?;
-        if self.adapter.mesh_server.is_some() != self.adapter.mesh_scope.is_some()
-            || (self.adapter.mesh_server.is_some() && self.agent.harness != HarnessKind::Pi)
+        if self.agent.harness == HarnessKind::Dsh {
+            return Err(MeshError::input(
+                "DSH has no Agent Client Protocol mode; register an ACP agent such as OpenCode or Claude Code",
+            ));
+        }
+        if self.adapter.credential_source.is_some() || self.adapter.models_file.is_some() {
+            return Err(MeshError::input(
+                "credential_source and models_file belonged to the retired Pi adapter; ACP agents use their own login and model settings",
+            ));
+        }
+        if self.adapter.mesh_server.is_some() || self.adapter.mesh_scope.is_some() {
+            return Err(MeshError::input(
+                "mesh_server and mesh_scope are retired; every session receives hmesh mcp automatically",
+            ));
+        }
+        if self.adapter.args.len() > 32
+            || self
+                .adapter
+                .args
+                .iter()
+                .any(|a| a.len() > 1024 || a.contains('\0'))
         {
             return Err(MeshError::input(
-                "Mesh tools require both owner-selected paths and the Pi adapter",
+                "at most 32 launch arguments of up to 1 KiB each are allowed",
             ));
         }
         if self.agent.mode != "managed"

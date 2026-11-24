@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessMesh：ACP 客户端 + 界面 + 跨电脑会话</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --ink: #111111;
+    --muted: #5b5b5b;
+    --line: #e3e3e3;
+    --accent: #0f6e56;
+    --bad: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151515;
+      --ink: #ececec;
+      --muted: #a3a3a3;
+      --line: #343434;
+      --accent: #4cc59a;
+      --bad: #f2877c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 48px 28px 80px; }
+  h1 { font-size: 28px; line-height: 1.35; margin: 0 0 10px; letter-spacing: -0.01em; }
+  h2 { font-size: 19px; margin: 52px 0 14px; }
+  h3 { font-size: 15px; margin: 0 0 8px; }
+  p { margin: 0 0 10px; }
+  a { color: var(--accent); }
+  .sub { color: var(--muted); margin-bottom: 4px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  code { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .accent { color: var(--accent); }
+  .bad { color: var(--bad); }
+  .muted { color: var(--muted); }
+  strong { font-weight: 650; }
+
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .card > :last-child { margin-bottom: 0; }
+
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 28px; }
+  .stat { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .stat .num { font-size: 24px; font-weight: 700; line-height: 1.25; }
+  .stat .label { color: var(--muted); font-size: 13px; line-height: 1.5; margin-top: 4px; }
+
+  .note { border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; margin: 18px 0 0; }
+
+  svg.diagram { width: 100%; height: auto; display: block; }
+  svg .frame { fill: none; stroke: var(--line); stroke-width: 1.5; }
+  svg .box { fill: var(--bg); stroke: var(--ink); stroke-width: 1.2; }
+  svg .box.hl { stroke: var(--accent); stroke-width: 1.8; }
+  svg .t { fill: var(--ink); font-size: 14px; font-weight: 600; }
+  svg .s { fill: var(--muted); font-size: 12px; }
+  svg .lbl { fill: var(--ink); font-size: 13px; font-weight: 600; }
+  svg .xl { fill: var(--accent); font-size: 11.5px; font-weight: 600; }
+  svg .xs { fill: var(--muted); font-size: 11.5px; }
+  svg .arrow { stroke: var(--ink); stroke-width: 1.4; fill: none; }
+  svg .arrow.hl { stroke: var(--accent); }
+  svg .head { fill: var(--ink); }
+  svg .head.hl { fill: var(--accent); }
+  svg .mask { fill: var(--bg); stroke: none; }
+
+  .scroll { overflow-x: auto; }
+  .scroll table { min-width: 640px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 10px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 650; border-bottom: 1.5px solid var(--ink); white-space: nowrap; }
+  td.nowrap { white-space: nowrap; }
+  td ul { margin: 0; padding-left: 18px; }
+  td li { margin: 3px 0; }
+  .size { white-space: nowrap; font-weight: 650; }
+  .size.m { color: var(--ink); }
+  .size.l { color: var(--bad); }
+  .tag { font-weight: 650; white-space: nowrap; }
+  .tag.keep { color: var(--accent); }
+  .tag.change { color: var(--ink); }
+  .tag.drop { color: var(--bad); }
+  .tag.freeze { color: var(--muted); }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .two ol, .two ul { margin: 6px 0 0; padding-left: 20px; }
+  .two li { margin: 6px 0; }
+  .two code { font-size: 12.5px; }
+
+  /* 界面示意 */
+  .mock { border: 1px solid var(--line); border-radius: 10px; display: grid; grid-template-columns: 250px 1fr; min-height: 440px; overflow: hidden; }
+  .mock .side { border-right: 1px solid var(--line); padding: 16px 0; }
+  .mock .group { color: var(--muted); font-size: 12px; padding: 12px 18px 4px; }
+  .mock .agent { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 18px; font-size: 14px; }
+  .mock .agent.on { border-left: 2px solid var(--accent); padding-left: 16px; font-weight: 650; }
+  .mock .agent .st { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .mock .agent .st.run { color: var(--accent); }
+  .mock .main { display: flex; flex-direction: column; }
+  .mock .head { padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  .mock .head .who { font-weight: 650; }
+  .mock .head .from { color: var(--muted); font-size: 13px; }
+  .mock .flow { padding: 16px 20px; flex: 1; font-size: 14px; }
+  .mock .msg { margin: 0 0 12px; }
+  .mock .msg .r { color: var(--muted); font-size: 12px; display: block; }
+  .mock .tool { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 0 0 10px; font-size: 13px; display: flex; justify-content: space-between; }
+  .mock .tool .ok { color: var(--accent); }
+  .mock .ask { border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin: 0 0 10px; font-size: 13px; }
+  .mock .ask .btns { margin-top: 8px; display: flex; gap: 8px; }
+  .mock .btn { border: 1px solid var(--line); border-radius: 6px; padding: 3px 12px; font-size: 13px; }
+  .mock .btn.primary { border-color: var(--accent); color: var(--accent); font-weight: 650; }
+  .mock .input { border-top: 1px solid var(--line); padding: 12px 20px; color: var(--muted); font-size: 14px; }
+
+  .evidence li { margin: 6px 0; font-size: 14px; }
+  .evidence code { font-size: 12px; word-break: break-all; }
+
+  @media (max-width: 760px) {
+    .stats { grid-template-columns: 1fr 1fr; }
+    .two { grid-template-columns: 1fr; }
+    .mock { grid-template-columns: 1fr; }
+    .mock .side { border-right: none; border-bottom: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>HarnessMesh 就做三件事：daemon 里的 ACP 客户端、一个以会话为中心的界面、让会话能跨电脑。配对和 MCP 底子已有，分 4 步做</h1>
+<p class="sub">2026-11-24 · 分支 <code>feat/mcp-mesh-phase1</code> · 路线 C：自己建，只从 codeg 借基本设计和少量代码</p>
+<p class="meta">ACP（Agent Client Protocol）是 Zed 发起的开放协议，编辑器用它驱动外部 agent。HarnessMesh 在这里当「编辑器」那一方。</p>
+
+<div class="stats">
+  <div class="stat"><div class="num">3 块</div><div class="label">ACP 客户端、界面、跨电脑会话；第三块的底子（配对、mTLS、看到对方 agent）已经有了</div></div>
+  <div class="stat"><div class="num">2 个</div><div class="label">首批 agent：OpenCode（原生 ACP）、Claude Code（官方适配器）；Codex、Pi 之后再接</div></div>
+  <div class="stat"><div class="num">几千行</div><div class="label">目标体量（估算）。codeg 的 ACP 部分源码有 3MB 多，大头是我们不需要的功能</div></div>
+  <div class="stat"><div class="num">4 步</div><div class="label">内核 → 本机界面 → 跨电脑 → Claude Code、清理和真机验收</div></div>
+</div>
+
+<h2>改完以后长这样</h2>
+<div class="card">
+<svg class="diagram" viewBox="0 0 940 500" role="img" aria-label="两台电脑上的 HarnessMesh 用 ACP 驱动本机 agent，建会话时交出 hmesh mcp；两台电脑的 daemon 通过配对和 mTLS 转发会话">
+  <defs>
+    <marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="hh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head hl" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+
+  <rect class="frame" x="16" y="16" width="430" height="470" rx="12"/>
+  <text class="lbl" x="34" y="44">电脑 A（你正在用）</text>
+  <rect class="frame" x="494" y="16" width="430" height="470" rx="12"/>
+  <text class="lbl" x="512" y="44">电脑 B（已配对）</text>
+
+  <!-- A -->
+  <rect class="box" x="46" y="62" width="370" height="54" rx="8"/>
+  <text class="t" x="62" y="85">HarnessMesh 界面</text>
+  <text class="s" x="62" y="104">侧栏列出 A、B 的 agent；B 的也能直接点开来用</text>
+  <line class="arrow" x1="231" y1="116" x2="231" y2="150" marker-start="url(#h)" marker-end="url(#h)"/>
+
+  <rect class="box hl" x="46" y="152" width="370" height="58" rx="8"/>
+  <text class="t" x="62" y="176">daemon（ACP 客户端）</text>
+  <text class="s" x="62" y="196">管会话、存记录、把会话转发给对端</text>
+
+  <line class="arrow hl" x1="133" y1="210" x2="133" y2="300" marker-end="url(#hh)"/>
+  <line class="arrow hl" x1="328" y1="210" x2="328" y2="300" marker-end="url(#hh)"/>
+  <text class="xl" x="142" y="248">ACP</text>
+  <text class="xl" x="337" y="248">ACP</text>
+
+  <rect class="box" x="46" y="302" width="175" height="86" rx="8"/>
+  <text class="t" x="60" y="326">Claude Code</text>
+  <text class="s" x="60" y="345">claude-agent-acp</text>
+  <text class="xl" x="60" y="374">带着 hmesh mcp</text>
+
+  <rect class="box" x="241" y="302" width="175" height="86" rx="8"/>
+  <text class="t" x="255" y="326">OpenCode</text>
+  <text class="s" x="255" y="345">opencode acp</text>
+  <text class="xl" x="255" y="374">带着 hmesh mcp</text>
+
+  <text class="xs" x="46" y="418">建会话时，daemon 把 hmesh mcp 交给 agent；</text>
+  <text class="xs" x="46" y="436">agent 调 mesh_send，就是回头让 daemon 找别的 agent。</text>
+  <text class="xs" x="46" y="466">之后再接：Codex（codex-acp）、Pi（pi-acp）</text>
+
+  <!-- link -->
+  <line class="arrow hl" x1="416" y1="181" x2="524" y2="181" marker-start="url(#hh)" marker-end="url(#hh)"/>
+  <rect class="mask" x="422" y="155" width="96" height="20"/>
+  <text class="xl" x="430" y="170">配对 + mTLS</text>
+  <rect class="mask" x="422" y="188" width="96" height="20"/>
+  <text class="xs" x="426" y="202">会话 / 实时更新</text>
+
+  <!-- B -->
+  <rect class="box" x="524" y="62" width="370" height="54" rx="8"/>
+  <text class="t" x="540" y="85">HarnessMesh 界面</text>
+  <text class="s" x="540" y="104">别人开在这里的会话也看得到，能插话、能取消</text>
+  <line class="arrow" x1="709" y1="116" x2="709" y2="150" marker-start="url(#h)" marker-end="url(#h)"/>
+
+  <rect class="box hl" x="524" y="152" width="370" height="58" rx="8"/>
+  <text class="t" x="540" y="176">daemon（ACP 客户端）</text>
+  <text class="s" x="540" y="196">对 A 设成 auto 就直接开会话，confirm 就先在这里批准</text>
+
+  <line class="arrow hl" x1="611" y1="210" x2="611" y2="300" marker-end="url(#hh)"/>
+  <line class="arrow hl" x1="806" y1="210" x2="806" y2="300" marker-end="url(#hh)"/>
+  <text class="xl" x="620" y="248">ACP</text>
+  <text class="xl" x="815" y="248">ACP</text>
+
+  <rect class="box" x="524" y="302" width="175" height="86" rx="8"/>
+  <text class="t" x="538" y="326">OpenCode</text>
+  <text class="s" x="538" y="345">opencode acp</text>
+  <text class="xl" x="538" y="374">带着 hmesh mcp</text>
+
+  <rect class="box" x="719" y="302" width="175" height="86" rx="8"/>
+  <text class="t" x="733" y="326">Claude Code</text>
+  <text class="s" x="733" y="345">claude-agent-acp</text>
+  <text class="xl" x="733" y="374">带着 hmesh mcp</text>
+
+  <text class="xs" x="524" y="418">A 的界面点开 B 的 OpenCode：会话跑在 B，</text>
+  <text class="xs" x="524" y="436">输出实时推回 A；A 的 agent 也能这样叫 B 的 agent。</text>
+</svg>
+</div>
+<p class="note">关键依据：ACP 规范规定，客户端建会话（<code>session/new</code>）时可以传一组 MCP 服务器，agent 必须支持 stdio 方式连接。所以 HarnessMesh 启动会话时就能把 <code>hmesh mcp</code> 交过去，不用你给每个 agent 手配。OpenCode 和 Claude 适配器的源码都确认会接收这组服务器。</p>
+
+<h2>两种用法怎么走</h2>
+<div class="two">
+  <div class="card">
+    <h3>你在 A 的界面直接用 B 的 OpenCode（远程操作）</h3>
+    <ol>
+      <li>A 的侧栏里有 <code>mac-b / OpenCode</code>，点开就能输入。</li>
+      <li>A 的 daemon 经 mTLS 请 B 开会话。B 对 A 设的是 <code>auto</code> 就直接开；设的是 <code>confirm</code> 就先在 B 的界面批准一次。</li>
+      <li>B 的 daemon 用 ACP 启动 <code>opencode acp</code>，建会话时交出 <code>hmesh mcp</code>。</li>
+      <li>OpenCode 的输出、工具调用实时推回 A 的界面；B 的界面也看得到。</li>
+      <li>OpenCode 要先问才能运行 <code>bash</code> 时，权限请求弹在 <strong>A</strong>：谁开的会话谁来批。</li>
+      <li>可以接着聊、取消；关掉 A 的界面再打开，会话还在。</li>
+    </ol>
+  </div>
+  <div class="card">
+    <h3>A 的 Claude Code 叫 B 的 OpenCode（agent 互相调用）</h3>
+    <ol>
+      <li>A 上 Claude Code 的会话已经带着 <code>hmesh mcp</code>。</li>
+      <li>它调用 <code>mesh_send(agent="mac-b/opencode", message=…)</code>。</li>
+      <li>B 开会话（同左边第 2、3 步），界面上标明「由 mac-a / Claude Code 发起」。</li>
+      <li>权限请求按 B 对 A 的设置处理：<code>auto</code> 自动答「允许一次」并留记录；<code>confirm</code> 弹在 B 的界面。</li>
+      <li>第一轮结束后，最终回复交回 Claude Code：<code>{session_id, final_text}</code>；带上 <code>session_id</code> 再调就接着聊。</li>
+      <li>调用链受限：限制深度，同一条链不能回到链上已有的会话（上限见「还要你定的」）。</li>
+    </ol>
+  </div>
+</div>
+
+<h2>界面改成这样（A 的界面，正在用 B 的 OpenCode）</h2>
+<div class="mock" aria-label="界面示意">
+  <div class="side">
+    <div class="group">本机 · mac-a</div>
+    <div class="agent">Claude Code <span class="st">空闲</span></div>
+    <div class="agent">OpenCode <span class="st">空闲</span></div>
+    <div class="group">mac-b · 已配对 · auto</div>
+    <div class="agent on">OpenCode <span class="st run">会话中 1</span></div>
+    <div class="agent">Claude Code <span class="st">空闲</span></div>
+    <div class="group">+ 添加 agent（探测本机已装的）</div>
+  </div>
+  <div class="main">
+    <div class="head">
+      <div class="who">mac-b / OpenCode</div>
+      <div class="from">你在本机打开 · 运行在 mac-b · 第 2 轮 · 进行中</div>
+    </div>
+    <div class="flow">
+      <p class="msg"><span class="r">你</span>跑一下 <code>cargo test -p hmesh-core</code>，把失败的用例列出来。</p>
+      <p class="msg"><span class="r">OpenCode · mac-b</span>好的，先看一下工作区，再跑测试。</p>
+      <div class="tool"><span>read <code>crates/hmesh-core/Cargo.toml</code></span><span class="ok">完成</span></div>
+      <div class="ask">
+        mac-b 上的 OpenCode 想运行 <code>bash: cargo test -p hmesh-core</code>
+        <div class="btns"><span class="btn primary">允许一次</span><span class="btn">拒绝</span></div>
+      </div>
+    </div>
+    <div class="input">接着说…（发到 mac-b）</div>
+  </div>
+</div>
+<p class="meta">示意图。这个会话是你在 A 上开的，所以权限请求弹在 A；B 的界面同时能看到这个会话，可以取消。如果会话是 A 的 agent 用 <code>mesh_send</code> 叫起来的，权限请求就按 B 对 A 的 auto / confirm 设置处理。</p>
+
+<h2>改前 → 改后</h2>
+<div class="scroll"><table>
+  <tr><th></th><th>现在</th><th>改完</th></tr>
+  <tr><td class="nowrap"><strong>怎么驱动 agent</strong></td><td>每次派活现启动一个 harness，跑一次就退出；每种 harness 一套输出解析</td><td>一个通用 ACP 客户端，agent 常驻，一个进程可以开多个会话</td></tr>
+  <tr><td class="nowrap"><strong>对话</strong></td><td>一问一答，拿到最终回复就结束</td><td>多轮会话，可以接着聊；daemon 重启后能续上（ACP 的 <code>session/load</code>）</td></tr>
+  <tr><td class="nowrap"><strong>用对方电脑的 agent</strong></td><td>只能派一次性任务，看事件列表</td><td>A 的界面直接点开 B 的 agent 来用，输出实时推回</td></tr>
+  <tr><td class="nowrap"><strong>权限</strong></td><td>工具白名单写死在参数里；要审批就是整个任务停着等</td><td>agent 自己发权限请求，界面上逐条点「允许一次 / 拒绝」；agent 叫起的会话按对端设置自动答</td></tr>
+  <tr><td class="nowrap"><strong>agent 互相调用</strong></td><td>要你在 Claude Code 里手配 <code>hmesh mcp</code>；被派活的 agent 不能再派</td><td>每个会话都自动带上 <code>hmesh mcp</code>，谁都能叫谁（限深度、防回环）</td></tr>
+  <tr><td class="nowrap"><strong>配置和版本</strong></td><td>版本白名单、隔离配置</td><td>agent 用它自己的登录和模型；兼容性靠 ACP 初始化时的能力协商</td></tr>
+  <tr><td class="nowrap"><strong>界面</strong></td><td>以「任务」为中心，侧栏没有 agent</td><td>侧栏就是各电脑的 agent，点进去是会话；仍是原生 JS，打包进单个二进制</td></tr>
+</table></div>
+
+<h2>从 codeg 拿什么、不拿什么</h2>
+<p>codeg（<code>spacering-net/codeg</code>，你的 fork 是 <code>jackie-cqz/codeg</code>）是一个成熟的 ACP 多 agent 工作台，技术栈同样是 Rust + axum + 官方 ACP 库，许可证 Apache-2.0，和 HarnessMesh 相同。我们只借它的骨架设计和少量小模块，借用的代码保留许可证、在 NOTICE 里注明出处并标出改动。</p>
+<div class="scroll"><table>
+  <tr><th>拿</th><th>在 codeg 哪里</th><th>用在哪</th></tr>
+  <tr><td>每个会话注入一个 MCP 伴生程序，带会话专属 token；父进程退出它也跟着退</td><td><code>src-tauri/src/bin/codeg_mcp.rs</code></td><td><code>hmesh mcp</code> 改成按会话启动</td></tr>
+  <tr><td>委派语义：拉起子会话，等第一轮结束，把最终回复作为工具结果交回；中断后可以续</td><td><code>src-tauri/src/acp/delegation/mod.rs</code></td><td><code>mesh_send</code> / <code>mesh_wait</code></td></tr>
+  <tr><td>沿父链计算调用深度并封顶</td><td><code>src-tauri/src/acp/delegation/depth.rs</code>（约 100 行）</td><td>防失控，可以直接借</td></tr>
+  <tr><td>把当前可派活的 agent 写进工具参数的枚举，模型一眼知道能叫谁</td><td><code>codeg_mcp.rs</code> 的 <code>--custom-agents</code> / <code>--disabled-agents</code></td><td><code>mesh_send</code> 的 <code>agent</code> 参数</td></tr>
+  <tr><td>同一个官方 ACP 库</td><td><code>agent-client-protocol</code> 2.2.0（<code>src-tauri/Cargo.toml</code>）</td><td>daemon 的 ACP 客户端，按仓库惯例钉版本、过 OSV 审计</td></tr>
+</table></div>
+<p class="meta" style="margin-top:10px">不拿：帮你安装和更新 agent、二进制缓存；各 agent 的兼容补丁和登录流程（Cursor 重试、Antigravity 登录、Codex 模型目录等）；导入 agent 历史；画布、Office、浏览器和电脑操作、自动化、聊天渠道、手机端；React / Next 前端。codeg 的 ACP 部分源码有 3MB 多（按文件大小估算，其中 <code>connection.rs</code> 一个文件就有 1.5MB），大部分是这些功能。</p>
+
+<h2>分 4 步</h2>
+<div class="scroll"><table>
+  <tr><th>步骤</th><th>做什么</th><th>怎么判对</th><th>规模（估算）</th></tr>
+  <tr>
+    <td class="nowrap"><strong>S1</strong><br>ACP 内核<br>+ 本机 OpenCode</td>
+    <td><ul>
+      <li>daemon 里加 ACP 客户端，用官方 Rust 库 <code>agent-client-protocol</code></li>
+      <li>探测本机已装的 agent（S1 只接 OpenCode），不负责安装</li>
+      <li>每个 agent 一个常驻进程，多会话复用，空闲回收；进程崩了会话标成中断，能续的用 <code>session/load</code> 续</li>
+      <li>存储新增「会话」：会话、每一轮、更新记录</li>
+      <li>建会话时交出 <code>hmesh mcp</code>（会话专属 token、调用链，父进程退出它也退）</li>
+      <li>MCP 工具改走会话，<code>mesh_send</code> 返回 <code>session_id</code></li>
+      <li>本机 API：开会话、发消息、订阅实时更新、回答权限请求、取消</li>
+      <li>假 agent（fixture）加一个会说 ACP 的模式，CI 不调模型</li>
+    </ul></td>
+    <td><ul>
+      <li>CI：假 agent 开会话 → 多轮 → 权限请求 → 取消 → daemon 重启后续上</li>
+      <li>CI：假 agent 甲通过交给它的 <code>hmesh mcp</code> 叫假 agent 乙，结果回到甲；超深度、回环被拦</li>
+      <li>真实 <code>opencode acp</code> 手动跑一次（会调用模型，先问你）</li>
+    </ul></td>
+    <td class="size l">大</td>
+  </tr>
+  <tr>
+    <td class="nowrap"><strong>S2</strong><br>本机界面</td>
+    <td><ul>
+      <li>侧栏：本机 agent、在线状态、会话数；历史会话列表</li>
+      <li>会话页：流式消息、工具调用、计划、权限按钮、取消、续聊</li>
+      <li>原生 JS，继续打包进单个二进制，不加构建步骤</li>
+    </ul></td>
+    <td><ul>
+      <li>Playwright：开会话 → 看到流式输出 → 点「允许一次」→ 取消 → 刷新后会话还在</li>
+      <li>深色、浅色、窄窗口各截一张图</li>
+    </ul></td>
+    <td class="size m">中</td>
+  </tr>
+  <tr>
+    <td class="nowrap"><strong>S3</strong><br>跨电脑会话</td>
+    <td><ul>
+      <li>对端接口：开会话、发消息、实时更新流、回答权限请求、取消；断线后按序号补齐</li>
+      <li>A 的侧栏显示 B 的 agent，点开直接用（会话跑在 B）</li>
+      <li>权限：人开的会话在开会话的界面批；agent 叫起的会话按 B 对发起方的 auto / confirm 处理</li>
+      <li><code>mesh_send</code> 能叫对端的 agent；B 的界面能看到、能插话、能取消</li>
+      <li>撤销配对：进行中的远端会话立即取消</li>
+    </ul></td>
+    <td><ul>
+      <li>CI 两节点：A 的界面直接操作 B 的假 agent（Playwright）</li>
+      <li>A 的假 agent 叫 B 的假 agent，B 再回叫 A 时按深度和回环规则处理</li>
+      <li>断线后补齐；撤销配对后会话终止</li>
+    </ul></td>
+    <td class="size l">大</td>
+  </tr>
+  <tr>
+    <td class="nowrap"><strong>S4</strong><br>Claude Code<br>+ 清理 + 真机</td>
+    <td><ul>
+      <li>接 Claude Code（<code>claude-agent-acp</code>）</li>
+      <li>删掉三套 harness 适配器、一次性任务执行循环，以及今天没提交的「放开版本 / 本机配置」补丁</li>
+      <li>开发流程按你的决定迁移或冻结；文档按新模型重写</li>
+    </ul></td>
+    <td><ul>
+      <li>两台真电脑：A 的界面用 B 的 OpenCode；A 的 Claude Code 叫 B 的 OpenCode，留证据</li>
+      <li>CI 全绿</li>
+    </ul></td>
+    <td class="size m">中</td>
+  </tr>
+</table></div>
+<p class="meta" style="margin-top:10px">之后：Codex（<code>codex-acp</code>，源码确认会接收 MCP 服务器）；Pi（<code>pi-acp</code> 能驱动 Pi，但它的 README 写明不把 MCP 传给 Pi，要先补这条路）。</p>
+
+<h2>保留、改造、替换</h2>
+<div class="scroll"><table>
+  <tr><th>部分</th><th>处理</th><th>说明</th></tr>
+  <tr><td><code>hmesh-security</code>、<code>hmesh-transport</code></td><td class="tag keep">保留</td><td>节点身份、mTLS、配对，不动</td></tr>
+  <tr><td>配对即信任 + 按对端 auto / confirm</td><td class="tag keep">保留</td><td>改成决定远端会话能不能直接开、agent 叫起的会话权限怎么答</td></tr>
+  <tr><td><code>hmesh-mcp</code>（5 个工具）</td><td class="tag change">改造</td><td>从「任务」改成「会话」：<code>session_id</code> 续聊、调用链、按会话启动</td></tr>
+  <tr><td><code>hmesh-store</code>、<code>hmesh-daemon</code></td><td class="tag change">改造</td><td>加会话表、ACP 会话管理、本机和对端的会话接口；任务表先留给旧接口</td></tr>
+  <tr><td><code>hmesh-adapters</code>（Pi rpc / OpenCode json / DSH）</td><td class="tag drop">替换</td><td>换成一个 ACP 客户端。DSH 不在 ACP 支持名单里，S4 再定去留</td></tr>
+  <tr><td><code>hmesh-runtime</code> 执行循环</td><td class="tag drop">替换</td><td>「每次跑一个任务」改成「管理常驻会话」；脱敏、最终回复提取留下</td></tr>
+  <tr><td>面板 <code>web/panel</code></td><td class="tag drop">重写</td><td>以 agent 和会话为中心，仍用原生 JS</td></tr>
+  <tr><td>开发流程、artifact 核验、git-worktree、预算</td><td class="tag freeze">冻结</td><td>先不动也不扩展，S4 再定</td></tr>
+  <tr><td>今天未提交的改动（放开版本、本机配置、OpenCode 专用 agent）</td><td class="tag freeze">不提交</td><td>ACP agent 天然用本机配置。S1 开工时丢弃；里面的经验（agent 自己的权限配置会影响远端任务）写进安全设计</td></tr>
+</table></div>
+
+<h2>已经定的</h2>
+<div class="scroll"><table>
+  <tr><th>决定</th><th>落到实现上</th></tr>
+  <tr><td>自己建（路线 C），不依赖 codeg，只借基本设计和少量代码</td><td>见「从 codeg 拿什么、不拿什么」</td></tr>
+  <tr><td>先接 OpenCode 和 Claude Code</td><td>S1 接 OpenCode，S4 接 Claude Code；Codex、Pi 之后</td></tr>
+  <tr><td>只探测本机已装的 agent，不负责安装</td><td>侧栏「添加 agent」只列出探测到的</td></tr>
+  <tr><td>界面继续用原生 JS</td><td>打包进单个二进制，不加前端构建步骤</td></tr>
+  <tr><td>谁开的会话谁来批</td><td>人开的会话，权限请求弹在开会话的界面；agent 叫起的会话按执行端对发起方的 auto / confirm 处理</td></tr>
+  <tr><td>被叫起的会话在执行端界面看得到、能插话</td><td>远端会话和本机会话一样存、一样显示，标明发起方</td></tr>
+  <tr><td><code>mesh_send</code> 默认新开会话，可续聊</td><td>返回 <code>session_id</code>，带着它再调就接着同一个会话</td></tr>
+</table></div>
+
+<h2>还要你定的</h2>
+<div class="scroll"><table>
+  <tr><th>问题</th><th>我的推荐</th></tr>
+  <tr><td>agent 互相调用的上限</td><td>调用深度最多 3 层；同一条链不能回到链上已有的会话；单个会话最多同时派 4 个活</td></tr>
+  <tr><td>旧的开发流程（模板、工作流）怎么处理</td><td>先冻结，S4 看你还用不用再定</td></tr>
+  <tr><td>Pi 怎么接 MCP（<code>pi-acp</code> 不透传）</td><td>轮到 Pi 时再定：先实测社区扩展 <code>pi-mcp-adapter</code>，不行就自己写一层 Pi 桥。现在不用定</td></tr>
+</table></div>
+
+<h2>安全底线</h2>
+<div class="two">
+  <div class="card">
+    <h3>谁能让我的 agent 干活</h3>
+    <ul>
+      <li>配对就是信任边界。被叫起的 agent 按它所在电脑的本机配置行事：比如 Claude Code 自己设了允许 <code>bash</code>，就不会再来问。</li>
+      <li>不放心的对端设成 <code>confirm</code>：它开的会话要先在本机批准，agent 叫起的会话里的权限请求也弹给你。</li>
+      <li>撤销配对立即生效：进行中的远端会话取消，排队的拒绝。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>交给 agent 的东西</h3>
+    <ul>
+      <li>只交我们自己的 <code>hmesh mcp</code>（固定命令和参数，会话专属 token），不转发来自项目文件或 agent 输出的 MCP 配置，这也是 ACP 规范的安全要求。</li>
+      <li>每次 <code>mesh_send</code> 都带上调用链，限制深度、禁止回环、限制同时派活数。</li>
+      <li>CI 只用会说 ACP 的假 agent；每次真机验证都先问你。</li>
+    </ul>
+  </div>
+</div>
+
+<h2>不做</h2>
+<p>不做编辑器插件；不帮你安装 agent；不替代各 agent 自己的登录和模型设置（在 agent 自己那里设）；不做云端中转，电脑之间仍然直连；不做 codeg 那些外围功能；CI 里不调用真实模型。</p>
+
+<h2>证据</h2>
+<ul class="evidence">
+  <li>ACP 规范 · 建会话可传 <code>mcpServers</code>（stdio 必须支持），以及 <code>session/load</code>、<code>session/resume</code>：<a href="https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/session-setup.mdx">docs/protocol/v1/session-setup.mdx</a></li>
+  <li>ACP 规范 · 权限请求 <code>session/request_permission</code> 和四种选项：<a href="https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/tool-calls.mdx">docs/protocol/v1/tool-calls.mdx</a>；一轮对话、<code>session/update</code>、结束原因：<a href="https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v1/prompt-turn.mdx">docs/protocol/v1/prompt-turn.mdx</a></li>
+  <li>支持 ACP 的 agent 名单：<a href="https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/get-started/agents.mdx">docs/get-started/agents.mdx</a>；官方 Rust 库：<a href="https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/libraries/rust.mdx">docs/libraries/rust.mdx</a></li>
+  <li>OpenCode 的 ACP 实现接收 <code>mcpServers</code>（stdio 和 HTTP）：<code>anomalyco/opencode packages/cli/src/acp/service.ts</code>（<code>supportedMcpServers</code>）</li>
+  <li>Claude 适配器把 ACP 的 <code>mcpServers</code> 合并进会话：<code>agentclientprotocol/claude-agent-acp src/v2/session-requests.ts</code>；Codex 适配器：<code>agentclientprotocol/codex-acp src/CodexAcpClient.ts</code></li>
+  <li>pi-acp 的限制「MCP servers are accepted … but not wired through to pi」：<a href="https://github.com/svkozak/pi-acp">svkozak/pi-acp README · Limitations</a></li>
+  <li>codeg：<code>src-tauri/src/bin/codeg_mcp.rs</code>（伴生程序参数）、<code>src-tauri/src/acp/delegation/mod.rs</code>（委派流程）、<code>depth.rs</code>（深度）、<code>src-tauri/Cargo.toml</code>（<code>agent-client-protocol</code> 2.2.0）、<code>LICENSE</code>（Apache-2.0）。你的 fork 没有自己的提交，落后上游 889 个</li>
+  <li>本机核对：<code>opencode --help</code> 有 <code>opencode acp</code>；<code>pi --help</code>（0.83.0）只有 <code>--mode rpc</code>；HarnessMesh 的 <code>Cargo.toml</code> 是 <code>license = "Apache-2.0"</code></li>
+  <li>没核实（本机代理中断）：官方 Rust 库的客户端示例代码、codeg 的前端组件、各适配器的版本兼容范围、<code>opencode acp</code> 实际连上 <code>hmesh mcp</code> 的效果。前两项代理恢复后补看，后两项放在 S1 第一天实测</li>
+</ul>
+
+</main>
+</body>
+</html>

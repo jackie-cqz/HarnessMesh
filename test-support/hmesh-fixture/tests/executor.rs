@@ -42,6 +42,7 @@ impl Fixture {
                 git_executable: None,
             },
             adapter: AdapterOptions {
+                args: vec![],
                 node_executable: None,
                 models_file: None,
                 executable: PathBuf::from(env!("CARGO_BIN_EXE_hmesh-fixture")),
