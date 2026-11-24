@@ -21,9 +21,9 @@ async function node(name){
  const card=await until(()=>{try{mesh.call(['daemon','status']);return mesh.call(['node','show']);}catch{return null;}});
  return{mesh,card,dir};
 }
-function register(node,name,harness='acp'){
+function register(node,name,harness='acp',args=[]){
  const project=join(root,`${name}-project`);mkdirSync(project);const config=join(root,`${name}.toml`);
- writeFileSync(config,['[agent]',`name="${name}"`,`harness="${harness}"`,`project_id="${harness==='acp'?'demo':'demo-'+name}"`,'[project]','root='+JSON.stringify(project),'allowed_tools=["read","write","edit"]','[adapter]','executable='+JSON.stringify(fixture),'env_allowlist=[]',''].join('\n'));
+ writeFileSync(config,['[agent]',`name="${name}"`,`harness="${harness}"`,`project_id="${harness==='acp'?'demo':'demo-'+name}"`,'[project]','root='+JSON.stringify(project),'allowed_tools=["read","write","edit"]','[adapter]','executable='+JSON.stringify(fixture),'args='+JSON.stringify(args),'env_allowlist=[]',''].join('\n'));
  return node.mesh.call(['agent','register','--config',config]);
 }
 async function panel(node){
@@ -57,6 +57,8 @@ const settle=page=>page.waitForTimeout(400);
 try{
  const a=await node('mac-a'),b=await node('mac-b');
  const local=register(a,'helper'),remote=register(b,'worker');register(a,'coder','opencode');
+ // Fixture agents answering ACP auth/status the way claude-agent-acp does.
+ register(a,'claude','claude-code',['--auth-status','subscription']);register(a,'stranger','claude-code',['--auth-status','none']);
  const models=await modelService();
  assert(remote.probe.protocol_probe==='acp_initialize_passed','fixture did not pass the ACP initialize check');
  const pairing=a.mesh.call(['pair','request','--peer',b.card.endpoint,'--expect-fingerprint',b.card.fingerprint]);
@@ -70,7 +72,7 @@ try{
  await page.locator('#session-agents .session-group').filter({hasText:'mac-b'}).getByText('worker').waitFor();
  await settle(page);await page.screenshot({path:join(shots,'overview-light.png')});
  await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
- assert(await page.locator('#hero-agents .agent-chip').count()===3,'new-session screen does not offer every agent');
+ assert(await page.locator('#hero-agents .agent-chip').count()===5,'new-session screen does not offer every agent');
  await settle(page);await page.screenshot({path:join(shots,'sessions-empty.png')});
  stage='open remote session';
  await openSession(page,'mac-b','worker','fixture:permission');
@@ -148,7 +150,7 @@ try{
  await page.locator('#service-model').fill('fixture-large');
  await settle(page);await page.screenshot({path:join(shots,'service-dialog.png')});
  await page.locator('#service-save').click();
- await helperCard.getByText('已配置').waitFor({timeout:30000});
+ await helperCard.getByText('单独配置').waitFor({timeout:30000});
  // Reopened, the value is gone; only its last characters are shown.
  await helperCard.getByRole('button',{name:'模型服务'}).click();
  await page.locator('#service-dialog[open]').waitFor();
@@ -191,6 +193,32 @@ try{
  await page.locator('#service-test').click();
  await page.locator('#service-test-result.failed').waitFor({timeout:30000});
  await page.locator('#service-cancel').click();
+ stage='its own login and presets';
+ const openFor=async name=>{await page.locator('#agent-list .entity-card').filter({has:page.locator('.entity-name',{hasText:new RegExp('^'+name+'$')})}).getByRole('button',{name:'模型服务'}).click();await page.locator('#service-dialog[open]').waitFor();};
+ await openFor('claude');
+ await page.locator('#service-own.configured').filter({hasText:'它自己已经配好了'}).waitFor({timeout:30000});
+ const own=await page.locator('#service-own').innerText();
+ assert(own.includes('fixture@example.com')&&own.includes('Claude 订阅（max 套餐）'),'own login details missing: '+own);
+ await settle(page);await page.screenshot({path:join(shots,'service-own.png')});
+ await page.locator('#service-modes').getByRole('radio',{name:/自定义地址/}).click();
+ assert(await page.locator('#service-preset').isVisible(),'no presets for Claude Code');
+ const presetUrls=await page.locator('#service-preset option').evaluateAll(o=>o.map(x=>x.value).filter(Boolean));
+ assert(presetUrls.includes('deepseek')&&!presetUrls.includes('openai'),'Claude Code presets not limited to Anthropic endpoints: '+presetUrls);
+ await page.locator('#service-preset').selectOption('deepseek');
+ assert(await page.locator('#service-url').inputValue()==='https://api.deepseek.com/anthropic','preset address not filled');
+ await page.locator('#service-key-from-env').check();
+ assert(await page.locator('#service-key-env').inputValue()==='DEEPSEEK_API_KEY'&&await page.locator('#service-key').isHidden(),'environment key name not offered');
+ await page.locator('#service-model').fill('deepseek-v4-pro');
+ await settle(page);await page.screenshot({path:join(shots,'service-preset.png')});
+ await page.locator('#service-save').click();
+ await page.locator('#service-dialog').waitFor({state:'hidden'});
+ await openFor('claude');
+ await page.locator('#service-own.configured').filter({hasText:'现在用的是这里单独配的设置'}).waitFor({timeout:30000});
+ assert(await page.locator('#service-key-env').inputValue()==='DEEPSEEK_API_KEY','saved environment key name not shown');
+ await page.locator('#service-cancel').click();
+ await openFor('stranger');
+ await page.locator('#service-own.not_configured').filter({hasText:'在终端运行 claude 并登录'}).waitFor({timeout:30000});
+ await page.locator('#service-cancel').click();
  stage='dark theme';
  await page.emulateMedia({colorScheme:'dark'});
  await page.locator('.session-row').filter({hasText:'fixture:reply'}).first().click();
@@ -208,6 +236,8 @@ try{
  await page.locator('#service-dialog[open]').waitFor();await page.locator('#service-test').click();
  await page.locator('#service-test-result.ok').waitFor({timeout:30000});await settle(page);await page.screenshot({path:join(shots,'service-test-dark.png')});
  await page.locator('#service-cancel').click();
+ await openFor('claude');await page.locator('#service-own.configured').waitFor({timeout:30000});await settle(page);await page.screenshot({path:join(shots,'service-own-dark.png')});
+ await page.locator('#service-cancel').click();
  await page.emulateMedia({colorScheme:'light'});
  stage='narrow window';
  await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();
@@ -216,6 +246,9 @@ try{
  await page.locator('#agent-list .entity-card').filter({hasText:'coder'}).getByRole('button',{name:'模型服务'}).click();
  await page.locator('#service-dialog[open]').waitFor();await page.locator('#service-test').click();
  await page.locator('#service-test-result.ok').waitFor({timeout:30000});await settle(page);await page.screenshot({path:join(shots,'service-test-narrow.png')});
+ await page.locator('#service-cancel').click();
+ await openFor('stranger');
+ await page.locator('#service-own.not_configured').waitFor({timeout:30000});await settle(page);await page.screenshot({path:join(shots,'service-own-narrow.png')});
  await page.locator('#service-cancel').click();
  assert(problems.length===0,`browser errors: ${problems.join(' | ')}`);
  console.log(JSON.stringify({ok:true,screenshots:shots}));

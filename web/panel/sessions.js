@@ -357,10 +357,69 @@ async function sendMessage(event){
 // only learns whether one is stored and its last four characters.
 const serviceModes={
   agent_login:['用它自己的登录','用 Agent 自己的账号和设置，这里什么都不加'],
-  api_key:['API key','用你的 key 连它平常用的服务'],
-  custom:['自定义地址','连一个你指定的模型服务地址'],
+  api_key:['单独给它一个 key','用你的 key 连它平常用的服务'],
+  custom:['自定义地址','连你指定的模型服务，可以从预设里选'],
 };
 const service={agent:null,view:null};
+// What the agent is set up with on its own, in words; the daemon learned it
+// from the agent's own report or status command, never its credential files.
+const ownLoginHint={'claude-code':'在终端运行 claude 并登录','codex':'在终端运行 codex login','opencode':'在终端运行 opencode auth login','pi':'在 pi 里用 /login'};
+function ownLoginText(own){
+  if(!own)return '';
+  const parts=[];
+  if(own.kind==='api_key')parts.push(`API key${own.detail?`（来自 ${own.detail}）`:''}`);
+  else if(own.kind==='subscription'){
+    const plan=(own.detail||'').split(' · ')[1];
+    const name=own.label==='ChatGPT'?'ChatGPT 账号':/subscription/i.test(own.label||'')?`${own.label.replace(/\s*subscription/i,'')} 订阅`:(own.label||'订阅账号');
+    parts.push(plan?`${name}（${plan} 套餐）`:name);
+  }
+  else if(own.kind==='credentials')parts.push(`已存的凭据：${own.detail||''}`);
+  else if(own.kind==='providers'){const m=/(\d+) providers, (\d+) models/.exec(own.detail||'');parts.push(m?`${m[1]} 个服务商、${m[2]} 个模型`:(own.detail||'已配好的服务商'));}
+  else if(own.kind==='gateway')parts.push(`网关${own.detail?`（${own.detail}）`:''}`);
+  else parts.push([own.label,own.kind==='subscription'?null:own.detail].filter(Boolean).join(' · ')||'已登录');
+  if(own.account)parts.push(own.account);
+  return parts.join('，');
+}
+function ownDefaultModel(agent){const o=(agent?.config_options||[]).find(o=>o.category==='model');const c=o?.choices?.find(c=>c.value===o.current);return c?.name||o?.current||'';}
+function showOwnLogin(own,checking=false){
+  const box=$('#service-own'),title=$('#service-own-title'),detail=$('#service-own-detail');
+  if(state.runtime?.capabilities?.agent_own_login!==true){box.hidden=true;return;}
+  box.hidden=false;box.className='service-own '+(checking&&!own?'':own?.state||'');
+  $('#service-own-check').disabled=checking;$('#service-own-check').textContent=checking?'检测中…':'重新检测';
+  const mode=$('#service-modes').dataset.mode,overriding=mode&&mode!=='agent_login'&&service.view?.mode!=='agent_login';
+  const model=ownDefaultModel(service.agent),withModel=model?`默认模型 ${model}。`:'';
+  if(checking&&!own){title.textContent='正在检测它自己的配置…';detail.textContent='只问它自己，不读它的凭据文件。';return;}
+  if(own?.state==='configured'){
+    title.textContent='它自己已经配好了';
+    const tail=overriding?'现在用的是这里单独配的设置，会盖过它自己的；选「用它自己的登录」就恢复。':mode&&mode!=='agent_login'?'保存后改用这里的设置，盖过它自己的；选回「用它自己的登录」就不改。':'不用在这里填 key；想让它改用别的 key 或服务，在下面重新配置。';
+    detail.textContent=`检测到 ${ownLoginText(own)}。${withModel}${tail}`;
+  }else if(own?.state==='not_configured'){
+    title.textContent='没检测到它自己的登录';
+    detail.textContent=`${ownLoginHint[service.agent?.harness]?ownLoginHint[service.agent.harness]+'，':''}或者在下面单独给它一个 key。`;
+  }else{
+    title.textContent=own?'看不出它自己配没配好':'还没检测过它自己的配置';
+    detail.textContent=`${withModel}${own?'它没有报告自己的登录方式。':'点「重新检测」看看。'}`;
+  }
+}
+async function checkOwnLogin(){
+  if(state.runtime?.capabilities?.agent_own_login!==true||!service.agent)return;
+  const agent=service.agent;showOwnLogin(service.view?.own_login,true);
+  try{const v=unwrap(await api(`/agents/${agent.agent_id}/service/check`,{method:'POST',body:'{}'}));if(service.agent!==agent)return;service.view.own_login=v.own_login;}
+  catch(e){if(service.agent!==agent)return;}
+  showOwnLogin(service.view.own_login);
+}
+function servicePresets(){
+  const groups=new Map();
+  for(const p of service.view?.presets||[]){if(!groups.has(p.group))groups.set(p.group,[]);groups.get(p.group).push(p);}
+  const none=document.createElement('option');none.value='';none.textContent='自己填地址';
+  $('#service-preset').replaceChildren(none,...[...groups].map(([name,items])=>{const g=document.createElement('optgroup');g.label=name;g.append(...items.map(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=`${p.name} · ${p.region}`;return o;}));return g;}));
+  const current=(service.view?.presets||[]).find(p=>p.base_url===service.view?.base_url);$('#service-preset').value=current?.id||'';
+}
+function setKeySource(fromEnv){
+  $('#service-key-from-env').checked=fromEnv;
+  const mode=$('#service-modes').dataset.mode,needsKey=mode&&mode!=='agent_login';
+  $('#service-key-label').hidden=!needsKey||fromEnv;$('#service-key-env-label').hidden=!needsKey||!fromEnv;
+}
 function hintText(hint,empty){return hint?.set?`已设置${hint.last4?` · 末 4 位 ${hint.last4}`:''}，留空保持不变`:empty;}
 // OpenCode is the agent that takes a model list (for a custom address).
 // The daemon stores at most this many.
@@ -371,12 +430,17 @@ function serviceTestable(mode){return state.runtime?.capabilities?.agent_service
 function setServiceMode(mode){
   $('#service-modes').dataset.mode=mode;
   for(const b of $('#service-modes').children)b.setAttribute('aria-checked',String(b.dataset.mode===mode));
-  $('#service-key-label').hidden=mode==='agent_login';$('#service-url-label').hidden=mode!=='custom';
+  $('#service-url-label').hidden=mode!=='custom';$('#service-preset-label').hidden=mode!=='custom'||!(service.view?.presets||[]).length;
+  // Daemons from before environment keys get no such option.
+  const envKeys=state.runtime?.capabilities?.agent_own_login===true;
+  if(!envKeys)$('#service-key-from-env').checked=false;
+  $('#service-key-source').hidden=mode==='agent_login'||!envKeys;setKeySource($('#service-key-from-env').checked);
   $('#service-url').required=mode==='custom';
   $('#service-model').placeholder=serviceTakesList(mode)?'不填就用下面第一个':mode==='custom'?'这个地址上的模型名':'不填就用 Agent 自己的默认';
   $('#service-model-list-label').hidden=!serviceTakesList(mode);
   $('#service-test-row').hidden=!serviceTestable(mode);
   showServiceTest(null);
+  if(service.view)showOwnLogin(service.view.own_login,$('#service-own-check').disabled);
 }
 function serviceModelList(){return [...new Set($('#service-model-list').value.split('\n').map(m=>m.trim()).filter(Boolean))];}
 function serviceDatalist(names){
@@ -410,7 +474,8 @@ function showServiceTest(result){
 async function testService(){
   const mode=$('#service-modes').dataset.mode,key=$('#service-key').value.trim();
   const body={mode,base_url:mode==='custom'?$('#service-url').value.trim()||null:null,model:$('#service-model').value.trim()||serviceModelList()[0]||null};
-  if(key)body.api_key=key;
+  if($('#service-key-from-env').checked&&$('#service-key-env').value.trim())body.api_key_env=$('#service-key-env').value.trim();
+  else if(key)body.api_key=key;
   const run=$('#service-test');run.disabled=true;run.textContent='测试中…';
   $('#service-test-result').className='muted';$('#service-test-result').textContent='正在连接…';$('#service-fill').hidden=true;
   try{showServiceTest(unwrap(await api(`/agents/${service.agent.agent_id}/service/test`,{method:'POST',body:JSON.stringify(body)})));}
@@ -435,7 +500,9 @@ async function openService(agent){
     b.addEventListener('click',()=>setServiceMode(mode));return b;
   }));
   $('#service-key').value='';$('#service-key').placeholder=hintText(v.api_key,'粘贴你的 key');
+  $('#service-key-env').value=v.api_key_env||'';$('#service-key-from-env').checked=Boolean(v.api_key_env);
   $('#service-url').value=v.base_url||'';$('#service-model').value=v.default_model||'';
+  servicePresets();
   $('#service-model-list').value=(v.models||[]).join('\n');
   const models=(agent.config_options||[]).find(o=>o.category==='model')?.choices||[];
   serviceDatalist([...(v.models||[]).map(value=>({value})),...models.map(c=>({value:c.value,name:c.name}))]);
@@ -444,6 +511,7 @@ async function openService(agent){
   $('#service-injected').hidden=!v.injected.length;$('#service-injected').textContent=`启动 ${agent.name} 时会设置：${v.injected.join('、')}`;
   $('#service-message').textContent='';setServiceMode(v.mode);
   $('#service-dialog').showModal();$('#service-modes').querySelector('[aria-checked="true"]')?.focus();
+  checkOwnLogin();
 }
 function closeService(){
   // Typed secrets do not stay in the page.
@@ -458,7 +526,10 @@ async function saveService(event){
     if(name)env[name]=value?value:(row.dataset.existing===name?null:'');
   }
   const body={mode,base_url:mode==='custom'?$('#service-url').value.trim()||null:null,default_model:$('#service-model').value.trim()||null,models:serviceTakesList(mode)?serviceModelList():[],env};
-  if(mode!=='agent_login'&&key)body.api_key=key;
+  const fromEnv=$('#service-key-from-env').checked,keyEnv=$('#service-key-env').value.trim();
+  if(mode!=='agent_login'&&fromEnv)body.api_key_env=keyEnv;
+  else if(mode!=='agent_login'&&key)body.api_key=key;
+  else if(mode!=='agent_login'&&service.view?.api_key_env)body.api_key_env='';
   $('#service-save').disabled=true;$('#service-message').textContent='';
   try{
     service.view=unwrap(await api(`/agents/${service.agent.agent_id}/service`,{method:'POST',body:JSON.stringify(body)}));
@@ -472,6 +543,13 @@ $('#service-cancel').addEventListener('click',closeService);
 $('#close-service').addEventListener('click',closeService);
 $('#service-dialog').addEventListener('close',()=>{$('#service-key').value='';});
 $('#service-test').addEventListener('click',testService);
+$('#service-own-check').addEventListener('click',checkOwnLogin);
+$('#service-key-from-env').addEventListener('change',e=>{setKeySource(e.target.checked);if(e.target.checked&&!$('#service-key-env').value){const p=(service.view?.presets||[]).find(p=>p.id===$('#service-preset').value);if(p?.env_key)$('#service-key-env').value=p.env_key;}});
+$('#service-preset').addEventListener('change',e=>{
+  const p=(service.view?.presets||[]).find(p=>p.id===e.target.value);if(!p)return;
+  $('#service-url').value=p.base_url;showServiceTest(null);
+  if($('#service-key-from-env').checked&&!$('#service-key-env').value&&p.env_key)$('#service-key-env').value=p.env_key;
+});
 $('#service-fill').addEventListener('click',()=>{
   const merged=[...new Set([...serviceModelList(),...service.tested])];
   $('#service-model-list').value=merged.join('\n');$('#service-fill').hidden=true;

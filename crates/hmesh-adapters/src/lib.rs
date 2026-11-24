@@ -4,6 +4,7 @@ pub mod acp;
 pub mod compatibility;
 pub mod executable;
 pub mod framing;
+pub mod own_login;
 pub mod protocol;
 pub use acp::AcpTaskDriver;
 pub use executable::{ResolvedExecutable, probe, resolve_executable};

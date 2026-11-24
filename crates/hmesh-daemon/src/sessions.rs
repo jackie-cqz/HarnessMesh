@@ -394,10 +394,7 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
     }
     // The owner's explicit default is reported when the agent refuses it; the
     // older informational `adapter.model` applies only when the agent offers it.
-    let default_model = match service
-        .as_ref()
-        .and_then(|v| v.default_model_value(card.harness))
-    {
+    let default_model = match service.as_ref().and_then(|v| v.model_setting(card.harness)) {
         Some(model) => Some((model, true)),
         None => config.adapter.model.clone().map(|model| (model, false)),
     };
@@ -1653,10 +1650,40 @@ async fn owner_config(
 fn service_view(s: &AppState, agent: Uuid) -> std::result::Result<AgentServiceView, ApiError> {
     let (card, _) = s.store.agent(agent)?;
     let stored = service::load(&s.instance.dir, agent).map_err(crate::internal)?;
-    Ok(match stored {
+    let mut view = match stored {
         Some(stored) => stored.view(agent, card.harness),
         None => service::default_view(agent, card.harness),
-    })
+    };
+    view.own_login = service::load_own_login(&s.instance.dir, agent).map_err(crate::internal)?;
+    Ok(view)
+}
+/// Find out what the agent is set up with on its own: the agent's own ACP
+/// report or its read-only status command, never its credential files. Only
+/// this computer's owner may ask; the details stay here and paired computers
+/// see only whether it is configured.
+async fn owner_check_service(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(agent): Path<Uuid>,
+) -> ApiResult<AgentServiceView> {
+    s.owner(&headers, &c)?;
+    let (_, config) = s.store.agent(agent)?;
+    let login = hmesh_adapters::own_login::detect(&config, hmesh_core::now())
+        .await
+        .map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+    service::save_own_login(&s.instance.dir, agent, &login).map_err(crate::internal)?;
+    let state = login.state.clone();
+    s.store
+        .update_agent_card(agent, |card| card.own_login = Some(state.clone()))?;
+    let _ = s.store.audit(
+        Some(s.instance.card.node_id),
+        "agent.service.check",
+        &agent.to_string(),
+        &login.state,
+        Uuid::new_v4(),
+    );
+    Ok(Json(service_view(&s, agent)?))
 }
 async fn owner_get_service(
     State(s): State<AppState>,
@@ -1899,6 +1926,10 @@ pub fn routes() -> Router<AppState> {
             get(owner_get_service).post(owner_set_service),
         )
         .route("/local/agents/{id}/service/test", post(owner_test_service))
+        .route(
+            "/local/agents/{id}/service/check",
+            post(owner_check_service),
+        )
         .route("/hmesh/v1/sessions", post(peer_open))
         .route("/hmesh/v1/sessions/{id}", get(peer_get))
         .route("/hmesh/v1/sessions/{id}/events", get(peer_events))

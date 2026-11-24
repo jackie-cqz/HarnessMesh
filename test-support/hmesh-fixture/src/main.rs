@@ -318,11 +318,44 @@ fn run_acp() -> anyhow::Result<()> {
                 {
                     std::thread::sleep(Duration::from_millis(ms));
                 }
+                // `--auth-status subscription|api_key|none` answers `auth/status`
+                // the way claude-agent-acp does.
+                let mut capabilities = json!({"loadSession":true,"promptCapabilities":{},"mcpCapabilities":{"http":false,"sse":false}});
+                if auth_status().is_some() {
+                    capabilities["auth"] = json!({"status":{}});
+                }
+                // `--auth-push subscription|none` only pushes `_auth/status_update`,
+                // like an agent with the extension but without `auth/status`.
+                let push = flag("--auth-push");
+                if push.is_some() {
+                    capabilities["_meta"] = json!({"authStatus":{}});
+                }
                 respond(
                     &id,
-                    json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{},"mcpCapabilities":{"http":false,"sse":false}},"authMethods":[],"agentInfo":{"name":"hmesh-fixture","version":"0.84.2"}}),
-                )
+                    json!({"protocolVersion":1,"agentCapabilities":capabilities,"authMethods":[],"agentInfo":{"name":"hmesh-fixture","version":"0.84.2"}}),
+                );
+                match push.as_deref() {
+                    Some("subscription") => send(
+                        json!({"jsonrpc":"2.0","method":"_auth/status_update","params":{"authStatus":{"kind":"account","label":"Claude subscription","account":{"email":"pushed@example.com","plan":"pro"}}}}),
+                    ),
+                    Some(_) => send(
+                        json!({"jsonrpc":"2.0","method":"_auth/status_update","params":{"authStatus":{"kind":"none","label":"Not logged in"}}}),
+                    ),
+                    None => {}
+                }
             }
+            "auth/status" => match auth_status().as_deref() {
+                Some("subscription") => respond(
+                    &id,
+                    json!({"state":"authenticated","accounts":[{"label":"Claude subscription","description":"OAuth token","email":"fixture@example.com","active":true,"_meta":{"claudeCode":{"kind":"account","plan":"max"}}}]}),
+                ),
+                Some("api_key") => respond(
+                    &id,
+                    json!({"state":"authenticated","accounts":[{"label":"Anthropic API key","description":"ANTHROPIC_API_KEY","active":true,"_meta":{"claudeCode":{"kind":"api_key"}}}]}),
+                ),
+                Some(_) => respond(&id, json!({"state":"unauthenticated"})),
+                None => fail(&id, -32601, "Method not found"),
+            },
             "session/new" => {
                 next += 1;
                 let session_id = format!(
@@ -656,6 +689,17 @@ fn run_acp() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn flag(name: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+fn auth_status() -> Option<String> {
+    flag("--auth-status")
 }
 
 #[tokio::main]

@@ -1567,3 +1567,226 @@ async fn a_turn_waits_while_a_setting_changes() {
     );
     daemon.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_own_login_is_checked_on_its_computer_and_peers_see_only_whether_it_is_set_up() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "node-a");
+    let b = init(root.path(), "node-b");
+    Store::open(&a.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&b.card)
+        .unwrap();
+    Store::open(&b.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&a.card)
+        .unwrap();
+    let claude = register_as(
+        &a,
+        &root.path().join("claude"),
+        "claude",
+        "claude-code",
+        &["--auth-status", "subscription"],
+    );
+    let logged_out = register_as(
+        &a,
+        &root.path().join("out"),
+        "out",
+        "claude-code",
+        &["--auth-status", "none"],
+    );
+    let silent = register_fixture(&a, &root.path().join("project"));
+    let codex = register_as(&a, &root.path().join("codex"), "codex", "codex", &[]);
+    let pushed = register_as(
+        &a,
+        &root.path().join("pushed"),
+        "pushed",
+        "claude-code",
+        &["--auth-push", "subscription"],
+    );
+    let daemon_a = Daemon::start(&a.dir);
+    let daemon_b = Daemon::start(&b.dir);
+    daemon_a.ready().await;
+    daemon_b.ready().await;
+    let owner = daemon_a.owner();
+    let check = |agent: Uuid| {
+        let owner = &owner;
+        async move {
+            owner
+                .post::<_, service::AgentServiceView>(
+                    &format!("/local/agents/{agent}/service/check"),
+                    &json!({}),
+                )
+                .await
+                .unwrap()
+                .own_login
+                .unwrap()
+        }
+    };
+
+    // The agent reports its own login over ACP; HarnessMesh reads no files.
+    let own = check(claude).await;
+    assert_eq!(
+        (
+            own.state.as_str(),
+            own.kind.as_deref(),
+            own.label.as_deref(),
+            own.account.as_deref(),
+            own.source.as_str()
+        ),
+        (
+            "configured",
+            Some("subscription"),
+            Some("Claude subscription"),
+            Some("fixture@example.com"),
+            "acp auth/status"
+        )
+    );
+    assert_eq!(check(logged_out).await.state, "not_configured");
+    assert_eq!(check(silent).await.state, "unknown");
+    // An agent that only pushes its identity (claude-agent-acp's extension).
+    let push = check(pushed).await;
+    assert_eq!(
+        (
+            push.state.as_str(),
+            push.kind.as_deref(),
+            push.account.as_deref(),
+            push.detail.as_deref()
+        ),
+        (
+            "configured",
+            Some("subscription"),
+            Some("pushed@example.com"),
+            Some("pro")
+        )
+    );
+    // The last check is kept on this computer and shown with the settings.
+    let view: service::AgentServiceView = owner
+        .get(&format!("/local/agents/{claude}/service"))
+        .await
+        .unwrap();
+    assert_eq!(
+        view.own_login.as_ref().map(|o| o.state.as_str()),
+        Some("configured")
+    );
+    assert!(
+        !view.presets.is_empty()
+            && view
+                .presets
+                .iter()
+                .all(|p| p.base_url.contains("/anthropic"))
+    );
+
+    // A paired computer learns only whether it is set up.
+    let nodes: Vec<MeshNode> = daemon_b.owner().get("/local/mesh/agents").await.unwrap();
+    let listed = serde_json::to_string(&nodes).unwrap();
+    assert!(
+        !listed.contains("fixture@example.com") && !listed.contains("Claude subscription"),
+        "{listed}"
+    );
+    let remote = nodes.iter().find(|n| !n.local).unwrap();
+    let state = |id: Uuid| {
+        remote
+            .agents
+            .iter()
+            .find(|c| c.agent_id == id)
+            .unwrap()
+            .own_login
+            .clone()
+    };
+    assert_eq!(state(claude).as_deref(), Some("configured"));
+    assert_eq!(state(logged_out).as_deref(), Some("not_configured"));
+    let as_peer =
+        hmesh_transport::Client::new(&b, &a.card.endpoint, &a.card.fingerprint, false, false)
+            .unwrap();
+    assert_eq!(
+        as_peer
+            .post::<_, Value>(&format!("/local/agents/{claude}/service/check"), &json!({}))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+
+    // Claude Code on a custom endpoint gets the chosen model in every tier
+    // variable, and the model is not also asked for over ACP.
+    set_service(
+        &owner,
+        claude,
+        json!({"mode":"custom","base_url":"https://api.deepseek.com/anthropic","api_key":"sk-fixture-0123456789","default_model":"deepseek-v4-pro"}),
+    )
+    .await;
+    let asked = open(
+        &owner,
+        json!({"agent_id":claude,"message":"fixture:env ANTHROPIC_DEFAULT_HAIKU_MODEL"}),
+    )
+    .await;
+    let (asked, events) = turn_done(&owner, asked.session_id, 1).await;
+    assert!(
+        asked
+            .last_final_text
+            .as_deref()
+            .is_some_and(|t| t.ends_with("value=deepseek-v4-pro")),
+        "{:?}",
+        asked.last_final_text
+    );
+    assert!(
+        !events.iter().any(|e| e.payload["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("did not accept"))),
+        "{events:#?}"
+    );
+
+    // A key read from the daemon's environment reaches the agent, redacted,
+    // and is never stored.
+    let from_env = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let view = set_service(
+        &owner,
+        codex,
+        json!({"mode":"api_key","api_key_env":"CARGO_MANIFEST_DIR"}),
+    )
+    .await;
+    assert_eq!(
+        (view.api_key_env.as_deref(), view.api_key.set),
+        (Some("CARGO_MANIFEST_DIR"), false)
+    );
+    let session = open(
+        &owner,
+        json!({"agent_id":codex,"message":"fixture:env OPENAI_API_KEY"}),
+    )
+    .await;
+    let (done, _) = turn_done(&owner, session.session_id, 1).await;
+    assert_eq!(
+        done.last_final_text,
+        Some(format!(
+            "OPENAI_API_KEY len={} fnv={:016x} value=[REDACTED]",
+            from_env.len(),
+            fnv(&from_env)
+        ))
+    );
+    let stored =
+        std::fs::read_to_string(a.dir.join("agent-secrets").join(format!("{codex}.json"))).unwrap();
+    assert!(
+        stored.contains("CARGO_MANIFEST_DIR") && !stored.contains(&from_env),
+        "{stored}"
+    );
+    // A missing variable stops the agent from starting and says which.
+    set_service(
+        &owner,
+        codex,
+        json!({"mode":"api_key","api_key_env":"NOT_SET_ANYWHERE_0123"}),
+    )
+    .await;
+    let missing = open(&owner, json!({"agent_id":codex,"message":"fixture:reply"})).await;
+    let (missing, _) = until(&owner, missing.session_id, |s, _| !s.status.is_busy()).await;
+    assert!(
+        missing
+            .last_error
+            .as_deref()
+            .is_some_and(|e| e.contains("NOT_SET_ANYWHERE_0123")),
+        "{:?}",
+        missing.last_error
+    );
+    daemon_a.stop().await;
+    daemon_b.stop().await;
+}

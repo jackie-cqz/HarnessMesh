@@ -1492,6 +1492,14 @@ main:has(#app[data-page="sessions"]) footer{display:none}
 .service-env summary{cursor:pointer;color:var(--muted)}
 .service-env-row{display:grid;grid-template-columns:1fr 1.4fr auto;align-items:center;gap:8px;margin:8px 0}
 .service-env-row input{width:100%;padding:8px 12px;border:1px solid var(--input,var(--border));border-radius:10px;background:var(--background);color:var(--foreground);font-size:13px}
+.service-dialog .service-key-source{display:flex;flex-direction:row;align-items:center;gap:8px;font-size:13px;color:var(--foreground);cursor:pointer}
+.service-dialog .service-key-source input{width:auto;margin:0}
+.service-own{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 14px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;font-size:13px;line-height:1.55}
+.service-own>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.service-own span{color:var(--muted);overflow-wrap:anywhere}
+.service-own.configured{border-color:color-mix(in srgb,var(--emerald) 45%,var(--border))}
+.service-own.not_configured{border-color:color-mix(in srgb,var(--amber) 45%,var(--border))}
+.service-own .button{flex:none}
 .service-test{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:12px 0 2px;font-size:12px;line-height:1.5}
 .service-test #service-test-result{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
 .service-test #service-test-result.ok{color:var(--emerald)}

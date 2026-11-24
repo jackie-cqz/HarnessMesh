@@ -936,6 +936,11 @@ pub struct AgentCard {
     /// Model new sessions start with, when the owner chose one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// Whether the agent is set up with a login or key of its own
+    /// (`configured`, `not_configured` or `unknown`), from the last check on
+    /// its computer. Which login and which account stay on that computer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_login: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

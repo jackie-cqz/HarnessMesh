@@ -436,8 +436,16 @@ enum AgentCommand {
         #[arg(long)]
         mode: Option<String>,
         /// Endpoint address for the custom mode.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preset")]
         base_url: Option<String>,
+        /// Use a known provider's address for the custom mode (the presets
+        /// listed for this agent type).
+        #[arg(long)]
+        preset: Option<String>,
+        /// First find out what the agent is set up with on its own: its own
+        /// report or status command; no credential files are read.
+        #[arg(long)]
+        check: bool,
         /// Model new sessions start with; an empty value removes it.
         #[arg(long)]
         default_model: Option<String>,
@@ -456,6 +464,10 @@ enum AgentCommand {
         /// Read a new API key from standard input (one line).
         #[arg(long)]
         api_key_stdin: bool,
+        /// Read the key from this variable of the daemon's environment when
+        /// the agent starts, instead of storing it.
+        #[arg(long, conflicts_with_all = ["api_key_stdin", "clear_api_key"])]
+        api_key_env: Option<String>,
         /// Remove the stored API key.
         #[arg(long, conflicts_with = "api_key_stdin")]
         clear_api_key: bool,
@@ -1177,11 +1189,14 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                     agent_id,
                     mode,
                     base_url,
+                    preset,
+                    check,
                     default_model,
                     models,
                     clear_models,
                     test,
                     api_key_stdin,
+                    api_key_env,
                     clear_api_key,
                     env,
                     keep_env,
@@ -1189,9 +1204,29 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 },
         } => {
             let path = format!("/local/agents/{agent_id}/service");
-            let current: hmesh_core::service::AgentServiceView = client.get(&path).await?;
+            let current: hmesh_core::service::AgentServiceView = if check {
+                client.post(&format!("{path}/check"), &json!({})).await?
+            } else {
+                client.get(&path).await?
+            };
+            let base_url = match preset {
+                Some(id) => Some(
+                    current
+                        .presets
+                        .iter()
+                        .find(|p| p.id == id)
+                        .map(|p| p.base_url.clone())
+                        .with_context(|| {
+                            format!(
+                                "preset {id:?} has no address this agent type can use; the usable presets are listed by `hmesh agent service {agent_id}`"
+                            )
+                        })?,
+                ),
+                None => base_url,
+            };
             let changing = mode.is_some()
                 || base_url.is_some()
+                || api_key_env.is_some()
                 || default_model.is_some()
                 || !models.is_empty()
                 || clear_models
@@ -1249,18 +1284,20 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 } else {
                     vec![]
                 };
+                let mut body = json!({
+                    "mode":mode,
+                    "base_url":base_url.or(current.base_url),
+                    "default_model":default_model.or(current.default_model),
+                    "models":models,
+                    "api_key":api_key,
+                    "env":env,
+                });
+                // Sent only when given, so daemons without it accept the request.
+                if let Some(name) = api_key_env {
+                    body["api_key_env"] = json!(name);
+                }
                 client
-                    .post::<_, hmesh_core::service::AgentServiceView>(
-                        &path,
-                        &json!({
-                            "mode":mode,
-                            "base_url":base_url.or(current.base_url),
-                            "default_model":default_model.or(current.default_model),
-                            "models":models,
-                            "api_key":api_key,
-                            "env":env,
-                        }),
-                    )
+                    .post::<_, hmesh_core::service::AgentServiceView>(&path, &body)
                     .await?
             };
             if test {

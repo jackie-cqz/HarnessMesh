@@ -33,6 +33,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "acp-sessions-v1",
     "agent-settings-v1",
     "agent-service-test-v1",
+    "agent-own-login-v1",
 ];
 
 #[derive(Clone)]
@@ -210,6 +211,7 @@ pub async fn run(
             get(agent_service).post(set_agent_service),
         )
         .route("/api/agents/{id}/service/test", post(test_agent_service))
+        .route("/api/agents/{id}/service/check", post(check_agent_service))
         .route("/api/sessions", get(sessions).post(open_session))
         .route("/api/sessions/{id}/events", get(session_events))
         .route("/api/sessions/{id}/prompt", post(session_prompt))
@@ -340,7 +342,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -794,6 +796,14 @@ async fn set_agent_service(
     session_reply(
         s.client
             .post::<_, Value>(&format!("/local/agents/{id}/service"), &body)
+            .await,
+    )
+}
+/// Find out what the agent is set up with on its own.
+async fn check_agent_service(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
+    session_reply(
+        s.client
+            .post::<_, Value>(&format!("/local/agents/{id}/service/check"), &json!({}))
             .await,
     )
 }

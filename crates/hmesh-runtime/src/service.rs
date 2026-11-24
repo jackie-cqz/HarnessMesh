@@ -36,6 +36,10 @@ pub struct AgentService {
     pub models: Vec<String>,
     #[serde(default)]
     pub api_key: Option<String>,
+    /// The key is read from this variable of the daemon's environment when
+    /// the agent starts, instead of being stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 }
@@ -72,6 +76,60 @@ fn directory(data_dir: &Path) -> PathBuf {
 fn file(data_dir: &Path, agent: Uuid) -> PathBuf {
     directory(data_dir).join(format!("{agent}.json"))
 }
+/// What each agent was last found to be set up with on its own: private to
+/// this computer (it can hold an account's email), but not a secret.
+fn login_directory(data_dir: &Path) -> PathBuf {
+    data_dir.join("agent-login")
+}
+fn login_file(data_dir: &Path, agent: Uuid) -> PathBuf {
+    login_directory(data_dir).join(format!("{agent}.json"))
+}
+
+/// The last check of what an agent is set up with on its own.
+pub fn load_own_login(data_dir: &Path, agent: Uuid) -> Result<Option<OwnLogin>> {
+    match fs::read(login_file(data_dir, agent)) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).context("agent login check is unreadable"),
+    }
+}
+pub fn save_own_login(data_dir: &Path, agent: Uuid, login: &OwnLogin) -> Result<()> {
+    write_private(
+        &login_directory(data_dir),
+        &login_file(data_dir, agent),
+        agent,
+        &serde_json::to_vec_pretty(login)?,
+    )
+}
+
+/// Write a file atomically, readable only by this user.
+fn write_private(dir: &Path, path: &Path, agent: Uuid, bytes: &[u8]) -> Result<()> {
+    fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    let temp = dir.join(format!(".{agent}.{}.tmp", Uuid::new_v4().simple()));
+    {
+        use std::io::Write;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut out = options.open(&temp)?;
+        out.write_all(bytes)?;
+        out.sync_all()?;
+    }
+    if let Err(e) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(e.into());
+    }
+    Ok(())
+}
 
 /// Modes an agent type supports. Every type may use its own login and
 /// extra environment variables.
@@ -107,33 +165,12 @@ pub fn save(data_dir: &Path, agent: Uuid, service: Option<&AgentService>) -> Res
             _ => Ok(()),
         };
     };
-    let dir = directory(data_dir);
-    fs::create_dir_all(&dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
-    }
-    let temp = dir.join(format!(".{agent}.{}.tmp", Uuid::new_v4().simple()));
-    let bytes = serde_json::to_vec_pretty(service)?;
-    {
-        use std::io::Write;
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut out = options.open(&temp)?;
-        out.write_all(&bytes)?;
-        out.sync_all()?;
-    }
-    if let Err(e) = fs::rename(&temp, &path) {
-        let _ = fs::remove_file(&temp);
-        return Err(e.into());
-    }
-    Ok(())
+    write_private(
+        &directory(data_dir),
+        &path,
+        agent,
+        &serde_json::to_vec_pretty(service)?,
+    )
 }
 
 fn plain(text: &str, limit: usize) -> bool {
@@ -147,6 +184,15 @@ fn valid_env_name(name: &str) -> bool {
             .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
         && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
+/// Claude Code's model variables, all set to the chosen model on a custom
+/// endpoint.
+const CLAUDE_MODEL_VARS: [&str; 5] = [
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+];
 const RESERVED_ENV: [&str; 7] = [
     "PATH",
     "HOME",
@@ -252,21 +298,46 @@ pub fn update(
         default_model,
         models,
         api_key: None,
+        api_key_env: None,
         env,
     };
     if mode != MODE_AGENT_LOGIN {
-        service.api_key = match request.api_key {
-            Some(key) if key.is_empty() => None,
-            Some(key) => {
-                let key = key.trim().to_owned();
-                if key.len() < 8 || !plain(&key, MAX_SECRET_BYTES) || key.contains(' ') {
-                    bail!("the API key must be one line of 8 characters or more, without spaces");
-                }
-                Some(key)
+        let named = request
+            .api_key_env
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty());
+        if let Some(name) = named {
+            // A key read from the environment: nothing stored.
+            if !valid_env_name(name) {
+                bail!(
+                    "invalid environment variable name {name:?}: use capital letters, digits and _"
+                );
             }
-            None => existing.and_then(|e| e.api_key.clone()),
-        };
-        if service.api_key.is_none() {
+            if RESERVED_ENV.contains(&name) || name.starts_with("HMESH_") {
+                bail!("{name} is managed by the system or by HarnessMesh and cannot hold the key");
+            }
+            service.api_key_env = Some(name.to_owned());
+        } else {
+            service.api_key = match request.api_key {
+                Some(key) if key.is_empty() => None,
+                Some(key) => {
+                    let key = key.trim().to_owned();
+                    if key.len() < 8 || !plain(&key, MAX_SECRET_BYTES) || key.contains(' ') {
+                        bail!(
+                            "the API key must be one line of 8 characters or more, without spaces"
+                        );
+                    }
+                    Some(key)
+                }
+                None => existing.and_then(|e| e.api_key.clone()),
+            };
+            // An empty name drops the reference; omitted keeps it while no key is given.
+            if service.api_key.is_none() && request.api_key_env.is_none() {
+                service.api_key_env = existing.and_then(|e| e.api_key_env.clone());
+            }
+        }
+        if service.api_key.is_none() && service.api_key_env.is_none() {
             bail!("this mode needs an API key");
         }
     }
@@ -287,9 +358,29 @@ impl AgentService {
     /// Environment changes for the agent process: `Some` sets a variable,
     /// `None` removes one inherited from the daemon that would conflict.
     pub fn launch_env(&self, harness: HarnessKind) -> Result<Vec<(String, Option<String>)>> {
+        let key = self.key()?.unwrap_or_default();
+        self.env_with_key(harness, &key)
+    }
+    /// The key the agent receives: the stored one, or the named variable of
+    /// the daemon's environment, which must be set.
+    pub fn key(&self) -> Result<Option<String>> {
+        match &self.api_key_env {
+            Some(name) => match std::env::var(name) {
+                Ok(value) if !value.trim().is_empty() => Ok(Some(value.trim().to_owned())),
+                _ => bail!(
+                    "the API key comes from the environment variable {name}, which is not set where HarnessMesh runs; set it and restart the daemon"
+                ),
+            },
+            None => Ok(self.api_key.clone()),
+        }
+    }
+    fn env_with_key(
+        &self,
+        harness: HarnessKind,
+        key: &str,
+    ) -> Result<Vec<(String, Option<String>)>> {
         let set = |name: &str, value: &str| (name.to_owned(), Some(value.to_owned()));
         let unset = |name: &str| (name.to_owned(), None);
-        let key = self.api_key.as_deref().unwrap_or_default();
         let mut env = match (self.mode.as_str(), harness) {
             (MODE_AGENT_LOGIN, _) => vec![],
             (MODE_API_KEY, HarnessKind::Opencode) => vec![set("OPENCODE_API_KEY", key)],
@@ -328,14 +419,26 @@ impl AgentService {
                     set("OPENCODE_CONFIG_CONTENT", &config.to_string()),
                 ]
             }
-            (MODE_CUSTOM, HarnessKind::ClaudeCode) => vec![
-                set(
-                    "ANTHROPIC_BASE_URL",
-                    self.base_url.as_deref().unwrap_or_default(),
-                ),
-                set("ANTHROPIC_AUTH_TOKEN", key),
-                unset("ANTHROPIC_API_KEY"),
-            ],
+            (MODE_CUSTOM, HarnessKind::ClaudeCode) => {
+                let mut env = vec![
+                    set(
+                        "ANTHROPIC_BASE_URL",
+                        self.base_url.as_deref().unwrap_or_default(),
+                    ),
+                    set("ANTHROPIC_AUTH_TOKEN", key),
+                    unset("ANTHROPIC_API_KEY"),
+                    // No background requests to Anthropic with another provider's key.
+                    set("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+                ];
+                // Claude Code otherwise sends its own model names, which other
+                // providers reject; every tier uses the chosen model.
+                if let Some(model) = &self.default_model {
+                    for name in CLAUDE_MODEL_VARS {
+                        env.push(set(name, model));
+                    }
+                }
+                env
+            }
             (MODE_CUSTOM, HarnessKind::Codex) => vec![
                 set(
                     "OPENAI_BASE_URL",
@@ -358,8 +461,14 @@ impl AgentService {
     }
     /// Values to keep out of recorded output.
     pub fn secrets(&self) -> Vec<String> {
+        let from_env = self
+            .key()
+            .ok()
+            .flatten()
+            .filter(|_| self.api_key_env.is_some());
         self.api_key
             .iter()
+            .chain(from_env.iter())
             .chain(self.env.values())
             .filter(|v| v.len() >= 8)
             .cloned()
@@ -379,6 +488,15 @@ impl AgentService {
                 model
             },
         )
+    }
+    /// The model setting HarnessMesh asks the agent for over ACP. Claude Code
+    /// on a custom endpoint gets its model through the environment instead,
+    /// since its own model choices are Claude names.
+    pub fn model_setting(&self, harness: HarnessKind) -> Option<String> {
+        if harness == HarnessKind::ClaudeCode && self.mode == MODE_CUSTOM {
+            return None;
+        }
+        self.default_model_value(harness)
     }
     pub fn view(&self, agent: Uuid, harness: HarnessKind) -> AgentServiceView {
         AgentServiceView {
@@ -403,8 +521,9 @@ impl AgentService {
                 })
                 .collect(),
             modes: modes(harness),
+            // Names only: a key from the environment need not be set to list them.
             injected: self
-                .launch_env(harness)
+                .env_with_key(harness, "")
                 .map(|env| {
                     env.into_iter()
                         .filter(|(_, v)| v.is_some())
@@ -412,6 +531,9 @@ impl AgentService {
                         .collect()
                 })
                 .unwrap_or_default(),
+            api_key_env: self.api_key_env.clone(),
+            own_login: None,
+            presets: presets_for(harness),
         }
     }
 }
@@ -430,11 +552,22 @@ pub fn test_target(
     if mode == MODE_AGENT_LOGIN {
         bail!("this agent uses its own login; there is no address or key here to test");
     }
-    let key = match request.api_key.map(|k| k.trim().to_owned()) {
-        Some(key) if !key.is_empty() => key,
-        _ => existing
-            .and_then(|e| e.api_key.clone())
-            .context("enter an API key to test")?,
+    let named = request
+        .api_key_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty());
+    let key = match (request.api_key.map(|k| k.trim().to_owned()), named) {
+        (Some(key), _) if !key.is_empty() => key,
+        (_, Some(name)) => std::env::var(name)
+            .ok()
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+            .with_context(|| format!("{name} is not set where HarnessMesh runs"))?,
+        _ => match existing {
+            Some(e) => e.key()?.context("enter an API key to test")?,
+            None => bail!("enter an API key to test"),
+        },
     };
     if !plain(&key, MAX_SECRET_BYTES) || key.contains(' ') {
         bail!("the API key must be one line without spaces");
@@ -549,6 +682,7 @@ mod tests {
             default_model: Some("demo-model".into()),
             models: vec!["demo-model".into(), "second-model".into()],
             api_key: Some("sk-test-0123456789".into()),
+            api_key_env: None,
             env: BTreeMap::from([("EXTRA_TOKEN".into(), "extra-secret-value".into())]),
         };
         let env: BTreeMap<_, _> = service
@@ -584,6 +718,20 @@ mod tests {
         assert_eq!(
             claude["ANTHROPIC_API_KEY"], None,
             "a conflicting key is removed"
+        );
+        // Every Claude Code model tier uses the chosen model, and the model is
+        // not also asked for over ACP (Claude Code lists only Claude names).
+        for name in CLAUDE_MODEL_VARS {
+            assert_eq!(claude[name].as_deref(), Some("demo-model"), "{name}");
+        }
+        assert_eq!(
+            claude["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"].as_deref(),
+            Some("1")
+        );
+        assert_eq!(service.model_setting(HarnessKind::ClaudeCode), None);
+        assert_eq!(
+            service.model_setting(HarnessKind::Opencode).as_deref(),
+            Some("hmesh/demo-model")
         );
         assert_eq!(
             service
@@ -698,6 +846,7 @@ mod tests {
                     mode: mode.into(),
                     base_url: base.map(Into::into),
                     api_key: key.map(Into::into),
+                    api_key_env: None,
                     model: None,
                 },
             )
@@ -756,6 +905,96 @@ mod tests {
             )
             .is_err(),
             "no key to test"
+        );
+    }
+    #[test]
+    fn a_key_can_come_from_the_environment() {
+        let mut named = request(MODE_API_KEY);
+        named.api_key_env = Some("CARGO_MANIFEST_DIR".into());
+        let stored = update(HarnessKind::Codex, None, named).unwrap().unwrap();
+        assert_eq!(stored.api_key, None, "nothing stored");
+        let expected = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let env: BTreeMap<_, _> = stored
+            .launch_env(HarnessKind::Codex)
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(env["OPENAI_API_KEY"].as_deref(), Some(expected.as_str()));
+        let saved = serde_json::to_string(&stored).unwrap();
+        assert!(
+            saved.contains("CARGO_MANIFEST_DIR") && !saved.contains(&expected),
+            "{saved}"
+        );
+        assert!(
+            stored.secrets().contains(&expected),
+            "redacted like a stored key"
+        );
+        // Omitted, the reference stays; a typed key replaces it.
+        let kept = update(HarnessKind::Codex, Some(&stored), request(MODE_API_KEY))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.api_key_env.as_deref(), Some("CARGO_MANIFEST_DIR"));
+        let mut typed = request(MODE_API_KEY);
+        typed.api_key = Some("sk-typed-0123456789".into());
+        let replaced = update(HarnessKind::Codex, Some(&stored), typed)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (replaced.api_key_env.as_deref(), replaced.api_key.as_deref()),
+            (None, Some("sk-typed-0123456789"))
+        );
+        let mut reserved = request(MODE_API_KEY);
+        reserved.api_key_env = Some("HOME".into());
+        assert!(update(HarnessKind::Codex, None, reserved).is_err());
+        // A missing variable stops the start and names the variable.
+        let missing = AgentService {
+            mode: MODE_API_KEY.into(),
+            api_key_env: Some("NOT_SET_ANYWHERE_0123".into()),
+            ..Default::default()
+        };
+        let error = missing
+            .launch_env(HarnessKind::Codex)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("NOT_SET_ANYWHERE_0123"), "{error}");
+        assert_eq!(
+            missing.view(Uuid::nil(), HarnessKind::Codex).injected,
+            ["OPENAI_API_KEY"]
+        );
+    }
+    #[test]
+    fn presets_follow_each_agent_types_protocol() {
+        assert_eq!(
+            PRESETS.len(),
+            31,
+            "AgentMeld's 28 and its 3 built-in endpoints"
+        );
+        let mut ids: Vec<&str> = PRESETS.iter().map(|p| p.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 31, "unique ids");
+        assert_eq!(presets_for(HarnessKind::Opencode).len(), 31);
+        let claude = presets_for(HarnessKind::ClaudeCode);
+        assert!(
+            claude.iter().all(|p| p.base_url.contains("/anthropic")),
+            "{claude:?}"
+        );
+        assert!(
+            claude
+                .iter()
+                .any(|p| p.id == "deepseek" && p.base_url == "https://api.deepseek.com/anthropic")
+        );
+        let codex: Vec<String> = presets_for(HarnessKind::Codex)
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(codex, ["openai"]);
+        assert!(presets_for(HarnessKind::Pi).is_empty());
+        assert!(presets_for(HarnessKind::Acp).is_empty());
+        assert!(
+            PRESETS
+                .iter()
+                .all(|p| endpoint(Some(p.chat.into())).is_ok())
         );
     }
 }
