@@ -444,7 +444,12 @@ async fn wait_turn(client: &Client, id: Uuid, seconds: u64) -> Result<Value> {
                 left.min(POLL_SECONDS)
             ))
             .await?;
-        if !page.session.status.is_busy() || left == 0 {
+        // Waiting for approval on the agent's computer counts as not done yet.
+        let done = matches!(
+            page.session.status,
+            SessionStatus::Idle | SessionStatus::Closed
+        );
+        if done || left == 0 {
             return Ok(session_view(&page.session));
         }
     }

@@ -72,6 +72,7 @@ pub struct Sessions {
     live: Mutex<HashMap<Uuid, Arc<Live>>>,
     watchers: Mutex<HashMap<Uuid, watch::Sender<u64>>>,
     starting: Mutex<std::collections::HashSet<Uuid>>,
+    refreshing: std::sync::atomic::AtomicBool,
 }
 impl Sessions {
     fn live(&self, id: Uuid) -> Option<Arc<Live>> {
@@ -501,6 +502,8 @@ async fn run_turn(s: AppState, id: Uuid, text: String) {
     };
     let live = match ensure_live(&s, &record).await {
         Ok(live) => live,
+        // Closed while starting: the close already explains itself.
+        Err(_) if !s.store.session(id).is_ok_and(|r| r.status.is_open()) => return,
         Err(error) => return finish(&s, None, None, Some(error.message)),
     };
     // Closed (or revoked) while the agent was starting: never send the prompt.
@@ -928,8 +931,10 @@ async fn wait_events(
             s.store.session_events(id, after, MAX_PAGE_EVENTS)?
         };
         let changed = session.status != first.status || session.updated_at != first.updated_at;
-        // A turn-end wait on a session that is not working returns at once.
-        let settled = status_only && !session.status.is_busy();
+        // A turn-end wait returns at once once nothing more will happen without
+        // a new message; a session waiting for approval keeps the caller waiting.
+        let settled =
+            status_only && matches!(session.status, SessionStatus::Idle | SessionStatus::Closed);
         if !events.is_empty() || changed || settled || tokio::time::Instant::now() >= deadline {
             let next = events.last().map_or(after, |e| e.seq);
             return Ok(SessionEventPage {
@@ -986,7 +991,18 @@ pub async fn run(s: AppState, mut shutdown: watch::Receiver<bool>) {
                         live.conn.shutdown().await;
                     }
                 }
-                refresh_remote(&s).await;
+                // Runs on its own so slow peers never delay reaping or shutdown.
+                if !s.sessions.refreshing.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let state = s.clone();
+                    let mut stop = shutdown.clone();
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            _ = refresh_remote(&state) => {}
+                            _ = stop.changed() => {}
+                        }
+                        state.sessions.refreshing.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
+                }
             }
         }
     }
@@ -1140,22 +1156,49 @@ async fn remote_post<B: Serialize>(
 /// working, so lists and the running-children limit do not trust stale state.
 async fn refresh_remote(s: &AppState) {
     let rows = s.store.remote_sessions(10_000).unwrap_or_default();
-    let open = rows
+    let open: Vec<(Uuid, SessionRecord)> = rows
         .into_iter()
         .filter(|(_, r)| r.status.is_busy() || r.status == SessionStatus::PendingApproval)
-        .take(50);
-    for (peer, record) in open {
-        let Ok(client) = peer_client(s, peer) else {
-            continue;
-        };
-        let id = record.session_id;
-        let path = format!("/hmesh/v1/sessions/{id}");
-        if let Ok(Ok(fresh)) =
-            tokio::time::timeout(Duration::from_secs(5), client.get::<SessionRecord>(&path)).await
-        {
-            let _ = mirror(s, peer, id, &fresh);
-        }
+        .take(50)
+        .collect();
+    let mut checks = tokio::task::JoinSet::new();
+    for (peer, mut record) in open {
+        let s = s.clone();
+        checks.spawn(async move {
+            let id = record.session_id;
+            let path = format!("/hmesh/v1/sessions/{id}");
+            let fetched = match peer_client(&s, peer) {
+                Ok(client) => {
+                    tokio::time::timeout(Duration::from_secs(5), client.get::<SessionRecord>(&path))
+                        .await
+                        .ok()
+                }
+                Err(_) => None,
+            };
+            match fetched {
+                Some(Ok(fresh)) => {
+                    let _ = mirror(&s, peer, id, &fresh);
+                }
+                // That computer no longer lets this one use the session (or
+                // this one stopped trusting it): the copy is closed for good.
+                Some(Err(e))
+                    if matches!(
+                        e.code,
+                        ErrorCode::PermissionDenied | ErrorCode::Unauthenticated
+                    ) =>
+                {
+                    record.status = SessionStatus::Closed;
+                    let _ = s.store.record_remote_session(peer, &record);
+                }
+                None if s.store.peer(peer).is_ok_and(|p| p.status != "trusted") => {
+                    record.status = SessionStatus::Closed;
+                    let _ = s.store.record_remote_session(peer, &record);
+                }
+                _ => {}
+            }
+        });
     }
+    while checks.join_next().await.is_some() {}
 }
 async fn owner_prompt(
     State(s): State<AppState>,
