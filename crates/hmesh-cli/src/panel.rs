@@ -31,6 +31,9 @@ const KNOWN_FEATURES: &[&str] = &[
     "development-workflows-v1",
     "reliability-v2",
     "acp-sessions-v1",
+    "agent-settings-v1",
+    "agent-service-test-v1",
+    "agent-own-login-v1",
 ];
 
 #[derive(Clone)]
@@ -203,9 +206,16 @@ pub async fn run(
             }),
         )
         .route("/api/agents/detect", get(detect_agents))
+        .route(
+            "/api/agents/{id}/service",
+            get(agent_service).post(set_agent_service),
+        )
+        .route("/api/agents/{id}/service/test", post(test_agent_service))
+        .route("/api/agents/{id}/service/check", post(check_agent_service))
         .route("/api/sessions", get(sessions).post(open_session))
         .route("/api/sessions/{id}/events", get(session_events))
         .route("/api/sessions/{id}/prompt", post(session_prompt))
+        .route("/api/sessions/{id}/config", post(session_config))
         .route(
             "/api/sessions/{id}/permissions/{key}",
             post(session_permission),
@@ -332,7 +342,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -736,14 +746,76 @@ struct OpenSessionForm {
     peer_id: Option<Uuid>,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    config: std::collections::BTreeMap<String, Value>,
 }
 async fn open_session(State(s): State<Panel>, Json(body): Json<OpenSessionForm>) -> Response {
     session_reply(
         s.client
             .post::<_, Value>(
                 "/local/sessions",
-                &json!({"agent_id":body.agent_id,"peer_id":body.peer_id,"message":body.message}),
+                &json!({"agent_id":body.agent_id,"peer_id":body.peer_id,"message":body.message,"config":body.config}),
             )
+            .await,
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionConfigForm {
+    config_id: String,
+    value: Value,
+}
+async fn session_config(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SessionConfigForm>,
+) -> Response {
+    session_reply(
+        s.client
+            .post::<_, Value>(
+                &format!("/local/sessions/{id}/config"),
+                &json!({"config_id":body.config_id,"value":body.value}),
+            )
+            .await,
+    )
+}
+async fn agent_service(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
+    session_reply(
+        s.client
+            .get::<Value>(&format!("/local/agents/{id}/service"))
+            .await,
+    )
+}
+/// The browser sends a key once; the panel passes it to the local daemon and
+/// never returns it.
+async fn set_agent_service(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<hmesh_core::service::SetAgentService>,
+) -> Response {
+    session_reply(
+        s.client
+            .post::<_, Value>(&format!("/local/agents/{id}/service"), &body)
+            .await,
+    )
+}
+/// Find out what the agent is set up with on its own.
+async fn check_agent_service(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
+    session_reply(
+        s.client
+            .post::<_, Value>(&format!("/local/agents/{id}/service/check"), &json!({}))
+            .await,
+    )
+}
+/// Test the settings in the dialog; a typed key goes to the local daemon only.
+async fn test_agent_service(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<hmesh_core::service::TestAgentService>,
+) -> Response {
+    session_reply(
+        s.client
+            .post::<_, Value>(&format!("/local/agents/{id}/service/test"), &body)
             .await,
     )
 }

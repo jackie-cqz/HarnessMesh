@@ -4,6 +4,7 @@
 use crate::{ErrorCode, MeshError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// Maximum number of sessions above a session in its call chain.
@@ -14,6 +15,10 @@ pub const MAX_RUNNING_CHILDREN: usize = 4;
 pub const MAX_PROMPT_BYTES: usize = 64 * 1024;
 /// Longest text kept in one recorded session event.
 pub const MAX_EVENT_TEXT_BYTES: usize = 16 * 1024;
+/// Most settings kept for one session, and choices kept per setting.
+pub const MAX_CONFIG_OPTIONS: usize = 32;
+pub const MAX_CONFIG_CHOICES: usize = 1000;
+const MAX_CONFIG_TEXT: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +117,15 @@ pub struct SessionRecord {
     /// First message held while the session waits for local approval.
     #[serde(default)]
     pub pending_message: Option<String>,
+    /// The settings the agent offers in this session (model, mode, ...), as
+    /// it last reported them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_options: Vec<ConfigOption>,
+    /// Settings chosen for this session, by setting ID. They are applied
+    /// again whenever the agent process restarts, because agents may reset
+    /// them when a conversation is reloaded.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_values: BTreeMap<String, Value>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -174,6 +188,9 @@ pub struct OpenSession {
     /// Set by `hmesh mcp` when an agent's session opens a child session.
     #[serde(default)]
     pub parent_session_id: Option<Uuid>,
+    /// Settings to use from the first turn on, by setting ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, Value>,
 }
 /// What a paired node sends to open a session here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +205,178 @@ pub struct PeerOpenSession {
     pub chain: Vec<ChainLink>,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config: BTreeMap<String, Value>,
+}
+/// Change one session setting between turns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSessionConfig {
+    pub config_id: String,
+    /// A choice's value for a selector, or true/false for a switch.
+    pub value: Value,
+}
+
+/// One setting an agent offers for a session (ACP `SessionConfigOption`): a
+/// model, mode or reasoning-level selector, or an on/off switch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfigOption {
+    pub id: String,
+    pub name: String,
+    /// `model`, `mode`, `thought_level`, `model_config`, or another value the
+    /// agent chose. Used for display only; settings are addressed by ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// `select` or `boolean`.
+    pub kind: String,
+    /// A choice's value for `select`, true or false for `boolean`.
+    pub current: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<ConfigChoice>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfigChoice {
+    pub value: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+fn short(value: &Value) -> Option<String> {
+    let text = value.as_str()?.trim();
+    (!text.is_empty()).then(|| clip(text, MAX_CONFIG_TEXT).0)
+}
+impl ConfigOption {
+    /// Read the `configOptions` an agent reported, keeping the kinds this
+    /// client understands and bounding their size.
+    pub fn parse_all(options: &Value) -> Vec<ConfigOption> {
+        let Some(options) = options.as_array() else {
+            return vec![];
+        };
+        options
+            .iter()
+            .filter_map(Self::parse)
+            .take(MAX_CONFIG_OPTIONS)
+            .collect()
+    }
+    fn parse(option: &Value) -> Option<ConfigOption> {
+        let id = short(option.get("id")?)?;
+        let name = option
+            .get("name")
+            .and_then(short)
+            .unwrap_or_else(|| id.clone());
+        let category = option.get("category").and_then(short);
+        match option
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("select")
+        {
+            "boolean" => Some(ConfigOption {
+                id,
+                name,
+                category,
+                kind: "boolean".into(),
+                current: Value::Bool(option.get("currentValue")?.as_bool()?),
+                choices: vec![],
+            }),
+            "select" => {
+                let current = short(option.get("currentValue")?)?;
+                let mut choices = vec![];
+                for entry in option.get("options")?.as_array()? {
+                    let mut add = |choice: &Value, group: Option<String>| {
+                        if choices.len() >= MAX_CONFIG_CHOICES {
+                            return;
+                        }
+                        if let Some(value) = choice.get("value").and_then(short) {
+                            let name = choice
+                                .get("name")
+                                .and_then(short)
+                                .unwrap_or_else(|| value.clone());
+                            choices.push(ConfigChoice { value, name, group });
+                        }
+                    };
+                    match entry.get("options").and_then(Value::as_array) {
+                        Some(grouped) => {
+                            let group = entry.get("name").and_then(short);
+                            for choice in grouped {
+                                add(choice, group.clone());
+                            }
+                        }
+                        None => add(entry, None),
+                    }
+                }
+                Some(ConfigOption {
+                    id,
+                    name,
+                    category,
+                    kind: "select".into(),
+                    current: Value::String(current),
+                    choices,
+                })
+            }
+            _ => None,
+        }
+    }
+    pub fn is_category(&self, category: &str) -> bool {
+        self.category.as_deref() == Some(category)
+    }
+    /// Whether this setting accepts the value.
+    pub fn accepts(&self, value: &Value) -> bool {
+        match (self.kind.as_str(), value) {
+            ("boolean", Value::Bool(_)) => true,
+            ("select", Value::String(v)) => self.choices.iter().any(|c| &c.value == v),
+            _ => false,
+        }
+    }
+    /// The display name of the current value.
+    pub fn current_name(&self) -> String {
+        match &self.current {
+            Value::String(v) => self
+                .choices
+                .iter()
+                .find(|c| &c.value == v)
+                .map_or_else(|| v.clone(), |c| c.name.clone()),
+            other => other.to_string(),
+        }
+    }
+}
+/// Chosen settings in the order to apply them: the model first, because
+/// changing it can add or remove other settings.
+pub fn config_apply_order(
+    values: &BTreeMap<String, Value>,
+    options: &[ConfigOption],
+) -> Vec<(String, Value)> {
+    let is_model = |id: &str| options.iter().any(|o| o.id == id && o.is_category("model"));
+    let mut ordered: Vec<(String, Value)> =
+        values.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    ordered.sort_by_key(|(id, _)| !is_model(id));
+    ordered
+}
+/// Check the shape of requested settings; the agent checks the values.
+pub fn validate_config(values: &BTreeMap<String, Value>) -> Result<()> {
+    if values.len() > MAX_CONFIG_OPTIONS {
+        return Err(MeshError::input("too many session settings"));
+    }
+    for (id, value) in values {
+        validate_config_value(id, value)?;
+    }
+    Ok(())
+}
+pub fn validate_config_value(id: &str, value: &Value) -> Result<()> {
+    let plain = |text: &str| {
+        !text.trim().is_empty()
+            && text.len() <= MAX_CONFIG_TEXT
+            && !text.chars().any(char::is_control)
+    };
+    if !plain(id) {
+        return Err(MeshError::input("invalid session setting ID"));
+    }
+    match value {
+        Value::Bool(_) => Ok(()),
+        Value::String(text) if plain(text) => Ok(()),
+        _ => Err(MeshError::input(
+            "a session setting value must be a choice's value or true/false",
+        )),
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -215,7 +404,7 @@ pub fn validate_prompt(message: &str) -> Result<()> {
 /// One recorded session event. `kind` is one of: `user_message`,
 /// `agent_message_chunk`, `agent_thought_chunk`, `tool_call`,
 /// `tool_call_update`, `plan`, `permission_request`, `permission_resolved`,
-/// `turn_end`, `status`, `error`.
+/// `config_changed`, `turn_end`, `status`, `error`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionEvent {
@@ -285,5 +474,43 @@ mod tests {
         assert!(validate_prompt("hello").is_ok());
         let (text, cut) = clip("中文", 4);
         assert_eq!((text.as_str(), cut), ("中", true));
+    }
+    #[test]
+    fn agent_settings_are_read_from_acp_config_options() {
+        let reported = serde_json::json!([
+            {"id":"model","name":"Model","category":"model","type":"select","currentValue":"a/small",
+             "options":[{"group":"a","name":"Provider A","options":[{"value":"a/small","name":"Small"},{"value":"a/large","name":"Large"}]}]},
+            {"id":"mode","name":"Mode","category":"mode","currentValue":"build",
+             "options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"}]},
+            {"id":"fast","name":"Fast","type":"boolean","currentValue":false},
+            {"id":"future","name":"Text","type":"text","currentValue":"x"},
+            {"name":"no id","currentValue":"x","options":[]}
+        ]);
+        let options = ConfigOption::parse_all(&reported);
+        assert_eq!(
+            options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+            ["model", "mode", "fast"]
+        );
+        let model = &options[0];
+        assert_eq!(model.choices[1].group.as_deref(), Some("Provider A"));
+        assert!(model.accepts(&serde_json::json!("a/large")));
+        assert!(!model.accepts(&serde_json::json!("b/other")));
+        assert!(!model.accepts(&serde_json::json!(true)));
+        assert_eq!(model.current_name(), "Small");
+        assert_eq!(options[1].kind, "select", "type defaults to select");
+        assert!(options[2].accepts(&serde_json::json!(true)));
+        // The model goes first: changing it can change the other settings.
+        let chosen = BTreeMap::from([
+            ("mode".to_owned(), serde_json::json!("plan")),
+            ("model".to_owned(), serde_json::json!("a/large")),
+        ]);
+        let order: Vec<String> = config_apply_order(&chosen, &options)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(order, ["model", "mode"]);
+        assert!(validate_config_value("model", &serde_json::json!(3)).is_err());
+        assert!(validate_config_value("mo\ndel", &serde_json::json!("x")).is_err());
+        assert!(validate_config_value("model", &serde_json::json!("a/large")).is_ok());
     }
 }

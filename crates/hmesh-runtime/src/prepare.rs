@@ -18,6 +18,14 @@ pub struct Prepared {
     pending_text: String,
 }
 impl Prepared {
+    /// Start the agent with its owner's model service settings and keep
+    /// their secret values out of recorded output.
+    pub fn add_service(&mut self, env: &[(String, Option<String>)], secrets: Vec<String>) {
+        apply_env(&mut self.command, env);
+        self.secrets.extend(secrets);
+        self.secrets.sort();
+        self.secrets.dedup();
+    }
     pub fn redact_stream(&mut self, delta: &str) -> String {
         self.pending_text.push_str(delta);
         for secret in &self.secrets {
@@ -107,6 +115,15 @@ pub fn run_secrets(config: &AgentConfig) -> Vec<String> {
     secrets.sort();
     secrets.dedup();
     secrets
+}
+/// Set (`Some`) or remove (`None`) environment variables of an agent command.
+pub fn apply_env(command: &mut Command, env: &[(String, Option<String>)]) {
+    for (name, value) in env {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
 }
 /// The ACP launch command for an Agent: its executable and ACP arguments, run
 /// in the project with the daemon's environment so the agent uses its own

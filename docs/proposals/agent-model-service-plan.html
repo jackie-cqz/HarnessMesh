@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessMesh：模型服务按 agent 单独配，先告诉你它自己配好了没有</title>
+<style>
+  :root{--bg:#fff;--ink:#0a0a0a;--muted:#737373;--line:#e5e5e5;--card:#fff;--accent:#171717;--ok:#047857;--warn:#b45309;--bad:#b42318}
+  @media (prefers-color-scheme: dark){:root{--bg:#0a0a0a;--ink:#ededed;--muted:#a3a3a3;--line:#2a2a2a;--card:#171717;--accent:#e5e5e5;--ok:#34d399;--warn:#fbbf24;--bad:#f2877c}}
+  *{box-sizing:border-box}
+  html,body{background:var(--bg)}
+  body{margin:0;color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif}
+  main{max-width:1000px;margin:0 auto;padding:44px 28px 80px}
+  h1{font-size:27px;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
+  h2{font-size:19px;margin:48px 0 14px}
+  p{margin:0 0 10px}
+  .sub{color:var(--muted)}
+  code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 5px;border:1px solid var(--line);border-radius:6px;overflow-wrap:anywhere}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0 8px}
+  .stat{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--card);min-width:0}
+  .stat b{display:block;font-size:15px;margin-bottom:4px}
+  .stat span{color:var(--muted);font-size:13px}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line);vertical-align:top;min-width:0}
+  th{color:var(--muted);font-weight:500;font-size:13px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .mock{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--card);min-width:0}
+  .mock .label{color:var(--muted);font-size:12px;margin-bottom:12px}
+  .mock h3{font-size:15px;margin:0 0 10px}
+  .note{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;margin:0 0 10px}
+  .note b{display:block;margin-bottom:2px}
+  .note.ok{border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
+  .note.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+  .note span{color:var(--muted)}
+  .seg{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}
+  .seg em{font-style:normal;border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12.5px}
+  .seg em.on{border-color:var(--accent)}
+  .line{height:30px;border:1px solid var(--line);border-radius:8px;margin:6px 0;color:var(--muted);font-size:12.5px;padding:5px 10px}
+  ul{padding-left:20px;margin:0}
+  li{margin-bottom:6px}
+  .ev li{font-size:13.5px}
+  @media (max-width:760px){.stats{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}}
+  @media (max-width:520px){.stats{grid-template-columns:1fr}main{padding:28px 16px 60px}table{font-size:13px}th,td{padding:8px 6px}}
+</style>
+</head>
+<body>
+<main>
+<h1>模型服务按 agent 单独配：弹窗先告诉你它自己配好了没有，需要时再单独给它一个 key</h1>
+<p class="sub">2026-11-25 定的方向：不做共用服务商；每个 agent 一套设置（现在就是这样）。新增两件事：检测本机 agent 自己已有的登录和配置并在弹窗里说明；自定义地址时可以从预设里选。上一版「共用服务商」方案作废。</p>
+
+<div class="stats">
+  <div class="stat"><b>4 种 agent 都能看出配好没</b><span>Claude Code 最清楚，Codex / OpenCode / Pi 粗略；其他 ACP agent 只能看到默认模型</span></div>
+  <div class="stat"><b>不读凭据文件</b><span>只用 agent 自己报的状态或它自带的只读命令，不碰 <code>auth.json</code>，不跑会打印 key 的命令</span></div>
+  <div class="stat"><b>预设 28 个放进弹窗</b><span>选一个自动填地址；按 agent 类型只列它能用的</span></div>
+  <div class="stat"><b>配对电脑只看到「已配好」</b><span>登录方式、账号只在本机弹窗里显示</span></div>
+</div>
+
+<h2>弹窗改前 → 改后</h2>
+<div class="two">
+  <div class="mock">
+    <div class="label">现在</div>
+    <h3>claude 的模型服务</h3>
+    <div class="seg"><em class="on">用它自己的登录</em><em>API key</em><em>自定义地址</em></div>
+    <p class="sub" style="font-size:13px">「用 Agent 自己的账号和设置，这里什么都不加」——但它到底登录了没有、用的什么，看不出来。卡片上也一律写「用它自己的登录」。</p>
+  </div>
+  <div class="mock">
+    <div class="label">改后（检测到已配好）</div>
+    <h3>claude 的模型服务</h3>
+    <div class="note ok"><b>它自己已经配好了</b><span>检测到 Claude 订阅（you@example.com），默认模型 claude-sonnet。不用在这里填 key。</span></div>
+    <div class="seg"><em class="on">用它自己的登录</em><em>单独给它一个 key</em><em>自定义地址</em></div>
+    <p class="sub" style="font-size:13px">想让它改用别的 key 或服务，直接选右边两项「重新配置」；切回「用它自己的登录」就恢复。</p>
+  </div>
+</div>
+<div class="two" style="margin-top:14px">
+  <div class="mock">
+    <div class="label">改后（没检测到登录）</div>
+    <div class="note warn"><b>没检测到它自己的登录</b><span>可以在终端里运行 <code>codex login</code>，或者在下面单独给它一个 key。</span></div>
+    <div class="seg"><em>用它自己的登录</em><em class="on">单独给它一个 key</em><em>自定义地址</em></div>
+  </div>
+  <div class="mock">
+    <div class="label">改后（自定义地址，选预设）</div>
+    <div class="line">预设：DeepSeek ▾（只列这个 agent 能用的）</div>
+    <div class="line">地址：https://api.deepseek.com/anthropic（自动填）</div>
+    <div class="line">key、默认模型、测试连接（已有）</div>
+  </div>
+</div>
+
+<h2>每种 agent 怎么看出「配好了没有」</h2>
+<table>
+  <tr><th>agent</th><th>怎么知道（不读凭据文件）</th><th>能看出什么</th><th>核实情况</th></tr>
+  <tr><td>Claude Code</td><td>它的 ACP 适配器 claude-agent-acp 启动后自己推 <code>_auth/status_update</code>，也回答 <code>auth/status</code>（内部跑 <code>claude auth status --json</code>）。HarnessMesh 只要接住这条消息</td><td>Claude 订阅（含邮箱、套餐）、API key（并说明来自 <code>ANTHROPIC_API_KEY</code> 还是 key helper）、网关、Bedrock / Vertex 等云账号、未登录</td><td class="warn">读了适配器 0.110.1 源码 <code>dist/auth-status.js</code>；本机没装 Claude Code，没实测</td></tr>
+  <tr><td>Codex</td><td>跑 <code>codex login status</code></td><td>ChatGPT 登录 / API key / 未登录。只读它自己存的登录，不联网验证；看不到环境变量里的 key</td><td class="ok">本机 codex-cli 0.153.4 实测：Not logged in。API key 时它会打印 key 前 8 后 5 位，我们只取「API key」三个字，不显示片段</td></tr>
+  <tr><td>OpenCode</td><td>ACP 不报（实测 <code>auth/status</code>、<code>providers/list</code> 都是 Method not found）；改跑 <code>opencode auth list</code></td><td>存了哪些服务商的凭据（名字 + 类型），以及环境变量里检测到哪些 key。不打印 key；没有 JSON 输出，要解析文字</td><td class="ok">本机 1.18.33 实测：1 个凭据（OpenCode，api）</td></tr>
+  <tr><td>Pi</td><td>跑 <code>pi --list-models</code>：只列已配好的服务商的模型。<b>不用</b> <code>pi auth</code>，它会直接打印凭据</td><td>配了几个服务商、多少个模型；看不出是订阅还是 key</td><td class="ok">本机 pi 0.83.0 实测：4 个服务商、29 个模型</td></tr>
+  <tr><td>所有 ACP agent</td><td>开新会话时 agent 报的模型选项（agent 卡片已经缓存，不调模型）</td><td>它自己的默认模型和可选模型</td><td class="ok">已有</td></tr>
+</table>
+<p class="sub" style="margin-top:10px">「检测到已配好」不等于 key 一定能用：Codex 的状态不联网验证，订阅也可能过期。所以文案写「检测到……」，真正能不能用以第一轮对话为准（失败时已有的报错会说明）。</p>
+
+<h2>规则</h2>
+<table>
+  <tr><th>规则</th><th>怎么做</th></tr>
+  <tr><td>什么时候检测</td><td>本机拥有者打开「模型服务」弹窗、点「重新检测」或运行 <code>hmesh agent service &lt;id&gt; --check</code> 时检测一次：同时起一次 agent 只做 ACP <code>initialize</code> 和 <code>auth/status</code>（最多 12 秒，适配器经 npx 启动可能要几秒），并跑它的状态命令（最多 10 秒）；超时显示「看不出来」。结果记到这台电脑上，卡片只带三态。都不建会话、不调模型</td></tr>
+  <tr><td>找不到命令</td><td>登记的是 ACP 适配器（<code>codex-acp</code>、<code>pi-acp</code>），状态命令要用同一台电脑上的 <code>codex</code> / <code>pi</code>；找不到就显示「没能检测」，不影响使用</td></tr>
+  <tr><td>谁能看到</td><td>本机弹窗：登录方式、账号邮箱、默认模型。配对电脑：只有「已配好 / 没配好 / 看不出来」</td></tr>
+  <tr><td>默认选哪个模式</td><td>检测到已配好且没单独配过：默认「用它自己的登录」并说明；没检测到：提示怎么登录，或单独给 key。不会自动替你切换</td></tr>
+  <tr><td>重新配置</td><td>选「单独给它一个 key」或「自定义地址」就是覆盖它自己的配置（只对这个 agent、只在 HarnessMesh 启动它时生效，不改它的配置文件）；切回「用它自己的登录」就恢复</td></tr>
+  <tr><td>预设</td><td>照 AgentMeld 全量 28 个 + 自定义，只放地址。按 agent 类型过滤：Claude Code 只列有 Anthropic 地址的，Codex 只列有 Responses 地址的，OpenCode 列有 Chat 地址的</td></tr>
+  <tr><td>沿用之前定的</td><td>Claude Code 选第三方模型时自动设 <code>ANTHROPIC_MODEL</code> 和 <code>ANTHROPIC_DEFAULT_OPUS/SONNET/HAIKU_MODEL</code>；key 可以只填本机环境变量名（CLI 已有 <code>--env NAME</code> 的同类做法）</td></tr>
+</table>
+
+<h2>怎么做</h2>
+<table>
+  <tr><th>步骤</th><th>改什么</th><th>怎么判断做完</th></tr>
+  <tr><td>1. 检测</td><td>daemon 接住 <code>_auth/status_update</code>（以及支持时问 <code>auth/status</code>），存进 agent 卡片；<code>GET /local/agents/{id}/service</code> 多返回「它自己的配置」详情；给配对电脑的卡片只带一个三态字段；Codex / OpenCode / Pi 的状态命令解析</td><td>fixture 模拟 Claude 适配器推三种状态；本机真跑 <code>codex login status</code>、<code>opencode auth list</code>、<code>pi --list-models</code>；配对电脑拿不到邮箱</td></tr>
+  <tr><td>2. 预设和 Claude Code 模型变量</td><td>28 个预设（地址 + 支持的接口），弹窗和 CLI <code>--preset</code>；Claude Code 自定义地址补模型变量</td><td>单测覆盖按 agent 类型过滤；fixture 冒充 Claude Code 检查拿到的变量</td></tr>
+  <tr><td>3. 面板和 CLI</td><td>弹窗顶部状态说明、「重新配置」、预设下拉；agent 卡片写清「它自己的登录（Claude 订阅）」；<code>hmesh agent service &lt;id&gt;</code> 输出也带这段</td><td>面板冒烟三种状态各截一张（浅色、深色、窄窗口）</td></tr>
+</table>
+
+<h2>没证实的</h2>
+<ul>
+  <li>Claude Code 真机上的推送时机和内容（本机没装）。</li>
+  <li>codex-acp、pi-acp 自己是否也报登录状态：codex-acp 包里只有启动脚本，真正的程序没下载；pi-acp 有多个分支，做法不一。</li>
+  <li><code>opencode auth list</code> 和 <code>codex login status</code> 是给人看的文字，版本升级可能改格式；解析不了就显示「没能检测」。</li>
+  <li>部分服务商的 Anthropic / Responses 地址（Kimi 国内站、通义国内站、OpenRouter）。</li>
+</ul>
+
+<h2>证据</h2>
+<ul class="ev">
+  <li>claude-agent-acp 0.110.1：<code>dist/auth-status.js</code>（身份种类、<code>_auth/status_update</code>、<code>auth/status</code> 的字段）、<code>dist/v1/acp-agent.js:366-584</code>（启动时探测并推送）。</li>
+  <li>本机实测脚本：<code>/tmp/hm-acp-auth.mjs</code>（OpenCode 1.18.33 的 ACP 只给 <code>opencode-login</code> 一种登录方式，不回答状态查询）。</li>
+  <li>HarnessMesh 现状：登记时的检查只记「agent 提供登录方式」（<code>crates/hmesh-adapters/src/executable.rs:197-217</code>）；弹窗文案在 <code>web/panel/sessions.js:359</code>。</li>
+  <li><a href="https://github.com/svkozak/pi-acp">svkozak/pi-acp</a>（终端登录）；Codex 登录状态的输出形式见 <a href="https://github.com/openai/codex/issues/53435">openai/codex#53435</a>。</li>
+</ul>
+</main>
+</body>
+</html>

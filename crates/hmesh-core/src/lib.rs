@@ -3,6 +3,7 @@ mod network;
 pub use network::is_tailnet_ip;
 pub mod development;
 pub mod managed;
+pub mod service;
 pub mod sessions;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -754,7 +755,8 @@ pub struct AdapterOptions {
     /// Retired: only the old Pi adapter used it. Rejected by `validate`.
     #[serde(default)]
     pub models_file: Option<PathBuf>,
-    /// Informational; ACP agents use the model chosen in their own settings.
+    /// Model new sessions start with, when the agent offers it as a session
+    /// setting. A default model in the agent's model service settings wins.
     #[serde(default)]
     pub model: Option<String>,
     /// Informational; ACP agents use the provider chosen in their own settings.
@@ -923,6 +925,22 @@ pub struct AgentCard {
     pub availability: String,
     pub capabilities: Vec<String>,
     pub probe: ProbeReport,
+    /// Settings the agent offered for its most recent new session, with the
+    /// agent's own defaults; shown before a session starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_options: Vec<sessions::ConfigOption>,
+    /// Its owner set how this agent reaches its model service. Keys never
+    /// leave the agent's computer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub service_configured: bool,
+    /// Model new sessions start with, when the owner chose one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    /// Whether the agent is set up with a login or key of its own
+    /// (`configured`, `not_configured` or `unknown`), from the last check on
+    /// its computer. Which login and which account stay on that computer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_login: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

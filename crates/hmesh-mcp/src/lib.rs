@@ -346,6 +346,7 @@ impl OwnerBackend {
                                     peer_id: (!node.local).then_some(node.node_id),
                                     message: Some(args.message),
                                     parent_session_id: self.session,
+                                    config: Default::default(),
                                 },
                             )
                             .await?;
@@ -476,12 +477,21 @@ fn next_step(record: &SessionRecord) -> &'static str {
 }
 fn session_view(record: &SessionRecord) -> Value {
     let done = matches!(record.status, SessionStatus::Idle | SessionStatus::Closed);
+    let setting = |category: &str| {
+        record
+            .config_options
+            .iter()
+            .find(|o| o.is_category(category))
+            .map(|o| o.current.clone())
+    };
     json!({
         "session_id":record.session_id,
         "agent_name":record.agent_name,
         "status":record.status,
         "done":done,
         "turns":record.turns,
+        "model":setting("model"),
+        "mode":setting("mode"),
         "final_text":if done { record.last_final_text.clone() } else { None },
         "stop_reason":record.last_stop_reason,
         "error":record.last_error,
