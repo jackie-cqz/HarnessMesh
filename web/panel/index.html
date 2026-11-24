@@ -74,17 +74,14 @@
   <dialog id="onboard-dialog" class="compose-dialog" aria-labelledby="onboard-title">
     <div class="dialog-heading"><div><span class="eyebrow">LOCAL SETUP</span><h2 id="onboard-title">接入项目与 Agent</h2></div><button class="icon-button" id="close-onboard" aria-label="关闭接入向导">×</button></div>
     <form id="onboard-form"><fieldset id="onboard-fields" class="onboard-fields"><div class="form-grid">
-      <label>Agent 名称<input id="onboard-name" required maxlength="64" placeholder="mac-pi"></label>
+      <label>Agent 名称<input id="onboard-name" required maxlength="64" placeholder="mac-opencode"></label>
       <label>项目 ID<input id="onboard-project" required maxlength="64" placeholder="my-project"></label>
       <label class="full-field">项目绝对路径<input id="onboard-root" required placeholder="/absolute/project"></label>
-      <label>Harness<select id="onboard-harness"><option value="pi">Pi</option><option value="dsh">DeepSeek Harness</option><option value="opencode">OpenCode</option></select></label>
-      <label>Harness 可执行文件<input id="onboard-executable" required placeholder="/absolute/executable"></label>
-      <label>模型<input id="onboard-model" required value="deepseek-v4-flash"></label>
-      <label>Provider<input id="onboard-provider" required value="deepseek"></label>
-      <label>Node 可执行文件（可选）<input id="onboard-node" placeholder="/absolute/node"></label>
-      <label>凭据文件引用（Pi，可选）<input id="onboard-credential" placeholder="只填写本机文件路径"></label>
-      <label>模型配置文件引用（Pi，可选）<input id="onboard-models" placeholder="/absolute/models.json"></label>
-      <label>环境变量引用（逗号分隔）<input id="onboard-env" placeholder="DEEPSEEK_API_KEY"></label>
+      <label>Agent 类型<select id="onboard-harness"><option value="opencode">OpenCode</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="pi">Pi</option><option value="acp">其他 ACP Agent</option></select></label>
+      <label>ACP 启动命令<input id="onboard-executable" required placeholder="/absolute/executable"></label>
+      <label id="onboard-args-label" hidden>启动参数（空格分隔）<input id="onboard-args" placeholder="--acp"></label>
+      <label>环境变量引用（逗号分隔，可选）<input id="onboard-env" placeholder="ANTHROPIC_API_KEY"></label>
+      <p id="onboard-detected" class="muted form-note full-field"></p>
       <label>允许工具（逗号分隔）<input id="onboard-tools" required value="read,write,edit"></label>
       <label>工作目录<select id="onboard-workspace"><option value="shared">共享目录 · 同目录互斥执行</option><option value="git-worktree">独立 Git worktree</option></select></label>
       <label id="onboard-git-label" hidden>Git 可执行文件绝对路径<input id="onboard-git" placeholder="/usr/bin/git"></label>

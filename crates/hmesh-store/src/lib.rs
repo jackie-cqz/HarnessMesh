@@ -621,41 +621,6 @@ impl Store {
             .map_err(internal)
         })
     }
-    pub fn reserve_tool_submission(
-        &self,
-        parent: Uuid,
-        request: Uuid,
-        peer: Uuid,
-        task: &TaskSubmit,
-        maximum: usize,
-    ) -> Result<()> {
-        task.validate()?;
-        self.transaction(|tx| {
-            if task_in(tx,parent)?.status != TaskStatus::Running {
-                return Err(MeshError::new(ErrorCode::PermissionDenied,"Mesh tools require an active parent run"));
-            }
-            let payload=encode(task)?;
-            let old:Option<(String,String)>=tx.query_row("SELECT peer_id,payload_json FROM tool_submissions WHERE parent_task_id=?1 AND request_id=?2",params![parent.to_string(),request.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(internal)?;
-            if let Some((old_peer,old_payload))=old {
-                if old_peer != peer.to_string() || old_payload != payload {return Err(MeshError::new(ErrorCode::TaskConflict,"delegation request reused with different payload"));}
-                return Ok(());
-            }
-            let count:usize=tx.query_row("SELECT COUNT(*) FROM tool_submissions WHERE parent_task_id=?1",[parent.to_string()],|r|r.get(0)).map_err(internal)?;
-            if maximum == 0 || count>=maximum {return Err(MeshError::new(ErrorCode::RateLimited,"parent delegation budget exhausted; no automatic retry"));}
-            tx.execute("INSERT INTO tool_submissions VALUES(?1,?2,?3,?4,?5)",params![parent.to_string(),request.to_string(),task.task_id.to_string(),peer.to_string(),payload]).map_err(|_|MeshError::new(ErrorCode::TaskConflict,"child task already belongs to a delegation"))?;
-            append_in(tx,&task_in(tx,parent)?,"delegation",json!({"child_task_id":task.task_id,"peer_id":peer,"request_id":request,"status":"reserved"}))?;
-            Ok(())
-        })
-    }
-    pub fn tool_child_allowed(&self, parent: Uuid, child: Uuid) -> Result<bool> {
-        self.read(|c|c.query_row("SELECT EXISTS(SELECT 1 FROM tool_submissions WHERE parent_task_id=?1 AND child_task_id=?2)",params![parent.to_string(),child.to_string()],|r|r.get(0)).map_err(internal))
-    }
-    pub fn tool_child_target(&self, parent: Uuid, child: Uuid) -> Result<Option<MeshTarget>> {
-        self.read(|c|{
-            let row:Option<(String,String)>=c.query_row("SELECT peer_id,payload_json FROM tool_submissions WHERE parent_task_id=?1 AND child_task_id=?2",params![parent.to_string(),child.to_string()],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(internal)?;
-            row.map(|(peer,payload)|{let task:TaskSubmit=decode(&payload)?;Ok(MeshTarget{peer_id:Uuid::parse_str(&peer).map_err(internal)?,agent_id:task.target_agent_id,project_id:task.project_id})}).transpose()
-        })
-    }
     pub fn recover_interrupted(&self) -> Result<usize> {
         self.transaction(|tx| {
             let mut q = tx.prepare("SELECT record_json FROM tasks WHERE status IN ('RUNNING','CANCELLING','WAITING_INPUT')").map_err(internal)?;

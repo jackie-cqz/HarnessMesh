@@ -1,23 +1,22 @@
 #!/usr/bin/env node
 // Run on each device locally. No SSH, sudo, system installation or model call.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { resolvePi, credentialSource, configName } from './tailnet-config.mjs';
+import { agentConfig, selectAgents, configDigest } from './tailnet-config.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const flags = new Map();
-const valued = new Set(['--root', '--port', '--pi', '--models', '--credential-source', '--tailscale-executable']);
+const valued = new Set(['--root', '--port', '--name', '--project', '--agents', '--tailscale-executable']);
 for (let i = 2; i < process.argv.length; i++) {
   const flag = process.argv[i];
   if (valued.has(flag) && process.argv[i + 1] && !process.argv[i + 1].startsWith('--')) flags.set(flag, process.argv[++i]);
   else if (flag === '--skip-build') flags.set(flag, true);
   else if (flag === '--help') {
-    console.log('node scripts/start-tailnet.mjs [--root ABSOLUTE_DIR] [--port 39880] [--pi ABSOLUTE_PATH] [--models ABSOLUTE_JSON] [--credential-source ABSOLUTE_AUTH_JSON] [--tailscale-executable ABSOLUTE_PATH] [--skip-build]');
+    console.log('node scripts/start-tailnet.mjs [--root ABSOLUTE_DIR] [--port 39880] [--name NODE_NAME] [--project ABSOLUTE_DIR] [--agents opencode,claude-code,codex,pi] [--tailscale-executable ABSOLUTE_PATH] [--skip-build]\nRegisters every ACP agent already installed on this computer (or the ones --agents lists). Nothing is installed and no model is called.');
     process.exit(0);
   } else throw new Error(`Unknown option or missing value: ${flag}`);
 }
@@ -40,13 +39,6 @@ function absoluteFile(flag, fallback) {
   const path = flags.get(flag) ?? fallback;
   if (!path || !isAbsolute(path) || !existsSync(path)) throw new Error(`Set ${flag} to an existing absolute local file`);
   return realpathSync(path);
-}
-function findPi() {
-  for (const dir of (process.env.PATH ?? '').split(delimiter).filter(isAbsolute)) {
-    const path = join(dir, 'pi');
-    if (existsSync(path)) return realpathSync(path);
-  }
-  throw new Error('Pi is missing from PATH; pass --pi /absolute/path/to/pi');
 }
 function toml(value) { return JSON.stringify(value); }
 
@@ -71,44 +63,26 @@ try {
     run('cargo', ['+stable', 'build', '--locked', '-p', 'hmesh-cli'], { inherit: true, timeout: 600000 });
   }
   if (!existsSync(binary)) throw new Error('Build hmesh-cli before using --skip-build');
-  // Resolve Mac configuration before starting a daemon. Keys stay in the existing
-  // local file; only a path reference is written into the dedicated Agent config.
-  let piConfig;
-  let agentName;
-  if (process.platform === 'darwin') {
-    const executable = resolvePi(absoluteFile('--pi', flags.has('--pi') ? undefined : findPi()));
-    const models = absoluteFile('--models', join(homedir(), '.pi', 'agent', 'models.json'));
-    const definition = JSON.parse(readFileSync(models, 'utf8'));
-    if (!definition.providers?.deepseek?.models?.some(model => model.id === 'deepseek-v4-flash')) {
-      throw new Error('Selected models.json does not define deepseek/deepseek-v4-flash; choose the existing Pi file with --models');
-    }
-    const defaultAuth = join(homedir(), '.pi', 'agent', 'auth.json');
-    const auth = credentialSource({ explicit: flags.has('--credential-source') ? absoluteFile('--credential-source') : undefined, auth: defaultAuth, models, envKey: process.env.DEEPSEEK_API_KEY });
-    if (!auth && !process.env.DEEPSEEK_API_KEY) throw new Error('Configure the local Pi DeepSeek API key or DEEPSEEK_API_KEY first');
-    const project = join(root, 'project');
-    const adapter = [`executable = ${toml(executable)}`, `node_executable = ${toml(process.execPath)}`,
-      `models_file = ${toml(models)}`, 'provider = "deepseek"', 'model = "deepseek-v4-flash"',
-      `env_allowlist = ${auth ? '[]' : '["DEEPSEEK_API_KEY"]'}`];
-    if (auth) adapter.push(`credential_source = ${toml(auth)}`);
-    piConfig = ['[agent]', 'name = "mac-pi-flash"', 'harness = "pi"', 'project_id = "tailnet-demo"',
-      'mode = "managed"', '[project]', `root = ${toml(project)}`, 'allowed_tools = ["read", "write", "edit"]',
-      'artifact_paths = ["out/health.json"]', 'require_remote_task_approval = true', '[adapter]', ...adapter, ''].join('\n');
-  }
-  if (piConfig) {
-    agentName = configName(piConfig);
-    piConfig = piConfig.replace('name = "mac-pi-flash"', `name = ${toml(agentName)}`);
-  }
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const init = ['init', '--name', process.platform === 'darwin' ? 'mac-pi' : 'windows-tailnet', '--port', port, '--network', 'tailscale'];
+  const nodeName = flags.get('--name') ?? (process.platform === 'darwin' ? 'mac' : process.platform === 'win32' ? 'windows' : 'linux');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(nodeName)) throw new Error('--name may use letters, digits, dot, dash and underscore');
+  const project = flags.has('--project') ? flags.get('--project') : join(root, 'project');
+  if (!isAbsolute(project)) throw new Error('--project must be an absolute directory');
+  // Only agents already installed here; HarnessMesh never installs one.
+  const detected = JSON.parse(run(binary, ['--json', 'agent', 'detect']));
+  const agents = selectAgents(detected.installed, flags.get('--agents'));
+  if (!agents.length) console.log(`No ACP agent found on PATH. Install one yourself, e.g. ${detected.not_found.map(a => a.install).filter(Boolean).join(' | ')}`);
+  const init = ['init', '--name', nodeName, '--port', port, '--network', 'tailscale'];
   if (flags.has('--tailscale-executable')) init.push('--tailscale-executable', absoluteFile('--tailscale-executable'));
   const card = mesh(init);
   if (new URL(card.endpoint).port !== port) throw new Error('Existing instance uses a different port; use a fresh --root');
-  if (piConfig) {
-    mkdirSync(join(root, 'project'), { recursive: true, mode: 0o700 });
-    const configPath = join(root, `${agentName}.toml`);
-    if (existsSync(configPath) && readFileSync(configPath, 'utf8') !== piConfig) throw new Error('Existing Agent config differs; use a fresh --root to preserve prior registrations');
-    if (!existsSync(configPath)) writeFileSync(configPath, piConfig, { flag: 'wx', mode: 0o600 });
-  }
+  mkdirSync(project, { recursive: true, mode: 0o700 });
+  const configs = agents.map(agent => {
+    const config = agentConfig({ node: nodeName, harness: agent.harness, executable: agent.executable, project });
+    const path = join(root, `${nodeName}-${agent.harness}-${configDigest(config)}.toml`);
+    if (!existsSync(path)) writeFileSync(path, config, { flag: 'wx', mode: 0o600 });
+    return { agent, path, name: `${nodeName}-${agent.harness}` };
+  });
   // A second invocation refuses the daemon lock; it never adopts another process.
   daemon = spawn(binary, [...hargs, 'daemon', 'start'], { cwd: repo, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
   exited = new Promise((resolveExit, reject) => { daemon.once('error', reject); daemon.once('exit', (code, signal) => resolveExit({ code, signal })); });
@@ -120,16 +94,17 @@ try {
     try { if (mesh(['daemon', 'status']).pid === daemon.pid) { ready = true; break; } } catch { /* Wait only for this owned daemon. */ }
   }
   if (!ready) throw new Error('Daemon did not become ready within 20 seconds');
-  let agent;
-  if (piConfig) {
-    agent = mesh(['agents', 'list']).find(item => item.name === agentName && item.project_ids.includes('tailnet-demo'));
-    if (!agent) agent = mesh(['agent', 'register', '--config', join(root, `${agentName}.toml`)]);
+  const registered = [];
+  for (const { path, name } of configs) {
+    // Registration runs only an ACP initialize handshake; no session, no model.
+    const existing = mesh(['agents', 'list']).find(item => item.name === name);
+    registered.push(existing ?? mesh(['agent', 'register', '--config', path]));
   }
-  const receipt = { node: card, agent, data_dir: nodeDir, project: piConfig ? join(root, 'project') : undefined };
+  const receipt = { node: card, agents: registered.map(a => ({ agent_id: a.agent_id, name: a.name, harness: a.harness, acp: a.probe?.protocol_probe })), data_dir: nodeDir, project };
   writeFileSync(join(root, 'startup.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(receipt, null, 2));
-  console.log("Keep this terminal open. Pair by comparing both Node fingerprints. Paired peers see this node's agents and their tasks run immediately; use `hmesh peers access <peer> confirm` to require local approval. Ctrl+C stops only this daemon. No model has been called.");
-  if (agent) console.log(`Local model verification (optional, billed): ${binary} --data-dir ${JSON.stringify(nodeDir)} agent verify ${agent.agent_id} --allow-model`);
+  console.log("Keep this terminal open. Pair by comparing both Node fingerprints. Paired computers see this node's agents and can open sessions with them right away; use `hmesh peers access <peer> confirm` to approve each one here first. Ctrl+C stops only this daemon. No model has been called.");
+  console.log(`Open the panel: ${binary} --data-dir ${JSON.stringify(nodeDir)} panel`);
   process.on('SIGINT', stopOwnedDaemon);
   process.on('SIGTERM', stopOwnedDaemon);
   const result = await exited;

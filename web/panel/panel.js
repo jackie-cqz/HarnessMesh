@@ -114,7 +114,7 @@ function renderTasks() {
 function meta(pairs) { const dl=el('dl','entity-meta');for(const [key,value]of pairs)dl.append(el('dt','',key),el('dd','',value??'—'));return dl; }
 function agentCard(agent,remote=false) {
   const card=el('article','entity-card'),top=el('div','entity-top'),title=el('div');title.append(el('h3','entity-name',agent.name),el('div','entity-harness',String(agent.harness||'').toUpperCase()));top.append(title,badge(agent.availability));
-  card.append(top,meta([['项目',agent.project_ids?.join(' / ')],['模型验证',agent.probe?.managed_run==='passed'?'已通过':agent.probe?.managed_run||'未验证'],['Harness 版本',agent.probe?.version||'—']]),el('div','entity-id',agent.agent_id));
+  card.append(top,meta([['项目',agent.project_ids?.join(' / ')],['ACP 检查',agent.probe?.protocol_probe==='acp_initialize_passed'?'已通过':'未通过'],['版本',agent.probe?.version||'—']]),el('div','entity-id',agent.agent_id));
   if(!remote&&canWrite()){const actions=el('div','entity-actions'),retired=state.agentFilter==='retired';actions.append(button(retired?'恢复 Agent':'退役 Agent','button secondary',()=>act('agents',agent.agent_id,retired?'restore':'retire',retired?'恢复 Agent？':'退役 Agent？',`${agent.name}\n${retired?'恢复后需通过 CLI 显式重新验证模型；不会自动调用模型。':'有未结束任务时服务端会拒绝退役。历史任务会保留。'}`)));card.append(actions);}return card;
 }
 function renderAgents() {

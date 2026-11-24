@@ -136,6 +136,11 @@ enum Commands {
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// Agent sessions on this and paired computers.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
@@ -379,6 +384,8 @@ enum PairCommand {
 }
 #[derive(Subcommand)]
 enum AgentCommand {
+    /// List the ACP agent commands installed on this computer (nothing is run).
+    Detect,
     Retired,
     Retire {
         agent_id: Uuid,
@@ -419,6 +426,59 @@ enum AgentCommand {
         agent_id: Uuid,
         #[arg(long = "path", required = true)]
         paths: Vec<PathBuf>,
+    },
+}
+#[derive(Subcommand)]
+enum SessionCommand {
+    /// Sessions here and the ones this computer opened on paired computers.
+    List,
+    Show {
+        session_id: Uuid,
+    },
+    /// Open a session; omit --peer for an agent on this computer.
+    Open {
+        #[arg(long)]
+        agent: Uuid,
+        #[arg(long)]
+        peer: Option<Uuid>,
+        #[arg(long)]
+        message: Option<String>,
+    },
+    /// Send the next message in a session.
+    Send {
+        session_id: Uuid,
+        #[arg(long)]
+        message: String,
+    },
+    /// Read events after a sequence number (waits up to --wait seconds for new ones).
+    Events {
+        session_id: Uuid,
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+    },
+    /// Answer a permission request (key from the permission_request event).
+    Permission {
+        session_id: Uuid,
+        key: String,
+        #[arg(long, conflicts_with = "deny")]
+        allow: bool,
+        #[arg(long)]
+        deny: bool,
+    },
+    Cancel {
+        session_id: Uuid,
+    },
+    Close {
+        session_id: Uuid,
+    },
+    /// Approve a session a paired computer opened while its access is confirm.
+    Approve {
+        session_id: Uuid,
+    },
+    Reject {
+        session_id: Uuid,
     },
 }
 #[derive(Subcommand)]
@@ -568,6 +628,25 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             "--data-dir requires an expanded path; use an absolute path instead of ~",
         )
         .into());
+    }
+    if let Commands::Agent {
+        command: AgentCommand::Detect,
+    } = &cli.command
+    {
+        let found = hmesh_core::detect_installed_agents();
+        let missing: Vec<Value> = [
+            HarnessKind::Opencode,
+            HarnessKind::ClaudeCode,
+            HarnessKind::Codex,
+            HarnessKind::Pi,
+        ]
+        .into_iter()
+        .filter(|h| !found.iter().any(|f| f.harness == *h))
+        .map(|h| json!({"harness":h,"command":h.acp_command(),"install":h.acp_package().map(|p| format!("npm install -g {p}"))}))
+        .collect();
+        return Ok(Some(
+            json!({"installed":found,"not_found":missing,"note":"HarnessMesh only looks for these commands; install missing agents yourself."}),
+        ));
     }
     if let Commands::Mcp { session } = &cli.command {
         // stdout carries only MCP frames from here on.
@@ -1051,6 +1130,83 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             let policy: Policy = toml::from_str(&fs::read_to_string(file)?)?;
             client.post("/local/policy", &policy).await?
         }
+        Commands::Session { command } => match command {
+            SessionCommand::List => client.get("/local/sessions").await?,
+            SessionCommand::Show { session_id } => {
+                client.get(&format!("/local/sessions/{session_id}")).await?
+            }
+            SessionCommand::Open {
+                agent,
+                peer,
+                message,
+            } => {
+                client
+                    .post(
+                        "/local/sessions",
+                        &json!({"agent_id":agent,"peer_id":peer,"message":message}),
+                    )
+                    .await?
+            }
+            SessionCommand::Send {
+                session_id,
+                message,
+            } => {
+                client
+                    .post(
+                        &format!("/local/sessions/{session_id}/prompt"),
+                        &json!({"message":message}),
+                    )
+                    .await?
+            }
+            SessionCommand::Events {
+                session_id,
+                after,
+                wait,
+            } => {
+                client
+                    .get(&format!(
+                        "/local/sessions/{session_id}/events?after={after}&wait={}",
+                        wait.min(10)
+                    ))
+                    .await?
+            }
+            SessionCommand::Permission {
+                session_id,
+                key,
+                allow,
+                deny,
+            } => {
+                if allow == deny {
+                    return Err(MeshError::input("pass exactly one of --allow or --deny").into());
+                }
+                client
+                    .post(
+                        &format!("/local/sessions/{session_id}/permissions/{key}"),
+                        &json!({"allow":allow}),
+                    )
+                    .await?
+            }
+            SessionCommand::Cancel { session_id } => {
+                client
+                    .post(&format!("/local/sessions/{session_id}/cancel"), &json!({}))
+                    .await?
+            }
+            SessionCommand::Close { session_id } => {
+                client
+                    .post(&format!("/local/sessions/{session_id}/close"), &json!({}))
+                    .await?
+            }
+            SessionCommand::Approve { session_id } => {
+                client
+                    .post(&format!("/local/sessions/{session_id}/approve"), &json!({}))
+                    .await?
+            }
+            SessionCommand::Reject { session_id } => {
+                client
+                    .post(&format!("/local/sessions/{session_id}/reject"), &json!({}))
+                    .await?
+            }
+        },
         Commands::Task { command } => match command {
             TaskCommand::Archive { task_id } => {
                 client

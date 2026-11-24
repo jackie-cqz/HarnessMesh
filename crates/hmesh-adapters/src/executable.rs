@@ -51,14 +51,24 @@ fn resolve_with_node(
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-    let mut entry = executable.to_path_buf();
+    // npm installs commands as symlinks to their JS entry; follow them so the
+    // entry runs under a resolved Node instead of relying on the shebang.
+    let mut entry = if executable.is_symlink() {
+        std::fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf())
+    } else {
+        executable.to_path_buf()
+    };
     if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("ps1") {
         let parent = executable.parent().context("missing shim directory")?;
         let relative = match kind {
             HarnessKind::Pi => "node_modules/pi-acp/dist/index.js",
             HarnessKind::Dsh => "node_modules/@deepseek-ai/dsh/lib/bin.js",
             HarnessKind::Opencode => "node_modules/opencode-ai/bin/opencode.exe",
-            HarnessKind::ClaudeCode | HarnessKind::Codex | HarnessKind::Acp => {
+            HarnessKind::ClaudeCode => {
+                "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
+            }
+            HarnessKind::Codex => "node_modules/@zed-industries/codex-acp/bin/codex-acp.js",
+            HarnessKind::Acp => {
                 bail!("configure the agent's real JS entry or native executable, not a shell shim")
             }
         };

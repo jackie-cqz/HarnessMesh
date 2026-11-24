@@ -202,6 +202,7 @@ pub async fn run(
                 )
             }),
         )
+        .route("/api/agents/detect", get(detect_agents))
         .route("/api/sessions", get(sessions).post(open_session))
         .route("/api/sessions/{id}/events", get(session_events))
         .route("/api/sessions/{id}/prompt", post(session_prompt))
@@ -703,6 +704,10 @@ async fn events(
             .await,
     ))
     .into_response()
+}
+/// ACP agent commands on this computer's PATH; nothing is run or installed.
+async fn detect_agents() -> Json<Value> {
+    Json(json!({"data":hmesh_core::detect_installed_agents()}))
 }
 /// Owner sessions plus every node's agents, for the session picker.
 async fn sessions(State(s): State<Panel>) -> Json<Value> {

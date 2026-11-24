@@ -145,6 +145,72 @@ impl HarnessKind {
             _ => &[],
         }
     }
+    /// The command that speaks ACP for this agent, as its package installs it.
+    pub fn acp_command(self) -> Option<&'static str> {
+        match self {
+            Self::Opencode => Some("opencode"),
+            Self::ClaudeCode => Some("claude-agent-acp"),
+            Self::Codex => Some("codex-acp"),
+            Self::Pi => Some("pi-acp"),
+            Self::Dsh | Self::Acp => None,
+        }
+    }
+    /// What to install for this agent's ACP command (HarnessMesh never installs it).
+    pub fn acp_package(self) -> Option<&'static str> {
+        match self {
+            Self::Opencode => Some("opencode-ai"),
+            Self::ClaudeCode => Some("@agentclientprotocol/claude-agent-acp"),
+            Self::Codex => Some("@zed-industries/codex-acp"),
+            Self::Pi => Some("pi-acp"),
+            Self::Dsh | Self::Acp => None,
+        }
+    }
+}
+
+/// An ACP agent command found on this computer's PATH.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetectedAgent {
+    pub harness: HarnessKind,
+    pub command: String,
+    /// Absolute path as found on PATH (usable as `adapter.executable`).
+    pub executable: std::path::PathBuf,
+}
+
+/// Look for the known ACP agent commands on PATH. Nothing is run or installed.
+pub fn detect_installed_agents() -> Vec<DetectedAgent> {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return vec![];
+    };
+    let directories: Vec<std::path::PathBuf> = std::env::split_paths(&paths)
+        .filter(|p| p.is_absolute())
+        .collect();
+    let suffixes: &[&str] = if cfg!(windows) {
+        &[".cmd", ".exe", ""]
+    } else {
+        &[""]
+    };
+    [
+        HarnessKind::Opencode,
+        HarnessKind::ClaudeCode,
+        HarnessKind::Codex,
+        HarnessKind::Pi,
+    ]
+    .into_iter()
+    .filter_map(|harness| {
+        let command = harness.acp_command()?;
+        directories.iter().find_map(|dir| {
+            suffixes.iter().find_map(|suffix| {
+                let path = dir.join(format!("{command}{suffix}"));
+                path.is_file().then(|| DetectedAgent {
+                    harness,
+                    command: command.to_owned(),
+                    executable: path,
+                })
+            })
+        })
+    })
+    .collect()
 }
 impl fmt::Display for HarnessKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -709,37 +775,6 @@ pub struct AdapterOptions {
     pub mesh_scope: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MeshTarget {
-    pub peer_id: Uuid,
-    pub agent_id: Uuid,
-    pub project_id: String,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MeshToolScope {
-    pub targets: Vec<MeshTarget>,
-    pub max_submissions: usize,
-    pub max_timeout_seconds: u64,
-    pub max_output_bytes: usize,
-}
-impl MeshToolScope {
-    pub fn validate(&self) -> Result<()> {
-        if self.targets.is_empty()
-            || self.targets.len() > 16
-            || !(1..=4).contains(&self.max_submissions)
-            || !(1..=600).contains(&self.max_timeout_seconds)
-            || !(1..=MAX_RUN_OUTPUT_BYTES).contains(&self.max_output_bytes)
-        {
-            return Err(MeshError::input("invalid owner-selected Mesh tool scope"));
-        }
-        for target in &self.targets {
-            validate_name(&target.project_id)?;
-        }
-        Ok(())
-    }
-}
 impl AgentConfig {
     /// Arguments that start this agent in ACP mode.
     pub fn launch_args(&self) -> Vec<String> {

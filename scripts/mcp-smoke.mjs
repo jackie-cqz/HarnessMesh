@@ -78,7 +78,7 @@ try {
   const project = join(root, 'project');
   mkdirSync(project);
   const config = join(root, 'fixture.toml');
-  writeFileSync(config, ['[agent]', 'name="mcp-fixture"', 'harness="pi"', 'project_id="mcp-demo"', '[project]', 'root=' + JSON.stringify(project), 'allowed_tools=["read","write","edit"]', 'artifact_paths=["out/health.json"]', '[adapter]', 'executable=' + JSON.stringify(fixture), 'provider="fixture"', 'model="fixture"', 'env_allowlist=[]', ''].join('\n'));
+  writeFileSync(config, ['[agent]', 'name="mcp-fixture"', 'harness="acp"', 'project_id="mcp-demo"', '[project]', 'root=' + JSON.stringify(project), 'allowed_tools=["read","write","edit"]', 'artifact_paths=["out/health.json"]', '[adapter]', 'executable=' + JSON.stringify(fixture), 'provider="fixture"', 'model="fixture"', 'env_allowlist=[]', ''].join('\n'));
   const agent = worker.mesh.call(['agent', 'register', '--config', config]);
   // --allow-model reaches only this explicitly registered test double.
   const probe = worker.mesh.call(['agent', 'verify', agent.agent_id, '--allow-model', '--prompt', 'fixture:create']);
@@ -100,7 +100,7 @@ try {
   assert(init.result?.protocolVersion === '2025-06-18', 'Client protocol version not honored');
   mcp.notify('notifications/initialized');
   const tools = (await mcp.request('tools/list', {})).result.tools.map(t => t.name);
-  assert(JSON.stringify(tools) === JSON.stringify(['mesh_list_agents', 'mesh_send', 'mesh_wait', 'mesh_get_task', 'mesh_cancel']), 'Unexpected tool list');
+  assert(JSON.stringify(tools) === JSON.stringify(['mesh_list_agents', 'mesh_send', 'mesh_wait', 'mesh_get_session', 'mesh_cancel', 'mesh_close']), 'Unexpected tool list');
   pass(stage);
 
   stage = 'mcp-lists-agents-by-reference';
@@ -109,23 +109,32 @@ try {
   assert(target?.ready === true && target.local === false, 'Remote agent reference missing or not ready');
   pass(stage);
 
-  stage = 'mcp-send-runs-without-approval-and-returns-reply';
+  stage = 'mcp-send-opens-a-session-and-returns-reply';
   const reply = await mcp.tool('mesh_send', { agent: 'mcp-worker/mcp-fixture', message: 'fixture:reply', wait_seconds: 60 });
   const body = reply.structuredContent;
-  assert(!reply.isError && body.done === true && body.status === 'SUCCEEDED', 'Remote task did not finish automatically');
+  assert(!reply.isError && body.done === true && body.status === 'idle', 'Remote session turn did not finish automatically');
   assert(body.final_text === 'Final answer: the build is green.', 'Final reply missing or wrong');
   pass(stage);
 
-  stage = 'peer-access-confirm-parks-tasks';
+  stage = 'mcp-send-continues-the-session';
+  const follow = (await mcp.tool('mesh_send', { session_id: body.session_id, message: 'fixture:echo again', wait_seconds: 60 })).structuredContent;
+  assert(follow.final_text === 'Echo #2: again' && follow.turns === 2, 'Follow-up did not continue the conversation');
+  const progress = (await mcp.tool('mesh_get_session', { session_id: body.session_id })).structuredContent;
+  assert(progress.events.some(e => e.kind === 'turn_end'), 'Session events missing');
+  const closed = (await mcp.tool('mesh_close', { session_id: body.session_id })).structuredContent;
+  assert(closed.status === 'closed', 'Session did not close');
+  pass(stage);
+
+  stage = 'peer-access-confirm-parks-sessions';
   const switched = worker.mesh.call(['peers', 'access', 'mcp-origin', 'confirm']);
   assert(switched.access === 'confirm', 'Access switch not applied');
   const parked = (await mcp.tool('mesh_send', { agent: 'mcp-worker/mcp-fixture', message: 'fixture:reply' })).structuredContent;
-  assert(parked.status === 'PENDING_APPROVAL', 'Confirm mode did not park the task');
-  const still = (await mcp.tool('mesh_wait', { task_id: parked.task_id, wait_seconds: 1 })).structuredContent;
-  assert(still.done === false && still.status === 'PENDING_APPROVAL', 'Parked task advanced without approval');
-  worker.mesh.call(['task', 'approve', parked.task_id]);
-  const approved = (await mcp.tool('mesh_wait', { task_id: parked.task_id, wait_seconds: 60 })).structuredContent;
-  assert(approved.status === 'SUCCEEDED' && approved.final_text === 'Final answer: the build is green.', 'Approved task did not return its reply');
+  assert(parked.status === 'pending_approval', 'Confirm mode did not park the session');
+  const still = (await mcp.tool('mesh_wait', { session_id: parked.session_id, wait_seconds: 1 })).structuredContent;
+  assert(still.done === false && still.status === 'pending_approval', 'Parked session advanced without approval');
+  worker.mesh.call(['session', 'approve', parked.session_id]);
+  const approved = (await mcp.tool('mesh_wait', { session_id: parked.session_id, wait_seconds: 60 })).structuredContent;
+  assert(approved.status === 'idle' && approved.final_text === 'Final answer: the build is green.', 'Approved session did not return its reply');
   worker.mesh.call(['peers', 'access', 'mcp-origin', 'auto']);
   pass(stage);
 
