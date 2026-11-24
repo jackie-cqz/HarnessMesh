@@ -30,6 +30,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "task-preflight-v1",
     "development-workflows-v1",
     "reliability-v2",
+    "acp-sessions-v1",
 ];
 
 #[derive(Clone)]
@@ -192,6 +193,23 @@ pub async fn run(
         .route("/api/agents/{id}/{action}", post(agent_action))
         .route("/api/services/{id}/{action}", post(service_action))
         .route("/api/peers/{id}/agents", get(remote_agents))
+        .route(
+            "/assets/sessions.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/sessions.js"),
+                )
+            }),
+        )
+        .route("/api/sessions", get(sessions).post(open_session))
+        .route("/api/sessions/{id}/events", get(session_events))
+        .route("/api/sessions/{id}/prompt", post(session_prompt))
+        .route(
+            "/api/sessions/{id}/permissions/{key}",
+            post(session_permission),
+        )
+        .route("/api/sessions/{id}/{action}", post(session_action))
         .fallback(|| async { error(StatusCode::NOT_FOUND, "NOT_FOUND") })
         .layer(DefaultBodyLimit::max(524288))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
@@ -281,6 +299,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
     let task_workflow = running && features.contains(&"panel-task-workflow-v1");
     let task_preflight = running && features.contains(&"task-preflight-v1");
     let development_workflows = running && features.contains(&"development-workflows-v1");
+    let sessions = running && features.contains(&"acp-sessions-v1");
     let mode = if !task_workflow || !task_preflight {
         "read_only"
     } else if development_workflows {
@@ -312,7 +331,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -684,6 +703,121 @@ async fn events(
             .await,
     ))
     .into_response()
+}
+/// Owner sessions plus every node's agents, for the session picker.
+async fn sessions(State(s): State<Panel>) -> Json<Value> {
+    let (sessions, nodes) = tokio::join!(
+        s.client.get::<Value>("/local/sessions"),
+        s.client.get::<Value>("/local/mesh/agents"),
+    );
+    Json(json!({"observed_at":now(),"sessions":result(sessions),"nodes":result(nodes)}))
+}
+/// Session errors carry the daemon's explanation; it is shown as text.
+fn session_reply(value: Result<Value, MeshError>) -> Response {
+    match value {
+        Ok(value) => Json(json!({"data":value})).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":{"code":e.code,"message":e.message,"automatic_retry":false}})),
+        )
+            .into_response(),
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenSessionForm {
+    agent_id: Uuid,
+    #[serde(default)]
+    peer_id: Option<Uuid>,
+    #[serde(default)]
+    message: Option<String>,
+}
+async fn open_session(State(s): State<Panel>, Json(body): Json<OpenSessionForm>) -> Response {
+    session_reply(
+        s.client
+            .post::<_, Value>(
+                "/local/sessions",
+                &json!({"agent_id":body.agent_id,"peer_id":body.peer_id,"message":body.message}),
+            )
+            .await,
+    )
+}
+#[derive(Deserialize)]
+struct SessionCursor {
+    #[serde(default)]
+    after: u64,
+    #[serde(default)]
+    wait: u64,
+}
+async fn session_events(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Query(cursor): Query<SessionCursor>,
+) -> Response {
+    session_reply(
+        s.client
+            .get::<Value>(&format!(
+                "/local/sessions/{id}/events?after={}&wait={}",
+                cursor.after,
+                cursor.wait.min(10)
+            ))
+            .await,
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionPromptForm {
+    message: String,
+}
+async fn session_prompt(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SessionPromptForm>,
+) -> Response {
+    session_reply(
+        s.client
+            .post::<_, Value>(
+                &format!("/local/sessions/{id}/prompt"),
+                &json!({"message":body.message}),
+            )
+            .await,
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PermissionForm {
+    allow: bool,
+}
+async fn session_permission(
+    State(s): State<Panel>,
+    Path((id, key)): Path<(Uuid, String)>,
+    Json(body): Json<PermissionForm>,
+) -> Response {
+    if key.is_empty() || key.len() > 32 || !key.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return error(StatusCode::BAD_REQUEST, "INVALID_PERMISSION_KEY");
+    }
+    session_reply(
+        s.client
+            .post::<_, Value>(
+                &format!("/local/sessions/{id}/permissions/{key}"),
+                &json!({"allow":body.allow}),
+            )
+            .await,
+    )
+}
+async fn session_action(
+    State(s): State<Panel>,
+    Path((id, name)): Path<(Uuid, String)>,
+    Json(body): Json<Value>,
+) -> Response {
+    if !["cancel", "close", "approve", "reject"].contains(&name.as_str()) || body != json!({}) {
+        return error(StatusCode::BAD_REQUEST, "UNSUPPORTED_ACTION");
+    }
+    session_reply(
+        s.client
+            .post::<_, Value>(&format!("/local/sessions/{id}/{name}"), &body)
+            .await,
+    )
 }
 async fn remote_agents(State(s): State<Panel>, Path(id): Path<Uuid>) -> Json<Value> {
     Json(result(

@@ -1167,3 +1167,55 @@ select:focus-visible,textarea:focus-visible { outline:2px solid var(--green); ou
 .confirm-actions{flex-wrap:wrap}.task-result .queue-note{font-size:10px;overflow-wrap:anywhere}
 #detail-updates .text-button{display:block}#task-dialog .dialog-heading{gap:12px}
 @media(max-width:700px){.approval-inbox{align-items:flex-start;flex-direction:column;gap:12px}.runtime-summary{padding:14px}.task-table th:first-child{width:61%}.task-table th:nth-child(2){width:39%}.segmented{max-width:100%;flex-wrap:wrap}.segmented button{padding-inline:9px}.detail-toolbar{justify-content:flex-end;gap:4px}.detail-toolbar .text-button{font-size:10px}.runtime-summary .entity-meta{grid-template-columns:60px 1fr}.handoff{padding:14px}}
+/* Sessions: list on the left, conversation on the right. No grey fills; thin lines and one green accent. */
+.sessions-layout{display:grid;grid-template-columns:minmax(240px,320px) minmax(0,1fr);gap:18px;align-items:start}
+.session-side{display:flex;flex-direction:column;gap:12px;min-width:0}
+.session-side-head{display:flex;align-items:center;justify-content:space-between}
+.session-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:7px;background:var(--white);max-height:calc(100vh - 260px);overflow:auto}
+.session-row{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);border-left:3px solid transparent;background:transparent;padding:12px 14px;color:var(--ink)}
+.session-row:last-child{border-bottom:0}
+.session-row:hover .session-row-title{color:var(--green)}
+.session-row.selected{border-left-color:var(--green)}
+.session-row-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.session-row-title{margin-top:3px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.session-row-meta{margin-top:2px;font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conversation-wrap{min-height:520px;display:flex;flex-direction:column}
+.conversation-empty{margin:auto}
+#conversation{display:flex;flex-direction:column;height:calc(100vh - 230px);min-height:520px}
+.conversation-header{padding:18px 22px 14px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr auto;gap:4px 16px;align-items:center}
+.conversation-title{display:flex;align-items:center;gap:10px}
+.conversation-title h2{margin:0;font-size:18px}
+.conversation-sub,.conversation-chain{grid-column:1;font-size:11px;color:var(--muted)}
+.conversation-actions{grid-column:2;grid-row:1/span 2;display:flex;gap:8px}
+.conversation-header>.alert{grid-column:1/-1}
+#conversation-note{margin:12px 22px 0}
+.conversation-stream{flex:1;overflow:auto;padding:18px 22px;display:flex;flex-direction:column;gap:12px;scrollbar-width:thin}
+.msg{max-width:min(760px,92%)}
+.msg-who{font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+.msg-text{white-space:pre-wrap;word-break:break-word;line-height:1.65}
+.msg.user{align-self:flex-end;border:1px solid var(--line);border-radius:7px;padding:10px 14px}
+.msg.user .msg-who{text-align:right}
+.msg.agent{border-left:2px solid var(--green);padding-left:12px}
+.msg.thought{color:var(--muted);font-size:12px;padding-left:14px}
+.msg.thought summary{cursor:pointer;font-size:11px}
+.tool-row{display:flex;align-items:center;gap:10px;font-size:12px;padding-left:14px}
+.tool-name{font-family:var(--mono);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool-state{font-size:10px;min-width:44px;color:var(--muted)}
+.tool-state.completed{color:var(--green)}
+.tool-state.failed{color:var(--red)}
+.plan{padding-left:14px;font-size:12px}
+.plan-entry.completed{color:var(--muted)}
+.permission{border:1px solid #e7d8b5;border-radius:7px;padding:12px 14px;max-width:560px}
+.permission-title{font-family:var(--mono);font-size:12px;margin:2px 0 10px}
+.permission-actions{display:flex;gap:8px;justify-content:flex-end}
+.note{font-size:11px;color:var(--muted);padding-left:14px}
+.note.bad{color:var(--red)}
+.turn-end{align-self:center;font-size:10px;color:var(--muted);letter-spacing:.06em;border-top:1px solid var(--line);padding-top:4px;min-width:160px;text-align:center}
+.working{font-size:12px;padding-left:14px;color:transparent;background:linear-gradient(90deg,var(--muted) 30%,var(--ink) 50%,var(--muted) 70%) 0/200% 100% text;-webkit-background-clip:text;animation:sweep 1.6s linear infinite}
+@keyframes sweep{to{background-position:-200% 0}}
+.composer{display:flex;gap:10px;align-items:flex-end;padding:14px 22px;border-top:1px solid var(--line)}
+.composer textarea{flex:1;resize:vertical;min-height:58px}
+@media(max-width:900px){.sessions-layout{grid-template-columns:1fr}.session-list{max-height:260px}#conversation{height:auto;min-height:480px}.conversation-stream{max-height:60vh}}
+@media(prefers-reduced-motion:reduce){.working{animation:none;color:var(--muted)}}
+/* The session page is a conversation workspace: task-only controls stay on their own pages. */
+#app[data-page="sessions"] .workspace-actions,#app[data-page="sessions"] #runtime-summary[data-mode="full"],#app[data-page="sessions"] #approval-inbox,#app[data-page="sessions"] #pending-submission,#app[data-page="sessions"] #development-pending{display:none}

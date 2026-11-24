@@ -70,13 +70,14 @@ let toastTimer;
 function toast(message) { clearTimeout(toastTimer); $('#toast').textContent=message; $('#toast').hidden=false; toastTimer=setTimeout(()=>$('#toast').hidden=true,6500); }
 function showView(name) {
   if(['development','operations'].includes(name)&&!hasDevelopment())return toast('此 Daemon 尚不支持开发流程，请查看运行能力与显式升级步骤。');
-  const names={overview:['运行总览','节点、任务与执行状态，尽在一处。'],tasks:['任务','查看执行记录，逐项处理审批与异常。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],services:['服务与连接','观察受管进程、服务租约和转发连接。'],nodes:['配对节点','连接可达性与项目授权分别呈现。'],development:['开发流程','保存可复用模板，逐阶段执行与核验。'],operations:['诊断与用量','定位失败原因，查看用量与本机资源。']};
+  const names={sessions:['会话','和本机、配对电脑上的 Agent 对话；它们也能互相调用。'],overview:['运行总览','节点、任务与执行状态，尽在一处。'],tasks:['任务','查看执行记录，逐项处理审批与异常。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],services:['服务与连接','观察受管进程、服务租约和转发连接。'],nodes:['配对节点','连接可达性与项目授权分别呈现。'],development:['开发流程','保存可复用模板，逐阶段执行与核验。'],operations:['诊断与用量','定位失败原因，查看用量与本机资源。']};
   if(!names[name])return;
-  state.view=name;
+  state.view=name;$('#app').dataset.page=name;
   for(const b of document.querySelectorAll('[data-view]')){b.classList.toggle('selected',b.dataset.view===name);b.setAttribute('aria-current',b.dataset.view===name?'page':'false');}
   for(const view of document.querySelectorAll('.view'))view.hidden=view.id!==`${name}-view`;
   $('#page-title').textContent=names[name][0];$('#breadcrumb').textContent=names[name][0];$('#page-description').textContent=names[name][1];
   $('#metrics').hidden=name!=='overview';render();
+  if(name==='sessions'&&typeof sessionsShown==='function')sessionsShown();
 }
 function renderMetrics() {
   const rows=allTasks(), localTasks=rows.filter(t=>t._direction==='local'), agents=data('agents'), peers=data('peers');
@@ -148,7 +149,7 @@ async function loadRemote(peer) {
 function render() {
   if(!state.snapshot)return;
   renderRuntime();renderMetrics();renderMesh();$('#recent-tasks').replaceChildren(table(allTasks().slice(0,6)));
-  if(state.view==='tasks')renderTasks();if(state.view==='agents')renderAgents();if(state.view==='services')renderServices();if(state.view==='nodes')renderNodes();
+  if(state.view==='tasks')renderTasks();if(state.view==='agents')renderAgents();if(state.view==='services')renderServices();if(state.view==='nodes')renderNodes();if(state.view==='sessions'&&typeof renderSessions==='function')renderSessions();
   if(typeof renderWorkflow==='function')renderWorkflow();
   if(typeof renderDevelopment==='function'&&hasDevelopment())renderDevelopment();else $('#development-pending').replaceChildren();
 }

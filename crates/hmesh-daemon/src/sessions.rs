@@ -216,7 +216,6 @@ async fn pump(
     live: Arc<Live>,
     mut messages: tokio::sync::mpsc::UnboundedReceiver<AgentMessage>,
 ) {
-    let mut counter = 0u64;
     while let Some(message) = messages.recv().await {
         match message {
             AgentMessage::Update(params) => {
@@ -241,8 +240,8 @@ async fn pump(
                 }
             }
             AgentMessage::Permission { id: rpc, params } => {
-                counter += 1;
-                let key = format!("p{counter}");
+                // Unique per session even when the agent process restarts.
+                let key = Uuid::new_v4().simple().to_string()[..12].to_owned();
                 let call = &params["toolCall"];
                 let options: Vec<Value> = params["options"].as_array().cloned().unwrap_or_default();
                 let shown: Vec<Value> = options
