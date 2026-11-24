@@ -113,7 +113,8 @@ try{
  stage='onboarding-preview-register-recover';
  const beforePolicy=readFileSync(join(b.dir,'policy.toml'),'utf8');
  await page.locator('#new-agent').click();
- for(const[id,value]of Object.entries({name:'wizard-fixture',project:'panel-test',root:project,executable:fixture,provider:'fixture',model:'fixture'}))await page.locator('#onboard-'+id).fill(value);
+ await page.locator('#onboard-harness').selectOption('acp');
+ for(const[id,value]of Object.entries({name:'wizard-fixture',project:'panel-test',root:project,executable:fixture}))await page.locator('#onboard-'+id).fill(value);
  await page.locator('#onboard-peer').selectOption(a.card.node_id);
  const previewResponse=page.waitForResponse(r=>r.url().endsWith('/onboarding/preview'));
  await page.getByRole('button',{name:'检查并预览',exact:true}).click();const preview=(await(await previewResponse).json()).data;
