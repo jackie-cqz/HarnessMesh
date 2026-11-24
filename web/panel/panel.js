@@ -172,7 +172,7 @@ function confirmAction(title,description) {
 }
 async function act(kind,id,name,title,description) {
   if(!canWrite())return toast('当前面板只读，请查看运行能力与升级步骤。');
-  if(state.actionBusy)return;state.actionBusy=true;
+  const release=await claimAction();
   try {
     if(kind==='tasks'&&name==='approve'){const check=unwrap(await api(`/tasks/${id}/preflight`));if(!check.ready)throw Object.assign(Error('执行条件未通过，请检查工件声明与 Agent 配置。'),{code:'TASK_PREFLIGHT_FAILED',preflight:check});}
     if(!await confirmAction(title,description))return;
@@ -180,7 +180,14 @@ async function act(kind,id,name,title,description) {
     await api(`/${kind}/${id}/${name}`,{method:'POST',body:'{}'});
     toast('操作已提交，正在读取最新状态。');await refresh();if(state.selected&&$('#task-dialog').open)await readDetail(state.detailVersion);
   } catch(e){toast(e.preflight?'执行条件未通过，任务未批准。请查看预检结果。':`操作未确认：${e.message}。先刷新检查状态，请勿重复提交。`);if(e.preflight&&state.selected?.task_id===id){state.lastDetail='';await readDetail(state.detailVersion);}}
-  finally{state.actionBusy=false;}
+  finally{release();}
+}
+// One owner action at a time. A click while another action is still finishing
+// waits for it instead of being dropped.
+async function claimAction(){
+  while(state.actionBusy)await state.actionDone;
+  let release;state.actionBusy=true;state.actionDone=new Promise(resolve=>{release=resolve;});
+  return ()=>{state.actionBusy=false;release();};
 }
 async function openTask(task) {
   state.selected=task;state.cursor=0;state.events=0;const version=++state.detailVersion;

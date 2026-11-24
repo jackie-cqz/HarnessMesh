@@ -58,12 +58,12 @@ async function openComposer(){
 }
 async function recoverOriginal(id){
  if(!canWrite())return toast('当前面板只读，原请求仍保留。请查看运行能力。');
- if(state.actionBusy)return;state.actionBusy=true;
+ const release=await claimAction();
  try{
   if(!await confirmAction('恢复原请求？',`request ${id}\n将使用本机已经持久化的原节点、Agent、目标和限额。接收端按同一 ID 去重，既有任务不会重新执行。尚未接收的请求会沿用原审批要求。`))return;
   const task=unwrap(await api(`/requests/${id}/recover`,{method:'POST',body:'{}'}));
   if(pendingDraft?.request_id===id)savePending(null);if($('#compose-dialog').open)$('#compose-dialog').close();await refresh();await openTask(allTasks().find(t=>t.task_id===task.task_id)||{...task,_request_id:id,_direction:'outbound'});toast('已读取原请求的任务状态。');
- }catch(e){toast(`恢复未确认：${problem(e)}。原草稿和请求 ID 保留。`);}finally{state.actionBusy=false;}
+ }catch(e){toast(`恢复未确认：${problem(e)}。原草稿和请求 ID 保留。`);}finally{release();}
 }
 $('#compose-form').addEventListener('submit',async event=>{
  event.preventDefault();if(composerBusy)return;if(pendingDraft)return recoverOriginal(pendingDraft.request_id);if(!$('#compose-form').reportValidity())return;
