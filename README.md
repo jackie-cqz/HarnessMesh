@@ -1,54 +1,168 @@
 # HarnessMesh
 
-An agent hub for your own computers. HarnessMesh connects to coding agents over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) and lets you talk to them, and lets them talk to each other, on this computer and on paired computers.
+**English** | [简体中文](README_CN.md)
 
-- **Sessions in one panel.** Open a session with OpenCode, Claude Code, Codex, Pi or any other ACP agent, keep a multi-turn conversation, watch its tool calls, answer its permission requests, stop or close it. Agents on a paired computer are used the same way from here. Run `hmesh --data-dir YOUR_NODE_DIR panel` and open the private link.
-- **Agents call each other.** Every session gets `hmesh mcp` bound to it, so the agent can open sessions with other agents (`mesh_send`), follow up in them and read their replies (`mesh_wait`). Delegation is limited to three levels and never loops back to an agent already on the chain. A session another computer opened can call agents on this computer, but not reach further computers.
-- **Pairing is the trust boundary.** Paired computers see each other's agents. Sessions they open start right away unless the receiving owner switches that peer to confirmation (`hmesh peers access <peer> confirm`). Whoever opened a session answers its permission requests; sessions an agent opened are answered automatically, or by the owner of the agent's computer in confirm mode. Revoking a pairing closes the sessions that peer opened.
-- **Only installed agents.** `hmesh agent detect` lists the ACP commands on PATH (`opencode`, `claude-agent-acp`, `codex-acp`, `pi-acp`); HarnessMesh never installs an agent. Registering one runs only an ACP `initialize` handshake; no model is called until you send a message.
-- **Model, mode and keys.** Switch a session's model, mode or reasoning level between turns (ACP session settings). Per agent, choose its own login, an API key or a custom endpoint, a default model and extra environment variables; keys stay on the agent's computer and are injected only into the agent process (`hmesh agent service`, or Agents → 模型服务 in the panel). OpenCode on a custom endpoint can offer a list of models, and sessions then switch only among them; it reaches the endpoint through a relay on this computer, which keeps the key out of the OpenCode process and drops fields its strict client rejects (such as a gateway's empty `delta.role`). A connection test (`--test`, or 测试连接) asks the service for its model list first and sends one minimal request only when it cannot list them. The dialog first says whether the agent is already set up on its own (its own ACP report or read-only status command; no credential files are read), and custom endpoints can start from 31 provider presets. A key may also come from an environment variable instead of being stored.
+One place to work with the coding agents on all of your own computers. HarnessMesh talks to agents such as OpenCode, Claude Code, Codex and Pi over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP). You chat with any of them from a local web panel, whichever computer it runs on. They can also hand work to each other, across computers, through a built-in MCP server.
 
-See [MCP](docs/mcp.md) and [security boundaries](docs/security.md). The one-shot task, artifact and workflow features below still work; they now drive agents over ACP too.
+![A session on studio: the backend agent finds the bug, asks the reviewer agent on laptop to check the fix, and applies its suggestion](docs/images/session.png)
 
-### Earlier acceptance records
+<sub>Screenshots in this README: two computers ("studio" and "laptop") simulated on one machine, with a scripted demo agent. No model was called. The panel's interface is in Chinese.</sub>
 
-These checkpoints predate the switch to ACP (they used each agent's native protocol). Their scripts were retired with that switch; the records stay as history.
+## What you get
 
-[Direct Tailscale setup for Windows and Mac](docs/quickstart-tailnet.md) supports literal Tailnet IPs, candidate discovery, pinned mTLS and a separate loopback owner API. Run `node scripts/start-tailnet.mjs` after cloning to build and start a dedicated Node and register every ACP agent already installed on that computer; SSH is not required. The [real Windows → Mac acceptance](docs/tailnet-mac-smoke.md) passed owner approval, Pi write/read, five-field JSON/hash verification, deduplication, event replay and completed-task recovery after restarting the Windows origin. The [Mac → Windows execution-owner checkpoint](docs/tailnet-reverse-smoke.md) also passed DSH/Pro write/read and independent JSON/hash verification. Mac-origin status, event and verification readback also passed; duplicate submission, recovery, workspace checks and managed-service integration remain separate.
+- **One panel for every agent.** Start a session with any agent on this computer or a paired one, keep a multi-turn conversation, and follow its thinking, plan and tool calls as they happen. You can stop or close it at any time. Each session can switch model, mode and reasoning level between turns.
+- **Agents call each other.** Every session gets the HarnessMesh MCP server, so an agent can open a session with another agent (`mesh_send`), follow up, and read its reply (`mesh_wait`), even on another computer. Calls go at most three levels deep and never loop back to an agent already in the chain.
+- **You stay in charge.** When an agent wants to edit a file or run a command, the question comes back to whoever opened the session: 允许一次 (allow once) or 拒绝 (reject). In sessions an agent opened, they are answered automatically; set the calling computer to `confirm` and they wait for you instead.
+- **Pair a computer in two steps.** Paste the other computer's pairing code; it approves once with a six-character check code. Then both sides can use each other's agents. Revoking a pairing closes the sessions that computer opened.
+- **Model service per agent.** Each agent can use its own login, an API key, or a custom endpoint (31 provider presets). Keys stay on the agent's computer and are passed only to that agent's process.
+- **Work beyond chat.** The 工作待办 (inbox) collects whatever waits for you. One-shot tasks come with artifact checks, templates and multi-stage workflows, and you can see usage per session and per project.
 
-[Bidirectional SSH and native MCP delegation](docs/ssh-bidirectional-mcp.md) now pass: execution survives a cut tunnel and origin restart, replay/deduplication remain correct, and Orion Pi uses native MCP to discover and delegate Windows DSH. That acceptance predates the current MCP model; see [MCP](docs/mcp.md) for today's setup.
+## Screens
 
-The [SSH Todo example](examples/ssh-todo/README.md) runs a Pi-authored API on Orion and a DSH-authored browser client on Windows. Real HTTP, browser operations and backend restart persistence passed; its [acceptance report](docs/evidence/latest-todo-integration.json) also preserves the Pi authoring output-limit failures separately from application test results.
+**The other computer sees who called it.** The reviewer session on laptop shows that studio's backend agent opened it, and the call chain studio → laptop.
 
-The native-message limit has since been fixed. A [fresh real Pi/Flash regression](docs/evidence/latest-pi-output-regression.json) completed successfully with a 375,131-byte native message and 14 passing generated-backend tests; original failed tasks remain unchanged.
+![The reviewer session on laptop, opened by studio's backend agent](docs/images/delegated.png)
 
-[Daemon-managed HTTP services and SSH tunnels](docs/managed-services.md) add owner-configured leases, scoped mTLS HTTP connections, bounded process restart and frozen deterministic integration contracts with at most two repair tasks. This is a two-node SSH checkpoint; generic TCP, streaming, OS startup installation and the complete V0.2 gates remain separate.
+**Permission questions come back to you.** Here the frontend agent on laptop wants to run `npm install`; you answer from studio, where you opened the session.
 
-The [real managed-service acceptance](docs/evidence/latest-managed-services.json) passed a missing-field failure → Pi repair → managed restart → fixed-contract retest in one cycle, plus DSH client CRUD, backend/client tests, persistence after restart, automatic SSH recovery and access revocation. Windows 52 / Linux 51 Rust tests passed. Initial proxy/deadline failures are retained alongside the final result.
+![A permission request from an agent on another computer](docs/images/permission.png)
 
-```powershell
-cargo +stable build --locked -p hmesh-cli
-.\target\debug\hmesh.exe --data-dir .\.hmesh-v0\node-a init --name local-a --port 38880
-.\target\debug\hmesh.exe --data-dir .\.hmesh-v0\node-a daemon start
+**Pairing.** On one computer, paste the other's pairing code. The dialog then shows a check code. On the other computer, the request appears on 配对节点 (paired computers) and in the inbox; type the check code and approve. The first computer finishes by itself.
+
+| 1. Send the request | 2. Approve on the other computer |
+|---|---|
+| ![The pairing dialog showing the check code](docs/images/pair-sent.png) | ![The incoming request with the check code typed in](docs/images/pair-approve.png) |
+
+**Start from any agent.** The start page lists every ready agent, with the computer it runs on.
+
+![The start page with agents from both computers](docs/images/start.png)
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph A["Your computer"]
+    panel["Panel in your browser<br/>127.0.0.1 only"] --> d1["hmesh daemon"]
+    d1 <-->|ACP| a1["OpenCode · Claude Code<br/>Codex · Pi"]
+    a1 -.->|"MCP: mesh_send"| d1
+  end
+  subgraph B["A paired computer"]
+    d2["hmesh daemon"] <-->|ACP| a2["its agents"]
+  end
+  d1 <==>|"mTLS over Tailscale"| d2
 ```
 
-Use Rust 1.90 or newer. `rust-toolchain.toml` and CI pin 1.90.0; `+stable` also works when the installed stable toolchain is at least that version.
+- Each computer runs one **daemon** (`hmesh daemon start`). It starts the agents you registered and keeps sessions, tasks and their events in a local SQLite database.
+- The **panel** (`hmesh panel`) listens on 127.0.0.1 only and opens with a private link printed in the terminal. Owner credentials stay in the CLI process.
+- Computers talk over Tailscale with TLS 1.3 and mutual authentication. Each side pins the other's certificate fingerprint. No SSH or cloud relay is needed.
 
-See [V0 quickstart](docs/quickstart-v0.md), [protocol](docs/protocol.md), [security boundaries](docs/security.md), and [implementation/acceptance status](docs/implementation-status.md).
+## Get started
 
-A [local management panel](docs/local-panel.md) supports task creation, owner approval, original-request recovery, scoped artifact verification and Node/Agent/service management. Run `hmesh --data-dir YOUR_NODE_DIR panel` and open the private access link. Owner mTLS credentials stay in the CLI process. Optional `--start-daemon` owns only a Daemon started here; compatible existing Daemons are preserved. [Native runtime packages](docs/runtime-packages.md) run without Rust or a frontend build. Opening the panel does not call models.
+You need:
 
-[Local reliability and onboarding](docs/local-reliability.md) adds completion-time artifact snapshots, opt-in Git worktrees with reviewed patch application, offline identity-preserving backups, scoped/fair queueing, a reference-only Agent setup wizard, versioned runtime preflight and owner-managed login startup. Schema 7 upgrades require a pre-upgrade backup; old successful tasks remain explicitly marked as current-file verification.
+- [Rust](https://rustup.rs) 1.90 or newer.
+- Node.js 20 or newer, for the helper scripts.
+- At least one ACP agent you have installed and signed in to yourself.
+- [Tailscale](https://tailscale.com), to connect more than one computer.
 
-[Reusable development workflows](docs/development-workflows.md) in 0.0.2 (schema 8) add immutable task templates, persistent approval-gated stages and bounded repair, structured diagnostic export, reviewed offline retention, reported usage/project budgets and executable Harness compatibility checks. The owner panel includes development and operations views. Back up an existing Node with its current binary before upgrading; the new panel preserves an older running Daemon and requests an explicit upgrade.
+HarnessMesh never installs agents. `hmesh agent detect` shows what it found and how to install the rest:
 
-Development checks do not call models or read personal Harness configurations:
+| Agent | Command HarnessMesh looks for | Install |
+|---|---|---|
+| OpenCode | `opencode` (runs `opencode acp`) | [opencode.ai](https://opencode.ai) |
+| Claude Code | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
+| Codex | `codex-acp` | `npm install -g @zed-industries/codex-acp` |
+| Pi | `pi-acp` | `npm install -g pi-acp` |
+| Any other ACP agent | the command and arguments you give it | — |
 
-```powershell
-cargo +stable fmt --all --check
-cargo +stable clippy --locked --workspace --all-targets -- -D warnings
-cargo +stable test --locked --workspace
+### On one computer
+
+```sh
+git clone https://github.com/jackie-cqz/HarnessMesh.git
+cd HarnessMesh
+cargo build --release --locked -p hmesh-cli
+./target/release/hmesh agent detect
+./target/release/hmesh panel --start-daemon
 ```
 
-Real Harness smoke requires a separate explicit opt-in and an authorized model credential. A successful Harness run and a passed artifact verification are separate results. Never count the `test-support/hmesh-fixture` process as a real Harness.
+1. Open the link the panel prints.
+2. On **Agents**, use **接入项目与 Agent** (add a project and agent) to register an agent for a project directory.
+3. Go to **新会话** (new session), pick the agent and send your first message.
 
+Registering an agent runs only an ACP `initialize` handshake. No model is called until you send a message. Data lives in `~/.harnessmesh`; pass `--data-dir /absolute/path` to use another directory.
+
+### Across computers (Tailscale)
+
+Run this on each computer, from the repository. It builds the CLI, picks the computer's Tailscale IP, creates a node, registers every ACP agent already installed there, and keeps the daemon running:
+
+```sh
+node scripts/start-tailnet.mjs --name studio
+```
+
+Then open the panel on one of them:
+
+```sh
+./target/debug/hmesh --data-dir "$PWD/.hmesh-v0/tailnet-darwin/node" panel
+```
+
+To pair:
+
+1. On computer B, open **配对节点 → 配对新电脑** and copy **这台电脑的配对码** (this computer's pairing code).
+2. On computer A, paste it in the same dialog and send the request. A shows a check code.
+3. On computer B, type the check code and approve.
+
+On Windows the node directory is `.hmesh-v0/tailnet-win32/node`. See the [Tailscale guide](docs/quickstart-tailnet.md) for options, firewall notes and the command-line equivalents (`hmesh pair show`, `hmesh pair request --code`, `hmesh pair approve`).
+
+### Let your own agent use the mesh
+
+Sessions started by HarnessMesh get the MCP tools automatically. To give them to an agent you run yourself, for example Claude Code in a terminal:
+
+```sh
+claude mcp add -s user harnessmesh -- /absolute/path/to/hmesh mcp
+```
+
+Codex takes the same server in `~/.codex/config.toml`. The six tools and their limits are described in [MCP](docs/mcp.md).
+
+## Security in brief
+
+- **Pairing is the trust boundary.** Only paired computers see your agents. Unpaired or revoked computers can neither see nor reach them.
+- **One approval, checked both ways.** The computer that asked trusts the other only after the other computer's owner approves and accepts its certificate.
+- **Pinned certificates.** Every connection uses TLS 1.3 with a pinned certificate. Anonymous routes exist only for the pairing handshake.
+- **Owner controls stay local.** The owner API and the panel listen on loopback only.
+- **Per-computer access mode.** Each paired computer is either `auto` (its sessions start right away) or `confirm` (you approve first): `hmesh peers access <peer> confirm`.
+- **Keys stay put.** Model keys never leave the agent's computer and are not shown again after saving. HarnessMesh does not read agents' own credential files.
+
+**Limits.** Agents run as your user. If you allow an agent to run shell commands, it can do anything you can on that computer, including using HarnessMesh as the owner. The six-character check code guards against approving the wrong request, not against a determined attacker on your tailnet: when it matters, compare the full fingerprint with `hmesh pair approve --expect-fingerprint`. Details are in [security](docs/security.md).
+
+## Documentation
+
+| Topic | Document |
+|---|---|
+| The panel, page by page | [docs/local-panel.md](docs/local-panel.md) |
+| Agents calling agents (MCP tools, limits, manual setup) | [docs/mcp.md](docs/mcp.md) |
+| Two computers over Tailscale | [docs/quickstart-tailnet.md](docs/quickstart-tailnet.md) |
+| Command-line walkthrough on one computer | [docs/quickstart-v0.md](docs/quickstart-v0.md) |
+| Security model | [docs/security.md](docs/security.md) |
+| Tasks, templates, workflows, usage and budgets | [docs/development-workflows.md](docs/development-workflows.md) |
+| Backups, upgrades, worktrees and queueing | [docs/local-reliability.md](docs/local-reliability.md) |
+| Managed HTTP services and tunnels | [docs/managed-services.md](docs/managed-services.md) |
+| Prebuilt runtime packages (no Rust needed) | [docs/runtime-packages.md](docs/runtime-packages.md) |
+| Wire protocol | [docs/protocol.md](docs/protocol.md) |
+| What is built and what has been accepted on real hardware | [docs/implementation-status.md](docs/implementation-status.md) |
+
+## Development
+
+```sh
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+cargo build --locked -p hmesh-cli -p hmesh-fixture
+npm ci && npx playwright install chromium
+npm run test:panel   # and test:sessions-panel, test:pairing-panel, …
+```
+
+None of the checks call a model or read your agent configuration. They use `test-support/hmesh-fixture`, a scripted ACP agent; a run with it never counts as a real agent run. A real agent run needs a separate, explicit opt-in and your own credentials.
+
+## Status
+
+Version 0.0.2. Developed on macOS; the CI workflow covers macOS, Windows and Linux. The panel's interface is in Chinese. Runtime packages are unsigned development builds without an installer or automatic updates.
