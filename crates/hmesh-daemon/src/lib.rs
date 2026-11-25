@@ -12,6 +12,7 @@ mod pairing;
 pub mod passcode;
 mod preflight;
 mod relay;
+mod relays;
 mod service_test;
 mod services;
 mod sessions;
@@ -32,9 +33,12 @@ use hmesh_security::{
 };
 use hmesh_store::Store;
 use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
-use hmesh_transport::{Client, ConnectionIdentity, RouteMemory};
+use hmesh_transport::{Client, ConnectionIdentity, RelayDialer, RouteMemory};
 pub use networks::{ForgetNetwork, TrustNetwork, view as networks_view, write_trusted};
 pub use onboarding::OnboardingRequest;
+pub use relays::{
+    UseRelay, configured as configured_relays, takes_relayed, with_relay, write_relays,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -76,6 +80,13 @@ pub struct AppState {
     /// What this computer's mark on the local network is made with (see
     /// `finding`). Never logged.
     find_key: Arc<RwLock<[u8; FIND_KEY_BYTES]>>,
+    /// The relays this computer holds a connection to (`node.relays`,
+    /// changed by `hmesh relay use`). Their tokens are never logged.
+    relays: Arc<watch::Sender<Vec<RelayAddress>>>,
+    /// Whether it holds each relay now and since when, by the relay's label.
+    relays_held: Arc<Mutex<HashMap<String, (bool, i64)>>>,
+    /// Loopback ports that reach other computers through their relays.
+    relay_dialer: Arc<RelayDialer>,
 }
 #[derive(Debug)]
 pub struct ApiError(pub MeshError);
@@ -222,7 +233,9 @@ impl AppState {
             .map(|elapsed| elapsed.as_millis() as i64)
             .unwrap_or_default();
         let find_key = finding::load_key(&store)?;
-        let mut addresses = addresses::local(&instance.config, &instance.card, &[], revision);
+        let relays = relays::configured(&instance.config);
+        let mut addresses =
+            addresses::local(&instance.config, &instance.card, &[], &relays, revision);
         let networks = Arc::new(networks::Networks::new(&instance.config));
         let routes_store = store.clone();
         let routes = Arc::new(RouteMemory::persisted(move |fingerprint, origin, at| {
@@ -240,6 +253,9 @@ impl AppState {
             nearby: Arc::default(),
             acceptance: Arc::new(Mutex::new(HashMap::new())),
             relay: Arc::new(relay::ModelRelay::new(shutdown.subscribe())),
+            relay_dialer: RelayDialer::new(instance.clone(), shutdown.subscribe()),
+            relays: Arc::new(watch::channel(relays).0),
+            relays_held: Arc::default(),
             shutdown,
             sessions: Arc::default(),
             addresses: Arc::default(),
@@ -408,10 +424,12 @@ impl AppState {
             return Err(outbound_only());
         }
         // On a direct network anyone on it can reach the port, so the
-        // pairing handshake answers only while the owner has pairing open.
-        // Status queries name an existing request by its random ID and stay
-        // open, so a request sent in time is still answered.
-        if self.instance.config.node.network == "direct"
+        // pairing handshake answers only while the owner has pairing open;
+        // so does one through a relay, which anyone with its token can ask
+        // for. Status queries name an existing request by its random ID and
+        // stay open, so a request sent in time is still answered.
+        if (self.instance.config.node.network == "direct"
+            || hmesh_transport::relay::is_relayed(source))
             && kind != "pair-status"
             && self.pairing_closes_at().is_none()
         {
@@ -534,6 +552,7 @@ pub fn router(state: AppState) -> Router {
         .merge(nearby::routes())
         .merge(addresses::routes())
         .merge(networks::routes())
+        .merge(relays::routes())
         .route("/hmesh/v1/hello", get(hello))
         .route("/hmesh/v1/pair/challenge", get(challenge))
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
@@ -771,6 +790,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let announce = tokio::spawn(pairing::announce(state.clone(), shutdown.subscribe()));
     let nearby = tokio::spawn(nearby::run(state.clone(), shutdown.subscribe()));
     let networks = tokio::spawn(networks::watch(state.clone(), shutdown.subscribe()));
+    let relays = tokio::spawn(relays::run(state.clone(), shutdown.subscribe()));
     let expiry_store = state.store.clone();
     let ttl = instance.config.security.pending_approval_ttl_seconds;
     let mut expiry_stop = shutdown.subscribe();
@@ -835,6 +855,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     announce.abort();
     let _ = nearby.await;
     let _ = networks.await;
+    let _ = relays.await;
     let _ = expiry.await;
     services::recover(&state_for_cleanup)?;
     signal.abort();
@@ -913,7 +934,7 @@ async fn status(
         "tailscale":match (s.instance.config.node.network.as_str(), s.instance.config.outbound_only()) {("tailscale", true) => "not_checked", ("tailscale", false) => "verified_at_startup", _ => "not_required"},
         "allowed_sources":(s.instance.config.node.network == "direct" && !s.instance.config.outbound_only()).then(|| s.instance.config.allowed_sources()),
         "pairing_window":s.pairing_window(),
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1","pairing-nearby-v1","peer-addresses-v1","trusted-networks-v1","peer-finding-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.card()),"outbound_only":s.instance.config.outbound_only(),"addresses":s.addresses().addresses,"networks":s.networks_view()}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1","pairing-nearby-v1","peer-addresses-v1","trusted-networks-v1","peer-finding-v1","relay-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.card()),"outbound_only":s.instance.config.outbound_only(),"addresses":s.addresses().addresses.iter().map(|a| shown_address(a)).collect::<Vec<_>>(),"networks":s.networks_view(),"relays":s.relays_view()}),
     ))
 }
 async fn stop(
@@ -1022,7 +1043,7 @@ async fn peers(
                 };
             }
             if !accepted {
-                view.routes = s.store.peer_routes(peer.card.node_id)?;
+                view.routes = addresses::shown_routes(s.store.peer_routes(peer.card.node_id)?);
                 views.push(view);
                 continue;
             }
@@ -1045,7 +1066,7 @@ async fn peers(
                 );
             }
         }
-        view.routes = s.store.peer_routes(peer.card.node_id)?;
+        view.routes = addresses::shown_routes(s.store.peer_routes(peer.card.node_id)?);
         views.push(view);
     }
     Ok(Json(views))
@@ -1072,8 +1093,23 @@ async fn outgoing_pair(
 ) -> ApiResult<PairRecord> {
     s.owner(&headers, &c)?;
     let expected = normalize_fingerprint(&target.expected_fingerprint).map_err(internal)?;
-    let client =
-        Client::new(&s.instance, &target.endpoint, &expected, true, false).map_err(internal)?;
+    // A relay pairing code: through that relay (its address is kept for the
+    // other computer once paired).
+    let relayed = if is_relay_address(&target.endpoint) {
+        Some(
+            hmesh_security::validate_relay(&target.endpoint)
+                .map_err(|e| ApiError(MeshError::input(e.to_string())))?
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    let client = match &relayed {
+        Some(relay) => s.relay_client(relay, &expected, true)?,
+        None => {
+            Client::new(&s.instance, &target.endpoint, &expected, true, false).map_err(internal)?
+        }
+    };
     let card: NodeCard = client.get("/hmesh/v1/hello").await?;
     validate_card(&card).map_err(internal)?;
     if card.fingerprint != expected || card.node_id == s.instance.card.node_id {
@@ -1106,7 +1142,7 @@ async fn outgoing_pair(
     };
     s.store.save_outgoing_pair(&record)?;
     // Trust the other computer as soon as its owner approves this request.
-    pairing::watch(s.clone(), record.clone());
+    pairing::watch_via(s.clone(), record.clone(), relayed);
     Ok(Json(record))
 }
 #[derive(Serialize, Deserialize)]

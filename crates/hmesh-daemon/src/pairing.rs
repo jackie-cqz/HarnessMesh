@@ -269,12 +269,21 @@ pub(crate) fn watch_via(state: AppState, record: PairRecord, via: Option<String>
 /// Ask once. True when the request is settled, either way; false while the
 /// other computer says pending or cannot be reached. Asked at its card's
 /// address, or at `via` (an address typed to pair with it, which may name a
-/// host) when there is one. Once paired, `via` is kept as
-/// an address set by hand for that computer, tried when the others fail.
+/// host, or the relay of a relay pairing code) when there is one. Once
+/// paired, a typed `via` is kept as an address set by hand for that
+/// computer, tried when the others fail; a relay among the addresses it
+/// told, until it tells its own list.
 pub(crate) async fn check_via(s: &AppState, record: &PairRecord, via: Option<&str>) -> bool {
     let fingerprint = &record.card.fingerprint;
     let path = format!("/hmesh/v1/pair/requests/{}", record.request_id);
     let at = |bootstrap| match via {
+        Some(address) if is_relay_address(address) => Client::pinned_through(
+            &s.instance,
+            address,
+            fingerprint,
+            bootstrap,
+            &s.relay_dialer,
+        ),
         Some(address) => Client::pinned(&s.instance, address, fingerprint, bootstrap),
         None => Client::new(
             &s.instance,
@@ -310,8 +319,17 @@ pub(crate) async fn check_via(s: &AppState, record: &PairRecord, via: Option<&st
                 .complete_outgoing_pair(record.request_id, fingerprint)
             {
                 Ok(peer) => {
-                    if let Some(address) = via {
-                        keep_typed_address(s, peer.card.node_id, address);
+                    match via {
+                        // Paired through its relay: the way it is reached
+                        // until it tells its own list.
+                        Some(relay) if is_relay_address(relay) => {
+                            if let Err(error) = s.store.add_found_address(peer.card.node_id, relay)
+                            {
+                                tracing::warn!(code = ?error.code, "the relay it was paired through was not kept");
+                            }
+                        }
+                        Some(address) => keep_typed_address(s, peer.card.node_id, address),
+                        None => {}
                     }
                     s.peers_changed();
                     let _ = s.store.audit(

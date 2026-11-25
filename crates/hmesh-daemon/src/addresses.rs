@@ -16,12 +16,14 @@ pub fn routes() -> Router<AppState> {
 /// This computer's address list as paired computers get it: its card's
 /// address, then its other addresses on trusted networks (`also`; a
 /// computer on every interface), then `https://<name>:<port>` for each host
-/// name. A computer that only connects out has none. `revision` tells
-/// newer lists from older.
+/// name, then the relays it holds a connection to (`relays`, in full: only
+/// paired computers get this list). A computer that only connects out has
+/// none. `revision` tells newer lists from older.
 pub fn local(
     config: &NodeConfig,
     card: &NodeCard,
     also: &[String],
+    relays: &[RelayAddress],
     revision: i64,
 ) -> PeerAddresses {
     let mut wanted = Vec::new();
@@ -37,13 +39,16 @@ pub fn local(
             }
         }
     }
+    if crate::relays::takes_relayed(config) {
+        wanted.extend(relays.iter().map(ToString::to_string));
+    }
     let mut addresses: Vec<String> = Vec::new();
     for address in wanted {
-        if let Ok(url) = hmesh_security::validate_peer_address(&address) {
-            let origin = url.origin().ascii_serialization();
-            if !addresses.contains(&origin) && addresses.len() < MAX_PEER_ADDRESSES {
-                addresses.push(origin);
-            }
+        if let Ok(origin) = hmesh_security::peer_address_key(&address)
+            && !addresses.contains(&origin)
+            && addresses.len() < MAX_PEER_ADDRESSES
+        {
+            addresses.push(origin);
         }
     }
     PeerAddresses {
@@ -130,6 +135,7 @@ impl AppState {
     /// its card's address, the ones set here by hand, the ones it told this
     /// computer. Only addresses this computer can call (see `can_call`),
     /// and loopback ones a test made stand in for one of its networks.
+    /// Its relays wherever they are, except from a computer on loopback.
     pub(crate) fn peer_candidates(&self, peer: &Peer) -> Vec<String> {
         let routes = self
             .store
@@ -143,10 +149,13 @@ impl AppState {
             .chain(routes.manual)
             .chain(routes.advertised)
         {
-            if (hmesh_security::can_call(&self.instance.config, &address)
-                || self.networks.names_own_network(&address))
-                && !candidates.contains(&address)
-            {
+            let callable = if is_relay_address(&address) {
+                self.instance.config.node.network != "loopback"
+            } else {
+                hmesh_security::can_call(&self.instance.config, &address)
+                    || self.networks.names_own_network(&address)
+            };
+            if callable && !candidates.contains(&address) {
                 candidates.push(address);
             }
         }
@@ -170,16 +179,13 @@ impl AppState {
                 "that computer only connects out, and no address set here reaches it",
             ));
         }
-        let build = if anonymous {
-            Client::routed_anonymous
-        } else {
-            Client::routed
-        };
-        let client = build(
+        let client = Client::routed_through(
             &self.instance,
             candidates,
             &peer.card.fingerprint,
             self.routes.clone(),
+            &self.relay_dialer,
+            anonymous,
         )
         .map_err(|error| MeshError::new(ErrorCode::Internal, error.to_string()))?;
         // None of them answering, it is looked for on the local network.
@@ -275,6 +281,11 @@ async fn set_manual(
 ) -> ApiResult<PeerRoutes> {
     s.owner(&headers, &c)?;
     let peer = s.store.peer(id)?;
+    if body.addresses.iter().any(|a| is_relay_address(a)) {
+        return Err(ApiError(MeshError::input(
+            "a relay address comes from the computer that holds the relay: pair with it again using its relay pairing code (hmesh pair show there)",
+        )));
+    }
     let addresses = checked(&body.addresses)?;
     s.store.set_manual_addresses(id, &addresses)?;
     s.store.audit(
@@ -285,7 +296,18 @@ async fn set_manual(
         Uuid::new_v4(),
     )?;
     s.peers_changed();
-    Ok(Json(s.store.peer_routes(id)?))
+    Ok(Json(shown_routes(s.store.peer_routes(id)?)))
+}
+/// How a peer is reached, as shown to this computer's owner: a relay by its
+/// label, without its token.
+pub(crate) fn shown_routes(routes: PeerRoutes) -> PeerRoutes {
+    let shown = |addresses: Vec<String>| addresses.iter().map(|a| shown_address(a)).collect();
+    PeerRoutes {
+        advertised: shown(routes.advertised),
+        manual: shown(routes.manual),
+        last_good: routes.last_good.as_deref().map(shown_address),
+        last_good_at: routes.last_good_at,
+    }
 }
 
 /// Ask a paired computer for its address list and keep it. Whether it
@@ -358,7 +380,7 @@ mod tests {
         config.node.host_names = Some(vec!["studio.local".into(), "localhost".into()]);
         let mut instance = Instance::init(&root.path().join("studio"), config).unwrap();
         instance.card.endpoint = "https://127.0.0.1:38880".into();
-        let list = local(&instance.config, &instance.card, &[], 7);
+        let list = local(&instance.config, &instance.card, &[], &[], 7);
         assert_eq!(list.node_id, instance.card.node_id);
         assert_eq!(list.revision, 7);
         assert_eq!(
@@ -372,7 +394,7 @@ mod tests {
         // On loopback, no name by default.
         let plain = Instance::init(&root.path().join("plain"), NodeConfig::default()).unwrap();
         assert_eq!(
-            local(&plain.config, &plain.card, &[], 1).addresses,
+            local(&plain.config, &plain.card, &[], &[], 1).addresses,
             std::slice::from_ref(&plain.card.endpoint)
         );
         // Only connects out: nothing to tell.
@@ -380,7 +402,7 @@ mod tests {
         config.node.network = "direct".into();
         let outbound = Instance::init(&root.path().join("outbound"), config).unwrap();
         assert!(
-            local(&outbound.config, &outbound.card, &[], 1)
+            local(&outbound.config, &outbound.card, &[], &[], 1)
                 .addresses
                 .is_empty()
         );
@@ -403,6 +425,7 @@ mod tests {
                     "https://[fd12::5]:38880".into(),
                     "https://100.101.102.103:38880".into()
                 ],
+                &[],
                 2
             )
             .addresses,

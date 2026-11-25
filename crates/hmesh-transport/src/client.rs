@@ -1,6 +1,7 @@
 //! Calling another computer, or this computer's own daemon. A paired
 //! computer may be known by several addresses: they are tried in turn, and
 //! where it answered is tried first next time.
+use crate::relay::RelayDialer;
 use hmesh_core::{ErrorCode, MeshError, NodeCard};
 use hmesh_security::{
     Instance, normalize_fingerprint, peer_address, validate_endpoint, validate_peer_address,
@@ -142,8 +143,30 @@ struct Routed {
 }
 #[derive(Clone)]
 struct Route {
+    /// What the route is known and remembered by: the origin it names, or a
+    /// relay address in full.
     origin: String,
+    /// Where HTTP goes: the origin, or the loopback port forwarding to the
+    /// computer through its relay.
+    url: String,
     target: Target,
+    /// Through a relay: the relay's label, which is all that is ever said
+    /// about it (its address has its token).
+    relay: Option<String>,
+}
+impl Route {
+    fn direct(origin: String, target: Target) -> Self {
+        Self {
+            url: origin.clone(),
+            origin,
+            target,
+            relay: None,
+        }
+    }
+    /// The route as it may be said in an error or a log.
+    fn shown(&self) -> &str {
+        self.relay.as_deref().unwrap_or(&self.origin)
+    }
 }
 #[derive(Clone)]
 enum Target {
@@ -208,7 +231,30 @@ impl Client {
         fingerprint: &str,
         memory: Arc<RouteMemory>,
     ) -> anyhow::Result<Self> {
-        Self::route(instance, candidates, fingerprint, memory, false)
+        Self::route(instance, candidates, fingerprint, memory, false, None)
+    }
+    /// The same, and through relays too: a relay address among the
+    /// candidates (`hmesh-relay://...`) is dialed at the loopback port
+    /// `relays` forwards to that computer through it, and tried like any
+    /// other address; the computer behind it must still show the
+    /// certificate `fingerprint` names. `anonymous` leaves this computer's
+    /// certificate out (`routed_anonymous`).
+    pub fn routed_through(
+        instance: &Instance,
+        candidates: Vec<String>,
+        fingerprint: &str,
+        memory: Arc<RouteMemory>,
+        relays: &Arc<RelayDialer>,
+        anonymous: bool,
+    ) -> anyhow::Result<Self> {
+        Self::route(
+            instance,
+            candidates,
+            fingerprint,
+            memory,
+            anonymous,
+            Some(relays),
+        )
     }
     /// The same, without showing this computer's certificate: for the
     /// pairing handshake's `hello`, which also answers a computer that no
@@ -219,7 +265,7 @@ impl Client {
         fingerprint: &str,
         memory: Arc<RouteMemory>,
     ) -> anyhow::Result<Self> {
-        Self::route(instance, candidates, fingerprint, memory, true)
+        Self::route(instance, candidates, fingerprint, memory, true, None)
     }
     fn route(
         instance: &Instance,
@@ -227,6 +273,7 @@ impl Client {
         fingerprint: &str,
         memory: Arc<RouteMemory>,
         bootstrap: bool,
+        relays: Option<&Arc<RelayDialer>>,
     ) -> anyhow::Result<Self> {
         let fingerprint = normalize_fingerprint(fingerprint)?;
         let config = instance.client_config(&fingerprint, bootstrap)?;
@@ -234,6 +281,35 @@ impl Client {
         let mut routes = Vec::new();
         let mut seen = HashSet::new();
         for candidate in candidates {
+            if hmesh_core::is_relay_address(&candidate) {
+                // Another computer, wherever its relay is: not for a computer
+                // on loopback.
+                let (Some(relays), false) = (relays, loopback_only) else {
+                    continue;
+                };
+                let Ok(relay) = hmesh_security::validate_relay(&candidate) else {
+                    continue;
+                };
+                let origin = relay.to_string();
+                if !seen.insert(origin.clone()) {
+                    continue;
+                }
+                let port = match relays.port(&relay, &fingerprint) {
+                    Ok(port) => port,
+                    Err(error) => {
+                        tracing::warn!(relay = %relay.label(), %error, "no port to reach a computer through its relay");
+                        continue;
+                    }
+                };
+                let at = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+                routes.push(Route {
+                    origin,
+                    url: format!("https://{at}"),
+                    target: Target::Ip(at),
+                    relay: Some(relay.label()),
+                });
+                continue;
+            }
             let Ok(url) = validate_peer_address(&candidate) else {
                 continue;
             };
@@ -242,7 +318,7 @@ impl Client {
             if (loopback_only && !target.loopback()) || !seen.insert(origin.clone()) {
                 continue;
             }
-            routes.push(Route { origin, target });
+            routes.push(Route::direct(origin, target));
         }
         if routes.is_empty() {
             anyhow::bail!("this computer has no address to reach that computer at");
@@ -293,16 +369,38 @@ impl Client {
             fingerprint,
             Arc::new(RouteMemory::new()),
             bootstrap,
+            None,
         )
     }
-    /// The addresses tried, in the order they are tried first.
+    /// The same at a relay address too (`hmesh-relay://...`, pairing
+    /// through a relay), dialed at the loopback port `relays` forwards to
+    /// the computer through it.
+    pub fn pinned_through(
+        instance: &Instance,
+        address: &str,
+        fingerprint: &str,
+        bootstrap: bool,
+        relays: &Arc<RelayDialer>,
+    ) -> anyhow::Result<Self> {
+        validate_peer_address(address)?;
+        Self::route(
+            instance,
+            vec![address.to_owned()],
+            fingerprint,
+            Arc::new(RouteMemory::new()),
+            bootstrap,
+            Some(relays),
+        )
+    }
+    /// The addresses tried, in the order they are tried first (a relay by
+    /// its label).
     pub fn origins(&self) -> Vec<String> {
         match &*self.dial {
             Dial::One { origin, .. } => vec![origin.clone()],
             Dial::Routed(routed) => routed
                 .order()
                 .iter()
-                .map(|&i| routed.routes[i].origin.clone())
+                .map(|&i| routed.routes[i].shown().to_owned())
                 .collect(),
         }
     }
@@ -506,7 +604,7 @@ impl Routed {
                 None => match probes.join_next().await {
                     Some(Ok((index, Ok(at)))) => (index, Some(at)),
                     Some(Ok((index, Err(why)))) => {
-                        failed[index] = Some(why);
+                        failed[index] = Some(self.why(index, why));
                         continue;
                     }
                     Some(Err(_)) => continue,
@@ -520,13 +618,15 @@ impl Routed {
             let gate = Arc::new(Gate::default());
             match self.attempt(index, &gate, at, call).await {
                 Ok(response) => return Ok(self.used(index, response)),
-                Err(error) if unsent(&error, &gate) => failed[index] = Some(failure(&error)),
+                Err(error) if unsent(&error, &gate) => {
+                    failed[index] = Some(self.why(index, failure(&error)))
+                }
                 Err(error) => return Err(transport_error(error)),
             }
         }
         let mut failures: Vec<(String, &'static str)> = order
             .iter()
-            .filter_map(|&i| failed[i].map(|why| (self.routes[i].origin.clone(), why)))
+            .filter_map(|&i| failed[i].map(|why| (self.routes[i].shown().to_owned(), why)))
             .collect();
         // None answered, and nothing was sent anywhere: ask where else it
         // might be (heard on the local network at a new address), and try
@@ -550,7 +650,7 @@ impl Routed {
             if self.loopback_only && !target.loopback() {
                 continue;
             }
-            let route = Route { origin, target };
+            let route = Route::direct(origin, target);
             let gate = Arc::new(Gate::default());
             match self.attempt_at(&route, &gate, None, call).await {
                 Ok(response) => {
@@ -606,7 +706,7 @@ impl Routed {
                         // It connected just now: its answer is awaited.
                         *probes = Probes::new();
                     }
-                    Ok((index, Err(why))) => failed[index] = Some(why),
+                    Ok((index, Err(why))) => failed[index] = Some(self.why(index, why)),
                     Err(_) => {}
                 },
                 () = gate.connected.notified(), if !probes.is_empty() => *probes = Probes::new(),
@@ -621,7 +721,7 @@ impl Routed {
         match tried {
             Ok(response) => Ok(First::Answered(response)),
             Err(error) if unsent(&error, &gate) => {
-                failed[first] = Some(failure(&error));
+                failed[first] = Some(self.why(first, failure(&error)));
                 if !waited {
                     self.probe(others, probes);
                 }
@@ -656,7 +756,7 @@ impl Routed {
         if let (Target::Name(name, _), Some(at)) = (&route.target, at) {
             builder = builder.resolve_to_addrs(name, &[at]);
         }
-        call.send(&builder.build()?, &route.origin, None).await
+        call.send(&builder.build()?, &route.url, None).await
     }
     /// Start a TLS handshake with each of these routes (nothing is sent
     /// over it): which ones answer, as the right computer, and how soon.
@@ -670,6 +770,16 @@ impl Routed {
                     .unwrap_or(Err(SILENT));
                 (index, answered)
             });
+        }
+    }
+    /// Why a try at route `index` stopped, as said: through a relay, that
+    /// the relay did not put it through (wherever on the way it stopped),
+    /// unless the computer that answered there is another one.
+    fn why(&self, index: usize, why: &'static str) -> &'static str {
+        if self.routes[index].relay.is_some() && why != ANOTHER {
+            NOT_RELAYED
+        } else {
+            why
         }
     }
     fn used(&self, index: usize, response: reqwest::Response) -> reqwest::Response {
@@ -837,7 +947,7 @@ async fn handshake(
     Ok(at)
 }
 /// A TCP connection to whichever of `addresses` accepts first.
-async fn connect(addresses: Vec<SocketAddr>) -> std::io::Result<TcpStream> {
+pub(crate) async fn connect(addresses: Vec<SocketAddr>) -> std::io::Result<TcpStream> {
     let mut connections = JoinSet::new();
     for address in addresses {
         connections.spawn(TcpStream::connect(address));
@@ -915,9 +1025,14 @@ const UNREACHED: &str = "could not be reached";
 const TLS: &str = "failed the TLS handshake";
 /// Looked for on the local network too, and not heard there.
 const NOT_HEARD: &str = "it was not heard on the local network either";
+/// Its relay did not put the call through: the relay is down, or the
+/// computer is not holding a connection to it, or its token is no longer
+/// the relay's.
+const NOT_RELAYED: &str = "was not put through by its relay";
 /// The reasons a call to a paired computer failed, read from its error
 /// message: `refused`, `silent`, `unresolved`, `another_computer`,
-/// `no_route`, `unreached`, `tls`, `not_heard`, each once, in that order.
+/// `no_route`, `unreached`, `tls`, `not_heard`, `relay`, each once, in that
+/// order.
 /// Fixed words, so a panel can say each in its own language.
 pub fn unreachable_reasons(message: &str) -> Vec<&'static str> {
     [
@@ -929,6 +1044,7 @@ pub fn unreachable_reasons(message: &str) -> Vec<&'static str> {
         (UNREACHED, "unreached"),
         (TLS, "tls"),
         (NOT_HEARD, "not_heard"),
+        (NOT_RELAYED, "relay"),
     ]
     .into_iter()
     .filter(|(phrase, _)| message.contains(phrase))

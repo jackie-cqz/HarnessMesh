@@ -2,6 +2,7 @@
 //! Tailnet or a direct network.
 mod client;
 pub mod netinfo;
+pub mod relay;
 pub mod tailscale;
 use axum::{Extension, Router};
 pub use client::{Client, Finder, RouteMemory, unreachable_reasons};
@@ -11,6 +12,7 @@ use hyper_util::{
     server::conn::auto::Builder,
     service::TowerToHyperService,
 };
+pub use relay::RelayDialer;
 use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,

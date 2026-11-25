@@ -10,6 +10,11 @@ pub mod development;
 mod git_version;
 pub mod managed;
 pub mod projects;
+mod relay;
+pub use relay::{
+    MAX_RELAYS, RELAY_SCHEME, RELAY_TOKEN_BYTES, RelayAddress, RelayHost, is_relay_address,
+    parse_relay_pair_code, relay_pair_code, shown_address,
+};
 pub mod service;
 pub mod sessions;
 pub use git_version::{GitVersionRequirement, GitVersionState};
@@ -272,13 +277,20 @@ pub struct PeerAddresses {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub find_key: Option<String>,
 }
-/// The find key stays out of debug output, and so out of logs.
+/// The find key and relay tokens stay out of debug output, and so out of logs.
 impl std::fmt::Debug for PeerAddresses {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerAddresses")
             .field("node_id", &self.node_id)
             .field("revision", &self.revision)
-            .field("addresses", &self.addresses)
+            .field(
+                "addresses",
+                &self
+                    .addresses
+                    .iter()
+                    .map(|address| shown_address(address))
+                    .collect::<Vec<_>>(),
+            )
             .field("find_key", &self.find_key.as_ref().map(|_| "hidden"))
             .finish()
     }
@@ -731,6 +743,13 @@ pub struct NodeOptions {
     /// TLS. `[]` trusts none yet: nobody can connect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trusted_networks: Option<Vec<TrustedNetwork>>,
+    /// Relays this computer holds a connection to, as relay codes
+    /// (`hmesh-relay://<address>:<port>/<fingerprint>/<token>`, from `hmesh
+    /// relay show` on the relay): computers paired with it reach it through
+    /// them when nothing else does. Used only by a computer that takes
+    /// connections from other computers. Their tokens are secrets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relays: Option<Vec<String>>,
 }
 impl Default for NodeOptions {
     fn default() -> Self {
@@ -745,6 +764,7 @@ impl Default for NodeOptions {
             allowed_sources: None,
             host_names: None,
             trusted_networks: None,
+            relays: None,
         }
     }
 }
@@ -919,6 +939,16 @@ impl NodeConfig {
                 "host_names are at most {} DNS names of lowercase letters, digits, hyphens and dots, without a port",
                 MAX_PEER_ADDRESSES - 1
             )));
+        }
+        if let Some(relays) = &self.node.relays {
+            if relays.len() > MAX_RELAYS {
+                return Err(MeshError::input(format!(
+                    "relays has at most {MAX_RELAYS} relay codes"
+                )));
+            }
+            for relay in relays {
+                RelayAddress::parse(relay)?;
+            }
         }
         if self
             .node
