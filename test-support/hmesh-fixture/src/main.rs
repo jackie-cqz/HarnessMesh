@@ -267,6 +267,48 @@ struct Pending {
     denied: &'static str,
 }
 
+async fn probe_model_relay() -> anyhow::Result<Value> {
+    let config: Value = serde_json::from_str(&std::env::var("OPENCODE_CONFIG_CONTENT")?)?;
+    let relay = config["provider"]["hmesh"]["options"]["baseURL"]
+        .as_str()
+        .unwrap_or_default();
+    let url = reqwest::Url::parse(relay)?;
+    anyhow::ensure!(url.scheme() == "http" && url.host_str() == Some("127.0.0.1"));
+    let token = std::env::var("HMESH_OPENCODE_API_KEY")?;
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    let request =
+        json!({"model":"m-one","stream":true,"messages":[{"role":"user","content":"hi"}]});
+    let response = http
+        .post(format!("{relay}/chat/completions"))
+        .bearer_auth(&token)
+        .json(&request)
+        .send()
+        .await?;
+    let chat = response.status().as_u16();
+    let body = response.text().await?;
+    let listed = http
+        .get(format!("{relay}/models?limit=5"))
+        .bearer_auth(&token)
+        .send()
+        .await?;
+    let moved = http
+        .get(format!("{relay}/moved"))
+        .bearer_auth(&token)
+        .send()
+        .await?;
+    Ok(json!({
+        "chat":chat,"listed":listed.status().as_u16(),"moved":moved.status().as_u16(),
+        "fixed":!body.contains(r#""role":"""#)
+            && body.contains(r#""role":"assistant","content":"你好""#)
+            && body.contains(r#""finish_reason":"stop""#)
+            && body.trim_end().ends_with("data: [DONE]")
+    }))
+}
+
 fn run_acp() -> anyhow::Result<()> {
     let resume_only = dsh_profile();
     let (events, inbox) = mpsc::channel();
@@ -756,6 +798,15 @@ fn run_acp() -> anyhow::Result<()> {
                             -32603,
                             &format!("provider rejected credential {value}"),
                         );
+                    }
+                    "fixture:model-relay" => {
+                        match tokio::runtime::Handle::current().block_on(probe_model_relay()) {
+                            Ok(result) => {
+                                reply(session, &result.to_string());
+                                end_turn(&id);
+                            }
+                            Err(_) => fail(&id, -32603, "fixture relay probe failed"),
+                        }
                     }
                     _ if prompt.starts_with("fixture:env ") => {
                         let name = prompt["fixture:env ".len()..].trim();

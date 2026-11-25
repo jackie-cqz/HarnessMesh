@@ -10,12 +10,12 @@ publish = false
 anyhow.workspace = true
 hmesh-daemon = { path = "../../crates/hmesh-daemon" }
 hmesh-mcp = { path = "../../crates/hmesh-mcp" }
+reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
 hmesh-transport = { path = "../../crates/hmesh-transport" }
-reqwest.workspace = true
 hmesh-core = { path = "../../crates/hmesh-core" }
 hmesh-store = { path = "../../crates/hmesh-store" }
 hmesh-security = { path = "../../crates/hmesh-security" }

@@ -1192,8 +1192,8 @@ async fn opencode_reaches_a_custom_endpoint_through_the_local_relay() {
     )
     .await;
     let (done, _) = turn_done(&owner, session.session_id, 2).await;
-    let token = value(done.last_final_text);
-    assert!(token.starts_with("hmr-") && !token.contains(key), "{token}");
+    let token_report = done.last_final_text.unwrap();
+    assert!(token_report.contains("len=68 fnv=") && token_report.ends_with("value=[REDACTED]"));
     let take = || std::mem::take(&mut *seen.lock().unwrap());
     take();
 
@@ -1218,58 +1218,32 @@ async fn opencode_reaches_a_custom_endpoint_through_the_local_relay() {
     assert_eq!(with_key.status(), 401);
     assert!(take().is_empty());
 
-    let reply = http
-        .post(&chat)
-        .bearer_auth(&token)
-        .json(&request)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reply.status(), 200);
-    assert!(
-        reply.headers()["content-type"]
-            .to_str()
-            .unwrap()
-            .starts_with("text/event-stream")
-    );
-    let body = reply.text().await.unwrap();
-    assert!(!body.contains(r#""role":"""#), "{body}");
-    assert!(
-        body.contains(r#""role":"assistant","content":"你好""#)
-            && body.contains(r#""finish_reason":"stop""#)
-            && body.trim_end().ends_with("data: [DONE]"),
-        "{body}"
+    // The fixture uses the token in its process and reports only the result.
+    prompt(&owner, session.session_id, "fixture:model-relay").await;
+    let (done, _) = turn_done(&owner, session.session_id, 3).await;
+    let result: Value = serde_json::from_str(&done.last_final_text.unwrap()).unwrap();
+    assert_eq!(
+        result,
+        json!({"chat":200,"listed":200,"moved":302,"fixed":true})
     );
     let requests = take();
-    assert_eq!(requests.len(), 1, "{requests:?}");
     assert_eq!(
-        (requests[0].method.as_str(), requests[0].path.as_str()),
-        ("POST", "/gateway/v1/chat/completions")
+        requests.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
+        [
+            "/gateway/v1/chat/completions",
+            "/gateway/v1/models?limit=5",
+            "/gateway/v1/moved"
+        ]
     );
-    assert_eq!(requests[0].authorization, format!("Bearer {key}"));
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.authorization == format!("Bearer {key}"))
+    );
+    assert_eq!(requests[0].method, "POST");
     assert_eq!(
         serde_json::from_str::<Value>(&requests[0].body).unwrap(),
         request
-    );
-    // Other paths and queries of the endpoint pass too; redirects come back
-    // to the agent instead of being followed with the key.
-    let listed = http
-        .get(format!("{relay}/models?limit=5"))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(listed.status(), 200);
-    let moved = http
-        .get(format!("{relay}/moved"))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(moved.status(), 302);
-    assert_eq!(
-        take().iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
-        ["/gateway/v1/models?limit=5", "/gateway/v1/moved"]
     );
     // Another session of the agent gets the same token, so agents already
     // running keep working.
@@ -1279,7 +1253,7 @@ async fn opencode_reaches_a_custom_endpoint_through_the_local_relay() {
     )
     .await;
     let (done, _) = turn_done(&owner, second.session_id, 1).await;
-    assert_eq!(value(done.last_final_text), token);
+    assert_eq!(done.last_final_text.as_deref(), Some(token_report.as_str()));
     daemon.stop().await;
 }
 
