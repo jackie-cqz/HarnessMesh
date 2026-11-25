@@ -1113,7 +1113,10 @@ async fn handshakes_never_confirmed_still_use_up_the_tries() {
 #[tokio::test]
 async fn a_computer_with_pairing_open_is_heard_nearby_until_its_passcode_is_used() {
     let root = tempfile::tempdir().expect("tempdir");
-    let (a_dir, b_dir, address) = direct_pair(root.path()).await;
+    // A name of its own: other tests open pairing on computers called
+    // `studio` meanwhile, and mDNS would hear those too.
+    let (b_dir, address) = direct_named(root.path(), "beacon", "scout");
+    let a_dir = root.path().join("scout");
     let _a = daemon(&a_dir);
     let _b = daemon(&b_dir);
     ready(&a_dir).await;
@@ -1123,7 +1126,7 @@ async fn a_computer_with_pairing_open_is_heard_nearby_until_its_passcode_is_used
             .as_array()
             .unwrap()
             .iter()
-            .filter(|c| c["name"] == "studio")
+            .filter(|c| c["name"] == "beacon")
             .map(|c| c["endpoint"].as_str().unwrap().to_owned())
             .collect()
     };
