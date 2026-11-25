@@ -590,6 +590,13 @@ fn run_acp() -> anyhow::Result<()> {
                     continue;
                 }
                 let session_id = params["sessionId"].as_str().unwrap_or("").to_owned();
+                // `<id>.hold-load` in the state directory: the reload waits
+                // (up to 30 s) until that file is gone.
+                let hold = state_dir().join(format!("{session_id}.hold-load"));
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while hold.exists() && std::time::Instant::now() < until {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
                 match restore(&session_id) {
                     Some(history) => {
                         if method == "session/load" {

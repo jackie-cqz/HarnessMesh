@@ -22,6 +22,10 @@ pub struct Store {
 }
 /// The database schema this build creates and reads (`PRAGMA user_version`).
 pub const SCHEMA_VERSION: i64 = 10;
+/// Event kind of a message sent while a session's earlier history is not
+/// loaded yet. Stored at once; shown as a `user_message` after the history
+/// (see `Store::release_queued_messages`).
+pub const QUEUED_MESSAGE: &str = "queued_message";
 
 fn internal(e: impl std::fmt::Display) -> MeshError {
     MeshError::new(ErrorCode::Internal, format!("persistence: {e}"))

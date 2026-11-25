@@ -53,6 +53,11 @@ struct Live {
     /// That history as it is replayed, recorded at once when the reload
     /// succeeds: a reload that stops part way records none of it.
     replayed: Mutex<Vec<(String, Value)>>,
+    /// Set just before the barrier that follows a reload: the pump ends the
+    /// replay when it reaches that barrier, so every update before it counts
+    /// as replayed however long the pump takes, and sets `replay_over`.
+    replay_ends: std::sync::atomic::AtomicBool,
+    replay_over: std::sync::atomic::AtomicBool,
     last_active: Mutex<Instant>,
     /// The model service settings the process was started with.
     service_digest: String,
@@ -493,6 +498,19 @@ async fn pump(
                 if end_turn || live.keep_replay.load(std::sync::atomic::Ordering::SeqCst) {
                     finish_text(&mut message_text, &mut thought_text);
                 }
+                // The barrier after a reload: what came before it was the
+                // replay, what comes after it is new.
+                if live
+                    .replay_ends
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    live.replaying
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    live.keep_replay
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    live.replay_over
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
                 let _ = done.send(());
             }
             AgentMessage::Exited => break,
@@ -628,6 +646,8 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
             matches!(restore, Some((_, acp::SessionRestore::Load))) && keep_history,
         ),
         replayed: Mutex::new(Vec::new()),
+        replay_ends: std::sync::atomic::AtomicBool::new(false),
+        replay_over: std::sync::atomic::AtomicBool::new(false),
         last_active: Mutex::new(Instant::now()),
         service_digest: digest,
         // A restarted agent may report only tokens at first: its last known
@@ -662,13 +682,25 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
     let started = match restore {
         Some((previous, method)) => {
             let restored = conn.restore_session(method, previous, &cwd, &mcp).await;
-            // Drain any replay and initial command/config updates before the next turn.
-            conn.barrier().await;
-            live.replaying
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-            if live
-                .keep_replay
-                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            // Drain any replay and initial command/config updates before the
+            // next turn. The pump ends the replay at this barrier.
+            live.replay_ends
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            conn.barrier_within(REPLAY_WAIT).await;
+            // Not reached in time: start again later rather than record a
+            // replay as new output or continue without it.
+            let restored = if live.replay_over.load(std::sync::atomic::Ordering::SeqCst) {
+                restored
+            } else {
+                restored.and_then(|_| {
+                    Err(MeshError::new(
+                        ErrorCode::AgentUnavailable,
+                        "the agent's earlier messages took too long to load; send again to retry",
+                    ))
+                })
+            };
+            if keep_history
+                && matches!(method, acp::SessionRestore::Load)
                 && let Ok(mut reply) = live.reply.lock()
             {
                 // The replayed answers are history, not the next turn's reply.
@@ -695,9 +727,11 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
             // below.
             if record.history_pending
                 && !started.2
-                && let Err(error) = record_history(s, record.session_id, &live).and_then(|()| {
-                    update_record(s, record.session_id, |r| r.history_pending = false)
-                })
+                && let Err(error) = still_open(s, record.session_id)
+                    .and_then(|()| record_history(s, record.session_id, &live))
+                    .and_then(|()| {
+                        update_record(s, record.session_id, |r| r.history_pending = false)
+                    })
             {
                 discard(s, record.session_id, &live).await;
                 return Err(error);
@@ -942,29 +976,23 @@ fn begin_checked_turn(
         record
     };
     let (shown, _) = clip(text, MAX_EVENT_TEXT_BYTES);
-    let message = json!({"text":shown,"from":from});
     // An earlier session not reloaded yet: its history comes first, so the
-    // message is recorded once the agent has started.
-    let message = if record.history_pending {
-        Some(message)
+    // message is stored as queued and shown once the agent has started (or
+    // the session closes, or HarnessMesh restarts).
+    let kind = if record.history_pending {
+        hmesh_store::QUEUED_MESSAGE
     } else {
-        record_event(s, id, "user_message", message)?;
-        None
+        "user_message"
     };
+    record_event(s, id, kind, json!({"text":shown,"from":from}))?;
     let state = s.clone();
     let text = text.to_owned();
-    tokio::spawn(async move { run_turn(state, id, text, command, message).await });
+    tokio::spawn(async move { run_turn(state, id, text, command).await });
     record.updated_at = now();
     Ok(record)
 }
 
-async fn run_turn(
-    s: AppState,
-    id: Uuid,
-    text: String,
-    command: Option<String>,
-    message: Option<Value>,
-) {
+async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) {
     let finish =
         |s: &AppState, stop: Option<&str>, final_text: Option<String>, error: Option<String>| {
             if let Ok(mut record) = s.store.session(id) {
@@ -1000,10 +1028,8 @@ async fn run_turn(
         Err(_) => return,
     };
     let started = ensure_live(&s, &record).await;
-    if let Some(message) = message
-        && s.store.session(id).is_ok_and(|r| r.status.is_open())
-    {
-        let _ = record_event(&s, id, "user_message", message);
+    if record.history_pending {
+        release_queued(&s, id);
     }
     let live = match started {
         Ok(live) => live,
@@ -1178,6 +1204,7 @@ fn close_session(s: &AppState, id: Uuid, why: &str) -> hmesh_core::Result<Sessio
         tokio::spawn(async move { live.conn.shutdown().await });
     }
     if newly {
+        release_queued(s, id);
         record_event(s, id, "status", json!({"status":"closed","message":why}))?;
     }
     Ok(record)
@@ -1377,6 +1404,29 @@ fn check_place(s: &AppState, record: &SessionRecord) -> hmesh_core::Result<()> {
 /// recorded whole (see `record_history`), so any replayed event tells.
 fn replay_recorded(s: &AppState, id: Uuid) -> bool {
     s.store.has_replayed_events(id).unwrap_or(true)
+}
+
+/// How long a reload's replay may take to pass through the pump.
+const REPLAY_WAIT: Duration = Duration::from_secs(120);
+
+/// A session closed while its agent was starting records nothing more.
+fn still_open(s: &AppState, id: Uuid) -> hmesh_core::Result<()> {
+    if s.store.session(id)?.status.is_open() {
+        Ok(())
+    } else {
+        Err(MeshError::new(
+            ErrorCode::TaskConflict,
+            "the session was closed while its agent was starting",
+        ))
+    }
+}
+
+/// Show messages queued while the history was not loaded yet, after
+/// everything recorded so far.
+fn release_queued(s: &AppState, id: Uuid) {
+    if let Ok(Some(seq)) = s.store.release_queued_messages(id) {
+        s.sessions.notify(id, seq);
+    }
 }
 
 /// Record the history replayed during a first reload, all at once and marked
@@ -1799,6 +1849,7 @@ async fn wait_events(
 pub async fn run(s: AppState, mut shutdown: watch::Receiver<bool>) {
     if let Ok(sessions) = s.store.sessions(10_000) {
         for record in sessions.into_iter().filter(|r| r.status.is_busy()) {
+            release_queued(&s, record.session_id);
             let _ = set_status(&s, record.session_id, SessionStatus::Idle);
             let _ = record_event(
                 &s,

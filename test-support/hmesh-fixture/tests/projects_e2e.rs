@@ -480,6 +480,140 @@ async fn earlier_sessions_are_listed_per_folder_and_continue_with_their_history(
         .filter_map(|e| e.payload["text"].as_str())
         .collect();
     assert_eq!(replayed.concat(), "Add a logout buttonAdded the button.");
+    // Had the daemon stopped right after recording that history, before it
+    // noted it as kept, the next reload still finds it: the first message
+    // here is not a replayed one, yet nothing is recorded twice.
+    daemon.stop().await;
+    {
+        let store = Store::open(&a.dir.join("state.sqlite3")).unwrap();
+        let mut record = store.session(flaky.session_id).unwrap();
+        record.history_pending = true;
+        store.update_session(&record).unwrap();
+    }
+    let mut daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    prompt(&owner, flaky.session_id, "fixture:echo three").await;
+    let (_, events) = idle_after(&owner, flaky.session_id, 2).await;
+    assert_eq!(
+        texts(&events, "user_message"),
+        [
+            "fixture:echo one",
+            "Add a logout button",
+            "fixture:echo two",
+            "fixture:echo three"
+        ]
+    );
+    let said = texts(&events, "agent_message_chunk").concat();
+    assert_eq!(said.matches("Added the button.").count(), 1, "{said}");
+
+    // A message sent while the agent is still starting is kept whatever
+    // happens to that start: the session closes, or HarnessMesh restarts.
+    for restart in [false, true] {
+        let id = format!("native-held-{restart}");
+        seed(
+            &state,
+            &id,
+            &web,
+            &[("user", "Earlier question"), ("agent", "Earlier answer.")],
+        );
+        let saved = state.join(format!("{id}.json"));
+        let aside = state.join(format!("{id}.aside"));
+        let hold = state.join(format!("{id}.hold-load"));
+        // The first continue fails: the agent cannot find the session yet.
+        std::fs::rename(&saved, &aside).unwrap();
+        let owner = daemon.owner();
+        let held: SessionRecord = owner
+            .post(
+                "/local/sessions",
+                &json!({"agent_id":agent,"project_id":web_project.project_id,"resume":id}),
+            )
+            .await
+            .unwrap();
+        until(&owner, held.session_id, |s, _| {
+            s.status == SessionStatus::Idle
+        })
+        .await;
+        std::fs::rename(&aside, &saved).unwrap();
+        if restart {
+            // HarnessMesh stopped abruptly while that start waited on the
+            // agent: the message is stored as queued, the turn still running.
+            daemon.stop().await;
+            {
+                let store = Store::open(&a.dir.join("state.sqlite3")).unwrap();
+                store
+                    .append_session_event(
+                        held.session_id,
+                        hmesh_store::QUEUED_MESSAGE,
+                        &json!({"text":"fixture:echo kept","from":{"node_id":a.card.node_id}}),
+                    )
+                    .unwrap();
+                let mut record = store.session(held.session_id).unwrap();
+                record.status = SessionStatus::Running;
+                store.update_session(&record).unwrap();
+            }
+            daemon = Daemon::start(&a.dir);
+            daemon.ready().await;
+        } else {
+            // The next start waits on the agent, with a message sent, and the
+            // session is closed meanwhile.
+            std::fs::write(&hold, "").unwrap();
+            prompt(&owner, held.session_id, "fixture:echo kept").await;
+            let _: SessionRecord = owner
+                .post(
+                    &format!("/local/sessions/{}/close", held.session_id),
+                    &json!({}),
+                )
+                .await
+                .unwrap();
+            std::fs::remove_file(&hold).unwrap();
+        }
+        let owner = daemon.owner();
+        let (_, events) = until(&owner, held.session_id, |s, _| !s.status.is_busy()).await;
+        assert_eq!(
+            texts(&events, "user_message"),
+            ["fixture:echo kept"],
+            "{events:#?}"
+        );
+        assert!(
+            events.iter().all(|e| e.kind != hmesh_store::QUEUED_MESSAGE),
+            "{events:#?}"
+        );
+        let shown = events
+            .iter()
+            .position(|e| e.kind == "user_message")
+            .unwrap();
+        if restart {
+            // Shown before the note that the turn was interrupted, and before
+            // the history the next start records.
+            let note = events
+                .iter()
+                .position(|e| {
+                    e.payload["message"]
+                        .as_str()
+                        .is_some_and(|m| m.contains("HarnessMesh restarted"))
+                })
+                .unwrap();
+            assert!(shown < note, "{events:#?}");
+            prompt(&owner, held.session_id, "fixture:echo after").await;
+            let (_, events) = idle_after(&owner, held.session_id, 1).await;
+            assert_eq!(
+                texts(&events, "user_message"),
+                [
+                    "fixture:echo kept",
+                    "Earlier question",
+                    "fixture:echo after"
+                ]
+            );
+        } else {
+            let closed = events
+                .iter()
+                .rposition(|e| e.kind == "status" && e.payload["status"] == "closed")
+                .unwrap();
+            assert!(shown < closed, "{events:#?}");
+        }
+    }
+    let owner = daemon.owner();
 
     // A new session in another project runs there.
     let api_project: Project = owner
