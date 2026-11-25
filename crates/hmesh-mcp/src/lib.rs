@@ -321,6 +321,28 @@ impl OwnerBackend {
             )
         })
     }
+    /// The agent directory as this server's caller may use it. In a chain a
+    /// paired computer started, this computer offers only its shared
+    /// projects, as it would to that computer itself.
+    async fn directory(&self, client: &Client) -> Result<Vec<MeshNode>> {
+        let mut nodes: Vec<MeshNode> = client.get("/local/mesh/agents").await?;
+        if let Some(id) = self.session {
+            let record: SessionRecord = client.get(&format!("/local/sessions/{id}")).await?;
+            if record.origin.root_node_id != record.node_id {
+                let shared: std::collections::HashSet<String> = client
+                    .get::<Vec<hmesh_core::projects::Project>>("/local/projects")
+                    .await?
+                    .into_iter()
+                    .filter(|p| p.shared)
+                    .map(|p| p.project_id)
+                    .collect();
+                for node in nodes.iter_mut().filter(|n| n.local) {
+                    node.projects.retain(|p| shared.contains(&p.project_id));
+                }
+            }
+        }
+        Ok(nodes)
+    }
     /// A bound server may only drive the sessions its own session opened.
     async fn child(&self, client: &Client, id: Uuid) -> Result<SessionRecord> {
         let record: SessionRecord = client.get(&format!("/local/sessions/{id}")).await?;
@@ -338,7 +360,7 @@ impl OwnerBackend {
         let client = self.connect().await?;
         match call {
             ToolCall::Agents(args) => {
-                let nodes: Vec<MeshNode> = client.get("/local/mesh/agents").await?;
+                let nodes = self.directory(&client).await?;
                 let caller = match self.session {
                     Some(id) => client
                         .get::<SessionRecord>(&format!("/local/sessions/{id}"))
@@ -403,7 +425,7 @@ impl OwnerBackend {
                         (record, None, None)
                     }
                     (None, Some(reference)) => {
-                        let nodes: Vec<MeshNode> = client.get("/local/mesh/agents").await?;
+                        let nodes = self.directory(&client).await?;
                         let (node, card) = resolve(&nodes, &reference)?;
                         let reference = agent_ref(&nodes, &node, &card);
                         let project_id = args

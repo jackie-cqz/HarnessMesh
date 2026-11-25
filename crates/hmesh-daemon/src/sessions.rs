@@ -609,7 +609,9 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
             matches!(restore, Some((_, acp::SessionRestore::Load))) && !record.history_pending,
         ),
         keep_replay: std::sync::atomic::AtomicBool::new(
-            matches!(restore, Some((_, acp::SessionRestore::Load))) && record.history_pending,
+            matches!(restore, Some((_, acp::SessionRestore::Load)))
+                && record.history_pending
+                && !replay_recorded(s, record.session_id),
         ),
         last_active: Mutex::new(Instant::now()),
         service_digest: digest,
@@ -675,8 +677,13 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         Ok(started) => {
             // The replay is recorded; a later start must not record it again,
             // even if applying settings fails below.
-            if record.history_pending && !started.2 {
-                update_record(s, record.session_id, |r| r.history_pending = false)?;
+            if record.history_pending
+                && !started.2
+                && let Err(error) =
+                    update_record(s, record.session_id, |r| r.history_pending = false)
+            {
+                discard(s, record.session_id, &live).await;
+                return Err(error);
             }
             started
         }
@@ -1326,6 +1333,18 @@ fn check_place(s: &AppState, record: &SessionRecord) -> hmesh_core::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Whether an earlier start already recorded (part of) the replayed history,
+/// e.g. when the daemon stopped during the first reload. A replay comes
+/// before any message sent here, so the first user message tells.
+fn replay_recorded(s: &AppState, id: Uuid) -> bool {
+    s.store
+        .session_events(id, 0, MAX_PAGE_EVENTS)
+        .unwrap_or_default()
+        .iter()
+        .find(|e| e.kind == "user_message")
+        .is_some_and(|e| e.payload["from"]["replayed"] == true)
 }
 
 /// Projects this computer's agents can work in when asked: every project

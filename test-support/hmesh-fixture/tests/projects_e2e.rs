@@ -388,6 +388,14 @@ async fn earlier_sessions_are_listed_per_folder_and_continue_with_their_history(
 
     // After a restart the agent reloads quietly: no second copy of the history.
     daemon.stop().await;
+    // Even if the daemon had stopped before it noted that the replay was
+    // kept, the history already recorded is not recorded again.
+    {
+        let store = Store::open(&a.dir.join("state.sqlite3")).unwrap();
+        let mut record = store.session(opened.session_id).unwrap();
+        record.history_pending = true;
+        store.update_session(&record).unwrap();
+    }
     let daemon = Daemon::start(&a.dir);
     daemon.ready().await;
     let owner = daemon.owner();
@@ -718,6 +726,27 @@ async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
         .unwrap();
     assert_eq!(allowed.cwd.as_deref(), Some(site.as_path()));
     idle_after(&owner_b, allowed.session_id, 1).await;
+    // The MCP server node-b gives that session lists only shared projects,
+    // so unshared names cannot travel back to node-a in an agent's reply.
+    let mut bound = Protocol::new(
+        hmesh_mcp::OwnerBackend::load_for_session(&b.dir, opened.session_id).unwrap(),
+    );
+    bound
+        .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}))
+        .await
+        .unwrap();
+    let seen = call(&mut bound, "mesh_list_agents", json!({"node":"node-b"})).await;
+    for agent in seen["agents"].as_array().unwrap() {
+        assert_eq!(
+            agent["available_projects"],
+            json!([{"name":"site","project_id":shared.project_id}]),
+            "{seen}"
+        );
+    }
+    // node-b's owner still sees every visible project.
+    let mut own_mcp = initialized(&b.dir).await;
+    let mine = call(&mut own_mcp, "mesh_list_agents", json!({"node":"node-b"})).await;
+    assert!(mine.to_string().contains(&kept.project_id), "{mine}");
     // The agent's own folder needs no sharing, and a request without a
     // project (as older computers send it) works as before.
     let own: SessionRecord = owner_a
