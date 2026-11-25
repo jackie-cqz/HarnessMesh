@@ -45,6 +45,12 @@ cargo +stable build --locked -p hmesh-cli
 - 项目菜单：改名、置顶、上移、下移、隐藏、共享、移除（只限自己添加的；agent 的目录只能隐藏）。会话菜单：改名、置顶、隐藏。改名只改这台电脑上显示的名字，不改 agent 里的标题。侧栏顶部可按标题搜索；底部开关可以显示已隐藏的项目和会话。
 - 旧会话只在本机面板列出，不会发给配对的电脑。
 
+![侧栏按项目分组；点开 Agent 里之前的会话，回放之前的记录后接着聊](images/projects-continued.png)
+
+![添加项目：勾选 Agent 用过的文件夹，或直接填路径](images/projects-add.png)
+
+![另一台电脑开新会话时，可以选这台电脑共享的项目](images/projects-shared-picker.png)
+
 页面用长轮询跟随当前会话（每次最多 10 秒），切换会话或离开页面就停止。
 
 完整访问链接带本次随机令牌，仅供本机 owner。浏览器清除地址栏 fragment，并在当前标签页 sessionStorage 保留访问令牌；新标签页需重新打开完整链接。不要转发或公开记录启动链接。`--json` 输出启动 URL、面板 PID 和本次拥有的 Daemon PID，集成工具应使用私有日志。
