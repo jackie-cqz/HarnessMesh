@@ -20,15 +20,17 @@ hmesh setup --full            # 完整安装：同时把本机 agent 共享给�
 
 | | 只装 MCP | 完整安装 |
 |---|---|---|
-| 节点配置 | `network = "tailscale"`、`expose_to_tailnet = false`、只监听 `127.0.0.1`，记下 `tailnet_address` | `expose_to_tailnet = true`，监听本机 Tailnet IP |
+| 节点配置 | `expose_to_tailnet = false`，只监听 `127.0.0.1`；`network` 是 `tailscale`（并记下 `tailnet_address`）或 `direct` | `expose_to_tailnet = true`，监听本机 Tailnet IP，或直连网络里本机的一个地址 |
+| 需要 Tailscale 吗 | 不需要：找不到 Tailscale 时就用本机自己的网络往外连 | 用 Tailscale 时需要；`--network direct` 时不需要 |
 | 别的电脑发来的请求（含配对申请、`hello`） | 一律拒绝（`PERMISSION_DENIED`） | 按配对和访问模式处理 |
 | 本机 ACP agent | 不需要，也不登记 | 登记已装的每个 |
 
-- 节点建在 `~/.harnessmesh`（`--data-dir` 可改）。证书里一开始就带着 Tailnet IP，所以以后从只装 MCP 换成完整安装（再跑一次 `hmesh setup --full`），指纹和已有配对都不变。
+- 节点建在 `~/.harnessmesh`（`--data-dir` 可改）。对端只认证书指纹，不认地址，所以以后从只装 MCP 换成完整安装、换网络、换地址（再跑一次 `hmesh setup`），指纹和已有配对都不变。
+- 网络：`--network tailscale`（装了 Tailscale 时默认就是它），或 `--network direct`：用电脑本来就在的网络，比如局域网、ZeroTier、WireGuard。直连的完整安装要选别的电脑连哪个地址：交互时会列出本机地址，也可以用 `--listen` 直接指定；默认只接受私有网段的连接，`--allow-from 192.168.1.0/24` 可以收得更紧，监听公网地址时必须写明。直连网络里，只有打开面板「配对新电脑」或运行 `hmesh pair show` 之后的 10 分钟内，这台电脑才回应配对申请。安全细节见 [安全说明](security.md)。
 - 改 HarnessMesh 以外的东西之前都会先问：开机自启（macOS、Windows；Linux 给提示），以及把 MCP 服务器加到 Claude Code（`claude mcp add -s user harnessmesh -- <hmesh> mcp`）和 Codex（在 `config.toml` 末尾追加 `[mcp_servers.harnessmesh]`，`tool_timeout_sec = 660`）。已经有 `harnessmesh` 这一项的客户端不再改动。
-- 没有终端可问时（例如 `--json`），没预先回答的一律当作不要：不带 `--connect` 就一个客户端都不碰，不带 `--startup` 就不加开机自启。`--connect claude,codex` 或 `--connect none`、`--startup` 或 `--no-startup` 预先回答。客户端配置里写的是节点目录的绝对路径；Codex 的 `config.toml` 是符号链接时，写的是它指向的文件，链接保留。`--name`、`--port`、`--tailnet-address`、`--project`、`--agents` 见 `hmesh setup --help`。
+- 没有终端可问时（例如 `--json`），没预先回答的一律当作不要：不带 `--connect` 就一个客户端都不碰，不带 `--startup` 就不加开机自启。`--connect claude,codex` 或 `--connect none`、`--startup` 或 `--no-startup` 预先回答。客户端配置里写的是节点目录的绝对路径；Codex 的 `config.toml` 是符号链接时，写的是它指向的文件，链接保留。`--name`、`--port`、`--tailnet-address`、`--network`、`--listen`、`--allow-from`、`--project`、`--agents` 见 `hmesh setup --help`。
 - setup 会在节点目录写 `setup.json`。有这个标记时，`hmesh mcp` 每次先向 daemon 确认它在运行（被强杀或崩溃时留下的 `daemon.json` 不算），没在运行就自己在后台把它启动起来（最多等 15 秒；起不来时工具返回 daemon 日志里的原因）。daemon 收到 SIGTERM 也会正常退出、清理 `daemon.json`。绑定到会话的服务器（`--session`）和手动 `hmesh init` 的节点不会这样做。
-- 名片同步：每个 daemon 启动时把自己的名片（地址、端口、是否只装 MCP）发给每台已配对的电脑，没送达就每 5 分钟重试，所以换装法、换端口后对方会更新。**已知限制**：只装 MCP 的电脑不接受连入，收不到别人的新名片；Tailscale IP 一般不变，但对方改了端口后，只装 MCP 的电脑会连不上它。
+- 名片同步：每个 daemon 启动时把自己的名片（地址、端口、是否只装 MCP）发给每台已配对的电脑，没送达就每 5 分钟重试，所以换装法、换端口后对方会更新。**已知限制**：只装 MCP 的电脑不接受连入，收不到别人的新名片。Tailscale IP 一般不变，但对方改了端口，或者直连网络上对方的局域网地址变了（DHCP 换地址比 Tailscale 常见得多），只装 MCP 的电脑就连不上它，要重新配对；建议在路由器上给完整安装的电脑固定 IP。
 
 ## 手动接入
 
@@ -106,7 +108,8 @@ hmesh peers access <对端名字或节点ID> auto      # 恢复直接开始
 - `node scripts/sessions-panel-smoke.mjs`：真实浏览器在面板里完成同样的流程。
 - `crates/hmesh-cli/tests/setup.rs`：用假的 `claude` 命令和临时 HOME 跑 `hmesh setup --mcp-only`，核对节点配置、Claude Code 和 Codex 各只接入一次、不同意就一个客户端和开机自启都不碰、`hmesh mcp` 自己拉起 daemon（包括 daemon 被强杀之后）、daemon 起不来时立刻报出原因、Codex 配置是符号链接时链接保留。
 - `test-support/hmesh-fixture/tests/mesh_e2e.rs` 的 `a_computer_that_only_connects_out_opens_sessions_but_none_open_on_it`：只装 MCP 的电脑经 MCP 在配对电脑上开会话、拿回答复；对方在它上面开会话被拒。
-- `crates/hmesh-cli/tests/two_nodes.rs`：只装 MCP 的电脑能向外配对和调用，对方发来的配对申请、`hello` 和节点请求都被拒；换了端口的电脑会把新名片发给配对的电脑。
+- `crates/hmesh-cli/tests/two_nodes.rs`：只装 MCP 的电脑能向外配对和调用，对方发来的配对申请、`hello` 和节点请求都被拒；换了端口的电脑会把新名片发给配对的电脑；直连网络的电脑只在配对窗口开着时回应配对，地址没了时启动会说明怎么办。
+- `crates/hmesh-transport/tests/pinning.rs`：证书里没写着拨的那个地址也能靠指纹连上，换一张证书就连不上。
 - 以上只用 fixture，不调用模型。
 
 ## 历史验收（旧模型）

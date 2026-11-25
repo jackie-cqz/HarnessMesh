@@ -554,6 +554,7 @@ dependencies = [
  "hmesh-security",
  "hmesh-store",
  "hmesh-transport",
+ "if-addrs",
  "reqwest",
  "rusqlite",
  "serde",
@@ -570,6 +571,7 @@ dependencies = [
 name = "hmesh-core"
 version = "0.0.2"
 dependencies = [
+ "ipnet",
  "serde",
  "serde_json",
  "time",
@@ -922,6 +924,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -936,6 +948,9 @@ name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "is_terminal_polyfill"

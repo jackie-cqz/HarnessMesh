@@ -111,6 +111,68 @@ fn a_computer_that_only_connects_out_listens_on_loopback_and_names_its_tailnet_i
 }
 
 #[test]
+fn a_direct_computer_listens_on_one_address_and_names_who_may_connect_when_public() {
+    let direct = |listen: &str| {
+        let mut config = NodeConfig::default();
+        config.node.network = "direct".into();
+        config.node.expose_to_tailnet = true;
+        config.node.listen_address = listen.parse().unwrap();
+        config
+    };
+    // LAN, overlay and loopback addresses: private ranges are allowed in.
+    for listen in [
+        "192.168.1.20",
+        "10.147.17.5",
+        "172.20.0.5",
+        "100.70.0.3",
+        "fd12::5",
+        "127.0.0.1",
+    ] {
+        let config = direct(listen);
+        config
+            .validate()
+            .unwrap_or_else(|e| panic!("{listen}: {e:?}"));
+        assert!(!config.outbound_only());
+        assert_eq!(config.allowed_sources(), default_allowed_sources());
+    }
+    assert!(direct("192.168.1.20").listens_for_peers());
+    assert!(!direct("127.0.0.1").listens_for_peers());
+    // Never every address at once, and never a group or broadcast address.
+    for listen in ["0.0.0.0", "::", "224.0.0.251", "255.255.255.255"] {
+        assert!(direct(listen).validate().is_err(), "{listen}");
+    }
+    // A public address must say who may connect, and that cannot be nobody.
+    let mut public = direct("203.0.113.9");
+    assert!(public.validate().is_err());
+    public.node.allowed_sources = Some(vec![]);
+    assert!(public.validate().is_err());
+    public.node.allowed_sources = Some(vec!["198.51.100.0/24".parse().unwrap()]);
+    public.validate().unwrap();
+    // Only connects out: loopback for its owner, no ranges, no Tailnet IP.
+    let mut outbound = direct("127.0.0.1");
+    outbound.node.expose_to_tailnet = false;
+    outbound.validate().unwrap();
+    assert!(outbound.outbound_only());
+    outbound.node.listen_address = "192.168.1.20".parse().unwrap();
+    assert!(outbound.validate().is_err());
+    outbound.node.listen_address = "127.0.0.1".parse().unwrap();
+    outbound.node.tailnet_address = Some("100.64.0.7".parse().unwrap());
+    assert!(outbound.validate().is_err());
+    // Source ranges belong to the direct network only.
+    let mut tailnet = NodeConfig::default();
+    tailnet.node.network = "tailscale".into();
+    tailnet.node.expose_to_tailnet = true;
+    tailnet.node.listen_address = "100.99.145.22".parse().unwrap();
+    tailnet.node.allowed_sources = Some(vec!["10.0.0.0/8".parse().unwrap()]);
+    assert!(tailnet.validate().is_err());
+    // The setting survives being written out and read back.
+    public.node.allowed_sources = Some(vec!["198.51.100.0/24".parse().unwrap()]);
+    let text = serde_json::to_string(&public).unwrap();
+    let back: NodeConfig = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.allowed_sources(), public.allowed_sources());
+}
+
+#[test]
 fn coding_runs_can_explicitly_request_bounded_wire_output_without_changing_the_default() {
     let mut request = TaskSubmit::new(Uuid::new_v4(), "coding", "write server files");
     assert_eq!(request.limits.max_output_bytes, 1048576);

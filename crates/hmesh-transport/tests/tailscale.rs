@@ -1,7 +1,7 @@
 use hmesh_core::*;
 use hmesh_security::{Instance, validate_endpoint};
 use hmesh_transport::{
-    Client, permits_source,
+    Client, Scope,
     tailscale::{CliTailscale, TailscaleProvider, parse_status},
 };
 use serde_json::json;
@@ -84,10 +84,18 @@ async fn cli_failure_is_actionable_without_echoing_private_output() {
 }
 
 #[test]
-fn source_and_destination_scope_reject_lan_public_dns_and_implicit_tailnet() {
-    for address in ["100.64.0.1", "100.127.255.254", "fd7a:115c:a1e0::1"] {
-        assert!(permits_source(true, address.parse().unwrap()));
-        assert!(!permits_source(false, address.parse().unwrap()));
+fn source_scopes_follow_the_network_and_endpoints_are_literal_unicast_addresses() {
+    let ip = |address: &str| address.parse::<std::net::IpAddr>().unwrap();
+    // Tailnet listeners take Tailnet sources only (an IPv4-mapped one is the
+    // same address); loopback listeners take this computer only.
+    for address in [
+        "100.64.0.1",
+        "100.127.255.254",
+        "fd7a:115c:a1e0::1",
+        "::ffff:100.64.0.1",
+    ] {
+        assert!(Scope::Tailnet.permits(ip(address)), "{address}");
+        assert!(!Scope::Loopback.permits(ip(address)), "{address}");
     }
     for address in [
         "127.0.0.1",
@@ -96,23 +104,49 @@ fn source_and_destination_scope_reject_lan_public_dns_and_implicit_tailnet() {
         "192.168.1.1",
         "8.8.8.8",
         "100.128.0.1",
-        "::ffff:100.64.0.1",
     ] {
-        assert!(!permits_source(true, address.parse().unwrap()));
+        assert!(!Scope::Tailnet.permits(ip(address)), "{address}");
     }
+    // A direct node takes its allowed ranges: by default private, overlay
+    // and loopback networks, never the public internet.
+    let direct = Scope::Sources(std::sync::Arc::new(default_allowed_sources()));
+    for address in [
+        "192.168.1.9",
+        "10.1.2.3",
+        "172.20.0.5",
+        "100.64.0.1",
+        "fd12::5",
+        "127.0.0.1",
+        "::ffff:192.168.1.9",
+    ] {
+        assert!(direct.permits(ip(address)), "{address}");
+    }
+    for address in ["8.8.8.8", "0.0.0.0", "172.32.0.1", "2001:db8::1"] {
+        assert!(!direct.permits(ip(address)), "{address}");
+    }
+    let narrow = Scope::Sources(std::sync::Arc::new(vec!["192.168.1.0/24".parse().unwrap()]));
+    assert!(narrow.permits(ip("192.168.1.200")));
+    assert!(!narrow.permits(ip("192.168.2.1")));
+    // Peers are named by literal unicast addresses on any network; no names
+    // are resolved.
     for endpoint in [
         "https://100.64.0.1:38880",
         "https://[fd7a:115c:a1e0::1]:38880",
+        "https://192.168.1.1:39880",
+        "https://10.147.17.5:39880",
+        "https://localhost:39880",
     ] {
         validate_endpoint(endpoint).unwrap();
     }
     for endpoint in [
         "http://100.64.0.1",
-        "https://100.63.255.255",
-        "https://192.168.1.1",
         "https://example.ts.net",
+        "https://studio.local:39880",
         "https://100.64.0.1/path",
         "https://user@100.64.0.1",
+        "https://0.0.0.0:39880",
+        "https://224.0.0.251:39880",
+        "https://255.255.255.255:39880",
     ] {
         assert!(validate_endpoint(endpoint).is_err(), "{endpoint}");
     }

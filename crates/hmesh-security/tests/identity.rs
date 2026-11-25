@@ -128,10 +128,17 @@ fn pairing_code_carries_the_address_and_fingerprint_and_survives_wrapping() {
     a.card.endpoint = "https://[fd7a:115c:a1e0::1]:7443".into();
     let (endpoint, _) = parse_pair_code(&pair_code(&a.card)).expect("IPv6 Tailnet code");
     assert_eq!(endpoint, "https://[fd7a:115c:a1e0::1]:7443");
+    // A direct network's address, on a LAN or the internet.
+    for address in ["192.168.1.20:39880", "203.0.113.9:39880"] {
+        a.card.endpoint = format!("https://{address}");
+        let (endpoint, _) = parse_pair_code(&pair_code(&a.card)).expect("direct code");
+        assert_eq!(endpoint, format!("https://{address}"));
+    }
     for bad in [
         "https://127.0.0.1:7443/abc".to_string(),
         "hmesh://127.0.0.1:7443/abc".to_string(),
-        format!("hmesh://8.8.8.8:7443/{}", a.card.fingerprint),
+        format!("hmesh://169.254.169.254:7443/{}", a.card.fingerprint),
+        format!("hmesh://studio.local:7443/{}", a.card.fingerprint),
         format!("hmesh://127.0.0.1:7443/x/{}", a.card.fingerprint),
     ] {
         assert!(parse_pair_code(&bad).is_err(), "{bad}");

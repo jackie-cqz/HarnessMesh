@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessMesh：加一种「直连」网络和局域网发现，选中电脑、输 6 位口令就配好</title>
+<style>
+  :root{--bg:#fff;--ink:#0a0a0a;--muted:#737373;--line:#e5e5e5;--card:#fff;--accent:#171717;--ok:#047857;--warn:#b45309;--bad:#b42318;--soft:#f5f5f5}
+  @media (prefers-color-scheme: dark){:root{--bg:#0a0a0a;--ink:#ededed;--muted:#a3a3a3;--line:#2a2a2a;--card:#171717;--accent:#e5e5e5;--ok:#34d399;--warn:#fbbf24;--bad:#f2877c;--soft:#1f1f1f}}
+  *{box-sizing:border-box}
+  html,body{background:var(--bg)}
+  body{margin:0;color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif}
+  main{max-width:1000px;margin:0 auto;padding:44px 28px 80px}
+  h1{font-size:27px;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
+  h2{font-size:19px;margin:48px 0 14px}
+  h3{font-size:15px;margin:0 0 8px}
+  p{margin:0 0 10px}
+  .sub{color:var(--muted)}
+  code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 5px;border:1px solid var(--line);border-radius:6px;overflow-wrap:anywhere}
+  pre{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow:auto;margin:8px 0 12px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0 8px}
+  .stat{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--card);min-width:0}
+  .stat b{display:block;font-size:15px;margin-bottom:4px}
+  .stat span{color:var(--muted);font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line);vertical-align:top;min-width:0}
+  th{color:var(--muted);font-weight:500;font-size:13px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--card);min-width:0}
+  .card .label{color:var(--muted);font-size:12px;margin-bottom:10px}
+  .note{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;margin:0 0 10px}
+  .note b{display:block;margin-bottom:2px}
+  .note.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+  .note span{color:var(--muted)}
+  ul,ol{padding-left:20px;margin:0}
+  li{margin-bottom:6px}
+  .ev li{font-size:13.5px}
+  .scroll{overflow-x:auto}
+  .kv td:first-child{white-space:nowrap}
+  .after{margin-top:10px}
+  svg{width:100%;height:auto;display:block}
+  svg text{font:12.5px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;fill:var(--ink)}
+  svg .muted{fill:var(--muted)}
+  svg .box{fill:var(--card);stroke:var(--line)}
+  svg .strong{stroke:var(--accent)}
+  svg .zone{fill:none;stroke:var(--line);stroke-dasharray:4 4}
+  svg .arrow{stroke:var(--ink);stroke-width:1.3;fill:none}
+  svg .no{stroke:var(--bad);stroke-width:1.6}
+  @media (max-width:760px){.stats{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}}
+  @media (max-width:520px){.stats{grid-template-columns:1fr}main{padding:28px 16px 60px}table{font-size:13px}th,td{padding:8px 6px}}
+</style>
+</head>
+<body>
+<main>
+<h1>加一种「直连」网络和局域网发现：局域网、ZeroTier、WireGuard 都能用，附近的电脑自动列出来，输对方屏幕上的 6 位口令就配好</h1>
+<p class="sub">2026-11-25。核查结论：现在只认 Tailscale，限制只在网络这一层的 5 处代码；身份认证靠 mTLS 加固定的证书指纹，再加上配对，这些和 Tailscale 无关。Tailscale 实际只帮了两件事：电脑之间连得上，以及 tailnet 外的设备根本碰不到端口。直连模式要把第二件补回来，靠的是「来源网段」加「配对窗口」。局域网发现只在配对窗口里广播，发现到的电脑用一次性 6 位口令确认身份，所以同一网络里的人冒充不了。连接建立以后的认证方式（mTLS 加证书指纹）不变。</p>
+
+<div class="stats">
+  <div class="stat"><b>3 种网络</b><span>本机回环（试用、测试）、Tailscale（默认推荐）、直连（新）</span></div>
+  <div class="stat"><b>附近的电脑自动列出来</b><span>选中它，输入它屏幕上的 6 位口令就配好，不用复制配对码</span></div>
+  <div class="stat"><b>局域网 IP 变了不用重新配对</b><span>证书只核对指纹，不再要求证书里写着这个 IP</span></div>
+  <div class="stat"><b>只装 MCP 不再需要 Tailscale</b><span>它只往外连，任何连得通的网络都行</span></div>
+</div>
+
+<h2>改前 → 改后：别的电脑连进来要过几道关</h2>
+<div class="two">
+  <div class="card">
+    <div class="label">现在：只有 Tailscale</div>
+    <svg viewBox="0 0 460 300" role="img" aria-label="现在的连接路径">
+      <defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <rect class="box" x="14" y="20" width="150" height="40" rx="8"/><text x="26" y="45">tailnet 里的电脑</text>
+      <rect class="box" x="14" y="100" width="150" height="40" rx="8"/><text x="26" y="125">局域网 / 别的 VPN</text>
+      <rect class="box strong" x="236" y="20" width="190" height="56" rx="8"/><text x="248" y="42">① 来源必须是 Tailnet IP</text><text x="248" y="62" class="muted">100.64.0.0/10</text>
+      <rect class="box strong" x="236" y="106" width="190" height="56" rx="8"/><text x="248" y="128">② 已配对：证书指纹对上</text><text x="248" y="148" class="muted">会话、Agent、任务</text>
+      <rect class="box strong" x="236" y="192" width="190" height="56" rx="8"/><text x="248" y="214">② 未配对：只有匿名接口</text><text x="248" y="234" class="muted">hello、配对申请，随时开放</text>
+      <path class="arrow" d="M166 40 H234" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <path class="arrow" d="M330 78 V104" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <path class="arrow" d="M420 78 C 454 110, 454 200, 430 220" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <path class="arrow no" d="M166 120 H214"/><path class="no" d="M210 112 L222 128 M222 112 L210 128"/>
+      <text x="14" y="168" class="muted">连接还没进门就被丢掉；</text>
+      <text x="14" y="186" class="muted">配置里也不允许监听局域网地址</text>
+    </svg>
+  </div>
+  <div class="card">
+    <div class="label">加上直连：网络可以换，关卡一道不少</div>
+    <svg viewBox="0 0 460 300" role="img" aria-label="直连后的连接路径">
+      <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <rect class="box" x="14" y="20" width="150" height="40" rx="8"/><text x="26" y="45">tailnet 里的电脑</text>
+      <rect class="box" x="14" y="100" width="150" height="40" rx="8"/><text x="26" y="125">局域网 / 别的 VPN</text>
+      <rect class="box strong" x="236" y="20" width="190" height="56" rx="8"/><text x="248" y="42">① 来源在允许的网段里</text><text x="248" y="62" class="muted">默认：私有网段</text>
+      <rect class="box strong" x="236" y="106" width="190" height="56" rx="8"/><text x="248" y="128">② 已配对：证书指纹对上</text><text x="248" y="148" class="muted">和现在完全一样</text>
+      <rect class="box strong" x="236" y="192" width="190" height="72" rx="8"/><text x="248" y="214">② 未配对：只有匿名接口</text><text x="248" y="234" class="muted">只在「配对窗口」开着时回应</text><text x="248" y="252" class="muted">并按来源地址限流</text>
+      <path class="arrow" d="M166 40 H234" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <path class="arrow" d="M166 120 C 200 120, 205 60, 234 54" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <path class="arrow" d="M330 78 V104" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <path class="arrow" d="M420 78 C 454 110, 454 210, 430 228" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <text x="14" y="176" class="muted">Tailscale 模式照旧；</text>
+      <text x="14" y="194" class="muted">直连模式监听你选的那个地址</text>
+    </svg>
+  </div>
+</div>
+
+<h2>三种网络对比</h2>
+<div class="scroll"><table>
+  <tr><th></th><th>本机回环</th><th>Tailscale（默认推荐）</th><th>直连（新）</th></tr>
+  <tr><td>适合</td><td>一台电脑上试用、测试</td><td>电脑分散在不同地方，要穿透 NAT</td><td>同一个局域网；已经在用 ZeroTier、WireGuard、NetBird 等；公司不让装 Tailscale</td></tr>
+  <tr><td>监听</td><td>127.0.0.1</td><td>本机的 Tailnet IP</td><td>本机的一个具体地址（不能是 0.0.0.0）</td></tr>
+  <tr><td>谁能连进来</td><td>只有本机</td><td>tailnet 里的设备</td><td>允许网段里的设备（默认：10/8、172.16/12、192.168/16、100.64/10、fc00::/7）</td></tr>
+  <tr><td>未配对的电脑能碰到的接口</td><td>—</td><td>hello、配对申请，随时开放</td><td>同上，但只在配对窗口开着时回应</td></tr>
+  <tr><td>怎么找到对方</td><td>—</td><td>粘贴配对码</td><td>配对弹窗里列出局域网里正在开配对窗口的电脑；也可以粘贴配对码</td></tr>
+  <tr><td>需要额外装的</td><td>—</td><td>Tailscale</td><td>无（网络本来就通）</td></tr>
+  <tr><td>只装 MCP</td><td colspan="3">只往外连，不监听：能连通对方就行，不再要求 Tailscale</td></tr>
+</table></div>
+
+<h2>安装时的样子</h2>
+<pre>$ hmesh setup --full --network direct
+这台电脑的地址（别的电脑用这个地址连你）：
+  1) 192.168.1.20   en0（局域网）
+  2) 10.147.17.5    zt0（ZeroTier）
+&gt; 1
+✓ 建好节点 ~/.harnessmesh，监听 192.168.1.20:39880
+✓ 只接受私有网段的连接（改用 --allow-from 192.168.1.0/24 可以收得更紧）
+✓ 登记了 2 个 Agent：studio-claude-code、studio-codex
+提示：Windows 防火墙会问要不要允许 hmesh，选「专用网络」。
+下一步：hmesh panel →「配对节点」→「配对新电脑」，复制配对码给另一台电脑。
+       打开这个弹窗后 10 分钟内，局域网里的电脑能看到它，用弹窗里的 6 位口令配对。</pre>
+<p>不想交互时直接带参数：<code>hmesh setup --full --network direct --listen 192.168.1.20</code>。只装 MCP 不需要选地址：<code>hmesh setup --mcp-only</code>，本机没装 Tailscale 时就自动按直连处理。</p>
+
+<h2>局域网发现：选中电脑，输入它屏幕上的 6 位口令</h2>
+<div class="card scroll">
+  <svg viewBox="0 0 900 318" style="min-width:640px" role="img" aria-label="局域网发现和口令配对的流程">
+    <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+    <rect class="box strong" x="60" y="10" width="200" height="34" rx="8"/><text x="76" y="32">A：你要连过去的电脑</text>
+    <rect class="box strong" x="640" y="10" width="220" height="34" rx="8"/><text x="656" y="32">B：studio（直连、完整安装）</text>
+    <path d="M160 44 V300" style="stroke:var(--line)"/><path d="M750 44 V300" style="stroke:var(--line)"/>
+    <rect class="box" x="500" y="58" width="390" height="40" rx="8"/><text x="514" y="83">① 打开「配对新电脑」：窗口开 10 分钟，屏幕上显示口令 482 913</text>
+    <path class="arrow" d="M748 122 H164" marker-end="url(#a3)" style="color:var(--ink);stroke-dasharray:5 4"/><text x="300" y="114" class="muted">② 局域网广播 _hmesh._tcp：studio 192.168.1.20:39880</text>
+    <rect class="box" x="20" y="138" width="400" height="40" rx="8"/><text x="34" y="163">③ 弹窗列出「附近的电脑」，选 studio，输入 482 913</text>
+    <path class="arrow" d="M162 202 H746" marker-end="url(#a3)" style="color:var(--ink)"/><text x="300" y="196" class="muted">④ SPAKE2 握手：网络上只有握手数据，口令本身不出现</text>
+    <path class="arrow" d="M748 226 H164" marker-end="url(#a3)" style="color:var(--ink)"/>
+    <rect class="box strong" x="150" y="244" width="610" height="40" rx="8"/><text x="164" y="269">⑤ 两边用口令导出的密钥，确认对方的证书指纹 → 互相信任，B 不用再点批准</text>
+    <text x="164" y="306" class="muted">口令输错 3 次：窗口关闭、广播撤回，要重新打开弹窗</text>
+  </svg>
+</div>
+<div class="scroll" style="margin-top:12px"><table class="kv">
+  <tr><th>问题</th><th>做法</th></tr>
+  <tr><td>谁会出现在列表里</td><td>直连模式、完整安装、并且正开着配对窗口的电脑。只装 MCP 的电脑只看、不广播（它不接受连入）。Tailscale 模式这次不参与。</td></tr>
+  <tr><td>广播什么</td><td>服务名 <code>_hmesh._tcp.local</code>，带电脑名、地址、端口和协议版本；不带证书指纹</td></tr>
+  <tr><td>什么时候广播</td><td>只在配对窗口里，窗口一关就撤回。平时局域网里看不到这台电脑</td></tr>
+  <tr><td>为什么要口令</td><td>同一网段里任何设备都能广播一个也叫 studio 的服务，发现结果本身证明不了身份。要确认「选中的就是那台电脑」，必须用一样只出现在那台电脑屏幕上的东西。</td></tr>
+  <tr><td>为什么 6 位够</td><td>口令走 SPAKE2：冒充的人每猜一次，都得真的跟你握一次手；错 3 次窗口就关，猜中的概率是百万分之三。简单地把口令做成哈希发过去不行：冒充的一方拿到哈希，一秒内就能离线试完 100 万种口令。</td></tr>
+  <tr><td>看不到对方时</td><td>访客 Wi-Fi、公司网络、开了「AP 隔离」的路由器常常屏蔽多播。这时列表是空的，弹窗会说明可能的原因，照旧可以粘贴配对码。</td></tr>
+</table></div>
+<p class="sub after">粘贴配对码的老办法在所有模式下照旧可用，流程也不变。窄屏上流程图可以左右滑动。</p>
+
+<h2>要改的地方</h2>
+<div class="scroll"><table>
+  <tr><th>改动</th><th>内容</th><th>代码</th></tr>
+  <tr><td>证书只核对指纹</td><td>连对方时，先比对固定的指纹，再照常检查证书有效期、用途，以及 TLS 握手里对方确实持有私钥；不再要求证书里写着你拨的那个 IP。这样局域网 IP 变了、走另一张网卡、经过别的 VPN，都不用重新配对</td><td><code>hmesh-security</code> 的 <code>PinnedServer</code></td></tr>
+  <tr><td>新网络 <code>direct</code></td><td>配置加 <code>network = "direct"</code>、<code>listen_address</code>（本机的一个具体地址），以及 <code>allowed_sources</code>（来源网段列表）。不允许 0.0.0.0。启动时如果绑不上这个地址，就明说「这台电脑的地址变了，运行 <code>hmesh setup</code> 更新」</td><td><code>hmesh-core</code> 配置校验，<code>hmesh-daemon</code> 启动</td></tr>
+  <tr><td>来源过滤</td><td>对外监听只接受允许网段的来源，不在网段里的连接直接丢掉，不做 TLS 握手</td><td><code>hmesh-transport</code> 的 <code>permits_source</code></td></tr>
+  <tr><td>配对窗口</td><td>直连模式下，hello、challenge、配对申请这几个匿名接口，只在 owner 打开「配对新电脑」或运行 <code>hmesh pair show</code> 之后的 10 分钟内回应；对已有申请的状态查询照常（申请 ID 是随机的，猜不到）。匿名接口改成按来源地址限流，一台机器刷不满所有人的额度</td><td><code>hmesh-daemon</code> 的 <code>anonymous_limit</code>，面板配对弹窗</td></tr>
+  <tr><td>能拨出去的地址</td><td>对端地址可以是任何 IP（不接受域名）。Tailscale 和直连节点都能拨给已配对电脑的任何 IP；本机回环节点不变，仍然只连本机</td><td><code>validate_endpoint</code>，<code>Client::new</code></td></tr>
+  <tr><td>只装 MCP</td><td>不再要求 Tailscale，也不再需要提前写 <code>tailnet_address</code>；以后换成完整安装（Tailscale 或直连都行），指纹和配对都不变</td><td><code>hmesh setup</code>，配置校验</td></tr>
+  <tr><td><code>hmesh setup</code> 和 <code>init</code></td><td>加 <code>--network direct</code>、<code>--listen</code>、<code>--allow-from</code>；交互时列出本机地址让你选；装了 Tailscale 时先问用哪种网络（默认 Tailscale）</td><td><code>hmesh-cli</code></td></tr>
+  <tr><td>面板</td><td>直连模式的配对弹窗显示「配对窗口还剩 9:41」；节点卡片标出「直连」；设置页显示允许的来源网段</td><td><code>web/panel</code></td></tr>
+  <tr><td>局域网发现</td><td>用 <code>mdns-sd</code>（纯 Rust，不依赖异步运行时）在配对窗口里广播；配对弹窗打开时浏览，列出附近的电脑；命令行加 <code>hmesh pair nearby</code></td><td><code>hmesh-daemon</code> 新增发现模块，面板配对弹窗</td></tr>
+  <tr><td>口令配对</td><td>开窗口时生成一次性 6 位口令。新增两条匿名接口，完成 SPAKE2 握手和密钥确认；确认内容绑定双方证书指纹，以及这条 TLS 连接上看到的证书。成功后双方直接互相信任；错 3 次关窗口</td><td><code>hmesh-security</code>（握手），<code>hmesh-daemon</code> 配对接口，<code>hmesh-store</code></td></tr>
+  <tr><td>macOS 本地网络权限</td><td>给 macOS 版 <code>hmesh</code> 嵌入 Info.plist（程序标识、<code>NSLocalNetworkUsageDescription</code>、<code>NSBonjourServices</code>），让开机自启的 daemon 第一次连局域网时能弹出系统授权。被拒时，把 <code>EHOSTUNREACH</code> 翻译成「去 系统设置 → 隐私与安全性 → 本地网络 打开 hmesh」</td><td>构建脚本，<code>hmesh startup</code>，错误提示</td></tr>
+  <tr><td>文档</td><td>README 的网络部分；<code>security.md</code> 要大改，因为这次推翻了原来写明的「不允许局域网和公网监听」</td><td><code>README*.md</code>，<code>docs/</code></td></tr>
+</table></div>
+<p class="sub">工作量估算：直连本身两到三天；局域网发现加口令配对再两到三天。建议分两个 PR，先合直连，再合发现。会话和 MCP 工具的报文都不变；粘贴配对码的流程也不变。</p>
+
+<h2>这次不做</h2>
+<ul>
+  <li>监听 0.0.0.0、同时用几个地址（比如 Tailscale 加局域网）：名片里只有一个地址，先保持简单。</li>
+  <li>域名和动态 DNS：现在完全不解析 DNS，加进来要另外设计。</li>
+  <li>公网服务器经路由器端口映射（对外地址和本机地址不同）：暴露面最大。云服务器下一步走 SSH 通道，更安全。</li>
+  <li>把 Tailnet 里的电脑也列进「附近的电脑」：可以用现有的 <code>hmesh peers candidates</code> 加探测实现，这次只做局域网。</li>
+  <li>把粘贴配对码那条路也换成口令配对：等口令配对在局域网里用稳了，再考虑统一。</li>
+</ul>
+
+<h2>需要你定的事</h2>
+<div class="note"><b>1. 证书只核对指纹，不再核对 IP（推荐）</b><span>好处：局域网 IP 变了、换网卡、换 VPN，都不用重新配对；只装 MCP 也不用提前写 Tailnet IP。安全上不吃亏：指纹已经锁死了唯一一张证书，握手又证明对方持有私钥，再核对 IP 不增加保护。代价：要改安全说明里的一句承诺。另一个做法是证书里写一个固定名字（节点 ID）、按名字核对，效果一样，但要处理已有证书里没有这个名字的情况，更复杂。</span></div>
+<div class="note"><b>2. 配对窗口只在直连模式开启（推荐）</b><span>直连的网络里谁都可能碰到端口，所以要关紧，局域网广播和 6 位口令也只在窗口里有效；Tailscale 模式照旧随时可以配对，现有的用法不变。另一个做法是所有模式都开窗口：更统一、更安全，但配对码复制出去超过 10 分钟就要重新打开弹窗。</span></div>
+<div class="note"><b>3. 来源默认放行私有网段（推荐）</b><span>局域网和常见 VPN 开箱即用；监听公网 IP 时必须用 <code>--allow-from</code> 写明网段，不然拒绝启动。另一个做法是一律手动填：最严，但每个人都要先搞清楚自己的网段。</span></div>
+<div class="note"><b>4. 第一版只接受 IP 地址，不做域名和端口映射（推荐）</b><span>覆盖局域网和各种 VPN 已经够用；公网服务器留给下一步的 SSH 通道。</span></div>
+<div class="note"><b>5. 发现到的电脑用「6 位口令」确认身份（推荐）</b><span>体验像蓝牙配对：选中电脑，输入它屏幕上的 6 位数字就配好，对方不用再点批准；同一网络里冒充的人拿不到口令，也没法离线猜。代价：新增一套握手（RustCrypto 的 <code>spake2</code> 0.4，会带进 curve25519-dalek 等几个密码学库），要专门的安全测试和评审，多花一到两天。另一个做法：发现只帮你填好名字和地址，身份照现在的办法确认，但要双向核对校验码（为了防离线碰撞，对方的码要 12 位）。不用改协议、省时间，但两边都要比对一串字符，体验一般。</span></div>
+
+<h2>风险和应对</h2>
+<div class="note warn"><b>局域网里任何设备都能连到这个端口</b><span>应对：来源网段先过一遍；没配对的设备只能碰到匿名接口，而这些接口只在配对窗口里回应，并且按来源限流；其余接口都要已配对的证书（现在就是这样）。并发连接上限 64 个、TLS 握手超过 5 秒就断（已有）。</span></div>
+<div class="note warn"><b>6 位校验码在更大的网络里更容易被冒充</b><span>冒充要先知道发起方证书指纹的后 6 位，再离线碰撞。应对：配对窗口关着时连 hello 都不回，拿不到别人的指纹。批准时显示申请的来源地址；多条申请对得上同一个校验码就拒绝批准（已有）。要更强的保证就用完整指纹：<code>hmesh pair approve --expect-fingerprint</code>。</span></div>
+<div class="note warn"><b>局域网 IP 变了，daemon 起不来</b><span>应对：启动时明确提示原因；再跑一次 <code>hmesh setup</code> 换成新地址，名片同步（#15）会把新地址告诉已配对的电脑。建议在路由器上给常用电脑固定 IP。两台电脑同时换地址时要重新配对。</span></div>
+<div class="note warn"><b>macOS 的「本地网络」权限（影响整个直连模式，不只是发现）</b><span>苹果的规定（TN3179）：向局域网地址发起 TCP 连接、收发多播，都要「本地网络」权限。从终端或 SSH 启动的命令、launchd daemon、root 进程自动放行；我们开机自启装的是 launchd agent，不在放行之列。有开发者报告，没有 Info.plist 的裸程序连授权弹窗都不出、连接直接失败（没证实）。只是接受连入不需要权限；Tailscale、WireGuard 这类 VPN 地址也不算本地网络，所以现在的 Tailscale 模式不受影响。应对：嵌入 Info.plist；setup 提示这一步；把 <code>EHOSTUNREACH</code> 翻成人话。真机验证必须覆盖「开机自启的 daemon 连局域网」这条路。</span></div>
+<div class="note warn"><b>新增密码学依赖和握手代码</b><span>应对：锁定版本，纳入 OSV 依赖审计；握手单独评审，并针对错口令、重放、冒充广播、窗口外的请求写测试。</span></div>
+<div class="note warn"><b>和旧版本不兼容</b><span>旧版本只接受 Tailnet 地址，所以用直连的两台电脑都要升级。只用 Tailscale 的电脑之间不受影响。</span></div>
+<div class="note warn"><b>防火墙</b><span>macOS、Windows 第一次监听局域网地址时会弹窗，要允许（Windows 选「专用网络」）。setup 会提示这一步。</span></div>
+
+<h2>怎么验证</h2>
+<ul>
+  <li>两节点测试（直连模式，测试里用 127.0.0.1，允许网段设为 127.0.0.0/8）：窗口关着时配对申请被拒，打开后能配上；配对后开会话、拿回答复；不在允许网段的来源被丢弃；窗口里按来源限流。</li>
+  <li>证书：证书里没有你拨的 IP 也能连上（指纹对）；指纹不对一定失败；过期证书照样失败。</li>
+  <li>换地址：一边换端口或地址后，名片同步让另一边跟上。</li>
+  <li><code>hmesh setup --network direct</code> 在临时 HOME 下走一遍；只装 MCP 在没有 Tailscale 的环境下装好、能配对出去。</li>
+  <li>口令配对（两节点测试，绕开 mDNS 直接走握手）：口令对，两边互相信任；错 3 次，窗口关闭、之后的请求被拒；拿着别的证书冒充的一方，即使知道广播内容也配不上；窗口外的握手被拒。</li>
+  <li>局域网发现：两台真机在同一个局域网里看得到对方，窗口一关就从列表里消失。mDNS 在测试机的回环接口上不一定能用，这一层以真机结果为准。</li>
+  <li>macOS：开机自启的 daemon 第一次连局域网时弹出授权，允许后能连；拒绝时面板给出指引。</li>
+  <li>面板：配对窗口倒计时、口令、「附近的电脑」列表、「直连」标记，深浅色和窄屏截图。</li>
+  <li>真机：你的 Mac 和 Windows 在同一个局域网、关掉 Tailscale，配对、开会话、批权限走一遍（需要你配合）。</li>
+</ul>
+
+<h2>依据</h2>
+<ul class="ev">
+  <li>配置只允许本机回环和 Tailscale，并且明确写着禁止局域网和公网监听：<code>crates/hmesh-core/src/lib.rs:717</code>、<code>:737</code>。</li>
+  <li>对端地址只能是回环地址或 Tailnet 网段：<code>crates/hmesh-security/src/lib.rs:329</code>（网段定义在 <code>crates/hmesh-core/src/network.rs:4</code>）。</li>
+  <li>证书校验先比对指纹，再由 WebPKI 核对主机名：<code>crates/hmesh-security/src/lib.rs:407</code>、<code>:425</code>。所以现在证书里必须写着对方拨的那个 IP。</li>
+  <li>对外监听只接受 Tailnet 来源：<code>crates/hmesh-transport/src/lib.rs:43</code>。并发上限 64：<code>:60</code>。</li>
+  <li>拨到非本机地址只在 Tailscale 模式下允许：<code>crates/hmesh-transport/src/lib.rs:129</code>。</li>
+  <li>完整安装的节点启动时要 Tailscale 确认这个 IP 是本机的：<code>crates/hmesh-daemon/src/lib.rs:445</code>。</li>
+  <li>匿名接口按种类、每分钟全局计数，不分来源：<code>crates/hmesh-daemon/src/lib.rs:231</code>。hello 返回本机名片：<code>:563</code>。</li>
+  <li>名片同步（启动时告诉已配对的电脑新地址）：<code>crates/hmesh-daemon/src/pairing.rs:76</code>，#15 合入。</li>
+  <li>识别网段用的 <code>ipnet</code> 已经在依赖树里（<code>Cargo.lock</code>），不用引入新的包。</li>
+  <li>macOS 本地网络权限：<a href="https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy">Apple TN3179</a>。「向外发起 TCP 连接」和「收发多播」需要权限，「监听并接受连入」不需要；放行的只有 launchd daemon、root、终端或 SSH 里运行的命令，并且写明 launchd agent 不放行。VPN 接口不算本地网络。开机自启在 macOS 装的是 LaunchAgent：<code>crates/hmesh-cli/src/startup.rs:126</code>。</li>
+  <li><code>mdns-sd</code> 0.22.0（<a href="https://github.com/keepsimple1/mdns-sd">keepsimple1/mdns-sd</a>）：纯 Rust，同时能广播和浏览，自带线程、不依赖异步运行时，README 写着已和 Avahi、macOS dns-sd 互通过。新增依赖 <code>flume</code>、<code>if-addrs</code>、<code>socket-pktinfo</code>；<code>if-addrs</code> 也能给 setup 列本机地址。</li>
+  <li>SPAKE2：<a href="https://github.com/RustCrypto/PAKEs">RustCrypto/PAKEs</a> 的 <code>spake2</code>，稳定版 0.4.0，0.5 还是预发布。Magic Wormhole 也用 SPAKE2 做短口令配对。</li>
+</ul>
+</main>
+</body>
+</html>

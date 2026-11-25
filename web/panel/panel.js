@@ -164,7 +164,7 @@ async function refresh() {
   if(state.stopped||state.refreshing||!access)return;state.refreshing=true;$('#refresh').disabled=true;$('#sync-state').textContent='同步中…';
   try {
     const [snapshot,runtime]=await Promise.all([api('/overview'),api('/runtime').then(unwrap).catch(()=>null)]);state.snapshot=snapshot;state.runtime=runtime;if(typeof noteInboxOverviewError==='function')noteInboxOverviewError(null);const node=data('node',{});$('#access-gate').hidden=true;$('#app').hidden=false;
-    $('#local-name').textContent=node.node?.display_name||'Daemon 不可读取';$('#local-network').textContent=node.network==='tailscale'?'Tailnet 直连':node.network?'仅本机回环':'Daemon 不可达';
+    $('#local-name').textContent=node.node?.display_name||'Daemon 不可读取';$('#local-network').textContent=node.network==='tailscale'?'Tailnet 直连':node.network==='direct'?'局域网直连':node.network?'仅本机回环':'Daemon 不可达';
     const names={node:'本机 Daemon',peers:'配对节点',agents:'Agent',retired:'退役 Agent',tasks:'任务',services:'服务',connections:'连接',tunnels:'隧道'};
     const failures=Object.entries(names).filter(([key])=>state.snapshot[key]?.error).map(([key,name])=>`${name}: ${state.snapshot[key].error.code}`);
     $('#alerts').replaceChildren(...(failures.length?[el('div','alert',`部分状态暂不可读取。${failures.join('；')}`)]:[]));
