@@ -3,6 +3,7 @@ mod acceptance;
 mod addresses;
 mod development;
 mod discovery;
+pub mod finding;
 mod integration;
 mod nearby;
 mod networks;
@@ -72,6 +73,9 @@ pub struct AppState {
     card: Arc<RwLock<NodeCard>>,
     /// Listening on every interface: the networks it is on and trusts.
     networks: Arc<networks::Networks>,
+    /// What this computer's mark on the local network is made with (see
+    /// `finding`). Never logged.
+    find_key: Arc<RwLock<[u8; FIND_KEY_BYTES]>>,
 }
 #[derive(Debug)]
 pub struct ApiError(pub MeshError);
@@ -217,19 +221,16 @@ impl AppState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_millis() as i64)
             .unwrap_or_default();
-        let addresses = Arc::new(RwLock::new(addresses::local(
-            &instance.config,
-            &instance.card,
-            &[],
-            revision,
-        )));
+        let find_key = finding::load_key(&store)?;
+        let mut addresses = addresses::local(&instance.config, &instance.card, &[], revision);
+        let networks = Arc::new(networks::Networks::new(&instance.config));
         let routes_store = store.clone();
         let routes = Arc::new(RouteMemory::persisted(move |fingerprint, origin, at| {
             if let Err(error) = routes_store.remember_route(fingerprint, origin, at) {
                 tracing::warn!(code = ?error.code, "where a paired computer answered was not kept");
             }
         }));
-        Ok(Self {
+        let state = Self {
             managed: services::Manager::default(),
             integration_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             store,
@@ -241,13 +242,19 @@ impl AppState {
             relay: Arc::new(relay::ModelRelay::new(shutdown.subscribe())),
             shutdown,
             sessions: Arc::default(),
-            addresses,
+            addresses: Arc::default(),
             routes,
             announce_now: Arc::default(),
             card: Arc::new(RwLock::new(instance.card.clone())),
-            networks: Arc::new(networks::Networks::new(&instance.config)),
+            networks,
+            find_key: Arc::new(RwLock::new(find_key)),
             instance,
-        })
+        };
+        addresses.find_key = state.find_key_told();
+        if let Ok(mut current) = state.addresses.write() {
+            *current = addresses;
+        }
+        Ok(state)
     }
     fn actor(
         &self,
@@ -906,7 +913,7 @@ async fn status(
         "tailscale":match (s.instance.config.node.network.as_str(), s.instance.config.outbound_only()) {("tailscale", true) => "not_checked", ("tailscale", false) => "verified_at_startup", _ => "not_required"},
         "allowed_sources":(s.instance.config.node.network == "direct" && !s.instance.config.outbound_only()).then(|| s.instance.config.allowed_sources()),
         "pairing_window":s.pairing_window(),
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1","pairing-nearby-v1","peer-addresses-v1","trusted-networks-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.card()),"outbound_only":s.instance.config.outbound_only(),"addresses":s.addresses().addresses,"networks":s.networks_view()}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1","pairing-nearby-v1","peer-addresses-v1","trusted-networks-v1","peer-finding-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.card()),"outbound_only":s.instance.config.outbound_only(),"addresses":s.addresses().addresses,"networks":s.networks_view()}),
     ))
 }
 async fn stop(
@@ -940,6 +947,7 @@ async fn peers(
             runnable_agent_count: None,
             services_status: "not_supported_in_v0".into(),
             routes: PeerRoutes::default(),
+            unreachable_reasons: Vec::new(),
         };
         if peer.status == "trusted" && !s.reaches(&peer) {
             view.node_connectivity = NodeConnectivity::OutboundOnly;
@@ -952,30 +960,67 @@ async fn peers(
             // first that refuses or sends nothing back (given up once another
             // completes a handshake, 200 ms on) and a next one that answers.
             let client = s.peer_client(&peer)?;
-            let accepted = matches!(
-                tokio::time::timeout(
-                    std::time::Duration::from_millis(1500),
-                    client.get::<NodeCard>("/hmesh/v1/node")
-                )
-                .await,
-                Ok(Ok(_))
-            );
+            // Left to finish when this gives up waiting: where it stopped is
+            // then known (as its last failure) the next time.
+            let probing = client.clone();
+            let probe =
+                tokio::spawn(async move { probing.get::<NodeCard>("/hmesh/v1/node").await });
+            let asked =
+                match tokio::time::timeout(std::time::Duration::from_millis(1500), probe).await {
+                    Ok(Ok(answer)) => Some(answer),
+                    _ => None,
+                };
+            let accepted = matches!(asked, Some(Ok(_)));
+            // Whether it answered hello at all: a direct node outside its
+            // pairing window answers with a refusal, which still says it is there.
+            let mut answered = accepted;
             let online = accepted || {
                 let hello = s.peer_hello_client(&peer)?;
-                matches!(
-                    tokio::time::timeout(
-                        std::time::Duration::from_millis(750),
-                        hello.get::<NodeCard>("/hmesh/v1/hello")
-                    )
-                    .await,
-                    Ok(Ok(_))
+                let said = tokio::time::timeout(
+                    std::time::Duration::from_millis(750),
+                    hello.get::<NodeCard>("/hmesh/v1/hello"),
                 )
+                .await;
+                answered = match &said {
+                    Ok(Ok(_)) => true,
+                    Ok(Err(error)) => error.code != ErrorCode::PeerUnreachable,
+                    Err(_) => false,
+                };
+                matches!(said, Ok(Ok(_)))
             };
             view.node_connectivity = if online {
                 NodeConnectivity::Online
             } else {
                 NodeConnectivity::Unreachable
             };
+            // Why, in the words the panel says in its own language: where
+            // each address stopped (this time, or the last time a call got
+            // that far, a minute ago at most), or that it answers but refuses
+            // this computer's certificate (it revoked the pairing there).
+            let message = match &asked {
+                Some(Err(error)) => Some(error.message.clone()),
+                Some(Ok(_)) => None,
+                None => s
+                    .routes
+                    .last_failure(&peer.card.fingerprint)
+                    .filter(|(_, at)| now() - at <= 60)
+                    .map(|(message, _)| message),
+            };
+            // Refused on the way in, by a computer that answers hello.
+            let refused_here = matches!(&asked, Some(Err(error)) if matches!(
+                error.code,
+                ErrorCode::PeerUnreachable | ErrorCode::PermissionDenied | ErrorCode::Unauthenticated
+            ));
+            if let Some(message) = message {
+                let reasons = hmesh_transport::unreachable_reasons(&message);
+                view.unreachable_reasons = if answered && refused_here && reasons.is_empty() {
+                    vec!["not_accepted".into()]
+                } else if online {
+                    Vec::new()
+                } else {
+                    reasons.into_iter().map(str::to_owned).collect()
+                };
+            }
             if !accepted {
                 view.routes = s.store.peer_routes(peer.card.node_id)?;
                 views.push(view);
@@ -1098,6 +1143,11 @@ async fn revoke(
     s.owner(&headers, &c)?;
     s.store.revoke_peer(id)?;
     sessions::close_for_peer(&s, id);
+    // The computer revoked knows the old key: a new one, so it cannot tell
+    // this computer's mark on the local network any more.
+    if let Err(error) = s.rotate_find_key() {
+        tracing::warn!(code = ?error.code, "the find key was not changed after a revocation");
+    }
     s.store.audit(
         Some(s.instance.card.node_id),
         "pair.revoke",

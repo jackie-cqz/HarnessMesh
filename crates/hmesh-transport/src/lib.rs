@@ -4,7 +4,7 @@ mod client;
 pub mod netinfo;
 pub mod tailscale;
 use axum::{Extension, Router};
-pub use client::{Client, RouteMemory};
+pub use client::{Client, Finder, RouteMemory, unreachable_reasons};
 use hmesh_security::fingerprint;
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},

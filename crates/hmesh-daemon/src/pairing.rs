@@ -209,6 +209,11 @@ pub fn resume(state: &AppState) -> hmesh_core::Result<()> {
 
 /// Wait in the background for the other computer's answer to `record`.
 pub fn watch(state: AppState, record: PairRecord) {
+    watch_via(state, record, None);
+}
+/// The same, asking at `via` (an address typed to pair with it) rather
+/// than at its card's address.
+pub(crate) fn watch_via(state: AppState, record: PairRecord, via: Option<String>) {
     tokio::spawn(async move {
         let mut stop = state.shutdown.subscribe();
         loop {
@@ -219,7 +224,7 @@ pub fn watch(state: AppState, record: PairRecord) {
             }
             // Ask before judging by the clock: only the other computer knows
             // whether its owner approved.
-            if check(&state, &record).await {
+            if check_via(&state, &record, via.as_deref()).await {
                 return;
             }
             if now() > record.expires_at + GIVE_UP_SECONDS {
@@ -240,14 +245,26 @@ pub fn watch(state: AppState, record: PairRecord) {
 }
 
 /// Ask once. True when the request is settled, either way; false while the
-/// other computer says pending or cannot be reached.
-pub(crate) async fn check(s: &AppState, record: &PairRecord) -> bool {
+/// other computer says pending or cannot be reached. Asked at its card's
+/// address, or at `via` (an address typed to pair with it, which may name a
+/// host) when there is one. Once paired, `via` is kept as
+/// an address set by hand for that computer, tried when the others fail.
+pub(crate) async fn check_via(s: &AppState, record: &PairRecord, via: Option<&str>) -> bool {
     let fingerprint = &record.card.fingerprint;
     let path = format!("/hmesh/v1/pair/requests/{}", record.request_id);
+    let at = |bootstrap| match via {
+        Some(address) => Client::pinned(&s.instance, address, fingerprint, bootstrap),
+        None => Client::new(
+            &s.instance,
+            &record.card.endpoint,
+            fingerprint,
+            bootstrap,
+            false,
+        ),
+    };
     // Not reachable right now, or a computer without this check: keep asking
     // (its owner can still finish by hand).
-    let Ok(client) = Client::new(&s.instance, &record.card.endpoint, fingerprint, true, false)
-    else {
+    let Ok(client) = at(true) else {
         return false;
     };
     let status = match client.get::<PairStatus>(&path).await {
@@ -258,13 +275,7 @@ pub(crate) async fn check(s: &AppState, record: &PairRecord) -> bool {
         "approved" => {
             // Proof rather than a word: the other computer now accepts this
             // computer's certificate.
-            let Ok(client) = Client::new(
-                &s.instance,
-                &record.card.endpoint,
-                fingerprint,
-                false,
-                false,
-            ) else {
+            let Ok(client) = at(false) else {
                 return false;
             };
             match client.get::<NodeCard>("/hmesh/v1/node").await {
@@ -277,6 +288,9 @@ pub(crate) async fn check(s: &AppState, record: &PairRecord) -> bool {
                 .complete_outgoing_pair(record.request_id, fingerprint)
             {
                 Ok(peer) => {
+                    if let Some(address) = via {
+                        keep_typed_address(s, peer.card.node_id, address);
+                    }
                     s.peers_changed();
                     let _ = s.store.audit(
                         Some(s.instance.card.node_id),
@@ -304,6 +318,18 @@ pub(crate) async fn check(s: &AppState, record: &PairRecord) -> bool {
             true
         }
         _ => false,
+    }
+}
+/// The address its owner typed to pair with `peer`, kept among the ones set
+/// by hand for it (once, after any already there).
+fn keep_typed_address(s: &AppState, peer: Uuid, address: &str) {
+    let mut manual = s.store.peer_routes(peer).unwrap_or_default().manual;
+    if manual.iter().any(|known| known == address) || manual.len() >= MAX_PEER_ADDRESSES {
+        return;
+    }
+    manual.push(address.to_owned());
+    if let Err(error) = s.store.set_manual_addresses(peer, &manual) {
+        tracing::warn!(code = ?error.code, "the address typed to pair was not kept");
     }
 }
 
@@ -386,7 +412,7 @@ mod tests {
                 expires_at: now() + 300,
             };
             store.save_outgoing_pair(&record).unwrap();
-            assert_eq!(check(&state, &record).await, accepts);
+            assert_eq!(check_via(&state, &record, None).await, accepts);
             let is_trusted = store
                 .peer_by_fingerprint(&b.card.fingerprint)
                 .unwrap()

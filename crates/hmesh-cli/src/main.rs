@@ -132,7 +132,7 @@ enum Commands {
         /// Node name; defaults to this computer's Tailscale host name.
         #[arg(long)]
         name: Option<String>,
-        #[arg(long, default_value_t = 39880)]
+        #[arg(long, default_value_t = hmesh_core::SETUP_PORT)]
         port: u16,
         /// MCP clients to connect without asking: claude, codex, or none.
         #[arg(long, value_delimiter = ',')]
@@ -522,7 +522,9 @@ enum PairCommand {
     /// 6-digit passcode its screen shows (`hmesh pair show` there). Both
     /// computers trust each other at once: nothing to approve.
     Join {
-        /// Its address, as `hmesh pair nearby` lists it (192.168.1.20:39880).
+        /// Its address, as `hmesh pair nearby` lists it (192.168.1.20:39880),
+        /// or an IP address or host name typed by hand (studio.local); without
+        /// a port, the one `hmesh setup` uses (39880).
         address: String,
         /// The 6 digits. Omit it to be asked, so it stays out of the shell
         /// history; it is read from standard input then.

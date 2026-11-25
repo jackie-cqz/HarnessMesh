@@ -27,6 +27,7 @@ fn peer_addresses_are_kept_per_trusted_peer_and_only_newer_ones_replace_them() {
         node_id: card.node_id,
         revision,
         addresses: addresses.iter().map(|a| a.to_string()).collect(),
+        find_key: None,
     };
     // Not paired yet: nothing is stored, nothing can be set.
     assert!(
@@ -100,6 +101,92 @@ fn peer_addresses_are_kept_per_trusted_peer_and_only_newer_ones_replace_them() {
     assert_eq!(routes.advertised, ["https://new:1"]);
     assert!(routes.manual.is_empty());
     assert_eq!(routes.last_good_at, Some(77));
+}
+
+/// A peer's find key comes with its address list (a newer one replaces it,
+/// one without a key clears it) and is read only while it is trusted; an
+/// address it was found at goes first among the ones it told; this
+/// computer's own secrets survive a restart.
+#[test]
+fn a_peer_find_key_and_where_it_was_found_are_kept_with_its_addresses() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("finding.sqlite3");
+    let store = Store::open(&path).unwrap();
+    let card = peer_card(&"c".repeat(64));
+    let told = |revision, key: Option<&str>| PeerAddresses {
+        node_id: card.node_id,
+        revision,
+        addresses: vec![card.endpoint.clone()],
+        find_key: key.map(str::to_owned),
+    };
+    let key = "ab".repeat(32);
+    assert!(
+        !store
+            .set_advertised_addresses(&told(3, Some(&key)))
+            .unwrap()
+    );
+    store
+        .add_found_address(card.node_id, "https://10.0.0.9:1")
+        .unwrap();
+    assert_eq!(store.peer_find_key(card.node_id).unwrap(), None);
+    assert_eq!(
+        store.peer_routes(card.node_id).unwrap(),
+        PeerRoutes::default()
+    );
+    store.trust_peer(&card).unwrap();
+    assert!(
+        store
+            .set_advertised_addresses(&told(3, Some(&key)))
+            .unwrap()
+    );
+    assert_eq!(
+        store.peer_find_key(card.node_id).unwrap(),
+        Some(key.clone())
+    );
+    // Older: the key stays.
+    assert!(
+        !store
+            .set_advertised_addresses(&told(2, Some(&"cd".repeat(32))))
+            .unwrap()
+    );
+    assert_eq!(
+        store.peer_find_key(card.node_id).unwrap(),
+        Some(key.clone())
+    );
+    // Found elsewhere: first, once, without changing the revision.
+    store
+        .add_found_address(card.node_id, "https://192.168.7.3:39880")
+        .unwrap();
+    store
+        .add_found_address(card.node_id, "https://192.168.7.3:39880")
+        .unwrap();
+    assert_eq!(
+        store.peer_routes(card.node_id).unwrap().advertised,
+        ["https://192.168.7.3:39880", card.endpoint.as_str()]
+    );
+    assert!(!store.set_advertised_addresses(&told(3, None)).unwrap());
+    // A newer list without a key: the old key is gone with the old list.
+    assert!(store.set_advertised_addresses(&told(4, None)).unwrap());
+    assert_eq!(store.peer_find_key(card.node_id).unwrap(), None);
+    assert_eq!(
+        store.peer_routes(card.node_id).unwrap().advertised,
+        [card.endpoint.as_str()]
+    );
+    assert!(
+        store
+            .set_advertised_addresses(&told(5, Some(&key)))
+            .unwrap()
+    );
+    // Revoked: its key is not read.
+    store.revoke_peer(card.node_id).unwrap();
+    assert_eq!(store.peer_find_key(card.node_id).unwrap(), None);
+
+    assert_eq!(store.node_secret("find_key").unwrap(), None);
+    store.set_node_secret("find_key", &[1; 32]).unwrap();
+    store.set_node_secret("find_key", &[2; 32]).unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.node_secret("find_key").unwrap(), Some(vec![2; 32]));
 }
 
 #[test]
@@ -335,7 +422,7 @@ fn schema_two_upgrade_preserves_historical_task_records() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        11
+        12
     );
 }
 

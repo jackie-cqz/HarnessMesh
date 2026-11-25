@@ -1328,15 +1328,21 @@ async fn a_peer_is_reached_at_an_address_set_by_hand_and_never_at_another_comput
     join(&a_dir, &b_dir, &address);
     let b_id = b_card.node_id.to_string();
 
-    // The studio comes back on another port; the laptop cannot be told.
+    // The studio comes back on another port; the laptop cannot be told. Nor
+    // does it look for the studio on the local network here (that is
+    // tested apart): it has forgotten the studio's find key.
+    stop(a, &a_dir);
     stop(b, &b_dir);
     let port = free_port();
     edit_node(&b_dir, |node| {
         node.insert("listen_port".into(), toml::Value::Integer(port.into()));
     });
+    forget_find_keys(&a_dir);
     let _b = daemon(&b_dir);
     let moved = ready(&b_dir).await;
     assert_eq!(moved.endpoint, format!("https://127.0.0.1:{port}"));
+    let a = daemon(&a_dir);
+    ready(&a_dir).await;
     let refused = cli_fails(&a_dir, &["agents", "--peer", &b_id]);
     assert!(refused.contains("refused the connection"), "{refused}");
 
@@ -1753,4 +1759,341 @@ async fn a_computer_that_moves_back_and_forth_tells_its_peers_each_time() {
         );
         assert_eq!(cli(&moving.b_dir, &["node", "show"])["endpoint"], *endpoint);
     }
+}
+
+/// A daemon whose log (standard error) is kept in `log`.
+fn daemon_logged(dir: &Path, log: &Path) -> Daemon {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .expect("log file");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hmesh"));
+    command
+        .arg("--data-dir")
+        .arg(dir)
+        .args(["daemon", "start"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(file);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    Daemon(command.spawn().expect("daemon process"))
+}
+/// Two direct computers like `direct_pair`, under other names (one that
+/// opens pairing must not be called `studio` while the nearby test runs:
+/// mDNS would hear two of them). `listens` takes connections on loopback
+/// at the returned address, with no host names; `asks` only connects out.
+fn direct_named(root: &Path, listens: &str, asks: &str) -> (std::path::PathBuf, String) {
+    let dir = root.join(listens);
+    let port = free_port().to_string();
+    cli(
+        &dir,
+        &[
+            "init",
+            "--name",
+            listens,
+            "--port",
+            &port,
+            "--network",
+            "direct",
+            "--listen-address",
+            "127.0.0.1",
+        ],
+    );
+    edit_node(&dir, |node| {
+        node.insert("host_names".into(), toml::Value::Array(vec![]));
+    });
+    outbound(root, asks);
+    (dir, format!("127.0.0.1:{port}"))
+}
+/// A direct computer that only connects out.
+fn outbound(root: &Path, name: &str) -> std::path::PathBuf {
+    let dir = root.join(name);
+    cli(
+        &dir,
+        &[
+            "init",
+            "--name",
+            name,
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--outbound-only",
+        ],
+    );
+    dir
+}
+/// The find key `dir` keeps for the paired computer `peer`, as told.
+fn find_key_of(dir: &Path, peer: uuid::Uuid) -> Option<String> {
+    let db = rusqlite::Connection::open(dir.join("state.sqlite3")).expect("database");
+    db.query_row(
+        "SELECT find_key FROM peer_addresses WHERE peer_node_id=?1",
+        [peer.to_string()],
+        |r| r.get(0),
+    )
+    .unwrap_or(None)
+}
+/// The find key `dir` makes its own mark with.
+fn own_find_key(dir: &Path) -> Vec<u8> {
+    let db = rusqlite::Connection::open(dir.join("state.sqlite3")).expect("database");
+    db.query_row(
+        "SELECT value FROM node_secrets WHERE name='find_key'",
+        [],
+        |r| r.get(0),
+    )
+    .expect("own find key")
+}
+/// Forget every paired computer's find key (while `dir`'s daemon is stopped).
+fn forget_find_keys(dir: &Path) {
+    rusqlite::Connection::open(dir.join("state.sqlite3"))
+        .expect("database")
+        .execute("UPDATE peer_addresses SET find_key=NULL", [])
+        .expect("forget");
+}
+/// Wait until `ready` says so of `dir`'s find key for `peer`.
+async fn find_key_until(dir: &Path, peer: uuid::Uuid, ready: impl Fn(&Option<String>) -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut key = find_key_of(dir, peer);
+    while !ready(&key) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        key = find_key_of(dir, peer);
+    }
+    assert!(ready(&key), "{key:?}");
+}
+
+/// Pairing at an address typed by hand (the panel's 按地址配对): a host
+/// name works, and the address is kept as one set by hand; an address that
+/// does not answer says where it stopped, and one without a port gets the
+/// port setup uses. Neither the passcode nor either find key ever shows up
+/// in the logs, the audit, or what doctor prints.
+#[tokio::test]
+async fn a_computer_pairs_at_a_host_name_typed_by_hand() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (b_dir, address) = direct_named(root.path(), "kiosk", "ledger");
+    let a_dir = root.path().join("ledger");
+    let (a_log, b_log) = (
+        root.path().join("ledger.log"),
+        root.path().join("kiosk.log"),
+    );
+    let _a = daemon_logged(&a_dir, &a_log);
+    let _b = daemon_logged(&b_dir, &b_log);
+    ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+    let port = port_of(&address);
+
+    let closed = free_port();
+    let refused = cli_fails(
+        &a_dir,
+        &[
+            "pair",
+            "join",
+            &format!("localhost:{closed}"),
+            "--passcode",
+            "123456",
+        ],
+    );
+    assert!(
+        refused.contains(&format!(
+            "https://localhost:{closed} refused the connection"
+        )),
+        "{refused}"
+    );
+    let unnamed = cli_fails(
+        &a_dir,
+        &["pair", "join", "nowhere.invalid", "--passcode", "123456"],
+    );
+    assert!(
+        unnamed.contains("https://nowhere.invalid:39880 did not resolve"),
+        "{unnamed}"
+    );
+
+    let passcode = cli(&b_dir, &["pair", "show"])["pairing_window"]["passcode"]
+        .as_str()
+        .expect("passcode")
+        .to_owned();
+    let joined = cli(
+        &a_dir,
+        &[
+            "pair",
+            "join",
+            &format!("LOCALHOST:{port}"),
+            "--passcode",
+            &passcode,
+        ],
+    );
+    assert_eq!(joined["status"], "approved", "{joined}");
+    assert_eq!(trusted(&a_dir), ["kiosk"]);
+    assert_eq!(trusted(&b_dir), ["ledger"]);
+    let by_name = format!("https://localhost:{port}");
+    let peer = &cli(&a_dir, &["peers", "list"])[0];
+    assert_eq!(peer["routes"]["manual"], json!([by_name]), "{peer}");
+    assert!(cli(&a_dir, &["agents", "--peer", &b_card.node_id.to_string()]).is_array());
+
+    // The kiosk's key, told to the ledger with its address list.
+    let key = hex(&own_find_key(&b_dir));
+    find_key_until(&a_dir, b_card.node_id, |k| {
+        k.as_deref() == Some(key.as_str())
+    })
+    .await;
+    let a_key = hex(&own_find_key(&a_dir));
+    let mut shared = String::new();
+    for dir in [&a_dir, &b_dir] {
+        shared.push_str(&cli(dir, &["doctor"]).to_string());
+        shared.push_str(&cli(dir, &["audit"]).to_string());
+        shared.push_str(&cli(dir, &["daemon", "status"]).to_string());
+        shared.push_str(&cli(dir, &["peers", "list"]).to_string());
+    }
+    for log in [&a_log, &b_log] {
+        shared.push_str(&std::fs::read_to_string(log).expect("log"));
+    }
+    for dir in [&a_dir, &b_dir] {
+        for table in ["audit_records", "task_events", "session_events"] {
+            shared.push_str(&table_text(dir, table));
+        }
+    }
+    assert!(
+        shared.contains("daemon listening"),
+        "the logs were not read"
+    );
+    assert!(
+        table_text(&b_dir, "audit_records").contains("pair.passcode"),
+        "the audit was not read"
+    );
+    for secret in [&key, &a_key, &passcode] {
+        assert!(!shared.contains(secret.as_str()), "{secret} was shown");
+    }
+
+    // Revoked on the kiosk: it still answers, but not to the ledger's
+    // certificate, and the ledger says so.
+    let a_id = cli(&a_dir, &["node", "show"])["node_id"]
+        .as_str()
+        .expect("node id")
+        .to_owned();
+    cli(&b_dir, &["pair", "revoke", &a_id]);
+    let peer = peer_until(&a_dir, |p| {
+        p["unreachable_reasons"] == json!(["not_accepted"])
+    })
+    .await;
+    assert_eq!(
+        peer["unreachable_reasons"],
+        json!(["not_accepted"]),
+        "{peer}"
+    );
+    assert_eq!(peer["status"], "trusted", "{peer}");
+}
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+/// Every row of `table` in `dir`'s database, written out.
+fn table_text(dir: &Path, table: &str) -> String {
+    let db = rusqlite::Connection::open(dir.join("state.sqlite3")).expect("database");
+    let mut rows = db
+        .prepare(&format!("SELECT * FROM {table}"))
+        .expect("query");
+    let columns = rows.column_count();
+    let mut text = String::new();
+    let mut read = rows.query([]).expect("rows");
+    while let Some(row) = read.next().expect("row") {
+        for i in 0..columns {
+            let value: rusqlite::types::Value = row.get(i).expect("value");
+            text.push_str(&format!("{value:?} "));
+        }
+    }
+    text
+}
+
+/// Paired computers find each other again on the local network (mDNS on
+/// loopback, reliable on macOS only). The lantern announces a mark only its
+/// paired computers can work out; when every address the rucksack knows
+/// stops answering (it came back on another port), the rucksack hears the
+/// mark and reaches it there, and keeps that address. The lantern revokes
+/// the satchel: its key changes, the rucksack is told the new one, and the
+/// satchel, left with the old, cannot tell the new mark or find it.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_paired_computer_found_by_its_mark_and_a_revoked_one_that_cannot() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (b_dir, address) = direct_named(root.path(), "lantern", "rucksack");
+    let a_dir = root.path().join("rucksack");
+    let c_dir = outbound(root.path(), "satchel");
+    let b_log = root.path().join("lantern.log");
+    let a = daemon(&a_dir);
+    let b = daemon_logged(&b_dir, &b_log);
+    let _c = daemon(&c_dir);
+    ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+    let c_card = ready(&c_dir).await;
+    join(&a_dir, &b_dir, &address);
+    join(&c_dir, &b_dir, &address);
+    let first = own_find_key(&b_dir);
+    for dir in [&a_dir, &c_dir] {
+        find_key_until(dir, b_card.node_id, |k| {
+            k.as_deref() == Some(hex(&first).as_str())
+        })
+        .await;
+    }
+
+    // Revoked: a new key. The rucksack only connects out, so it learns the
+    // new key when it next asks (at once after a restart); the satchel is
+    // not paired with the lantern any more and keeps the old one.
+    cli(&b_dir, &["pair", "revoke", &c_card.node_id.to_string()]);
+    let second = own_find_key(&b_dir);
+    assert_ne!(second, first);
+    stop(a, &a_dir);
+    let a = daemon(&a_dir);
+    ready(&a_dir).await;
+    find_key_until(&a_dir, b_card.node_id, |k| {
+        k.as_deref() == Some(hex(&second).as_str())
+    })
+    .await;
+    assert_eq!(find_key_of(&c_dir, b_card.node_id), Some(hex(&first)));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    use hmesh_daemon::finding::{matches, token, window};
+    let mark = token(&second, window(now));
+    assert!(matches(&second, &mark, now));
+    assert!(
+        !matches(&first, &mark, now),
+        "the old key tells the new mark"
+    );
+
+    // The lantern comes back on another port: nothing either one knows
+    // answers. Its mark is announced again there.
+    stop(b, &b_dir);
+    let port = free_port();
+    edit_node(&b_dir, |node| {
+        node.insert("listen_port".into(), toml::Value::Integer(port.into()));
+    });
+    let _b = daemon_logged(&b_dir, &b_log);
+    let moved = ready(&b_dir).await;
+    assert!(std::net::TcpStream::connect(&address).is_err());
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let b_id = b_card.node_id.to_string();
+    let agents = cli(&a_dir, &["agents", "--peer", &b_id]);
+    assert!(agents.is_array(), "{agents}");
+    let peer = &cli(&a_dir, &["peers", "list"])[0];
+    assert_eq!(peer["routes"]["last_good"], moved.endpoint, "{peer}");
+    assert_eq!(peer["routes"]["advertised"][0], moved.endpoint, "{peer}");
+    assert_eq!(peer["node_connectivity"], "online", "{peer}");
+    // The satchel hears no mark it can tell.
+    let lost = cli_fails(&c_dir, &["agents", "--peer", &b_id]);
+    assert!(lost.contains("refused the connection"), "{lost}");
+    assert!(lost.contains("not heard on the local network"), "{lost}");
+    let peer = &cli(&c_dir, &["peers", "list"])[0];
+    assert!(
+        !peer["routes"].to_string().contains(&port.to_string()),
+        "{peer}"
+    );
+    let log = std::fs::read_to_string(&b_log).expect("log");
+    for key in [&first, &second] {
+        assert!(!log.contains(&hex(key)), "a find key was logged");
+    }
+    drop(a);
 }

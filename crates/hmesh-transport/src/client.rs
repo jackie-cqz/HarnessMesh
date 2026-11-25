@@ -44,6 +44,9 @@ type Persist = Box<dyn Fn(&str, &str, i64) + Send + Sync>;
 #[derive(Default)]
 pub struct RouteMemory {
     routes: Mutex<HashMap<String, (String, i64)>>,
+    /// Why each one could not be reached the last time no address answered
+    /// (the error's message), and when; gone once it answers again.
+    failures: Mutex<HashMap<String, (String, i64)>>,
     persist: Option<Persist>,
 }
 impl RouteMemory {
@@ -53,6 +56,7 @@ impl RouteMemory {
     pub fn persisted(persist: impl Fn(&str, &str, i64) + Send + Sync + 'static) -> Self {
         Self {
             routes: Mutex::default(),
+            failures: Mutex::default(),
             persist: Some(Box::new(persist)),
         }
     }
@@ -61,7 +65,25 @@ impl RouteMemory {
         let routes = self.routes.lock().ok()?;
         routes.get(fingerprint).map(|(origin, _)| origin.clone())
     }
+    /// Why the computer with this fingerprint could not be reached the last
+    /// time none of its addresses answered (unix seconds), unless it has
+    /// answered since: for a caller that gave up waiting before then.
+    pub fn last_failure(&self, fingerprint: &str) -> Option<(String, i64)> {
+        let failures = self.failures.lock().ok()?;
+        failures.get(fingerprint).cloned()
+    }
+    fn failed(&self, fingerprint: &str, error: &MeshError) {
+        if let Ok(mut failures) = self.failures.lock() {
+            failures.insert(
+                fingerprint.to_owned(),
+                (error.message.clone(), hmesh_core::now()),
+            );
+        }
+    }
     fn remember(&self, fingerprint: &str, origin: &str) {
+        if let Ok(mut failures) = self.failures.lock() {
+            failures.remove(fingerprint);
+        }
         let at = hmesh_core::now();
         let changed = match self.routes.lock() {
             Ok(mut routes) => {
@@ -96,6 +118,16 @@ enum Dial {
     /// A paired computer, at whichever of its addresses answers.
     Routed(Routed),
 }
+/// Where else a paired computer might be, asked when none of the addresses
+/// it is known by answers before anything was sent: on the local network,
+/// say, after its address there changed. Whoever answers at an address it
+/// gives must still show the pinned certificate.
+pub trait Finder: Send + Sync {
+    /// Addresses (`https://<ip>:<port>`) the computer was heard at.
+    fn find(&self) -> Pin<Box<dyn Future<Output = Vec<String>> + Send + 'static>>;
+    /// It answered at `origin`, one of those.
+    fn found(&self, origin: &str);
+}
 /// A paired computer's addresses. Where it answers is remembered under its
 /// fingerprint; `tls` pins its certificate, for each try and each probe.
 struct Routed {
@@ -103,7 +135,12 @@ struct Routed {
     memory: Arc<RouteMemory>,
     fingerprint: String,
     tls: Arc<rustls::ClientConfig>,
+    /// Asked when no known address answers.
+    finder: Option<Arc<dyn Finder>>,
+    /// A computer on loopback reaches only loopback addresses.
+    loopback_only: bool,
 }
+#[derive(Clone)]
 struct Route {
     origin: String,
     target: Target,
@@ -216,8 +253,47 @@ impl Client {
                 memory,
                 fingerprint,
                 tls: Arc::new(config),
+                finder: None,
+                loopback_only,
             })),
         })
+    }
+    /// The same client, asking `finder` where else the computer might be
+    /// when none of its addresses answers. Only a client for a paired
+    /// computer (`routed`) asks.
+    pub fn finding(self, finder: Arc<dyn Finder>) -> Self {
+        let Dial::Routed(routed) = &*self.dial else {
+            return self;
+        };
+        Self {
+            dial: Arc::new(Dial::Routed(Routed {
+                routes: routed.routes.clone(),
+                memory: routed.memory.clone(),
+                fingerprint: routed.fingerprint.clone(),
+                tls: routed.tls.clone(),
+                finder: Some(finder),
+                loopback_only: routed.loopback_only,
+            })),
+        }
+    }
+    /// One computer at one address, which may name a host (an address typed
+    /// to pair with it): it must show the certificate `fingerprint` names.
+    /// `bootstrap` leaves this computer's certificate out (the pairing
+    /// handshake). Where every attempt stopped is said as for `routed`.
+    pub fn pinned(
+        instance: &Instance,
+        address: &str,
+        fingerprint: &str,
+        bootstrap: bool,
+    ) -> anyhow::Result<Self> {
+        validate_peer_address(address)?;
+        Self::route(
+            instance,
+            vec![address.to_owned()],
+            fingerprint,
+            Arc::new(RouteMemory::new()),
+            bootstrap,
+        )
     }
     /// The addresses tried, in the order they are tried first.
     pub fn origins(&self) -> Vec<String> {
@@ -233,13 +309,15 @@ impl Client {
     /// First contact with a computer whose certificate is not known yet
     /// (passcode pairing): its card, and the fingerprint of the certificate
     /// this connection saw, which the card must name. The caller pins that
-    /// fingerprint from here on; nothing is trusted because of this.
+    /// fingerprint from here on; nothing is trusted because of this. The
+    /// address may name a host, resolved as in an address list; when nothing
+    /// answers there, the error says where it stopped.
     pub async fn learn(
         instance: &Instance,
         endpoint: &str,
     ) -> hmesh_core::Result<(NodeCard, String)> {
         let refused = |error: anyhow::Error| MeshError::input(error.to_string());
-        let url = validate_endpoint(endpoint).map_err(refused)?;
+        let url = validate_peer_address(endpoint).map_err(refused)?;
         if instance.config.node.network == "loopback"
             && !hmesh_security::endpoint_is_loopback(endpoint)
         {
@@ -251,16 +329,25 @@ impl Client {
         let config = instance
             .first_contact_config(seen.clone())
             .map_err(refused)?;
-        let client = Self {
-            dial: Arc::new(Dial::One {
-                origin: url.origin().ascii_serialization(),
-                http: builder(config, CONNECT)
-                    .build()
-                    .map_err(|error| refused(error.into()))?,
-                owner_token: None,
-            }),
+        let origin = url.origin().ascii_serialization();
+        let http = builder(config, CONNECT)
+            .dns_resolver(Arc::new(PeerResolver))
+            .build()
+            .map_err(|error| refused(error.into()))?;
+        let hello = Call {
+            method: reqwest::Method::GET,
+            path: "/hmesh/v1/hello",
+            body: None,
+            timeout: None,
         };
-        let card: NodeCard = client.get("/hmesh/v1/hello").await?;
+        let response = hello.send(&http, &origin, None).await.map_err(|error| {
+            if error.is_connect() {
+                unreachable(&[(origin.clone(), failure(&error))], false)
+            } else {
+                transport_error(error)
+            }
+        })?;
+        let card: NodeCard = read(response).await?;
         let seen = seen
             .lock()
             .ok()
@@ -396,7 +483,7 @@ impl Routed {
     async fn call(&self, call: &Call<'_>) -> hmesh_core::Result<reqwest::Response> {
         let order = self.order();
         let Some((&first, others)) = order.split_first() else {
-            return Err(unreachable(&[]));
+            return Err(unreachable(&[], false));
         };
         let mut failed: Vec<Option<&'static str>> = vec![None; self.routes.len()];
         let mut probes = Probes::new();
@@ -437,11 +524,54 @@ impl Routed {
                 Err(error) => return Err(transport_error(error)),
             }
         }
-        let failures: Vec<(String, &'static str)> = order
+        let mut failures: Vec<(String, &'static str)> = order
             .iter()
             .filter_map(|&i| failed[i].map(|why| (self.routes[i].origin.clone(), why)))
             .collect();
-        Err(unreachable(&failures))
+        // None answered, and nothing was sent anywhere: ask where else it
+        // might be (heard on the local network at a new address), and try
+        // there, one at a time, the same way.
+        let Some(finder) = &self.finder else {
+            return Err(self.unreachable(&failures, false));
+        };
+        let mut heard = false;
+        for address in finder.find().await {
+            let Ok(url) = validate_peer_address(&address) else {
+                continue;
+            };
+            let origin = url.origin().ascii_serialization();
+            heard = true;
+            if self.routes.iter().any(|route| route.origin == origin) {
+                continue;
+            }
+            let Ok(target) = Target::of(&url) else {
+                continue;
+            };
+            if self.loopback_only && !target.loopback() {
+                continue;
+            }
+            let route = Route { origin, target };
+            let gate = Arc::new(Gate::default());
+            match self.attempt_at(&route, &gate, None, call).await {
+                Ok(response) => {
+                    self.memory.remember(&self.fingerprint, &route.origin);
+                    finder.found(&route.origin);
+                    return Ok(response);
+                }
+                Err(error) if unsent(&error, &gate) => {
+                    failures.push((route.origin, failure(&error)));
+                }
+                Err(error) => return Err(transport_error(error)),
+            }
+        }
+        Err(self.unreachable(&failures, !heard))
+    }
+    /// Every address failed before anything was sent: why, as an error,
+    /// also kept as this computer's last failure.
+    fn unreachable(&self, failures: &[(String, &'static str)], not_heard: bool) -> MeshError {
+        let error = unreachable(failures, not_heard);
+        self.memory.failed(&self.fingerprint, &error);
+        error
     }
     /// The first address, alone for `HEAD_START`, then with the others
     /// probed meanwhile. Once it has connected its answer is awaited, however
@@ -510,7 +640,16 @@ impl Routed {
         at: Option<SocketAddr>,
         call: &Call<'_>,
     ) -> reqwest::Result<reqwest::Response> {
-        let route = &self.routes[index];
+        self.attempt_at(&self.routes[index], gate, at, call).await
+    }
+    /// The same, at `route` (one of the routes, or where the computer was heard).
+    async fn attempt_at(
+        &self,
+        route: &Route,
+        gate: &Arc<Gate>,
+        at: Option<SocketAddr>,
+        call: &Call<'_>,
+    ) -> reqwest::Result<reqwest::Response> {
         let mut builder = builder((*self.tls).clone(), CONNECT)
             .dns_resolver(Arc::new(PeerResolver))
             .connector_layer(Gated(gate.clone()));
@@ -765,13 +904,37 @@ fn builder(config: rustls::ClientConfig, connect: Duration) -> reqwest::ClientBu
         .pool_max_idle_per_host(0)
 }
 
-/// What stopped a connection to one address, in words the panel can match.
+/// What stopped a connection to one address, in words the panel can match
+/// (`unreachable_reasons`): kept as they are, older panels match them too.
 const REFUSED: &str = "refused the connection";
 const SILENT: &str = "did not answer";
 const UNRESOLVED: &str = "did not resolve";
 const ANOTHER: &str = "is another computer";
 const NO_ROUTE: &str = "has no route from here";
 const UNREACHED: &str = "could not be reached";
+const TLS: &str = "failed the TLS handshake";
+/// Looked for on the local network too, and not heard there.
+const NOT_HEARD: &str = "it was not heard on the local network either";
+/// The reasons a call to a paired computer failed, read from its error
+/// message: `refused`, `silent`, `unresolved`, `another_computer`,
+/// `no_route`, `unreached`, `tls`, `not_heard`, each once, in that order.
+/// Fixed words, so a panel can say each in its own language.
+pub fn unreachable_reasons(message: &str) -> Vec<&'static str> {
+    [
+        (REFUSED, "refused"),
+        (SILENT, "silent"),
+        (UNRESOLVED, "unresolved"),
+        (ANOTHER, "another_computer"),
+        (NO_ROUTE, "no_route"),
+        (UNREACHED, "unreached"),
+        (TLS, "tls"),
+        (NOT_HEARD, "not_heard"),
+    ]
+    .into_iter()
+    .filter(|(phrase, _)| message.contains(phrase))
+    .map(|(_, reason)| reason)
+    .collect()
+}
 fn failure(error: &reqwest::Error) -> &'static str {
     reason(error).unwrap_or(if error.is_timeout() {
         SILENT
@@ -783,7 +946,7 @@ fn failure(error: &reqwest::Error) -> &'static str {
 fn reason(error: &(dyn StdError + 'static)) -> Option<&'static str> {
     let tls = |error: &rustls::Error| match error {
         rustls::Error::InvalidCertificate(_) | rustls::Error::General(_) => ANOTHER,
-        _ => "failed the TLS handshake",
+        _ => TLS,
     };
     let mut source = Some(error);
     while let Some(current) = source {
@@ -813,8 +976,9 @@ fn reason(error: &(dyn StdError + 'static)) -> Option<&'static str> {
     }
     None
 }
-/// Every address failed before anything was sent: say where each one stopped.
-fn unreachable(failures: &[(String, &'static str)]) -> MeshError {
+/// Every address failed before anything was sent: say where each one
+/// stopped, and whether it was looked for on the local network in vain.
+fn unreachable(failures: &[(String, &'static str)], not_heard: bool) -> MeshError {
     let each: Vec<String> = failures
         .iter()
         .map(|(origin, why)| format!("{origin} {why}"))
@@ -823,6 +987,10 @@ fn unreachable(failures: &[(String, &'static str)]) -> MeshError {
         "could not reach that computer at any address it is known by: {}",
         each.join("; ")
     );
+    if not_heard {
+        message.push_str("; ");
+        message.push_str(NOT_HEARD);
+    }
     if failures.iter().any(|(_, why)| *why == NO_ROUTE) {
         message.push_str(". ");
         message.push_str(NO_ROUTE_HINT);

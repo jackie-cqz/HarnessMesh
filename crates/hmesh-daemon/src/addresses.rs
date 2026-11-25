@@ -50,6 +50,7 @@ pub fn local(
         node_id: card.node_id,
         revision,
         addresses,
+        find_key: None,
     }
 }
 /// The names in `host_names`, or by default this computer's own name with
@@ -174,13 +175,18 @@ impl AppState {
         } else {
             Client::routed
         };
-        build(
+        let client = build(
             &self.instance,
             candidates,
             &peer.card.fingerprint,
             self.routes.clone(),
         )
-        .map_err(|error| MeshError::new(ErrorCode::Internal, error.to_string()))
+        .map_err(|error| MeshError::new(ErrorCode::Internal, error.to_string()))?;
+        // None of them answering, it is looked for on the local network.
+        Ok(match self.finder(peer) {
+            Some(finder) => client.finding(finder),
+            None => client,
+        })
     }
     /// A peer was paired, or how to reach one changed: tell and ask the
     /// paired computers now instead of at the next round.
@@ -204,6 +210,15 @@ async fn receive(
         )));
     }
     let addresses = checked(&body.addresses)?;
+    if body
+        .find_key
+        .as_deref()
+        .is_some_and(|key| !valid_find_key(key))
+    {
+        return Err(ApiError(MeshError::input(
+            "a find key is 64 lowercase hex digits",
+        )));
+    }
     let count = addresses.len();
     let updated = s
         .store
@@ -283,6 +298,7 @@ pub async fn pull(s: &AppState, peer: &Peer, client: &Client) -> bool {
         Err(_) => return false,
     };
     if told.node_id == peer.card.node_id
+        && told.find_key.as_deref().is_none_or(valid_find_key)
         && let Ok(addresses) = hmesh_security::validate_peer_addresses(&told.addresses)
     {
         let _ = s

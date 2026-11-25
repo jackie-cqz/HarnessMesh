@@ -275,13 +275,16 @@ impl AppState {
             .map(|elapsed| elapsed.as_millis() as i64)
             .unwrap_or_default()
             .max(previous + 1);
-        let list = addresses::local(
+        let mut list = addresses::local(
             &self.instance.config,
             &card,
             &self.networks.open_endpoints(),
             if startup { previous } else { revision },
         );
         if let Ok(mut current) = self.addresses.write() {
+            // Read while the list is held: a key changed meanwhile (see
+            // `rotate_find_key`) is not put back.
+            list.find_key = self.find_key_told();
             *current = list;
         }
         if !startup {

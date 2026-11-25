@@ -58,6 +58,46 @@ fn peer_addresses_take_host_names_but_cards_keep_literal_ips() {
     assert!(parse_pair_code(&format!("hmesh://studio.local:38880/{}", "a".repeat(64))).is_err());
 }
 
+/// An address a person types to pair with (the panel's 按地址配对, `hmesh
+/// pair join`): an IP or host name, with or without a port or `https://`;
+/// without a port, the one `hmesh setup` uses.
+#[test]
+fn an_address_typed_to_pair_with_gets_the_setup_port_when_it_has_none() {
+    for (typed, meant) in [
+        ("192.168.1.20", "https://192.168.1.20:39880"),
+        (" 192.168.1.20:41000 ", "https://192.168.1.20:41000"),
+        ("Studio.local", "https://studio.local:39880"),
+        ("studio.local:38880", "https://studio.local:38880"),
+        ("https://studio.local", "https://studio.local:39880"),
+        ("https://studio.local:443/", "https://studio.local"),
+        ("fd7a:115c:a1e0::5", "https://[fd7a:115c:a1e0::5]:39880"),
+        ("[fd7a:115c:a1e0::5]", "https://[fd7a:115c:a1e0::5]:39880"),
+        (
+            "[fd7a:115c:a1e0::5]:41000",
+            "https://[fd7a:115c:a1e0::5]:41000",
+        ),
+        ("localhost:41000", "https://localhost:41000"),
+    ] {
+        let read = typed_peer_address(typed, SETUP_PORT).unwrap_or_else(|e| panic!("{typed}: {e}"));
+        assert_eq!(read.origin().ascii_serialization(), meant, "{typed}");
+    }
+    for bad in [
+        "",
+        "http://studio.local",
+        "studio.local/path",
+        "studio.local:0",
+        "user@studio.local",
+        "169.254.169.254",
+        "studio .local",
+        "studio.local:port",
+    ] {
+        assert!(
+            typed_peer_address(bad, SETUP_PORT).is_err(),
+            "{bad} accepted"
+        );
+    }
+}
+
 /// Later versions add fields to an address list; this one ignores them.
 #[test]
 fn an_address_list_with_fields_this_version_does_not_know_still_reads() {
@@ -76,8 +116,24 @@ fn an_address_list_with_fields_this_version_does_not_know_still_reads() {
             node_id: id,
             revision: 7,
             addresses: vec!["https://studio.local:38880".into()],
+            find_key: Some("00ff".into()),
         }
     );
+    // A list without a find key says nothing about one; one with a key
+    // never shows it in debug output (and so in logs).
+    let plain = PeerAddresses {
+        find_key: None,
+        ..read.clone()
+    };
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("find_key")
+            .is_none()
+    );
+    assert!(!format!("{read:?}").contains("00ff"));
+    assert!(valid_find_key(&"0a".repeat(32)));
+    assert!(!valid_find_key(&"0A".repeat(32)) && !valid_find_key("00ff"));
     // The card is still read strictly: one unknown field rejects it.
     let mut card = serde_json::to_value(NodeCard {
         version: PROTOCOL.into(),

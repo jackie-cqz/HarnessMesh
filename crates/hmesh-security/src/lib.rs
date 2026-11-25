@@ -449,6 +449,38 @@ pub fn validate_peer_address(address: &str) -> Result<url::Url> {
     }
     Ok(url)
 }
+/// An address a person typed to pair with a computer: an IP address or a
+/// host name, with or without `https://` and a port (`default_port` when it
+/// has none), checked like any peer address (`validate_peer_address`). A
+/// bare IPv6 address may leave out its brackets when it has no port.
+pub fn typed_peer_address(typed: &str, default_port: u16) -> Result<url::Url> {
+    let typed = typed.trim();
+    let rest = typed.strip_prefix("https://").unwrap_or(typed);
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    if rest.is_empty()
+        || rest.contains(['/', '?', '#', '@', '\\'])
+        || rest.contains(char::is_whitespace)
+    {
+        bail!("write an address as an IP address or a host name, with a port if it has one");
+    }
+    let (authority, has_port) = match rest.strip_prefix('[') {
+        Some(inside) => (
+            rest.to_owned(),
+            inside
+                .split_once(']')
+                .is_some_and(|(_, tail)| !tail.is_empty()),
+        ),
+        // More than one colon, no brackets: an IPv6 address without a port.
+        None if rest.matches(':').count() > 1 => (format!("[{rest}]"), false),
+        None => (rest.to_owned(), rest.contains(':')),
+    };
+    let address = if has_port {
+        format!("https://{authority}")
+    } else {
+        format!("https://{authority}:{default_port}")
+    };
+    validate_peer_address(&address)
+}
 /// A computer's address list, checked: its count and each address, written
 /// as the origin it names (`https://studio.local:38880`), without repeats.
 pub fn validate_peer_addresses(addresses: &[String]) -> Result<Vec<String>> {

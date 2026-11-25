@@ -635,3 +635,204 @@ async fn a_loopback_computer_dials_only_loopback_addresses() {
         .is_err()
     );
 }
+
+/// Says where a computer was heard (as the local network would), counts how
+/// often it is asked, and keeps what it is told answered.
+struct Heard {
+    at: Vec<String>,
+    asked: AtomicUsize,
+    answered: Mutex<Vec<String>>,
+}
+impl Heard {
+    fn at(at: &[&str]) -> Arc<Self> {
+        Arc::new(Self {
+            at: at.iter().map(|a| a.to_string()).collect(),
+            asked: AtomicUsize::new(0),
+            answered: Mutex::new(Vec::new()),
+        })
+    }
+}
+impl hmesh_transport::Finder for Heard {
+    fn find(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'static>> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        let at = self.at.clone();
+        Box::pin(async move { at })
+    }
+    fn found(&self, origin: &str) {
+        self.answered.lock().unwrap().push(origin.to_owned());
+    }
+}
+
+/// No address a computer is known by answers: it is looked for (once per
+/// call) and reached where it was heard, which is then tried first. Heard
+/// only where another computer answers, or not heard at all, the error says so.
+#[tokio::test]
+async fn a_computer_none_of_whose_addresses_answers_is_reached_where_it_was_heard() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let a = instance(root.path(), "asks");
+    let b = instance(root.path(), "studio");
+    let c = instance(root.path(), "another");
+    let (b_endpoint, b_calls, _b) = computer(b.clone(), trusting(&a)).await;
+    let (c_endpoint, c_calls, _c) = computer(c.clone(), trusting(&a)).await;
+    let dead = refused();
+    let memory = Arc::new(RouteMemory::new());
+    let heard = Heard::at(&["not an address", &c_endpoint, &b_endpoint]);
+    let client = Client::routed(&a, vec![dead.clone()], &b.card.fingerprint, memory.clone())
+        .expect("client")
+        .finding(heard.clone());
+    assert_eq!(
+        client.post::<_, usize>("/count", &()).await.expect("found"),
+        1
+    );
+    assert_eq!(heard.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *heard.answered.lock().unwrap(),
+        std::slice::from_ref(&b_endpoint)
+    );
+    assert_eq!(
+        memory.last_good(&b.card.fingerprint),
+        Some(b_endpoint.clone())
+    );
+    assert_eq!(
+        c_calls.load(Ordering::SeqCst),
+        0,
+        "another computer got a request"
+    );
+    // Answering where it was found: nothing more to look for.
+    let client = Client::routed(
+        &a,
+        vec![dead.clone(), b_endpoint.clone()],
+        &b.card.fingerprint,
+        memory.clone(),
+    )
+    .expect("client")
+    .finding(heard.clone());
+    assert_eq!(client.origins()[0], b_endpoint);
+    assert_eq!(
+        client.post::<_, usize>("/count", &()).await.expect("count"),
+        2
+    );
+    assert_eq!(heard.asked.load(Ordering::SeqCst), 1);
+    assert_eq!(b_calls.load(Ordering::SeqCst), 2);
+
+    // Heard only where another computer answers.
+    let elsewhere = Heard::at(&[&c_endpoint]);
+    let lost = Client::routed(
+        &a,
+        vec![dead.clone()],
+        &b.card.fingerprint,
+        Arc::new(RouteMemory::new()),
+    )
+    .expect("client")
+    .finding(elsewhere.clone())
+    .get::<String>("/who")
+    .await
+    .unwrap_err();
+    assert_eq!(lost.code, ErrorCode::PeerUnreachable);
+    assert!(
+        lost.message
+            .contains(&format!("{c_endpoint} is another computer")),
+        "{}",
+        lost.message
+    );
+    assert!(elsewhere.answered.lock().unwrap().is_empty());
+    assert_eq!(
+        hmesh_transport::unreachable_reasons(&lost.message),
+        ["refused", "another_computer"]
+    );
+    // Not heard at all: the error says that too.
+    let unheard = Client::routed(
+        &a,
+        vec![dead.clone()],
+        &b.card.fingerprint,
+        Arc::new(RouteMemory::new()),
+    )
+    .expect("client")
+    .finding(Heard::at(&[]))
+    .get::<String>("/who")
+    .await
+    .unwrap_err();
+    assert_eq!(
+        hmesh_transport::unreachable_reasons(&unheard.message),
+        ["refused", "not_heard"],
+        "{}",
+        unheard.message
+    );
+    // Without a finder, nothing is said about the local network.
+    let plain = Client::routed(
+        &a,
+        vec![dead],
+        &b.card.fingerprint,
+        Arc::new(RouteMemory::new()),
+    )
+    .expect("client")
+    .get::<String>("/who")
+    .await
+    .unwrap_err();
+    assert_eq!(
+        hmesh_transport::unreachable_reasons(&plain.message),
+        ["refused"]
+    );
+    assert!(hmesh_transport::unreachable_reasons("RPC deadline exceeded").is_empty());
+}
+
+/// First contact at a host name (pairing by an address someone typed):
+/// the card is learned there; nothing answering says where it stopped.
+#[tokio::test]
+async fn first_contact_works_at_a_host_name_and_says_where_it_stopped() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let a = instance(root.path(), "asks");
+    let b = instance(root.path(), "studio");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+    let port = listener.local_addr().expect("address").port();
+    let card = b.card.clone();
+    let app = Router::new().route("/hmesh/v1/hello", get(move || async move { Json(card) }));
+    let (_stop, receiver) = watch::channel(false);
+    let server = b.clone();
+    tokio::spawn(serve(
+        listener,
+        app,
+        Arc::new(move || server.server_config(&[])),
+        receiver,
+    ));
+    let by_name = format!("https://localhost:{port}");
+    let (card, seen) = Client::learn(&a, &by_name).await.expect("learned by name");
+    assert_eq!(card.node_id, b.card.node_id);
+    assert_eq!(seen, b.card.fingerprint);
+    let pinned = Client::pinned(&a, &by_name, &seen, true).expect("pinned");
+    assert_eq!(
+        pinned
+            .get::<NodeCard>("/hmesh/v1/hello")
+            .await
+            .expect("hello")
+            .node_id,
+        b.card.node_id
+    );
+    let dead = refused();
+    let lost = Client::learn(&a, &dead).await.unwrap_err();
+    assert_eq!(lost.code, ErrorCode::PeerUnreachable);
+    assert!(
+        lost.message
+            .contains(&format!("{dead} refused the connection")),
+        "{}",
+        lost.message
+    );
+    let unnamed = Client::learn(&a, "https://nowhere.invalid:1")
+        .await
+        .unwrap_err();
+    assert_eq!(
+        hmesh_transport::unreachable_reasons(&unnamed.message),
+        ["unresolved"],
+        "{}",
+        unnamed.message
+    );
+    assert_eq!(
+        Client::learn(&a, "https://studio.local:1/path")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidInput
+    );
+}
