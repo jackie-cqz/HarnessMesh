@@ -80,7 +80,7 @@ sudo derper -a :8443 -http-port -1 -stun-port 3478 \
 | `-http-port -1` | 不开 80 端口。照 derper 源码，80 用来签 Let's Encrypt 证书、做强制门户（captive portal）检测、把 HTTP 跳转到 HTTPS，自签证书用不到。官方文档把 80 列在必开端口里，关掉对中继有没有别的影响，没证实 |
 | `-stun-port 3478` | STUN 的 UDP 端口，帮客户端找到自己的公网地址、打洞。默认就是 3478 |
 | `-certmode manual -hostname <IP>` | `-hostname` 写 IP 时，derper 第一次启动会在 `-certdir` 里生成一张一年有效的自签证书 |
-| `-verify-clients` | 只让本 tailnet 的设备用，靠同一台机器上的 tailscaled 核对 |
+| `-verify-clients` | 只让本 tailnet 的设备用，靠同一台机器上的 tailscaled 核对。照 derper 源码，查不到这台设备、或者问本机 tailscaled 出错，都直接拒绝，不会默认放行 |
 
 第一次启动，日志里会打印一行这样的内容（照 derper 源码写的）：
 
@@ -157,7 +157,7 @@ derper 的说明里还写了：前面的防火墙不能吞掉 TCP 的 RST，不�
 }
 ```
 
-- 区域 ID 900 到 999 留给自定义区域。一个区域只放一台 DERP；要备份就再开一个区域。
+- 区域 ID 900 到 999 留给自定义区域。一个区域放几台，两份官方资料说法不同：KB 写的是「一个区域只能有一台 DERP，要冗余就用多个区域、每个区域一台」；derper 的说明写的是「尽量别在一个区域放多台，非放不可就要让它们互相 mesh 并监控」。本文一个区域只放一台，要备份就再开一个区域，两份说法都认这种做法。
 - `IPv4` 必须是公网地址。有 IPv6 就加一行 `"IPv6"`。
 - `CertName` 以 `sha256-raw:` 开头时，客户端不看证书由谁签发，只核对证书的 SHA-256。这是给自签证书用的。
 - 先别加 `"OmitDefaultRegions": true`。保留官方的中继，ECS 出问题时还有退路；确认好用之后再决定要不要只用自己的。
@@ -198,7 +198,7 @@ tailscale ping <对方的名字或 100.x 地址>
 hmesh peers list
 ```
 
-对方的 `node_connectivity` 是 `online` 就通了。完整安装的电脑看只装 MCP 的那台，显示 `outbound_only`，这是正常的。`peers list` 探测每台只等 750 毫秒，经中继、链路很慢时可能显示 `unreachable`，不一定是真不通，再试试在面板里开个会话。
+对方的 `node_connectivity` 是 `online` 就通了。完整安装的电脑看只装 MCP 的那台，显示 `outbound_only`，这是正常的。`peers list` 探测时等待的时间很短，经中继、链路很慢时可能显示 `unreachable`，不一定是真不通，再试试在面板里开个会话。
 
 ### 另一个选择：Tailscale Peer Relays
 
@@ -243,7 +243,16 @@ derp:
 
 `urls` 留着官方地图，ECS 出问题时还有退路；改成 `urls: []` 就只用自己的，但那是单点。它自带的 DERP 默认就只服务登录在这台 Headscale 上的设备（`verify_clients: true`）。
 
-**接上面装好的 derper**：在 `config.yaml` 的 `derp.paths` 里指向一个 `derp.yaml`，再把 derper 的 `-verify-clients` 换成 `-verify-client-url https://<你的 Headscale 地址>/verify`：
+**接上面装好的 derper**：在 `config.yaml` 的 `derp.paths` 里指向一个 `derp.yaml`，再把 derper 启动命令里的 `-verify-clients` 换成这两个参数：
+
+```sh
+-verify-client-url https://<你的 Headscale 地址>/verify -verify-client-url-fail-open=false
+```
+
+- `-verify-client-url`：每有客户端连进来，derper 就去问 Headscale 认不认识它，不认识就拒绝。
+- `-verify-client-url-fail-open=false`：**一定要加。** 它默认是 `true`，意思是 derper 连不上 Headscale 时放行所有客户端（derper 源码和 Headscale 文档都这么写），Headscale 一挂，这台 DERP 谁都能用。设成 `false` 后，连不上 Headscale 时宁可拒绝也不放行；代价是 Headscale 停机期间，这台 DERP 也用不了。
+
+`derp.yaml` 的写法：
 
 ```yaml
 # /etc/headscale/derp.yaml
@@ -319,6 +328,12 @@ PublicKey = <B 的公钥>
 AllowedIPs = 10.66.0.3/32
 ```
 
+这个文件里有私钥，存好后只让 root 能读：
+
+```sh
+sudo chmod 600 /etc/wireguard/wg0.conf
+```
+
 打开 IPv4 转发，再启动并设为开机自动起来：
 
 ```sh
@@ -347,8 +362,9 @@ PersistentKeepalive = 25
 ```
 
 - `AllowedIPs = 10.66.0.0/24`：发往整个 10.66 段的包都交给 ECS，到 B 的包也是。电脑平时上网不受影响。
+- `AllowedIPs` 别写宽了。wg-quick 会按它往系统路由表里加路由：写成 `0.0.0.0/0`，电脑所有上网流量都会被引到 ECS，而 ECS 没做 NAT，电脑就上不了网了；写成 `10.0.0.0/8` 这类和家里、公司局域网重叠的段，会把本该走局域网的流量抢过来。ECS 那边也一样：它按目的地址在各台的 `AllowedIPs` 里找该发给谁，所以每台只写自己的 `/32`；两台写了重叠的段，发给一台的包可能被送到另一台。
 - `PersistentKeepalive = 25`：电脑在 NAT 后面，不发保活包，NAT 的映射过一阵就失效，ECS 就转不过来了。25 秒是 WireGuard 官方给的建议值。
-- Linux 存成 `/etc/wireguard/wg0.conf`，用 `sudo systemctl enable --now wg-quick@wg0`。Windows 和 macOS 在客户端里导入这个文件，再点激活。
+- Linux 存成 `/etc/wireguard/wg0.conf`，同样 `sudo chmod 600`，再 `sudo systemctl enable --now wg-quick@wg0`。Windows 和 macOS 在客户端里导入这个文件，再点激活；原文件里有私钥，别留在下载目录这类地方。
 
 ### 4. 放行端口
 
@@ -371,8 +387,12 @@ hmesh setup --mcp-only --network direct
 
 - 想收得更紧：B 加 `--allow-from 10.66.0.2/32`，只放 A 进来，ECS 自己（10.66.0.1）也进不来。
 - **先连上 WireGuard，再 setup、再启动 daemon。** 直连模式只绑一个具体地址，启动时网卡上没有 10.66.0.3 就会退出。开机自启时，要让 WireGuard 比 daemon 先起来。Linux 上 `wg-quick@wg0` 是开机服务；Windows、macOS 客户端怎么设开机自动连，没证实，照客户端界面来。启动失败了，连上 WireGuard 后再运行 `hmesh daemon start`。
-- 配对用配对码：在 B 的面板「配对节点」→「配对新电脑」复制配对码（里面是 `10.66.0.3:39880`），在 A 上粘贴。「附近的电脑」靠 mDNS 多播，多播地址不在 `AllowedIPs` 里，WireGuard 不会把它发出去，所以多半列不出来（没实测）。
-- 用过 Tailscale 配对、现在改走 WireGuard 的：B 换了地址，只装 MCP 的 A 收不到 B 的新名片（见 [安全说明](security.md) 的「名片更新」），在 A 上重新配对一次。
+- 配对用配对码，和 [README](../README_CN.md#配对电脑) 里的步骤一样：
+  1. 在 B 的面板「配对节点」→「配对新电脑」打开配对窗口。直连网络里，B 只在打开后的 10 分钟内接受配对申请。复制「这台电脑的配对码」（里面是 `10.66.0.3:39880`）。
+  2. 在 A 的同一个弹窗里粘贴、发出申请。A 会显示一个 6 位校验码。
+  3. 回到 B，在「配对节点」或「工作待办」里找到这条申请，输入 A 上显示的校验码，核对无误再批准。A 几秒内会自己完成。
+- 「附近的电脑」靠 mDNS 多播，多播地址不在 `AllowedIPs` 里，WireGuard 不会把它发出去，所以多半列不出来（没实测）。
+- 从 Tailscale 换成 WireGuard 后，B 的地址变了。A 之后连不上 B 时，在 A 上重新配对一次。
 - macOS 的「本地网络」权限管不管 WireGuard 的地址，没证实。连不上、提示去开本地网络权限时，照 [安全说明](security.md) 去「系统设置 → 隐私与安全性 → 本地网络」打开。
 - Windows 把 WireGuard 网卡算成「专用」还是「公用」网络，没证实。B 是 Windows、A 连不进来时，先查 Windows 防火墙对 hmesh 的规则。
 
@@ -432,9 +452,9 @@ Windows 的防火墙默认不回 ping，B 是 Windows 时 ping 不通不一定�
 阿里云的固定公网 IP 只收出方向流量的钱，入方向不收。经 ECS 转发的每个字节，从 A 进来不收，转给 B 出去收一次。
 
 - 做法一只在打不通时才经过 ECS；做法二全部经过。
-- HarnessMesh 平时传的是会话文字和事件，量不大。受管 HTTP 服务和大的产物会多一些。
+- HarnessMesh 平时传的是会话文字和事件，量应该不大（推断，没统计过）。受管 HTTP 服务和大的产物会多一些。
 - 「按使用流量」计费时设一个带宽峰值；「按固定带宽」时，带宽值就是出网的上限。
-- 做法一一定要开 `--verify-clients`（或 Headscale 的 `-verify-client-url`），不然别人能拿你的 DERP 转流量，费用算你的。
+- 做法一一定要限制谁能用这台 DERP，不然别人能拿它转流量，费用算你的。用 Tailscale 官方控制服务器时开 `-verify-clients`，它查不到设备就拒绝；用 Headscale 时开 `-verify-client-url`，并且同时加 `-verify-client-url-fail-open=false`，否则 Headscale 连不上时谁都能用。
 
 ### ECS 能看到什么
 
@@ -453,9 +473,10 @@ ECS 被人拿下，做法一里对方进了你的 tailnet，做法二里对方�
 
 Tailscale：
 
-- 自定义 DERP（端口、ICMP、`go install`、`derpMap`、区域 ID 900 到 999、`--verify-clients`、`OmitDefaultRegions`、Peer Relays 更推荐）：https://tailscale.com/kb/1118/custom-derp-servers
-- derper 的 README（同一版本编译、不能放在代理和负载均衡后面、防火墙放行、RST 和限速、`tailscale debug derp`）：https://pkg.go.dev/tailscale.com/cmd/derper ，源码目录 https://github.com/tailscale/tailscale/tree/main/cmd/derper
-- derper 参数（`-a`、`-http-port`、`-stun-port`、`-certmode`、`-certdir`、`-hostname`、`--acme-ip-certs`、`-verify-client-url`）：https://github.com/tailscale/tailscale/blob/v1.104.7/cmd/derper/derper.go
+- 自定义 DERP（端口、ICMP、`go install`、`derpMap`、区域 ID 900 到 999、一个区域只能有一台、`--verify-clients`、`OmitDefaultRegions`、Peer Relays 更推荐）：https://tailscale.com/kb/1118/custom-derp-servers
+- derper 的 README（同一版本编译、不能放在代理和负载均衡后面、一个区域尽量别放多台、防火墙放行、RST 和限速、`tailscale debug derp`）：https://pkg.go.dev/tailscale.com/cmd/derper ，源码目录 https://github.com/tailscale/tailscale/tree/main/cmd/derper
+- derper 参数（`-a`、`-http-port`、`-stun-port`、`-certmode`、`-certdir`、`-hostname`、`--acme-ip-certs`、`-verify-client-url`、`-verify-client-url-fail-open` 默认 `true`）：https://github.com/tailscale/tailscale/blob/v1.104.7/cmd/derper/derper.go
+- `-verify-clients` 查不到或出错就拒绝、`-verify-client-url` 连不上时按 fail-open 放行：https://github.com/tailscale/tailscale/blob/v1.104.7/derp/derpserver/derpserver.go （`verifyClient`）
 - 只用 IP 时生成自签证书、打印 `CertName`：https://github.com/tailscale/tailscale/blob/v1.104.7/cmd/derper/cert.go
 - `DERPNode` 各字段，`sha256-raw:` 的含义：https://github.com/tailscale/tailscale/blob/v1.104.7/tailcfg/derpmap.go ；客户端按指纹核对：https://github.com/tailscale/tailscale/blob/v1.104.7/derp/derphttp/derphttp_client.go
 - `tailscale ping` 的 `via` 输出：https://github.com/tailscale/tailscale/blob/v1.104.7/cmd/tailscale/cli/ping.go
@@ -466,7 +487,7 @@ Tailscale：
 
 Headscale：
 
-- DERP（自带 DERP、`urls`、`paths`、`derp.yaml`、`-verify-client-url`、`tailscale debug derp-map`）：https://headscale.net/stable/ref/derp/
+- DERP（自带 DERP、`urls`、`paths`、`derp.yaml`、`-verify-client-url`、`-verify-client-url-fail-open` 默认放行、`tailscale debug derp-map`）：https://headscale.net/stable/ref/derp/
 - 要求和端口（HTTPS 443、issue 2164）：https://headscale.net/stable/setup/requirements/
 - TLS：https://headscale.net/stable/ref/tls/
 - 配置样例（`derp` 一节、`prefixes`、自带 DERP 要求 https）：https://github.com/juanfont/headscale/blob/v0.29.7/config-example.yaml
@@ -474,9 +495,10 @@ Headscale：
 WireGuard 和 Linux：
 
 - 快速上手（`wg genkey`、`wg pubkey`、`wg show`、保活 25 秒）：https://www.wireguard.com/quickstart/
+- Cryptokey Routing（发包时按目的地址在各 peer 的 `AllowedIPs` 里找该发给谁）：https://www.wireguard.com/#cryptokey-routing
 - 安装：https://www.wireguard.com/install/
 - `wg(8)`（`ListenPort` 不写就随机、`AllowedIPs`、`Endpoint`、`PersistentKeepalive`）：https://git.zx2c4.com/wireguard-tools/about/src/man/wg.8
-- `wg-quick(8)`（`Address`、`PostUp`、`%i`、`/etc/wireguard/`）：https://git.zx2c4.com/wireguard-tools/about/src/man/wg-quick.8
+- `wg-quick(8)`（`Address`、`PostUp`、`%i`、`/etc/wireguard/`、按 `AllowedIPs` 加路由、`0.0.0.0/0` 接管默认路由）：https://git.zx2c4.com/wireguard-tools/about/src/man/wg-quick.8
 - `wg-quick@.service`：https://git.zx2c4.com/wireguard-tools/tree/src/systemd/wg-quick@.service
 - `ip_forward`：https://docs.kernel.org/networking/ip-sysctl.html
 
@@ -491,6 +513,7 @@ WireGuard 和 Linux：
 HarnessMesh：
 
 - Tailscale 模式只认 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，直连模式默认放行的网段：`crates/hmesh-core/src/network.rs`
-- 直连只监听一个具体地址、名片更新的已知限制：[安全说明](security.md)
+- 直连只监听一个具体地址：[安全说明](security.md)
 - `--network`、`--listen`、`--allow-from`：`hmesh setup --help`，以及 [MCP 说明](mcp.md#用-hmesh-setup-安装)；只装 MCP 时没写 `--network`、登录了 Tailscale 就用 Tailscale 模式：`crates/hmesh-cli/src/setup.rs`
-- `hmesh peers list` 的 `node_connectivity` 和 750 毫秒探测：`crates/hmesh-daemon/src/lib.rs`
+- `hmesh peers list` 的 `node_connectivity`：`crates/hmesh-daemon/src/lib.rs`
+- 配对步骤：[README](../README_CN.md#配对电脑)
