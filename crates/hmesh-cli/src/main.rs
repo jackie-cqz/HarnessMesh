@@ -460,6 +460,20 @@ enum PairCommand {
     Decline {
         request_id: Uuid,
     },
+    /// Computers on this network with pairing open (direct network), for
+    /// `hmesh pair join`.
+    Nearby,
+    /// Pair with a computer found nearby, or at a known address, using the
+    /// 6-digit passcode its screen shows (`hmesh pair show` there). Both
+    /// computers trust each other at once: nothing to approve.
+    Join {
+        /// Its address, as `hmesh pair nearby` lists it (192.168.1.20:39880).
+        address: String,
+        /// The 6 digits. Omit it to be asked, so it stays out of the shell
+        /// history; it is read from standard input then.
+        #[arg(long)]
+        passcode: Option<String>,
+    },
     Revoke {
         peer_id: Uuid,
     },
@@ -1045,7 +1059,15 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         }
         let daemon = match local_client(&instance) {
             Ok(client) => Some(match client.get::<Value>("/local/status").await {
-                Ok(status) => json!({"state":"reachable", "status":status}),
+                Ok(mut status) => {
+                    // Doctor output is shared to get help: never the passcode.
+                    if let Some(passcode) = status.pointer_mut("/pairing_window/passcode")
+                        && passcode.is_string()
+                    {
+                        *passcode = json!("hidden");
+                    }
+                    json!({"state":"reachable", "status":status})
+                }
                 Err(error) => {
                     json!({"state":"unreachable", "error":error.to_string(), "hint":"Check daemon start and local owner credentials"})
                 }
@@ -1320,6 +1342,35 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                         &PairApproval {
                             request_id,
                             expected_fingerprint: expect_fingerprint,
+                        },
+                    )
+                    .await?
+            }
+            PairCommand::Nearby => client.get("/local/pairing/nearby").await?,
+            PairCommand::Join { address, passcode } => {
+                let passcode = match passcode {
+                    Some(passcode) => passcode,
+                    None => {
+                        use std::io::{BufRead, IsTerminal, Write};
+                        if std::io::stdin().is_terminal() {
+                            eprint!("Passcode shown on the other computer: ");
+                            std::io::stderr().flush()?;
+                        }
+                        let mut line = String::new();
+                        std::io::stdin().lock().read_line(&mut line)?;
+                        line.trim().to_owned()
+                    }
+                };
+                client
+                    .post(
+                        "/local/pairs/passcode",
+                        &hmesh_daemon::passcode::PasscodeTarget {
+                            endpoint: if address.starts_with("https://") {
+                                address
+                            } else {
+                                format!("https://{address}")
+                            },
+                            passcode,
                         },
                     )
                     .await?

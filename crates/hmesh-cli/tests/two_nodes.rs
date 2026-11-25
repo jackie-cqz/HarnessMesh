@@ -836,3 +836,318 @@ fn a_direct_computer_whose_address_is_gone_says_how_to_fix_it() {
     );
     assert!(stderr.contains("hmesh setup"), "{stderr}");
 }
+
+/// Two direct computers on one machine: the studio takes connections (on
+/// loopback, standing in for a LAN address, at a fixed port) and the laptop
+/// only connects out.
+async fn direct_pair(root: &Path) -> (std::path::PathBuf, std::path::PathBuf, String) {
+    let a_dir = root.join("laptop");
+    let b_dir = root.join("studio");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("free port")
+        .local_addr()
+        .expect("port")
+        .port()
+        .to_string();
+    cli(
+        &b_dir,
+        &[
+            "init",
+            "--name",
+            "studio",
+            "--port",
+            &port,
+            "--network",
+            "direct",
+            "--listen-address",
+            "127.0.0.1",
+        ],
+    );
+    cli(
+        &a_dir,
+        &[
+            "init",
+            "--name",
+            "laptop",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--outbound-only",
+        ],
+    );
+    (a_dir, b_dir, format!("127.0.0.1:{port}"))
+}
+fn trusted(dir: &Path) -> Vec<String> {
+    cli(dir, &["peers", "list"])
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["status"] == "trusted")
+        .map(|p| p["card"]["display_name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Pairing with the 6-digit passcode the other computer shows: a wrong one
+/// trusts nobody, the right one pairs both ways with no approval, and it
+/// works once.
+#[tokio::test]
+async fn a_computer_pairs_with_the_passcode_the_other_shows_and_nobody_approves() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (a_dir, b_dir, address) = direct_pair(root.path()).await;
+    let _a = daemon(&a_dir);
+    let _b = daemon(&b_dir);
+    let a_card = ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+
+    // Pairing closed: there is no passcode to try, even asked directly.
+    let refused = cli_fails(&a_dir, &["pair", "join", &address, "--passcode", "123456"]);
+    assert!(refused.contains("pairing is closed"), "{refused}");
+    let mut asker = Instance::load(&a_dir).expect("a");
+    asker.card = a_card.clone();
+    let submission = asker
+        .pair_submission(PairChallenge {
+            nonce: uuid::Uuid::new_v4(),
+            node_id: b_card.node_id,
+            expires_at: 0,
+        })
+        .expect("submission");
+    let (_, message) = hmesh_security::passcode::Asker::start(
+        "123456",
+        &a_card.fingerprint,
+        &b_card.fingerprint,
+        submission.request_id,
+    )
+    .expect("asker");
+    let anonymous =
+        Client::new(&asker, &b_card.endpoint, &b_card.fingerprint, true, false).expect("anonymous");
+    assert_eq!(
+        anonymous
+            .post::<_, Value>(
+                "/hmesh/v1/pair/passcode",
+                &hmesh_daemon::passcode::PasscodeStart {
+                    submission,
+                    message
+                },
+            )
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+
+    let shown = cli(&b_dir, &["pair", "show"]);
+    let passcode = shown["pairing_window"]["passcode"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no passcode: {shown}"))
+        .to_owned();
+    assert!(passcode.len() == 6 && passcode.bytes().all(|b| b.is_ascii_digit()));
+    assert_eq!(shown["pairing_window"]["tries_left"], 3);
+    let wrong = if passcode == "000000" {
+        "000001"
+    } else {
+        "000000"
+    };
+
+    // A wrong passcode: refused, and the studio trusts nobody.
+    let refused = cli_fails(&a_dir, &["pair", "join", &address, "--passcode", wrong]);
+    assert!(refused.contains("passcode did not match"), "{refused}");
+    assert!(trusted(&b_dir).is_empty());
+    assert!(trusted(&a_dir).is_empty());
+    let status = cli(&b_dir, &["daemon", "status"]);
+    assert_eq!(status["pairing_window"]["tries_left"], 2, "{status}");
+
+    // The right one: both trust each other, nobody approved anything.
+    // Doctor output (shared to get help) never carries the passcode.
+    let doctor = cli(&b_dir, &["doctor"]);
+    assert_eq!(
+        doctor["daemon"]["status"]["pairing_window"]["passcode"], "hidden",
+        "{doctor}"
+    );
+    assert!(!doctor.to_string().contains(&passcode));
+    // Typed when asked, not on the command line (out of the shell history).
+    let output = {
+        use std::io::Write;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_hmesh"))
+            .arg("--data-dir")
+            .arg(&a_dir)
+            .args(["--json", "pair", "join", &address])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("CLI process");
+        writeln!(child.stdin.take().expect("stdin"), "{passcode}").expect("type passcode");
+        child.wait_with_output().expect("CLI output")
+    };
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let joined: Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(joined["status"], "approved", "{joined}");
+    assert_eq!(trusted(&a_dir), ["studio"]);
+    assert_eq!(trusted(&b_dir), ["laptop"]);
+    let mut a = Instance::load(&a_dir).expect("a");
+    a.card = a_card;
+    let a_to_b =
+        Client::new(&a, &b_card.endpoint, &b_card.fingerprint, false, false).expect("a to b");
+    assert_eq!(
+        a_to_b
+            .get::<NodeCard>("/hmesh/v1/node")
+            .await
+            .expect("a reaches b")
+            .node_id,
+        b_card.node_id
+    );
+
+    // Used up: no passcode now, and the same one does not pair again.
+    let status = cli(&b_dir, &["daemon", "status"]);
+    assert!(status["pairing_window"]["passcode"].is_null(), "{status}");
+    assert_eq!(status["pairing_window"]["passcode_used"], true, "{status}");
+    let again = cli_fails(&a_dir, &["pair", "join", &address, "--passcode", &passcode]);
+    assert!(again.contains("no passcode open"), "{again}");
+}
+
+/// Three wrong passcodes end the passcode, not pairing: the pairing code
+/// still works, so guessing cannot shut the owner out.
+#[tokio::test]
+async fn three_wrong_passcodes_end_the_passcode_and_pairing_codes_still_work() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (a_dir, b_dir, address) = direct_pair(root.path()).await;
+    let _a = daemon(&a_dir);
+    let _b = daemon(&b_dir);
+    ready(&a_dir).await;
+    ready(&b_dir).await;
+    let passcode = cli(&b_dir, &["pair", "show"])["pairing_window"]["passcode"]
+        .as_str()
+        .expect("passcode")
+        .to_owned();
+    let wrong = if passcode == "000000" {
+        "000001"
+    } else {
+        "000000"
+    };
+    for _ in 0..3 {
+        let refused = cli_fails(&a_dir, &["pair", "join", &address, "--passcode", wrong]);
+        assert!(refused.contains("passcode did not match"), "{refused}");
+    }
+    let status = cli(&b_dir, &["daemon", "status"]);
+    let window = &status["pairing_window"];
+    assert!(window["closes_at"].is_i64(), "{status}");
+    assert!(
+        window["passcode"].is_null() && window["passcode_used"] == false,
+        "{status}"
+    );
+    // Even the right passcode is too late now.
+    let refused = cli_fails(&a_dir, &["pair", "join", &address, "--passcode", &passcode]);
+    assert!(refused.contains("no passcode open"), "{refused}");
+    assert!(trusted(&b_dir).is_empty());
+    // The pairing code still sends a request.
+    let code = cli(&b_dir, &["pair", "show"])["pair_code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let request = cli(&a_dir, &["pair", "request", "--code", &code]);
+    assert_eq!(request["status"], "pending", "{request}");
+}
+
+/// A try is spent when a handshake starts: an asker that never sends its
+/// confirmation still gets three guesses at most.
+#[tokio::test]
+async fn handshakes_never_confirmed_still_use_up_the_tries() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (a_dir, b_dir, _) = direct_pair(root.path()).await;
+    let _a = daemon(&a_dir);
+    let _b = daemon(&b_dir);
+    let a_card = ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+    cli(&b_dir, &["pair", "show"]);
+    let mut asker = Instance::load(&a_dir).expect("a");
+    asker.card = a_card.clone();
+    let anonymous =
+        Client::new(&asker, &b_card.endpoint, &b_card.fingerprint, true, false).expect("anonymous");
+    let mut answers = vec![];
+    for guess in ["111111", "222222", "333333", "444444"] {
+        let challenge: PairChallenge = anonymous
+            .get("/hmesh/v1/pair/challenge")
+            .await
+            .expect("challenge");
+        let submission = asker.pair_submission(challenge).expect("submission");
+        let (_, message) = hmesh_security::passcode::Asker::start(
+            guess,
+            &a_card.fingerprint,
+            &b_card.fingerprint,
+            submission.request_id,
+        )
+        .expect("asker");
+        answers.push(
+            anonymous
+                .post::<_, Value>(
+                    "/hmesh/v1/pair/passcode",
+                    &hmesh_daemon::passcode::PasscodeStart {
+                        submission,
+                        message,
+                    },
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.code),
+        );
+    }
+    assert_eq!(
+        answers,
+        [Ok(()), Ok(()), Ok(()), Err(ErrorCode::PermissionDenied)]
+    );
+    assert_eq!(
+        cli(&b_dir, &["daemon", "status"])["pairing_window"]["tries_left"],
+        0
+    );
+}
+
+/// A computer with pairing open is heard nearby, and no longer once its
+/// passcode is used. Multicast on loopback works on macOS; other systems
+/// may not route it there.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_computer_with_pairing_open_is_heard_nearby_until_its_passcode_is_used() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (a_dir, b_dir, address) = direct_pair(root.path()).await;
+    let _a = daemon(&a_dir);
+    let _b = daemon(&b_dir);
+    ready(&a_dir).await;
+    ready(&b_dir).await;
+    let heard = |dir: &Path| -> Vec<String> {
+        cli(dir, &["pair", "nearby"])["computers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["name"] == "studio")
+            .map(|c| c["endpoint"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    // Closed: not announced.
+    assert!(heard(&a_dir).is_empty());
+    let passcode = cli(&b_dir, &["pair", "show"])["pairing_window"]["passcode"]
+        .as_str()
+        .expect("passcode")
+        .to_owned();
+    let mut found = vec![];
+    for _ in 0..5 {
+        found = heard(&a_dir);
+        if !found.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(found, [format!("https://{address}")]);
+    cli(&a_dir, &["pair", "join", &address, "--passcode", &passcode]);
+    let mut gone = false;
+    for _ in 0..5 {
+        if heard(&a_dir).is_empty() {
+            gone = true;
+            break;
+        }
+    }
+    assert!(gone, "still announced after its passcode was used");
+}

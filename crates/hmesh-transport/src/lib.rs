@@ -2,7 +2,7 @@
 //! Tailnet or a direct network.
 pub mod tailscale;
 use axum::{Extension, Router};
-use hmesh_core::{ErrorCode, MeshError};
+use hmesh_core::{ErrorCode, MeshError, NodeCard};
 use hmesh_security::{Instance, fingerprint, validate_endpoint};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
@@ -12,7 +12,7 @@ use hyper_util::{
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     net::{IpAddr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
@@ -157,19 +157,51 @@ impl Client {
             );
         }
         let config = instance.client_config(expected_fingerprint, bootstrap)?;
-        let inner = reqwest::Client::builder()
-            .use_preconfigured_tls(config)
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(15))
-            .pool_max_idle_per_host(0)
-            .build()?;
         Ok(Self {
-            inner,
+            inner: http(config)?,
             endpoint: url.origin().ascii_serialization(),
             owner_token: owner.then(|| instance.owner_token().to_owned()),
         })
+    }
+    /// First contact with a computer whose certificate is not known yet
+    /// (passcode pairing): its card, and the fingerprint of the certificate
+    /// this connection saw, which the card must name. The caller pins that
+    /// fingerprint from here on; nothing is trusted because of this.
+    pub async fn learn(
+        instance: &Instance,
+        endpoint: &str,
+    ) -> hmesh_core::Result<(NodeCard, String)> {
+        let refused = |error: anyhow::Error| MeshError::input(error.to_string());
+        let url = validate_endpoint(endpoint).map_err(refused)?;
+        if instance.config.node.network == "loopback"
+            && !hmesh_security::endpoint_is_loopback(endpoint)
+        {
+            return Err(MeshError::input(
+                "other computers are reached from a tailscale or direct instance only",
+            ));
+        }
+        let seen = Arc::new(Mutex::new(None));
+        let config = instance
+            .first_contact_config(seen.clone())
+            .map_err(refused)?;
+        let client = Self {
+            inner: http(config).map_err(refused)?,
+            endpoint: url.origin().ascii_serialization(),
+            owner_token: None,
+        };
+        let card: NodeCard = client.get("/hmesh/v1/hello").await?;
+        let seen = seen
+            .lock()
+            .ok()
+            .and_then(|seen| seen.clone())
+            .ok_or_else(|| MeshError::new(ErrorCode::PeerUnreachable, "no certificate was seen"))?;
+        if card.fingerprint != seen {
+            return Err(MeshError::new(
+                ErrorCode::Unauthenticated,
+                "that computer's card names another certificate than the one it showed",
+            ));
+        }
+        Ok((card, seen))
     }
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> hmesh_core::Result<T> {
         self.send::<(), T>(reqwest::Method::GET, path, None, None)
@@ -253,6 +285,16 @@ impl Client {
             )
         })
     }
+}
+fn http(config: rustls::ClientConfig) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .use_preconfigured_tls(config)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(15))
+        .pool_max_idle_per_host(0)
+        .build()?)
 }
 fn transport_error(error: reqwest::Error) -> MeshError {
     // No route: often macOS refusing a LAN connection to a process without

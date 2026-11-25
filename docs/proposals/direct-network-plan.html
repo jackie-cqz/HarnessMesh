@@ -139,7 +139,7 @@
     <path class="arrow" d="M162 202 H746" marker-end="url(#a3)" style="color:var(--ink)"/><text x="300" y="196" class="muted">④ SPAKE2 握手：网络上只有握手数据，口令本身不出现</text>
     <path class="arrow" d="M748 226 H164" marker-end="url(#a3)" style="color:var(--ink)"/>
     <rect class="box strong" x="150" y="244" width="610" height="40" rx="8"/><text x="164" y="269">⑤ 两边用口令导出的密钥，确认对方的证书指纹 → 互相信任，B 不用再点批准</text>
-    <text x="164" y="306" class="muted">口令输错 3 次：窗口关闭、广播撤回，要重新打开弹窗</text>
+    <text x="164" y="306" class="muted">口令输错 3 次：口令作废、广播撤回；配对码照样能用</text>
   </svg>
 </div>
 <div class="scroll" style="margin-top:12px"><table class="kv">
@@ -148,7 +148,7 @@
   <tr><td>广播什么</td><td>服务名 <code>_hmesh._tcp.local</code>，带电脑名、地址、端口和协议版本；不带证书指纹</td></tr>
   <tr><td>什么时候广播</td><td>只在配对窗口里，窗口一关就撤回。平时局域网里看不到这台电脑</td></tr>
   <tr><td>为什么要口令</td><td>同一网段里任何设备都能广播一个也叫 studio 的服务，发现结果本身证明不了身份。要确认「选中的就是那台电脑」，必须用一样只出现在那台电脑屏幕上的东西。</td></tr>
-  <tr><td>为什么 6 位够</td><td>口令走 SPAKE2：冒充的人每猜一次，都得真的跟你握一次手；错 3 次窗口就关，猜中的概率是百万分之三。简单地把口令做成哈希发过去不行：冒充的一方拿到哈希，一秒内就能离线试完 100 万种口令。</td></tr>
+  <tr><td>为什么 6 位够</td><td>口令走 SPAKE2：冒充的人每猜一次，都得真的跟你握一次手；错 3 次口令就作废（配对窗口照开，粘贴配对码不受影响），猜中的概率是百万分之三。简单地把口令做成哈希发过去不行：冒充的一方拿到哈希，一秒内就能离线试完 100 万种口令。</td></tr>
   <tr><td>看不到对方时</td><td>访客 Wi-Fi、公司网络、开了「AP 隔离」的路由器常常屏蔽多播。这时列表是空的，弹窗会说明可能的原因，照旧可以粘贴配对码。</td></tr>
 </table></div>
 <p class="sub after">粘贴配对码的老办法在所有模式下照旧可用，流程也不变。窄屏上流程图可以左右滑动。</p>
@@ -165,7 +165,7 @@
   <tr><td><code>hmesh setup</code> 和 <code>init</code></td><td>加 <code>--network direct</code>、<code>--listen</code>、<code>--allow-from</code>；交互时列出本机地址让你选；装了 Tailscale 时先问用哪种网络（默认 Tailscale）</td><td><code>hmesh-cli</code></td></tr>
   <tr><td>面板</td><td>直连模式的配对弹窗显示「配对窗口还剩 9:41」；节点卡片标出「直连」；设置页显示允许的来源网段</td><td><code>web/panel</code></td></tr>
   <tr><td>局域网发现</td><td>用 <code>mdns-sd</code>（纯 Rust，不依赖异步运行时）在配对窗口里广播；配对弹窗打开时浏览，列出附近的电脑；命令行加 <code>hmesh pair nearby</code></td><td><code>hmesh-daemon</code> 新增发现模块，面板配对弹窗</td></tr>
-  <tr><td>口令配对</td><td>开窗口时生成一次性 6 位口令。新增两条匿名接口，完成 SPAKE2 握手和密钥确认；确认内容绑定双方证书指纹，以及这条 TLS 连接上看到的证书。成功后双方直接互相信任；错 3 次关窗口</td><td><code>hmesh-security</code>（握手），<code>hmesh-daemon</code> 配对接口，<code>hmesh-store</code></td></tr>
+  <tr><td>口令配对</td><td>开窗口时生成一次性 6 位口令。新增两条匿名接口，完成 SPAKE2 握手和密钥确认；确认内容绑定双方证书指纹，以及这条 TLS 连接上看到的证书。成功后双方直接互相信任；错 3 次口令作废，配对码照用</td><td><code>hmesh-security</code>（握手），<code>hmesh-daemon</code> 配对接口，<code>hmesh-store</code></td></tr>
   <tr><td>macOS 本地网络权限</td><td>给 macOS 版 <code>hmesh</code> 嵌入 Info.plist（程序标识、<code>NSLocalNetworkUsageDescription</code>、<code>NSBonjourServices</code>），让开机自启的 daemon 第一次连局域网时能弹出系统授权。被拒时，把 <code>EHOSTUNREACH</code> 翻译成「去 系统设置 → 隐私与安全性 → 本地网络 打开 hmesh」</td><td>构建脚本，<code>hmesh startup</code>，错误提示</td></tr>
   <tr><td>文档</td><td>README 的网络部分；<code>security.md</code> 要大改，因为这次推翻了原来写明的「不允许局域网和公网监听」</td><td><code>README*.md</code>，<code>docs/</code></td></tr>
 </table></div>
@@ -202,7 +202,7 @@
   <li>证书：证书里没有你拨的 IP 也能连上（指纹对）；指纹不对一定失败；过期证书照样失败。</li>
   <li>换地址：一边换端口或地址后，名片同步让另一边跟上。</li>
   <li><code>hmesh setup --network direct</code> 在临时 HOME 下走一遍；只装 MCP 在没有 Tailscale 的环境下装好、能配对出去。</li>
-  <li>口令配对（两节点测试，绕开 mDNS 直接走握手）：口令对，两边互相信任；错 3 次，窗口关闭、之后的请求被拒；拿着别的证书冒充的一方，即使知道广播内容也配不上；窗口外的握手被拒。</li>
+  <li>口令配对（两节点测试，绕开 mDNS 直接走握手）：口令对，两边互相信任；错 3 次，口令作废、之后的口令请求被拒，配对码照样能申请；只发起握手不确认的也照样扣次数；拿着别的证书冒充的一方，即使知道广播内容也配不上；窗口外的握手被拒。</li>
   <li>局域网发现：两台真机在同一个局域网里看得到对方，窗口一关就从列表里消失。mDNS 在测试机的回环接口上不一定能用，这一层以真机结果为准。</li>
   <li>macOS：开机自启的 daemon 第一次连局域网时弹出授权，允许后能连；拒绝时面板给出指引。</li>
   <li>面板：配对窗口倒计时、口令、「附近的电脑」列表、「直连」标记，深浅色和窄屏截图。</li>

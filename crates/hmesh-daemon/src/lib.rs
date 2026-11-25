@@ -3,8 +3,10 @@ mod acceptance;
 mod development;
 mod discovery;
 mod integration;
+mod nearby;
 mod onboarding;
 mod pairing;
+pub mod passcode;
 mod preflight;
 mod relay;
 mod service_test;
@@ -48,8 +50,10 @@ pub struct AppState {
     pub store: Store,
     policy: Arc<RwLock<Policy>>,
     handshake_requests: Arc<Mutex<HandshakeCounts>>,
-    /// Direct network: when the pairing window closes (0: closed).
-    pairing_open_until: Arc<Mutex<i64>>,
+    /// Direct network: when the pairing window closes, and its passcode.
+    pairing: Arc<Mutex<passcode::PairingWindow>>,
+    /// Direct network: this computer announced to, and heard from, others.
+    nearby: Arc<nearby::Nearby>,
     acceptance: Arc<Mutex<HashMap<Uuid, Value>>>,
     pub shutdown: watch::Sender<bool>,
     sessions: Arc<sessions::Sessions>,
@@ -201,7 +205,8 @@ impl AppState {
             store,
             policy: Arc::new(RwLock::new(policy)),
             handshake_requests: Arc::default(),
-            pairing_open_until: Arc::new(Mutex::new(0)),
+            pairing: Arc::new(Mutex::new(passcode::PairingWindow::started())),
+            nearby: Arc::default(),
             acceptance: Arc::new(Mutex::new(HashMap::new())),
             relay: Arc::new(relay::ModelRelay::new(shutdown.subscribe())),
             shutdown,
@@ -300,14 +305,51 @@ impl AppState {
     /// the pairing handshake answers only while it is open). Returns when
     /// it closes.
     pub fn open_pairing(&self) -> std::result::Result<i64, ApiError> {
-        let until = now() + PAIRING_WINDOW_SECONDS;
-        *self.pairing_open_until.lock().map_err(internal)? = until;
-        Ok(until)
+        let mut window = self.pairing.lock().map_err(internal)?;
+        window
+            .open(now(), self.offers_passcode())
+            .map_err(internal)?;
+        drop(window);
+        self.nearby.changed.notify_one();
+        Ok(self.pairing_closes_at().unwrap_or_default())
     }
     /// When the pairing window closes, if it is open.
     fn pairing_closes_at(&self) -> Option<i64> {
-        let until = *self.pairing_open_until.lock().ok()?;
-        (until > now()).then_some(until)
+        let window = self.pairing.lock().ok()?;
+        window.is_open(now()).then_some(window.closes_at)
+    }
+    /// A direct node that takes connections pairs with a passcode too.
+    fn offers_passcode(&self) -> bool {
+        self.instance.config.node.network == "direct" && !self.instance.config.outbound_only()
+    }
+    /// Whether the passcode can be used now (announced on the network).
+    fn passcode_open(&self) -> bool {
+        self.pairing
+            .lock()
+            .is_ok_and(|window| window.passcode(now()).is_some())
+    }
+    /// The pairing window as the owner sees it, in status and when opened:
+    /// read at once, so its fields belong together. `passcode_used` tells a
+    /// used passcode from one whose tries ran out.
+    fn pairing_window(&self) -> Value {
+        let required = self.offers_passcode();
+        let Ok(window) = self.pairing.lock() else {
+            return json!({"required": required, "closes_at": null});
+        };
+        let now = now();
+        let mut shown = json!({
+            "required": required,
+            "closes_at": window.is_open(now).then_some(window.closes_at),
+            "boot": window.boot,
+        });
+        if required {
+            let code = window.passcode(now);
+            shown["passcode"] = json!(code);
+            shown["tries_left"] = json!(if code.is_some() { window.tries_left } else { 0 });
+            shown["passcode_used"] = json!(code.is_none() && window.used);
+            shown["revision"] = json!(window.revision);
+        }
+        shown
     }
     /// Anonymous requests per minute, counted separately per kind so that a
     /// computer waiting for its pair request to be answered does not use up
@@ -445,6 +487,8 @@ pub fn router(state: AppState) -> Router {
         .merge(preflight::routes())
         .merge(sessions::routes())
         .merge(pairing::routes())
+        .merge(passcode::routes())
+        .merge(nearby::routes())
         .route("/hmesh/v1/hello", get(hello))
         .route("/hmesh/v1/pair/challenge", get(challenge))
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
@@ -623,6 +667,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let workflows = tokio::spawn(development::run(state.clone(), shutdown.subscribe()));
     let session_manager = tokio::spawn(sessions::run(state.clone(), shutdown.subscribe()));
     let announce = tokio::spawn(pairing::announce(state.clone(), shutdown.subscribe()));
+    let nearby = tokio::spawn(nearby::run(state.clone(), shutdown.subscribe()));
     let expiry_store = state.store.clone();
     let ttl = instance.config.security.pending_approval_ttl_seconds;
     let mut expiry_stop = shutdown.subscribe();
@@ -666,6 +711,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let _ = workflows.await;
     let _ = session_manager.await;
     announce.abort();
+    let _ = nearby.await;
     let _ = expiry.await;
     services::recover(&state_for_cleanup)?;
     signal.abort();
@@ -730,9 +776,8 @@ async fn open_pairing_window(
     headers: HeaderMap,
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
-    let required = s.instance.config.node.network == "direct" && !s.instance.config.outbound_only();
-    let closes_at = s.open_pairing()?;
-    Ok(Json(json!({"required": required, "closes_at": closes_at})))
+    s.open_pairing()?;
+    Ok(Json(s.pairing_window()))
 }
 async fn status(
     State(s): State<AppState>,
@@ -744,8 +789,8 @@ async fn status(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":match (s.instance.config.node.network.as_str(), s.instance.config.outbound_only()) {("tailscale", true) => "not_checked", ("tailscale", false) => "verified_at_startup", _ => "not_required"},
         "allowed_sources":(s.instance.config.node.network == "direct" && !s.instance.config.outbound_only()).then(|| s.instance.config.allowed_sources()),
-        "pairing_window":{"required":s.instance.config.node.network == "direct" && !s.instance.config.outbound_only(),"closes_at":s.pairing_closes_at()},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
+        "pairing_window":s.pairing_window(),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1","pairing-nearby-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
     ))
 }
 async fn stop(

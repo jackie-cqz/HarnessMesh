@@ -3,7 +3,7 @@
 // other's pairing code and sends a request; the other side approves it once,
 // typing the six-character check code the first side shows. The daemon that
 // sent the request finishes pairing by itself when the approval arrives.
-const pairingState={sent:null,waiting:new Set(),dismissed:new Set(),typed:new Map(),messages:new Map(),busy:false};
+const pairingState={sent:null,waiting:new Set(),dismissed:new Set(),typed:new Map(),messages:new Map(),busy:false,nearby:[],nearbyLooked:false,nearbyError:'',chosen:null,passcodeMessage:'',passcodeError:false};
 const pairProblems={
  INVALID_PAIR_CODE:'这不是配对码。配对码以 hmesh:// 开头，在对方面板的「配对新电脑」里复制。',
  PEER_UNREACHABLE:'连不上这台电脑：确认它开着 HarnessMesh，并且两台电脑在同一个 Tailnet 里。',
@@ -99,39 +99,134 @@ function endedPairCard(p){
 }
 
 // Direct network: this computer answers pairing for ten minutes after the
-// dialog opens it. Redraws reuse an open window; opening the dialog renews it.
+// dialog opens it, and shows a one-time passcode that a computer nearby
+// types to pair. Redraws reuse an open window; opening the dialog renews it.
 function pairingWindowNote(){
- const note=el('span','pair-window'),line=el('span','pair-window-line');
- const again=button('再开 10 分钟','button secondary small',()=>openPairingWindow(note,again));again.type='button';again.hidden=true;
- line.append(note,again);
- if((pairingState.windowClosesAt||0)>Date.now()/1000)tickPairingWindow(note,again);else openPairingWindow(note,again);
- return line;
+ const box=el('div','pair-window-box'),passcode=el('div','pair-passcode-own'),note=el('span','pair-window'),line=el('span','pair-window-line');
+ const again=button('再开 10 分钟','button secondary small',()=>openPairingWindow(box));again.type='button';again.hidden=true;
+ line.append(note,again);box.append(passcode,line);
+ if((pairingState.windowClosesAt||0)>Date.now()/1000)tickPairingWindow(box);else openPairingWindow(box);
+ return box;
 }
-async function openPairingWindow(note,again){
+async function openPairingWindow(box){
+ const note=box.querySelector('.pair-window'),again=box.querySelector('.pair-window-line .button');
  note.textContent='正在打开配对窗口…';again.hidden=true;
- try{pairingState.windowClosesAt=unwrap(await api('/pairing/window',{method:'POST',body:'{}'})).closes_at;}
+ try{const w=unwrap(await api('/pairing/window',{method:'POST',body:'{}'}));pairingState.windowClosesAt=w.closes_at;pairingState.windowRevision=w.revision||0;pairingState.windowBoot=w.boot;pairingState.ownPasscode=w.passcode||null;pairingState.triesLeft=w.tries_left??0;}
  catch(e){note.textContent=`没能打开配对窗口：${pairProblem(e)}`;again.hidden=false;return;}
- tickPairingWindow(note,again);
+ tickPairingWindow(box);
 }
-function tickPairingWindow(note,again){
+// What the daemon says, when its status is at least as new as what opening
+// the window returned (by revision): a passcode used or out of tries, a
+// window closed, or one opened again elsewhere (hmesh pair show).
+function currentWindow(){
+ // A restarted daemon (another boot) closed the window, whatever its revision.
+ const w=data('node',{}).pairing_window,fresh=w&&(w.boot!==pairingState.windowBoot||(w.revision??-1)>=(pairingState.windowRevision||0));
+ if(w&&fresh)return {closesAt:w.closes_at||0,code:w.passcode||null,tries:w.tries_left??0,used:w.passcode_used===true};
+ return {closesAt:pairingState.windowClosesAt||0,code:pairingState.ownPasscode||null,tries:pairingState.triesLeft??0,used:false};
+}
+function tickPairingWindow(box){
  clearInterval(pairingState.windowTimer);
+ const note=box.querySelector('.pair-window'),again=box.querySelector('.pair-window-line .button'),passcode=box.querySelector('.pair-passcode-own');
+ let ticks=0;
  const tick=()=>{
-  if(!note.isConnected){clearInterval(pairingState.windowTimer);return;}
-  const left=Math.round((pairingState.windowClosesAt||0)-Date.now()/1000);
-  if(left<=0){note.textContent='配对窗口已关闭：别的电脑现在用这个配对码申请会被拒绝。';again.hidden=false;clearInterval(pairingState.windowTimer);return;}
-  note.textContent=`配对窗口还剩 ${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}，这段时间里别的电脑才能用这个配对码申请。`;
+  if(!note.isConnected||!$('#pair-dialog')?.open){clearInterval(pairingState.windowTimer);return;}
+  // Ask the daemon every few seconds while the dialog is open.
+  if(++ticks%3===0&&!document.hidden)refresh();
+  const {closesAt,code,tries,used}=currentWindow();pairingState.windowClosesAt=closesAt;
+  const left=Math.round(closesAt-Date.now()/1000);
+  if(left<=0){passcode.replaceChildren();passcode.hidden=true;note.textContent='配对窗口已关闭：别的电脑现在找不到这台，用配对码申请也会被拒绝。';again.textContent='再开 10 分钟';again.hidden=false;clearInterval(pairingState.windowTimer);return;}
+  const clock=`${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}`;
+  if(nearbyReady()&&code){
+   passcode.hidden=false;
+   const digits=el('span','pair-passcode-digits',spacedPasscode(code));
+   passcode.replaceChildren(el('b','','这台电脑的口令'),digits,el('span','',`在另一台电脑的「附近的电脑」里选中这台，输入这 6 位数字。还能试 ${tries} 次。`));
+   note.textContent=`配对窗口还剩 ${clock}，这段时间里附近的电脑能看到这台，也能用配对码申请。`;again.hidden=true;
+  }else if(nearbyReady()){
+   passcode.hidden=false;passcode.replaceChildren(el('span','',used?'口令已经用过了。要再配一台电脑，换一个新口令。':'口令错了 3 次，已经作废，附近的电脑也看不到这台了。配对码照样能用；要用口令，换一个新口令。'));
+   note.textContent=`配对窗口还剩 ${clock}，这段时间里别的电脑能用配对码申请。`;again.textContent='换一个口令';again.hidden=false;
+  }else{
+   passcode.hidden=true;
+   note.textContent=`配对窗口还剩 ${clock}，这段时间里别的电脑才能用这个配对码申请。`;again.hidden=true;
+  }
  };
  tick();pairingState.windowTimer=setInterval(tick,1000);
 }
+
+// Direct network: computers on this network with pairing open. Choose one
+// and type the passcode its screen shows; nothing to approve on either side.
+function directNode(){return data('node',{}).network==='direct';}
+function nearbyReady(){return state.runtime?.capabilities?.pairing_nearby===true&&directNode();}
+function spacedPasscode(code){return code?`${code.slice(0,3)} ${code.slice(3)}`:'';}
+function nearbySection(){
+ const box=el('section','pair-nearby');box.id='pair-nearby';
+ box.append(el('div','pair-nearby-head'),el('div','pair-nearby-list'));
+ // After the dialog is shown: looking stops once it is closed.
+ drawNearby(box);setTimeout(lookNearby,0);
+ return box;
+}
+async function lookNearby(){
+ clearTimeout(pairingState.nearbyTimer);
+ if(!$('#pair-dialog')?.open||pairingState.sent)return;
+ try{pairingState.nearby=unwrap(await api('/pairing/nearby'))?.computers||[];pairingState.nearbyError='';}
+ catch(e){pairingState.nearbyError=pairProblem(e);}
+ pairingState.nearbyLooked=true;
+ const box=$('#pair-nearby');if(box)drawNearby(box);
+ if($('#pair-dialog')?.open&&!pairingState.sent)pairingState.nearbyTimer=setTimeout(lookNearby,3000);
+}
+function drawNearby(box){
+ const head=box.querySelector('.pair-nearby-head'),list=box.querySelector('.pair-nearby-list'),found=pairingState.nearby||[];
+ head.replaceChildren(el('b','','附近的电脑'),el('span','',!pairingState.nearbyLooked?'正在找…':found.length?'选中要配对的那台，输入它屏幕上的 6 位口令。':''));
+ // Keep the passcode being typed, and the focus, across redraws.
+ const typing=list.querySelector('.pair-passcode'),typed=typing?.value||'',focused=document.activeElement===typing;
+ const rows=found.map(nearbyRow);
+ if(pairingState.nearbyLooked&&!found.length)rows.push(el('p','form-note muted pair-nearby-empty',pairingState.nearbyError||'还没找到。对方也要打开「配对新电脑」；有的 Wi-Fi 会挡住查找，这时用下面的配对码。'));
+ list.replaceChildren(...rows);
+ const input=list.querySelector('.pair-passcode');if(input){input.value=typed;if(focused)input.focus();}
+}
+function nearbyRow(c){
+ const row=el('div','pair-nearby-row');row.dataset.endpoint=c.endpoint;
+ const who=el('div','pair-nearby-who');who.append(el('b','',c.name),el('span','',c.address));
+ row.append(who);
+ if(c.paired){row.append(el('span','badge','已配对'));return row;}
+ if(pairingState.chosen!==c.endpoint){
+  const pick=button('用口令配对','button secondary small',()=>{pairingState.chosen=c.endpoint;pairingState.passcodeMessage='';drawNearby($('#pair-nearby'));$('#pair-nearby .pair-passcode')?.focus();});
+  pick.type='button';pick.disabled=!canWrite();row.append(pick);return row;
+ }
+ const form=el('div','pair-passcode-form'),input=el('input','pair-passcode');
+ input.inputMode='numeric';input.autocomplete='off';input.maxLength=7;input.placeholder='6 位口令';input.setAttribute('aria-label',`${c.name} 屏幕上的 6 位口令`);
+ const go=el('button','button small','配对');go.type='button';go.disabled=!canWrite()||pairingState.busy;
+ const message=el('p','form-note pair-message',pairingState.passcodeMessage||'');message.setAttribute('role','status');message.hidden=!message.textContent;if(pairingState.passcodeError)message.classList.add('error');
+ form.append(input,go);go.addEventListener('click',()=>pairWithPasscode(c,input.value));
+ // Enter pairs with this computer, never submits the pairing-code form around it.
+ input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();event.stopPropagation();pairWithPasscode(c,input.value);}});
+ input.addEventListener('input',()=>{if(pairingState.passcodeMessage){pairingState.passcodeMessage='';message.hidden=true;}});
+ row.classList.add('chosen');row.append(form,message);
+ return row;
+}
+async function pairWithPasscode(c,value){
+ const code=String(value||'').replace(/[\s-]/g,'');
+ if(!/^[0-9]{6}$/.test(code)){pairingState.passcodeMessage='口令是对方屏幕上的 6 位数字。';pairingState.passcodeError=true;drawNearby($('#pair-nearby'));return;}
+ if(pairingState.busy)return;pairingState.busy=true;
+ pairingState.passcodeMessage='正在配对…';pairingState.passcodeError=false;drawNearby($('#pair-nearby'));
+ try{
+  const p=unwrap(await api('/pairs/passcode',{method:'POST',body:JSON.stringify({endpoint:c.endpoint,passcode:code})}));
+  pairingState.sent={...p,viaPasscode:true};pairingState.chosen=null;pairingState.passcodeMessage='';
+  if(p.status==='pending')pairingState.waiting.add(p.request_id);
+  drawPairDialog();refresh();
+ }catch(error){pairingState.busy=false;pairingState.passcodeMessage=passcodeProblem(error);pairingState.passcodeError=true;drawNearby($('#pair-nearby'));}
+ finally{pairingState.busy=false;}
+}
+function passcodeProblem(error){
+ return {UNAUTHENTICATED:'口令不对。请看对方屏幕上的 6 位数字；每台电脑的口令只能试 3 次。',PERMISSION_DENIED:'对方现在没有可用的口令：请在对方面板里重新打开「配对新电脑」。',TASK_CONFLICT:'口令对上了，但对方那边没能完成配对。请重新选中它再试一次。'}[error?.code]||pairProblem(error);
+}
 function openPairDialog(){
  if(pairingState.busy)return;
- pairingState.sent=null;
- pairingState.windowClosesAt=0;
+ Object.assign(pairingState,{sent:null,windowClosesAt:0,windowRevision:0,windowBoot:null,ownPasscode:null,triesLeft:0,nearby:[],nearbyLooked:false,nearbyError:'',chosen:null,passcodeMessage:'',passcodeError:false});
  const local=data('node',{}).node?.display_name;
  $('#pair-local').textContent=local?`本机 · ${local}`:'本机节点';
  drawPairDialog();
  $('#pair-dialog').showModal();
- $('#pair-code')?.focus({preventScroll:true});
+ if(!nearbyReady())$('#pair-code')?.focus({preventScroll:true});
 }
 function copyPairText(node,label){
  const copy=button(label,'button secondary',async()=>{
@@ -149,6 +244,9 @@ function drawPairDialog(){
   if(sent.status==='approved'){
    status.append(el('span','badge good','已配对'),el('h3','pair-sent-title',`已和 ${name} 配对`));
    done.append(status,el('p','','可在「已配对的电脑」查看对方授权的 Agent。'));
+  }else if(sent.status==='pending'&&sent.viaPasscode){
+   status.append(el('span','badge live','正在完成'),el('h3','pair-sent-title',`口令对上了，正在和 ${name} 完成配对`));
+   done.append(status,el('p','','连上对方后几秒内自动完成，不用再操作。'));
   }else if(sent.status==='pending'){
    status.append(el('span','badge warn','待对方批准'),el('h3','pair-sent-title',`已向 ${name} 发出配对申请`));
    const check=el('code','pair-digits',ownPairCheck()),checkBox=el('div','pair-check-tile');
@@ -168,7 +266,7 @@ function drawPairDialog(){
  const form=el('form','pair-form'),scroll=el('div','pair-scroll'),label=el('label','form-label','对方的配对码'),code=el('textarea');
  code.id='pair-code';code.rows=3;code.spellcheck=false;code.autocomplete='off';code.placeholder='hmesh://…';code.maxLength=600;label.append(code);
  const node=data('node',{}),canReceive=!outboundOnly(),remoteBox=el('div','pair-entry');
- if(!canReceive)remoteBox.append(el('p','form-note muted','本机以仅 MCP 模式运行，配对需要从这台电脑发起。'));
+ if(!canReceive)remoteBox.append(el('p','form-note muted',nearbyReady()?'本机以仅 MCP 模式运行，配对需要从这台电脑发起：在上面选中附近的电脑、输入它的口令，或者粘贴对方的配对码。':'本机以仅 MCP 模式运行，配对需要从这台电脑发起。'));
  remoteBox.append(label,el('p','form-note muted','让对方在「配对新电脑」里切到「本机配对码」，把复制的内容发给你。'));
  const ownBox=el('div','pair-entry'),ownCode=el('code','pair-own-code',canReceive?node.pair_code||'':'');ownCode.id='own-pair-code';
  ownBox.append(el('p','form-note','把本机配对码发给对方。收到申请后，在「配对节点」核对对方显示的 6 位校验码。'),
@@ -190,6 +288,8 @@ function drawPairDialog(){
  };
  const remote=button('粘贴对方的码','',()=>useMode(false)),local=button('本机配对码','',()=>useMode(true));
  remote.type=local.type='button';methods.append(remote,local);
+ // A direct network lists computers nearby with pairing open.
+ if(nearbyReady())scroll.append(nearbySection());
  if(canReceive)scroll.append(methods);
  scroll.append(remoteBox);
  if(canReceive)scroll.append(ownBox);

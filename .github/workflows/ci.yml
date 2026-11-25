@@ -67,6 +67,16 @@ jobs:
       - name: Pairing from the panel with one approval, without models
         if: runner.os == 'Linux'
         run: npm run test:pairing-panel
+      # Computers nearby are found over mDNS, which reaches loopback on macOS.
+      - name: Install pinned browser regression tools (macOS)
+        if: runner.os == 'macOS'
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install headless Chromium (macOS)
+        if: runner.os == 'macOS'
+        run: npx playwright install chromium
+      - name: Pairing with a computer nearby by its passcode, without models
+        if: runner.os == 'macOS'
+        run: npm run test:pairing-nearby
   dependency-audit:
     runs-on: ubuntu-latest
     steps:

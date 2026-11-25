@@ -19,9 +19,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use uuid::Uuid;
+pub mod passcode;
 
 pub struct Instance {
     pub dir: PathBuf,
@@ -258,7 +259,10 @@ impl Instance {
         let builder = ClientConfig::builder_with_provider(provider.clone())
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(PinnedServer { expected, provider }));
+            .with_custom_certificate_verifier(Arc::new(PinnedServer {
+                pin: Pin::Exact(expected),
+                provider,
+            }));
         let config = if bootstrap {
             builder.with_no_client_auth()
         } else {
@@ -268,6 +272,21 @@ impl Instance {
             )?
         };
         Ok(config)
+    }
+    /// First contact with a computer whose certificate is not known yet
+    /// (passcode pairing): any certificate passing the usual WebPKI checks is
+    /// accepted, and its fingerprint written to `seen`, for the caller to pin
+    /// from then on. Trust comes from the passcode, never from this.
+    pub fn first_contact_config(&self, seen: Arc<Mutex<Option<String>>>) -> Result<ClientConfig> {
+        let provider = provider();
+        Ok(ClientConfig::builder_with_provider(provider.clone())
+            .with_protocol_versions(&[&rustls::version::TLS13])?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(PinnedServer {
+                pin: Pin::Learn(seen),
+                provider,
+            }))
+            .with_no_client_auth())
     }
 }
 
@@ -428,8 +447,15 @@ pub fn provider() -> Arc<CryptoProvider> {
 
 #[derive(Debug)]
 struct PinnedServer {
-    expected: String,
+    pin: Pin,
     provider: Arc<CryptoProvider>,
+}
+#[derive(Debug)]
+enum Pin {
+    /// Exactly this certificate fingerprint.
+    Exact(String),
+    /// Whichever certificate answers, recorded here (first contact).
+    Learn(Arc<Mutex<Option<String>>>),
 }
 impl ServerCertVerifier for PinnedServer {
     fn verify_server_cert(
@@ -440,7 +466,10 @@ impl ServerCertVerifier for PinnedServer {
         ocsp: &[u8],
         now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
-        if fingerprint(cert.as_ref()) != self.expected {
+        let seen = fingerprint(cert.as_ref());
+        if let Pin::Exact(expected) = &self.pin
+            && seen != *expected
+        {
             return Err(rustls::Error::General(
                 "pinned certificate fingerprint mismatch".into(),
             ));
@@ -462,7 +491,14 @@ impl ServerCertVerifier for PinnedServer {
                 .map_err(|e| rustls::Error::General(e.to_string()))?;
         let pinned =
             ServerName::try_from("localhost").map_err(|e| rustls::Error::General(e.to_string()))?;
-        verifier.verify_server_cert(cert, intermediates, &pinned, ocsp, now)
+        let verified = verifier.verify_server_cert(cert, intermediates, &pinned, ocsp, now)?;
+        if let Pin::Learn(slot) = &self.pin {
+            *slot
+                .lock()
+                .map_err(|_| rustls::Error::General("certificate record poisoned".into()))? =
+                Some(seen);
+        }
+        Ok(verified)
     }
     fn verify_tls12_signature(
         &self,
