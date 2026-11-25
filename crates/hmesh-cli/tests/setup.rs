@@ -389,3 +389,213 @@ fn a_symlinked_codex_config_stays_a_link_and_clients_get_an_absolute_node_dir() 
     let node = std::fs::canonicalize(&home.node).unwrap();
     assert_eq!(args, ["mcp", "--data-dir", &node.display().to_string()]);
 }
+
+impl Home {
+    fn setup_with(&self, args: &[&str]) -> Value {
+        let mut all = vec!["--json", "setup", "--no-startup", "--connect", "none"];
+        all.extend_from_slice(&["--name", "probe", "--port", "0"]);
+        all.extend_from_slice(args);
+        let output = self.hmesh(&all, None);
+        assert!(
+            output.status.success(),
+            "setup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+    fn config(&self) -> toml::Table {
+        toml::from_str(&std::fs::read_to_string(self.node.join("node.toml")).unwrap()).unwrap()
+    }
+}
+
+#[test]
+fn without_tailscale_only_mcp_connects_out_over_this_computers_own_network() {
+    let home = Home::new();
+    // No Tailscale here (forced, so a developer machine with it behaves the same).
+    let summary = home.setup_with(&[
+        "--mcp-only",
+        "--tailscale-executable",
+        "/nonexistent/tailscale",
+    ]);
+    assert_eq!(summary["network"], "direct");
+    assert_eq!(summary["outbound_only"], true);
+    assert!(summary["tailnet_address"].is_null());
+    let config = home.config();
+    assert_eq!(config["node"]["network"].as_str(), Some("direct"));
+    assert_eq!(config["node"]["expose_to_tailnet"].as_bool(), Some(false));
+    assert_eq!(config["node"]["listen_address"].as_str(), Some("127.0.0.1"));
+    let status = home.hmesh(&["--json", "daemon", "status"], None);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["outbound_only"], true);
+    assert_eq!(status["pairing_window"]["required"], false);
+}
+
+#[test]
+fn full_on_a_direct_network_listens_on_the_given_address_and_switches_back() {
+    let home = Home::new();
+    // Loopback stands in for this computer's LAN address.
+    let summary = home.setup_with(&[
+        "--full",
+        "--network",
+        "direct",
+        "--listen",
+        "127.0.0.1",
+        "--allow-from",
+        "127.0.0.0/8",
+    ]);
+    assert_eq!(summary["network"], "direct");
+    assert_eq!(summary["outbound_only"], false);
+    assert_eq!(summary["listen_address"], "127.0.0.1");
+    let config = home.config();
+    assert_eq!(config["node"]["expose_to_tailnet"].as_bool(), Some(true));
+    assert_eq!(
+        config["node"]["allowed_sources"]
+            .as_array()
+            .map(|a| a.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>()),
+        Some(vec!["127.0.0.0/8"])
+    );
+    let status = home.hmesh(&["--json", "daemon", "status"], None);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["network"], "direct");
+    assert_eq!(status["pairing_window"]["required"], true);
+    let fingerprint = summary["node"]["fingerprint"].clone();
+
+    // Not an address of this computer: refused before anything changes.
+    let refused = home.hmesh(
+        &[
+            "--json",
+            "setup",
+            "--full",
+            "--no-startup",
+            "--connect",
+            "none",
+            "--network",
+            "direct",
+            "--listen",
+            "192.0.2.10",
+        ],
+        None,
+    );
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("not an address of this computer"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(
+        home.config()["node"]["listen_address"].as_str(),
+        Some("127.0.0.1")
+    );
+
+    // Back to only MCP on Tailscale: same identity, pairings would stay.
+    let back = home.setup_with(&["--mcp-only", "--tailnet-address", "100.64.0.9"]);
+    assert_eq!(back["network"], "tailscale");
+    assert_eq!(back["node"]["fingerprint"], fingerprint);
+    assert!(home.config()["node"].get("allowed_sources").is_none());
+    // Said, not silent: the narrowed sources are gone.
+    assert!(
+        back["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["text"].as_str().unwrap().contains("127.0.0.0/8")),
+        "{back}"
+    );
+}
+
+impl Home {
+    /// A Tailscale CLI here that reports `state`.
+    fn tailscale(&self, state: &str) -> String {
+        let path = self.bin.join(format!("tailscale-{state}"));
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho '{{\"BackendState\":\"{state}\",\"Self\":{{\"HostName\":\"probe\",\"TailscaleIPs\":[\"100.64.0.9\"],\"Online\":true}}}}'\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.display().to_string()
+    }
+}
+
+/// Run again without naming a network, a node keeps the one it has, with
+/// its address and sources, even with Tailscale running here now.
+#[test]
+fn setup_again_keeps_the_network_address_and_sources_it_has() {
+    let home = Home::new();
+    home.setup_with(&[
+        "--full",
+        "--network",
+        "direct",
+        "--listen",
+        "127.0.0.1",
+        "--allow-from",
+        "127.0.0.0/8",
+    ]);
+    let before = home.config();
+    let running = home.tailscale("Running");
+    let again = home.setup_with(&["--full", "--tailscale-executable", &running]);
+    assert_eq!(again["network"], "direct", "{again}");
+    let after = home.config();
+    for key in [
+        "network",
+        "listen_address",
+        "expose_to_tailnet",
+        "allowed_sources",
+    ] {
+        assert_eq!(after["node"].get(key), before["node"].get(key), "{key}");
+    }
+    assert!(after["node"].get("tailnet_address").is_none());
+}
+
+/// Tailscale installed but signed out counts as not here: only MCP connects
+/// out over this computer's own network instead of failing.
+#[test]
+fn only_mcp_with_tailscale_signed_out_connects_out_directly() {
+    let home = Home::new();
+    let signed_out = home.tailscale("NeedsLogin");
+    let summary = home.setup_with(&["--mcp-only", "--tailscale-executable", &signed_out]);
+    assert_eq!(summary["network"], "direct", "{summary}");
+    assert_eq!(summary["outbound_only"], true);
+}
+
+/// A new address (the fix for a DHCP change) keeps a narrowed source range:
+/// it is never widened to every private network without being asked.
+#[test]
+fn a_new_address_keeps_the_narrowed_sources() {
+    let home = Home::new();
+    // Set up for an address this computer does not have (192.0.2.0/24 is
+    // for documentation), as after its lease changed.
+    let output = home.hmesh(
+        &[
+            "--json",
+            "init",
+            "--name",
+            "probe",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--listen-address",
+            "192.0.2.10",
+            "--allow-from",
+            "192.0.2.0/24",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    home.setup_with(&["--full", "--listen", "127.0.0.1"]);
+    let config = home.config();
+    assert_eq!(config["node"]["listen_address"].as_str(), Some("127.0.0.1"));
+    assert_eq!(
+        config["node"]["allowed_sources"]
+            .as_array()
+            .map(|a| a.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>()),
+        Some(vec!["192.0.2.0/24"])
+    );
+}

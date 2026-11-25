@@ -209,6 +209,7 @@ pub async fn run(
         .route("/api/services/{id}/{action}", post(service_action))
         .route("/api/peers/{id}/agents", get(remote_agents))
         .route("/api/pairs/request", post(request_pair))
+        .route("/api/pairing/window", post(open_pairing_window))
         .route("/api/pairs/{id}/{action}", post(pair_action))
         .route(
             "/assets/sessions.js",
@@ -1232,6 +1233,11 @@ struct PairCheck {
 /// Approve or decline a request from another computer, or cancel one sent
 /// from here. Approving takes the last six digits of the other computer's
 /// fingerprint, which its panel shows after it sends the request.
+/// Open the pairing window for ten minutes (a direct network answers the
+/// pairing handshake only while it is open).
+async fn open_pairing_window(State(s): State<Panel>) -> Response {
+    mutation(s.client.post("/local/pairing/window", &json!({})).await)
+}
 async fn pair_action(
     State(s): State<Panel>,
     Path((id, name)): Path<(Uuid, String)>,

@@ -47,6 +47,12 @@ pub struct Options {
     pub startup: Option<bool>,
     pub tailscale_executable: Option<PathBuf>,
     pub tailnet_address: Option<IpAddr>,
+    /// `tailscale` or `direct`; `None` picks Tailscale when it is here.
+    pub network: Option<String>,
+    /// Direct network: the address of this computer others connect to.
+    pub listen: Option<IpAddr>,
+    /// Direct network: who may connect (default: private networks).
+    pub allow_from: Option<Vec<hmesh_core::IpNet>>,
     pub project: Option<PathBuf>,
     pub agents: Option<Vec<String>>,
     /// The data directory was given explicitly, so MCP entries must name it.
@@ -89,28 +95,80 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
         steps: vec![],
     };
 
-    // This computer's Tailnet IP: the address paired computers know it by.
-    let (address, hostname) = match options.tailnet_address {
-        Some(address) => (address, None),
-        None => {
-            let status = CliTailscale::discover(options.tailscale_executable.as_deref())
-                .context("Tailscale is needed to reach other computers; install it and sign in, or pass --tailscale-executable")?
-                .status()
-                .await?;
-            (
-                status.preferred_local_ip()?,
-                Some(status.self_node.hostname),
-            )
-        }
+    // The network paired computers reach this one on. Run again without
+    // naming one, a node keeps the network, address and sources it has.
+    let existing = dir
+        .join("node.toml")
+        .exists()
+        .then(|| Instance::load(dir))
+        .transpose()?
+        .map(|instance| instance.config);
+    let (place, hostname) = find_place(mode, &options, interactive, existing.as_ref()).await?;
+    let allow_from = options
+        .allow_from
+        .clone()
+        .or_else(|| match (&existing, place) {
+            // Kept across a new address too (the fix for a DHCP change): a
+            // narrowed range is never widened without being asked.
+            (Some(config), Place::Direct(Some(_))) if config.node.network == "direct" => {
+                config.node.allowed_sources.clone()
+            }
+            _ => None,
+        });
+    let options = Options {
+        allow_from,
+        ..options
     };
-    report.step(true, format!("This computer is {address} on the Tailnet"));
+    match place {
+        Place::Tailnet(address) => {
+            report.step(true, format!("This computer is {address} on the Tailnet"))
+        }
+        Place::Direct(Some(address)) => report.step(
+            true,
+            format!(
+                "Other computers on this network connect to {address}; it accepts them from {}",
+                match &options.allow_from {
+                    Some(sources) => sources
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    None => "private networks only".into(),
+                }
+            ),
+        ),
+        Place::Direct(None) => report.step(
+            true,
+            "Connects out over this computer's own network (no Tailscale needed)",
+        ),
+    }
 
-    // The node: create it, or switch an existing one between the two ways.
-    let target = node_config(mode, &options, address, hostname.as_deref());
+    // The node: create it, or switch an existing one between the two ways
+    // and networks. Peers know it by its certificate, so pairings stay.
+    let target = node_config(mode, &options, place, hostname.as_deref());
+    // Only MCP accepts no connections, so it has no sources to keep.
+    if let Some(sources) = existing
+        .as_ref()
+        .and_then(|config| config.node.allowed_sources.as_ref())
+        .filter(|_| target.node.allowed_sources.is_none())
+    {
+        report.step(
+            false,
+            format!(
+                "The sources it accepted ({}) are not kept: pass --allow-from again when it goes back to --full",
+                sources
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
+    target.validate()?;
     let mut restart = false;
     if dir.join("node.toml").exists() {
         let mut instance = Instance::load(dir)?;
-        if switch(&mut instance.config, mode, address)? {
+        if switch(&mut instance.config, &target)? {
             atomic_write(
                 &dir.join("node.toml"),
                 toml::to_string_pretty(&instance.config)?.as_bytes(),
@@ -197,11 +255,17 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
         &mut report,
     )?;
 
-    let next = match mode {
-        Mode::McpOnly => {
+    if matches!(place, Place::Direct(_)) {
+        direct_notes(mode, &mut report);
+    }
+    let next = match (mode, place) {
+        (Mode::McpOnly, _) => {
             "Next: run `hmesh panel`, open 配对节点 → 配对新电脑 and paste another computer's pairing code. This computer only connects out, so pairing starts here."
         }
-        Mode::Full => {
+        (Mode::Full, Place::Direct(_)) => {
+            "Next: run `hmesh panel` and open 配对节点 → 配对新电脑: for 10 minutes, other computers can pair with the code it shows (`hmesh pair show` does the same)."
+        }
+        (Mode::Full, _) => {
             "Next: run `hmesh panel` to pair with other computers and talk to agents. Others can pair with this computer's code (`hmesh pair show`)."
         }
     };
@@ -212,7 +276,9 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
         "mode": mode.name(),
         "data_dir": dir,
         "node": instance.card,
-        "tailnet_address": address,
+        "network": instance.config.node.network,
+        "tailnet_address": match place { Place::Tailnet(address) => Some(address), Place::Direct(_) => None },
+        "listen_address": match place { Place::Direct(address) => address, Place::Tailnet(address) => (mode == Mode::Full).then_some(address) },
         "outbound_only": mode == Mode::McpOnly,
         "startup": startup,
         "registered_agents": registered,
@@ -259,11 +325,232 @@ fn confirm(question: &str) -> Result<bool> {
     ))
 }
 
-/// A new node's configuration for `mode`.
+/// Where paired computers find this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// On a Tailnet, at this computer's Tailnet IP.
+    Tailnet(IpAddr),
+    /// On a network this computer is on (a LAN, ZeroTier, WireGuard, ...):
+    /// the address others connect to, or none when it only connects out.
+    Direct(Option<IpAddr>),
+}
+
+/// The network to set this computer up for: as asked, or Tailscale when it
+/// is here and this computer's own network otherwise.
+async fn find_place(
+    mode: Mode,
+    options: &Options,
+    interactive: bool,
+    existing: Option<&NodeConfig>,
+) -> Result<(Place, Option<String>)> {
+    let wants_direct = options.listen.is_some() || options.allow_from.is_some();
+    let kept = existing
+        .map(|config| config.node.network.as_str())
+        .filter(|network| matches!(*network, "tailscale" | "direct"));
+    let network = match options.network.as_deref() {
+        Some(network) => network.to_owned(),
+        None if wants_direct => "direct".into(),
+        None if options.tailnet_address.is_some() => "tailscale".into(),
+        // Set up before: the same network again.
+        None if kept.is_some() => kept.unwrap_or_default().to_owned(),
+        None => {
+            // Here and signed in: Tailscale. Installed but signed out or
+            // stopped counts as not here.
+            let tailnet = match CliTailscale::discover(options.tailscale_executable.as_deref()) {
+                Ok(provider) => provider
+                    .status()
+                    .await
+                    .ok()
+                    .filter(|status| status.require_running().is_ok()),
+                Err(_) => None,
+            };
+            match (tailnet, mode) {
+                (Some(_), Mode::Full) if interactive && !ask_tailscale()? => "direct".into(),
+                (Some(_), _) => "tailscale".into(),
+                (None, Mode::McpOnly) => "direct".into(),
+                (None, Mode::Full) if interactive => {
+                    eprintln!(
+                        "Tailscale is not installed or not signed in here, so other computers connect over this computer's own network."
+                    );
+                    "direct".into()
+                }
+                (None, Mode::Full) => bail!(
+                    "Tailscale is not installed or not signed in here: sign in to it, or set this computer up for its own network with --network direct --listen <one of its addresses>"
+                ),
+            }
+        }
+    };
+    if network == "tailscale" {
+        if wants_direct {
+            bail!("--listen and --allow-from are for --network direct");
+        }
+        if let Some(address) = options.tailnet_address {
+            return Ok((Place::Tailnet(address), None));
+        }
+        // Tailscale's current IP; an only-MCP node set up before may keep
+        // the one it has (it only goes into the certificate) when Tailscale
+        // is not running now.
+        let status = match CliTailscale::discover(options.tailscale_executable.as_deref()) {
+            Ok(provider) => provider.status().await,
+            Err(error) => Err(error),
+        };
+        let known = existing
+            .filter(|config| config.node.network == "tailscale")
+            .and_then(|config| config.node.tailnet_address);
+        return Ok(
+            match (
+                status.and_then(|s| Ok((s.preferred_local_ip()?, s.self_node.hostname))),
+                known,
+            ) {
+                (Ok((address, hostname)), _) => (Place::Tailnet(address), Some(hostname)),
+                (Err(_), Some(address)) if mode == Mode::McpOnly => (Place::Tailnet(address), None),
+                (Err(error), _) => {
+                    return Err(error.context(
+                    "Tailscale is needed for --network tailscale: install it, sign in and keep it running (or pass --tailscale-executable), or use this computer's own network with --network direct",
+                ));
+                }
+            },
+        );
+    }
+    if options.tailnet_address.is_some() {
+        bail!("--tailnet-address is for --network tailscale");
+    }
+    if mode == Mode::McpOnly {
+        if wants_direct {
+            bail!(
+                "an only-MCP computer accepts no connections: --listen and --allow-from are for --full"
+            );
+        }
+        return Ok((Place::Direct(None), host_name()));
+    }
+    // A direct node that listened before keeps its address, while this
+    // computer still has it.
+    let listen = options.listen.or_else(|| {
+        existing
+            .filter(|config| config.node.network == "direct" && config.node.expose_to_tailnet)
+            .map(|config| config.node.listen_address)
+            .filter(|address| {
+                address.is_loopback() || local_addresses().iter().any(|(_, ip)| ip == address)
+            })
+    });
+    Ok((
+        Place::Direct(Some(choose_address(listen, interactive)?)),
+        host_name(),
+    ))
+}
+
+fn ask_tailscale() -> Result<bool> {
+    eprintln!("How do other computers reach this one?");
+    eprintln!("  1) Tailscale (recommended: works across networks)");
+    eprintln!(
+        "  2) This computer's own network: a LAN, ZeroTier, WireGuard (computers on it connect directly)"
+    );
+    loop {
+        match ask("> ")?.as_str() {
+            "1" | "" => return Ok(true),
+            "2" => return Ok(false),
+            _ => eprintln!("Type 1 or 2."),
+        }
+    }
+}
+
+/// This computer's addresses other computers could connect to: not
+/// loopback, link-local or unspecified. IPv4 first.
+fn local_addresses() -> Vec<(String, IpAddr)> {
+    let mut found: Vec<(String, IpAddr)> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|interface| (interface.name.clone(), interface.ip()))
+        .filter(|(_, ip)| hmesh_security::peer_address(*ip) && !ip.is_loopback())
+        .collect();
+    found.sort_by_key(|(name, ip)| (ip.is_ipv6(), name.clone(), *ip));
+    found.dedup_by_key(|(_, ip)| *ip);
+    found
+}
+
+/// The address a direct node listens on: `--listen` if it is one of this
+/// computer's, the only candidate, or the one the owner picks.
+fn choose_address(listen: Option<IpAddr>, interactive: bool) -> Result<IpAddr> {
+    let found = local_addresses();
+    let list = || {
+        found
+            .iter()
+            .map(|(name, ip)| format!("{ip} ({name})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if let Some(address) = listen {
+        // Loopback stands in for a network on one computer (tests, demos).
+        if address.is_loopback() || found.iter().any(|(_, ip)| *ip == address) {
+            return Ok(address);
+        }
+        bail!(
+            "{address} is not an address of this computer; its addresses are: {}",
+            list()
+        );
+    }
+    match found.as_slice() {
+        [] => bail!("this computer has no network address other computers could connect to"),
+        [(_, only)] => Ok(*only),
+        _ if !interactive => bail!(
+            "this computer has several addresses; pick the one other computers connect to with --listen: {}",
+            list()
+        ),
+        _ => {
+            eprintln!("Which address do other computers connect to?");
+            for (index, (name, ip)) in found.iter().enumerate() {
+                eprintln!("  {}) {ip}   {name}", index + 1);
+            }
+            loop {
+                if let Ok(choice) = ask("> ")?.parse::<usize>()
+                    && let Some((_, ip)) = found.get(choice.wrapping_sub(1))
+                {
+                    return Ok(*ip);
+                }
+                eprintln!("Type a number from the list.");
+            }
+        }
+    }
+}
+
+/// This computer's host name, for the node name.
+fn host_name() -> Option<String> {
+    let output = Command::new("hostname")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()?
+        .trim()
+        .split('.')
+        .next()?
+        .to_owned();
+    (output.status.success() && !name.is_empty()).then_some(name)
+}
+
+/// What the owner may need to allow for a direct network.
+fn direct_notes(mode: Mode, report: &mut Report) {
+    if mode == Mode::Full && matches!(std::env::consts::OS, "macos" | "windows") {
+        report.step(
+            false,
+            "Your firewall may ask whether hmesh may accept connections: allow it (on Windows, for private networks)",
+        );
+    }
+    if std::env::consts::OS == "macos" {
+        report.step(
+            false,
+            "If the daemon starts at login and cannot reach the other computers, allow hmesh under System Settings → Privacy & Security → Local Network",
+        );
+    }
+}
+
+/// A new node's configuration for `mode` at `place`.
 pub fn node_config(
     mode: Mode,
     options: &Options,
-    address: IpAddr,
+    place: Place,
     hostname: Option<&str>,
 ) -> NodeConfig {
     let mut config = NodeConfig::default();
@@ -273,17 +560,26 @@ pub fn node_config(
         .or_else(|| hostname.map(node_name))
         .unwrap_or_else(|| "my-computer".into());
     config.node.listen_port = options.port;
-    config.node.network = "tailscale".into();
     config.node.tailscale_executable = options.tailscale_executable.clone();
-    config.node.tailnet_address = Some(address);
-    match mode {
-        Mode::McpOnly => {
-            config.node.listen_address = IpAddr::V4(Ipv4Addr::LOCALHOST);
-            config.node.expose_to_tailnet = false;
+    let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    match place {
+        Place::Tailnet(address) => {
+            config.node.network = "tailscale".into();
+            config.node.tailnet_address = Some(address);
+            let full = mode == Mode::Full;
+            config.node.listen_address = if full { address } else { loopback };
+            config.node.expose_to_tailnet = full;
         }
-        Mode::Full => {
-            config.node.listen_address = address;
-            config.node.expose_to_tailnet = true;
+        Place::Direct(address) => {
+            config.node.network = "direct".into();
+            match (mode, address) {
+                (Mode::Full, Some(address)) => {
+                    config.node.listen_address = address;
+                    config.node.expose_to_tailnet = true;
+                    config.node.allowed_sources = options.allow_from.clone();
+                }
+                _ => config.node.listen_address = loopback,
+            }
         }
     }
     config
@@ -309,38 +605,24 @@ fn node_name(hostname: &str) -> String {
     }
 }
 
-/// Change an existing node to `mode`. Its certificate already names its
-/// Tailnet IP, so pairings stay valid; true when anything changed.
-pub fn switch(config: &mut NodeConfig, mode: Mode, address: IpAddr) -> Result<bool> {
-    if config.node.network != "tailscale" {
+/// Move an existing node to `target`'s way and network, keeping its name,
+/// port and identity: peers know it by its pinned certificate, and the new
+/// address reaches them with its card. True when anything changed.
+pub fn switch(config: &mut NodeConfig, target: &NodeConfig) -> Result<bool> {
+    if config.node.network == "loopback" {
         bail!("this node was set up for one computer only; run setup with a new --data-dir");
     }
-    let known = config
-        .node
-        .tailnet_address
-        .unwrap_or(config.node.listen_address);
-    if known != address {
-        bail!(
-            "this node's certificate is for Tailnet IP {known}, but this computer is {address} now; run setup with a new --data-dir and pair again"
-        );
+    let before = serde_json::to_value(&config.node)?;
+    config.node.network = target.node.network.clone();
+    config.node.listen_address = target.node.listen_address;
+    config.node.expose_to_tailnet = target.node.expose_to_tailnet;
+    config.node.tailnet_address = target.node.tailnet_address;
+    config.node.allowed_sources = target.node.allowed_sources.clone();
+    if target.node.tailscale_executable.is_some() {
+        config.node.tailscale_executable = target.node.tailscale_executable.clone();
     }
-    let changed = match mode {
-        Mode::McpOnly if config.outbound_only() => false,
-        Mode::Full if !config.outbound_only() => false,
-        Mode::McpOnly => {
-            config.node.listen_address = IpAddr::V4(Ipv4Addr::LOCALHOST);
-            config.node.expose_to_tailnet = false;
-            true
-        }
-        Mode::Full => {
-            config.node.listen_address = address;
-            config.node.expose_to_tailnet = true;
-            true
-        }
-    };
-    config.node.tailnet_address = Some(address);
     config.validate()?;
-    Ok(changed)
+    Ok(serde_json::to_value(&config.node)? != before)
 }
 
 /// The daemon's owner client: started in the background if it is not
@@ -619,6 +901,9 @@ mod tests {
             startup: Some(false),
             tailscale_executable: None,
             tailnet_address: None,
+            network: None,
+            listen: None,
+            allow_from: None,
             project: None,
             agents: None,
             explicit_dir: false,
@@ -628,29 +913,60 @@ mod tests {
     #[test]
     fn both_ways_name_the_tailnet_ip_and_only_full_listens_on_it() {
         let ip: IpAddr = "100.64.0.7".parse().unwrap();
-        let only = node_config(Mode::McpOnly, &options(), ip, None);
+        let only = node_config(Mode::McpOnly, &options(), Place::Tailnet(ip), None);
         only.validate().unwrap();
         assert!(only.outbound_only());
         assert!(only.node.listen_address.is_loopback());
         assert_eq!(only.node.tailnet_address, Some(ip));
-        let full = node_config(Mode::Full, &options(), ip, None);
+        let full = node_config(Mode::Full, &options(), Place::Tailnet(ip), None);
         full.validate().unwrap();
         assert!(!full.outbound_only());
         assert_eq!(full.node.listen_address, ip);
     }
 
     #[test]
-    fn switching_keeps_the_address_and_refuses_another_one() {
+    fn a_direct_network_listens_on_the_chosen_address_or_only_connects_out() {
+        let lan: IpAddr = "192.168.1.20".parse().unwrap();
+        let mut options = options();
+        options.allow_from = Some(vec!["192.168.1.0/24".parse().unwrap()]);
+        let full = node_config(Mode::Full, &options, Place::Direct(Some(lan)), None);
+        full.validate().unwrap();
+        assert_eq!(full.node.network, "direct");
+        assert_eq!(full.node.listen_address, lan);
+        assert!(full.listens_for_peers());
+        assert_eq!(full.allowed_sources(), options.allow_from.clone().unwrap());
+        assert_eq!(full.node.tailnet_address, None);
+        let only = node_config(Mode::McpOnly, &options, Place::Direct(None), None);
+        only.validate().unwrap();
+        assert!(only.outbound_only());
+        assert!(only.node.listen_address.is_loopback());
+        assert_eq!(only.node.allowed_sources, None);
+    }
+
+    #[test]
+    fn switching_moves_a_node_between_ways_and_networks_and_keeps_its_name_and_port() {
         let ip: IpAddr = "100.64.0.7".parse().unwrap();
-        let mut config = node_config(Mode::McpOnly, &options(), ip, None);
-        assert!(!switch(&mut config, Mode::McpOnly, ip).unwrap());
-        assert!(switch(&mut config, Mode::Full, ip).unwrap());
+        let lan: IpAddr = "192.168.1.20".parse().unwrap();
+        let at = |mode, place| node_config(mode, &options(), place, None);
+        let mut config = at(Mode::McpOnly, Place::Tailnet(ip));
+        config.node.listen_port = 41000;
+        assert!(!switch(&mut config, &at(Mode::McpOnly, Place::Tailnet(ip))).unwrap());
+        assert!(switch(&mut config, &at(Mode::Full, Place::Tailnet(ip))).unwrap());
         assert_eq!(config.node.listen_address, ip);
-        assert!(switch(&mut config, Mode::McpOnly, ip).unwrap());
+        // A new address, then another network: identity is the certificate.
+        let moved: IpAddr = "100.64.0.8".parse().unwrap();
+        assert!(switch(&mut config, &at(Mode::Full, Place::Tailnet(moved))).unwrap());
+        assert_eq!(config.node.listen_address, moved);
+        assert!(switch(&mut config, &at(Mode::Full, Place::Direct(Some(lan)))).unwrap());
+        assert_eq!(config.node.network, "direct");
+        assert_eq!(config.node.listen_address, lan);
+        assert_eq!(config.node.tailnet_address, None);
+        assert!(switch(&mut config, &at(Mode::McpOnly, Place::Direct(None))).unwrap());
         assert!(config.outbound_only());
-        assert!(switch(&mut config, Mode::Full, "100.64.0.8".parse().unwrap()).is_err());
+        assert_eq!(config.node.listen_port, 41000);
+        assert_eq!(config.node.name, "studio");
         let mut local = NodeConfig::default();
-        assert!(switch(&mut local, Mode::Full, ip).is_err());
+        assert!(switch(&mut local, &at(Mode::Full, Place::Tailnet(ip))).is_err());
     }
 
     #[test]

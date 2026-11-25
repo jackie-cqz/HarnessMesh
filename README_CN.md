@@ -62,7 +62,7 @@ flowchart LR
 需要：
 
 - [Rust](https://rustup.rs) 1.90 或更新。
-- 连接多台电脑时需要 [Tailscale](https://tailscale.com)。
+- 连接多台电脑：用 [Tailscale](https://tailscale.com)，或者它们本来就连得通的网络（局域网、ZeroTier、WireGuard）。
 - 完整安装时：至少一个你自己装好并登录过的 ACP Agent。
 
 ### 每台电脑选一种装法
@@ -85,12 +85,14 @@ cargo build --release --locked -p hmesh-cli
 ./target/release/hmesh setup --mcp-only     # 或者 --full
 ```
 
-`hmesh setup` 会找出本机的 Tailscale IP，在 `~/.harnessmesh` 创建节点并启动 daemon；`--full` 还会登记本机已装的每个 ACP Agent。改动 HarnessMesh 以外的东西之前，它会先问你：
+`hmesh setup` 会找出别的电脑怎么连到这台（它的 Tailscale IP，或者用 `--network direct` 时本机的某个地址），在 `~/.harnessmesh` 创建节点并启动 daemon；`--full` 还会登记本机已装的每个 ACP Agent。改动 HarnessMesh 以外的东西之前，它会先问你：
 
 - 要不要开机自动启动 daemon（macOS 和 Windows）；
 - 要不要把 MCP 服务器加到 Claude Code（`claude mcp add -s user harnessmesh`）和 Codex（`~/.codex/config.toml`）。
 
-`--connect claude,codex` 或 `--connect none` 预先回答第二个问题，`--startup` 或 `--no-startup` 回答第一个。没人可问时（没有终端，或者用了 `--json`），没预先回答的一律当作不要。重复运行不会改动已经装好的部分。以后把一台电脑从 `--mcp-only` 换成 `--full`，它的身份和已有的配对都保留。
+`--connect claude,codex` 或 `--connect none` 预先回答第二个问题，`--startup` 或 `--no-startup` 回答第一个。没人可问时（没有终端，或者用了 `--json`），没预先回答的一律当作不要。重复运行不会改动已经装好的部分。以后把一台电脑从 `--mcp-only` 换成 `--full`，或者换一种网络，它的身份和已有的配对都保留。
+
+**不用 Tailscale。** 在同一个网络里的电脑可以直连：`hmesh setup --full --network direct` 会问别的电脑用本机哪个地址来连（也可以直接写 `--listen 192.168.1.20`），默认只接受私有网段的连接，要放行别的网段就用 `--allow-from`。只装 MCP 的电脑完全不需要 Tailscale：setup 找不到它时，就用本机自己的网络。直连网络里，只有在你打开这台电脑的「配对新电脑」（或者运行 `hmesh pair show`）之后的 10 分钟内，它才接受配对申请。
 
 HarnessMesh 不会替你安装 Agent。`hmesh agent detect` 会列出找到了哪些，没找到的该怎么装：
 
@@ -107,7 +109,7 @@ HarnessMesh 不会替你安装 Agent。`hmesh agent detect` 会列出找到了�
 
 打开面板（`hmesh panel`），进入「配对节点」→「配对新电脑」：
 
-1. 在完整安装的电脑 B 上，复制「这台电脑的配对码」。
+1. 在完整安装的电脑 B 上，复制「这台电脑的配对码」。直连网络里，弹窗还会显示 B 的配对窗口还剩多久。
 2. 在电脑 A 的同一个弹窗里粘贴，发出申请。A 会显示一个校验码。
 3. 在 B 上输入校验码，批准。A 会自己完成配对。
 
@@ -155,6 +157,7 @@ tool_timeout_sec = 660
 - **证书固定。** 每个连接都用 TLS 1.3 并固定证书；匿名接口只用于配对握手。
 - **owner 操作只在本机。** owner 接口和面板只监听本机回环地址。
 - **只装 MCP 的电脑什么都不放进来。** 它只监听本机回环地址，拒绝别的电脑发来的所有请求，包括配对申请。
+- **直连网络按需开放配对。** 用自己的局域网或 VPN 的电脑，只接受允许网段的连接，并且只在你打开「配对新电脑」后的 10 分钟内回应配对申请。
 - **按电脑设访问模式。** 每台配对电脑可以是 `auto`（它开的会话直接开始）或 `confirm`（先由你批准）：`hmesh peers access <peer> confirm`。
 - **key 不离开本机。** 模型 key 不会离开 Agent 所在的电脑，保存后不再显示；HarnessMesh 不读 Agent 自己的凭据文件。
 

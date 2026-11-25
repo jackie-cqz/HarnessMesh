@@ -62,7 +62,7 @@ flowchart LR
 You need:
 
 - [Rust](https://rustup.rs) 1.90 or newer.
-- [Tailscale](https://tailscale.com), to connect more than one computer.
+- To connect computers: [Tailscale](https://tailscale.com), or a network they already share (a LAN, ZeroTier, WireGuard).
 - For a full install: at least one ACP agent you have installed and signed in to yourself.
 
 ### Choose how to set up each computer
@@ -85,12 +85,14 @@ cargo build --release --locked -p hmesh-cli
 ./target/release/hmesh setup --mcp-only     # or: --full
 ```
 
-`hmesh setup` finds the computer's Tailscale IP, creates the node in `~/.harnessmesh` and starts its daemon. With `--full` it also registers each ACP agent installed there. Before it changes anything outside HarnessMesh, it asks:
+`hmesh setup` finds how other computers reach this one (its Tailscale IP, or with `--network direct` one of its own addresses), creates the node in `~/.harnessmesh` and starts its daemon. With `--full` it also registers each ACP agent installed there. Before it changes anything outside HarnessMesh, it asks:
 
 - whether to start the daemon at login (macOS and Windows);
 - whether to add the MCP server to Claude Code (`claude mcp add -s user harnessmesh`) and to Codex (`~/.codex/config.toml`).
 
-`--connect claude,codex` or `--connect none` answers the second question in advance, and `--startup` or `--no-startup` the first. With nobody to ask (no terminal, or `--json`), an unanswered question means no. Running setup again leaves what is already set up alone. Switching a computer from `--mcp-only` to `--full` later keeps its identity and its pairings.
+`--connect claude,codex` or `--connect none` answers the second question in advance, and `--startup` or `--no-startup` the first. With nobody to ask (no terminal, or `--json`), an unanswered question means no. Running setup again leaves what is already set up alone. Switching a computer from `--mcp-only` to `--full`, or to another network, later keeps its identity and its pairings.
+
+**Without Tailscale.** Computers on a network they already share can connect directly: `hmesh setup --full --network direct` asks which of the computer's addresses the others use (or pass `--listen 192.168.1.20`), and accepts connections from private networks only unless you name others with `--allow-from`. An only-MCP computer needs no Tailscale at all; when setup does not find it, it uses the computer's own network. On a direct network a computer answers pairing requests only for 10 minutes after you open 配对新电脑 on it (or run `hmesh pair show`).
 
 HarnessMesh never installs agents. `hmesh agent detect` shows what it found and how to install the rest:
 
@@ -107,7 +109,7 @@ HarnessMesh never installs agents. `hmesh agent detect` shows what it found and 
 
 Open the panel (`hmesh panel`) and go to **配对节点 → 配对新电脑** (paired computers → pair a new computer):
 
-1. On a full computer B, copy **这台电脑的配对码** (this computer's pairing code).
+1. On a full computer B, copy **这台电脑的配对码** (this computer's pairing code). On a direct network the dialog also shows how long B keeps pairing open.
 2. On computer A, paste it in the same dialog and send the request. A shows a check code.
 3. On B, type the check code and approve. A finishes by itself.
 
@@ -155,6 +157,7 @@ On a computer set up with `hmesh setup`, the MCP server starts the daemon when i
 - **Pinned certificates.** Every connection uses TLS 1.3 with a pinned certificate. Anonymous routes exist only for the pairing handshake.
 - **Owner controls stay local.** The owner API and the panel listen on loopback only.
 - **Only-MCP computers let nothing in.** They listen on loopback only and refuse every request from another computer, pairing requests included.
+- **Direct networks open pairing on request.** A computer on a LAN or VPN of your own accepts connections only from the networks it allows, and answers pairing requests only for 10 minutes after you open 配对新电脑 on it.
 - **Per-computer access mode.** Each paired computer is either `auto` (its sessions start right away) or `confirm` (you approve first): `hmesh peers access <peer> confirm`.
 - **Keys stay put.** Model keys never leave the agent's computer and are not shown again after saving. HarnessMesh does not read agents' own credential files.
 

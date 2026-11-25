@@ -97,8 +97,14 @@ impl Instance {
         let node_id = Uuid::new_v4();
         let key = KeyPair::generate_for(&PKCS_ED25519)?;
         let mut names = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
-        if config.node.network == "tailscale" {
+        // Cosmetic since connections check the pinned fingerprint, not the
+        // address (see PinnedServer), but it names where the node listens.
+        if matches!(config.node.network.as_str(), "tailscale" | "direct")
+            && !config.node.listen_address.is_loopback()
+        {
             names.push(config.node.listen_address.to_string());
+        }
+        if config.node.network == "tailscale" {
             // Only connects out for now; the address it may listen on later.
             if let Some(address) = config.node.tailnet_address
                 && address != config.node.listen_address
@@ -318,19 +324,40 @@ pub fn endpoint_is_loopback(endpoint: &str) -> bool {
     })
 }
 /// Whether a computer configured as `config` can call a peer whose card
-/// names `endpoint`. A full Tailnet node reads a loopback endpoint as a peer
-/// set up with only MCP: it accepts no connections, so there is nothing to
-/// call. A loopback node (one computer, tests) calls loopback peers as usual.
+/// names `endpoint`. A node that other computers reach on a real address
+/// (Tailscale or direct) reads a loopback endpoint as a peer set up with only
+/// MCP: it accepts no connections, so there is nothing to call. Nodes on
+/// loopback themselves (one computer, tests, only-MCP nodes) call loopback
+/// peers as usual.
 pub fn can_call(config: &NodeConfig, endpoint: &str) -> bool {
-    !(config.node.network == "tailscale"
-        && !config.outbound_only()
-        && endpoint_is_loopback(endpoint))
+    !(config.listens_for_peers() && endpoint_is_loopback(endpoint))
+}
+/// Where a peer may be: any literal unicast address a computer can have on
+/// loopback, a Tailnet, a LAN, another overlay network or the internet. Not
+/// link-local addresses (169.254.0.0/16 is where cloud metadata services
+/// answer, fe80::/10 needs a zone), and not unspecified, multicast,
+/// broadcast or reserved ones. No names are resolved, and who answers there
+/// is settled by the pinned certificate fingerprint, not by the address.
+pub fn peer_address(ip: std::net::IpAddr) -> bool {
+    match ip.to_canonical() {
+        std::net::IpAddr::V4(ip) => {
+            !ip.is_unspecified()
+                && !ip.is_multicast()
+                && !ip.is_broadcast()
+                && !ip.is_link_local()
+                && ip.octets()[0] != 0
+                && ip.octets()[0] < 240
+        }
+        std::net::IpAddr::V6(ip) => {
+            !ip.is_unspecified() && !ip.is_multicast() && !ip.is_unicast_link_local()
+        }
+    }
 }
 pub fn validate_endpoint(endpoint: &str) -> Result<url::Url> {
     let url = url::Url::parse(endpoint)?;
     let permitted = match url.host() {
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || is_tailnet_ip(ip.into()),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || is_tailnet_ip(ip.into()),
+        Some(url::Host::Ipv4(ip)) => peer_address(ip.into()),
+        Some(url::Host::Ipv6(ip)) => peer_address(ip.into()),
         Some(url::Host::Domain("localhost")) => true,
         _ => false,
     };
@@ -344,7 +371,7 @@ pub fn validate_endpoint(endpoint: &str) -> Result<url::Url> {
         || url.path() != "/"
     {
         bail!(
-            "peer endpoints must be literal loopback/Tailnet HTTPS origins without credentials, paths or queries (localhost is also allowed)"
+            "peer endpoints must be HTTPS origins on a literal unicast IP address (or localhost), without credentials, paths or queries"
         );
     }
     Ok(url)
@@ -409,7 +436,7 @@ impl ServerCertVerifier for PinnedServer {
         &self,
         cert: &CertificateDer<'_>,
         intermediates: &[CertificateDer<'_>],
-        name: &ServerName<'_>,
+        _dialed: &ServerName<'_>,
         ocsp: &[u8],
         now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
@@ -422,13 +449,20 @@ impl ServerCertVerifier for PinnedServer {
         roots.add(cert.clone().into_owned()).map_err(|_| {
             rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
         })?;
-        // Pin comparison comes first. WebPKI still checks encoding, validity,
-        // purpose and hostname; TLS CertificateVerify proves key possession.
+        // Pin comparison comes first and is what identifies the peer: exactly
+        // this certificate, whose key TLS CertificateVerify proves the peer
+        // holds. WebPKI still checks encoding, validity and purpose. The
+        // address that was dialed is not checked against the certificate:
+        // with the certificate pinned it adds nothing, and a LAN address may
+        // change (DHCP) or differ by network. Every HarnessMesh certificate
+        // names localhost, so that is the name WebPKI is asked about.
         let verifier =
             WebPkiServerVerifier::builder_with_provider(Arc::new(roots), self.provider.clone())
                 .build()
                 .map_err(|e| rustls::Error::General(e.to_string()))?;
-        verifier.verify_server_cert(cert, intermediates, name, ocsp, now)
+        let pinned =
+            ServerName::try_from("localhost").map_err(|e| rustls::Error::General(e.to_string()))?;
+        verifier.verify_server_cert(cert, intermediates, &pinned, ocsp, now)
     }
     fn verify_tls12_signature(
         &self,

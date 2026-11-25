@@ -18,6 +18,8 @@ setup 从 Tailscale 取本机 IP（Mac App Store 版的 CLI 位置同下文；�
 
 只装 MCP 的电脑不开 Tailnet 监听，所以不需要防火墙放行，但配对只能从它发起：在它的面板里粘贴完整安装那台电脑的配对码。两台只装 MCP 的电脑之间不能配对。
 
+不用 Tailscale 也行：在同一个局域网里，或者已经用着 ZeroTier、WireGuard 之类的网络时，用 `hmesh setup --full --network direct`，它会列出本机地址让你选（也可以写 `--listen 192.168.1.20`）。直连网络里，配对码只在打开「配对新电脑」之后的 10 分钟内有效。macOS 上，开机自启的 daemon 第一次连局域网里的电脑时，可能要在「系统设置 → 隐私与安全性 → 本地网络」里允许 hmesh。细节见 [MCP 说明](mcp.md#用-hmesh-setup-安装) 和 [安全说明](security.md)。
+
 ## 从源码在前台启动（开发时用；Mac、Windows、Linux 相同）
 
 需要 Node.js 20+、通过 rustup 安装的 Rust stable >= 1.90、已登录的 Tailscale，以及你自己装好并登录过的 ACP agent（任选：`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh`）。DSH 0.2.2-rc.5 需要 Node.js 24.9 或更高版本。HarnessMesh 不会安装 agent；`hmesh agent detect` 会列出本机找到了哪些、缺的该怎么装。

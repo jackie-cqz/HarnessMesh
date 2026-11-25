@@ -1,4 +1,5 @@
-//! Bounded loopback/Tailnet HTTPS transport with TLS 1.3 and certificate pins.
+//! Bounded HTTPS transport with TLS 1.3 and certificate pins, on loopback,
+//! Tailnet or a direct network.
 pub mod tailscale;
 use axum::{Extension, Router};
 use hmesh_core::{ErrorCode, MeshError};
@@ -9,7 +10,11 @@ use hyper_util::{
     service::TowerToHyperService,
 };
 use serde::{Serialize, de::DeserializeOwned};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{
     net::TcpListener,
     sync::{Semaphore, watch},
@@ -30,21 +35,36 @@ pub async fn serve(
     tls: TlsConfigProvider,
     shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    serve_scoped(listener, router, tls, shutdown, false).await
+    serve_scoped(listener, router, tls, shutdown, Scope::Loopback).await
 }
-pub async fn serve_tailnet(
+/// Serve other computers: Tailnet sources, or a direct node's allowed ones.
+pub async fn serve_peers(
     listener: TcpListener,
     router: Router,
     tls: TlsConfigProvider,
     shutdown: watch::Receiver<bool>,
+    scope: Scope,
 ) -> anyhow::Result<()> {
-    serve_scoped(listener, router, tls, shutdown, true).await
+    serve_scoped(listener, router, tls, shutdown, scope).await
 }
-pub fn permits_source(tailnet: bool, ip: std::net::IpAddr) -> bool {
-    if tailnet {
-        hmesh_core::is_tailnet_ip(ip)
-    } else {
-        ip.is_loopback()
+/// Who may open a connection to a listener, by source address. A fence in
+/// front of TLS, not authentication: peers are identified by their pinned
+/// certificates, and only the pairing handshake is anonymous.
+#[derive(Clone, Debug)]
+pub enum Scope {
+    Loopback,
+    Tailnet,
+    /// A direct node's allowed source ranges.
+    Sources(Arc<Vec<hmesh_core::IpNet>>),
+}
+impl Scope {
+    pub fn permits(&self, ip: IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        match self {
+            Self::Loopback => ip.is_loopback(),
+            Self::Tailnet => hmesh_core::is_tailnet_ip(ip),
+            Self::Sources(nets) => nets.iter().any(|net| net.contains(&ip)),
+        }
     }
 }
 async fn serve_scoped(
@@ -52,9 +72,14 @@ async fn serve_scoped(
     router: Router,
     tls: TlsConfigProvider,
     mut shutdown: watch::Receiver<bool>,
-    tailnet: bool,
+    scope: Scope,
 ) -> anyhow::Result<()> {
-    if !permits_source(tailnet, listener.local_addr()?.ip()) {
+    let local = listener.local_addr()?.ip();
+    let listens_where_it_should = match scope {
+        Scope::Loopback | Scope::Tailnet => scope.permits(local),
+        Scope::Sources(_) => !local.is_unspecified(),
+    };
+    if !listens_where_it_should {
         anyhow::bail!("listener address does not match its explicit network scope");
     }
     let semaphore = Arc::new(Semaphore::new(64));
@@ -65,7 +90,7 @@ async fn serve_scoped(
             changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { break; } }
             accepted = listener.accept() => {
                 let (stream, address) = accepted?;
-                if !permits_source(tailnet, address.ip()) { continue; }
+                if !scope.permits(address.ip()) { continue; }
                 let Ok(permit) = semaphore.clone().try_acquire_owned() else { continue; };
                 let config = match tls() { Ok(config) => config, Err(error) => { tracing::error!(%error, "TLS configuration rejected"); continue; } };
                 let app = router.clone();
@@ -126,9 +151,9 @@ impl Client {
             Some(url::Host::Domain("localhost")) => true,
             _ => false,
         };
-        if !loopback && (owner || instance.config.node.network != "tailscale") {
+        if !loopback && (owner || instance.config.node.network == "loopback") {
             anyhow::bail!(
-                "Tailnet RPC requires an opted-in tailscale instance; owner credentials remain loopback-only"
+                "other computers are reached from a tailscale or direct instance only; owner credentials remain loopback-only"
             );
         }
         let config = instance.client_config(expected_fingerprint, bootstrap)?;
@@ -230,6 +255,26 @@ impl Client {
     }
 }
 fn transport_error(error: reqwest::Error) -> MeshError {
+    // No route: often macOS refusing a LAN connection to a process without
+    // Local Network access (a daemon started at login, TN3179), which
+    // reports EHOSTUNREACH before a packet is sent.
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(current) = source {
+        if current
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::HostUnreachable)
+        {
+            return MeshError::new(
+                ErrorCode::PeerUnreachable,
+                if cfg!(target_os = "macos") {
+                    "no route to that computer: on macOS, allow hmesh under System Settings → Privacy & Security → Local Network (a daemon started at login needs it), and check that both computers are on the same network"
+                } else {
+                    "no route to that computer: check that both computers are on the same network"
+                },
+            );
+        }
+        source = current.source();
+    }
     let message = if error.is_timeout() {
         "RPC deadline exceeded"
     } else if error.is_connect() {

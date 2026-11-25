@@ -1414,6 +1414,9 @@ footer{margin-top:28px}
 .pair-card .form-note{margin:10px 0 0}
 .pair-message{color:var(--destructive)}
 .pair-message[hidden]{display:none}
+/* The pairing dialog shares the service dialog frame (no outer padding):
+   its body scrolls inside with the same inset. */
+.pair-dialog #pair-body{min-height:0;overflow:auto;overscroll-behavior:contain;padding:14px var(--service-padding) 18px}
 .pair-dialog .pair-message{color:var(--muted)}
 .pair-dialog .pair-message.error{color:var(--destructive)}
 .pair-dialog textarea{font:12px/1.6 var(--mono);word-break:break-all}
@@ -1452,6 +1455,8 @@ footer{margin-top:28px}
 /* "Only MCP" setup: this computer only calls agents on other computers. */
 .mode-note{margin:0 0 16px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;font-size:13px;line-height:1.6;color:var(--muted)}
 .mode-note[hidden]{display:none}
+.pair-window-line{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:8px;font-size:12.5px;line-height:1.6;color:var(--muted)}
+.pair-window-line .button{flex:none}
 .pair-outbound{font-size:12.5px;color:var(--muted);line-height:1.6}
 
 /* Projects in the sidebar: this computer → project → sessions, with the

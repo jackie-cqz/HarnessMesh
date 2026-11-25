@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     fs,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::Path as FilePath,
     sync::{Arc, Mutex, RwLock},
 };
@@ -47,7 +47,9 @@ pub struct AppState {
     pub instance: Arc<Instance>,
     pub store: Store,
     policy: Arc<RwLock<Policy>>,
-    handshake_requests: Arc<Mutex<HashMap<(i64, &'static str), usize>>>,
+    handshake_requests: Arc<Mutex<HandshakeCounts>>,
+    /// Direct network: when the pairing window closes (0: closed).
+    pairing_open_until: Arc<Mutex<i64>>,
     acceptance: Arc<Mutex<HashMap<Uuid, Value>>>,
     pub shutdown: watch::Sender<bool>,
     sessions: Arc<sessions::Sessions>,
@@ -85,6 +87,74 @@ fn outbound_only() -> ApiError {
     ApiError(MeshError::new(
         ErrorCode::PermissionDenied,
         "this computer only connects out; it accepts no connections from other computers",
+    ))
+}
+/// Anonymous requests per (minute, kind, source); `None` counts them across
+/// all sources.
+#[derive(Default)]
+struct HandshakeCounts(HashMap<(i64, &'static str, Option<IpAddr>), usize>);
+impl HandshakeCounts {
+    /// Count one request. Refused over `per_minute` from one source, or ten
+    /// times that across all of them. Refused requests count nowhere, so one
+    /// computer cannot use up the allowance of everyone else.
+    fn admit(
+        &mut self,
+        minute: i64,
+        kind: &'static str,
+        source: IpAddr,
+        per_minute: usize,
+    ) -> bool {
+        self.0.retain(|key, _| key.0 == minute);
+        let mine = (minute, kind, Some(source.to_canonical()));
+        let everyone = (minute, kind, None);
+        let count = |key| self.0.get(&key).copied().unwrap_or(0);
+        if count(mine) >= per_minute || count(everyone) >= per_minute * 10 {
+            return false;
+        }
+        *self.0.entry(mine).or_default() += 1;
+        *self.0.entry(everyone).or_default() += 1;
+        true
+    }
+}
+#[cfg(test)]
+mod handshake_counts {
+    use super::*;
+    #[test]
+    fn each_source_has_its_own_allowance_under_a_shared_ceiling() {
+        let mut counts = HandshakeCounts::default();
+        let one: IpAddr = "192.168.1.9".parse().unwrap();
+        let other: IpAddr = "192.168.1.10".parse().unwrap();
+        for _ in 0..3 {
+            assert!(counts.admit(7, "handshake", one, 3));
+        }
+        assert!(!counts.admit(7, "handshake", one, 3));
+        // The same address written IPv4-mapped is the same source.
+        assert!(!counts.admit(7, "handshake", "::ffff:192.168.1.9".parse().unwrap(), 3));
+        // Another computer is still let in, and so is another kind.
+        assert!(counts.admit(7, "handshake", other, 3));
+        assert!(counts.admit(7, "pair-status", one, 3));
+        // One computer asking on and on does not use up the others' share.
+        let mut counts = HandshakeCounts::default();
+        for _ in 0..600 {
+            counts.admit(7, "handshake", one, 3);
+        }
+        assert!(counts.admit(7, "handshake", other, 3));
+        // A new minute starts over.
+        assert!(counts.admit(8, "handshake", one, 3));
+        // Many sources together stop at ten times the allowance.
+        let mut counts = HandshakeCounts::default();
+        let admitted = (0..40u8)
+            .filter(|n| counts.admit(1, "handshake", IpAddr::from([10, 0, 0, *n]), 3))
+            .count();
+        assert_eq!(admitted, 30);
+    }
+}
+/// How long the pairing window stays open on a direct network.
+const PAIRING_WINDOW_SECONDS: i64 = 600;
+fn pairing_closed() -> ApiError {
+    ApiError(MeshError::new(
+        ErrorCode::PermissionDenied,
+        "pairing is closed on this computer: open 配对新电脑 in its panel (or run `hmesh pair show` there), then pair within 10 minutes",
     ))
 }
 /// Ctrl-C, or SIGTERM on Unix (a login item or service manager stopping
@@ -130,7 +200,8 @@ impl AppState {
             instance,
             store,
             policy: Arc::new(RwLock::new(policy)),
-            handshake_requests: Arc::new(Mutex::new(HashMap::new())),
+            handshake_requests: Arc::default(),
+            pairing_open_until: Arc::new(Mutex::new(0)),
             acceptance: Arc::new(Mutex::new(HashMap::new())),
             relay: Arc::new(relay::ModelRelay::new(shutdown.subscribe())),
             shutdown,
@@ -222,8 +293,21 @@ impl AppState {
         let config = &self.instance.config;
         hmesh_security::can_call(config, &peer.card.endpoint)
     }
-    fn handshake_limit(&self) -> std::result::Result<(), ApiError> {
-        self.anonymous_limit("handshake", 60)
+    fn handshake_limit(&self, source: IpAddr) -> std::result::Result<(), ApiError> {
+        self.anonymous_limit("handshake", 60, source)
+    }
+    /// Open the pairing window for ten minutes from now (direct network:
+    /// the pairing handshake answers only while it is open). Returns when
+    /// it closes.
+    pub fn open_pairing(&self) -> std::result::Result<i64, ApiError> {
+        let until = now() + PAIRING_WINDOW_SECONDS;
+        *self.pairing_open_until.lock().map_err(internal)? = until;
+        Ok(until)
+    }
+    /// When the pairing window closes, if it is open.
+    fn pairing_closes_at(&self) -> Option<i64> {
+        let until = *self.pairing_open_until.lock().ok()?;
+        (until > now()).then_some(until)
     }
     /// Anonymous requests per minute, counted separately per kind so that a
     /// computer waiting for its pair request to be answered does not use up
@@ -232,17 +316,29 @@ impl AppState {
         &self,
         kind: &'static str,
         per_minute: usize,
+        source: IpAddr,
     ) -> std::result::Result<(), ApiError> {
         // Pairing with this node starts on this node; nobody pairs into it.
         if self.instance.config.outbound_only() {
             return Err(outbound_only());
         }
-        let minute = now() / 60;
-        let mut counts = self.handshake_requests.lock().map_err(internal)?;
-        counts.retain(|key, _| key.0 == minute);
-        let count = counts.entry((minute, kind)).or_default();
-        *count += 1;
-        if *count > per_minute {
+        // On a direct network anyone on it can reach the port, so the
+        // pairing handshake answers only while the owner has pairing open.
+        // Status queries name an existing request by its random ID and stay
+        // open, so a request sent in time is still answered.
+        if self.instance.config.node.network == "direct"
+            && kind != "pair-status"
+            && self.pairing_closes_at().is_none()
+        {
+            return Err(pairing_closed());
+        }
+        let admitted = self.handshake_requests.lock().map_err(internal)?.admit(
+            now() / 60,
+            kind,
+            source,
+            per_minute,
+        );
+        if !admitted {
             Err(ApiError(MeshError::new(
                 ErrorCode::RateLimited,
                 "handshake request limit reached",
@@ -364,6 +460,7 @@ pub fn router(state: AppState) -> Router {
         .route("/hmesh/v1/tasks/{id}/workspace", get(peer_task_workspace))
         .route("/hmesh/v1/tasks/{id}/verify", post(peer_verify_task))
         .route("/local/status", get(status))
+        .route("/local/pairing/window", post(open_pairing_window))
         .route("/local/queue", get(queue_status))
         .route("/local/tasks/{id}/workspace", get(task_workspace))
         .route("/local/stop", post(stop))
@@ -440,10 +537,11 @@ async fn contract_errors(request: axum::extract::Request, next: middleware::Next
 pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let mut instance = Instance::load(dir)?;
     let _lock = instance.lock_daemon()?;
-    // Listening on a Tailnet IP. A node that only connects out listens on
-    // loopback for its owner and needs Tailscale only to reach others.
-    let tailnet = instance.config.node.network == "tailscale" && !instance.config.outbound_only();
-    if tailnet {
+    // Other computers connect on a Tailnet IP, or on a direct network's
+    // address; the owner then uses a separate loopback listener. A node that
+    // only connects out listens on loopback for its owner alone.
+    let for_peers = instance.config.listens_for_peers();
+    if for_peers && instance.config.node.network == "tailscale" {
         CliTailscale::discover(instance.config.node.tailscale_executable.as_deref())?
             .status()
             .await?
@@ -453,11 +551,25 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
         instance.config.node.listen_address,
         instance.config.node.listen_port,
     );
-    let peer_listener = TcpListener::bind(address)
-        .await
-        .context("bind node listener on its configured address")?;
+    let peer_listener = TcpListener::bind(address).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AddrNotAvailable
+            && instance.config.node.network == "direct"
+        {
+            anyhow::anyhow!(
+                "this computer no longer has the address {} it is set up to listen on (network = \"direct\"); run `hmesh setup` to use its current address",
+                address.ip()
+            )
+        } else {
+            anyhow::Error::new(error).context("bind node listener on its configured address")
+        }
+    })?;
     instance.card.endpoint = format!("https://{}", peer_listener.local_addr()?);
-    let (listener, peer_listener) = if tailnet {
+    let scope = if instance.config.node.network == "tailscale" {
+        hmesh_transport::Scope::Tailnet
+    } else {
+        hmesh_transport::Scope::Sources(Arc::new(instance.config.allowed_sources()))
+    };
+    let (listener, peer_listener) = if for_peers {
         let owner = TcpListener::bind((
             std::net::Ipv4Addr::LOCALHOST,
             peer_listener.local_addr()?.port(),
@@ -525,11 +637,12 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
         Arc::new(move || tls_instance.server_config(&store.peers()?));
     let owner = hmesh_transport::serve(listener, router(state.clone()), tls.clone(), receiver);
     let result = if let Some(listener) = peer_listener {
-        let peer = hmesh_transport::serve_tailnet(
+        let peer = hmesh_transport::serve_peers(
             listener,
             tailnet_router(state),
             tls,
             shutdown.subscribe(),
+            scope,
         );
         tokio::try_join!(
             async {
@@ -560,19 +673,26 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     result
 }
 
-async fn hello(State(s): State<AppState>) -> ApiResult<NodeCard> {
-    s.handshake_limit()?;
+async fn hello(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+) -> ApiResult<NodeCard> {
+    s.handshake_limit(c.address.ip())?;
     Ok(Json(s.instance.card.clone()))
 }
-async fn challenge(State(s): State<AppState>) -> ApiResult<PairChallenge> {
-    s.handshake_limit()?;
+async fn challenge(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+) -> ApiResult<PairChallenge> {
+    s.handshake_limit(c.address.ip())?;
     Ok(Json(s.store.challenge(s.instance.card.node_id)?))
 }
 async fn incoming_pair(
     State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
     Json(body): Json<PairSubmission>,
 ) -> ApiResult<PairRecord> {
-    s.handshake_limit()?;
+    s.handshake_limit(c.address.ip())?;
     verify_pair_submission(&body, s.instance.card.node_id).map_err(|_| {
         ApiError(MeshError::new(
             ErrorCode::Unauthenticated,
@@ -602,6 +722,18 @@ async fn agents(
     s.actor(&headers, &c)?;
     Ok(Json(s.store.agents()?))
 }
+/// Open the pairing window (direct network). Harmless elsewhere: other
+/// networks answer the pairing handshake whenever they are reachable.
+async fn open_pairing_window(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+) -> ApiResult<Value> {
+    s.owner(&headers, &c)?;
+    let required = s.instance.config.node.network == "direct" && !s.instance.config.outbound_only();
+    let closes_at = s.open_pairing()?;
+    Ok(Json(json!({"required": required, "closes_at": closes_at})))
+}
 async fn status(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
@@ -610,8 +742,10 @@ async fn status(
     s.owner(&headers, &c)?;
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
-        "tailscale":if s.instance.config.outbound_only() {"not_checked"} else if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","agent-projects-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
+        "tailscale":match (s.instance.config.node.network.as_str(), s.instance.config.outbound_only()) {("tailscale", true) => "not_checked", ("tailscale", false) => "verified_at_startup", _ => "not_required"},
+        "allowed_sources":(s.instance.config.node.network == "direct" && !s.instance.config.outbound_only()).then(|| s.instance.config.allowed_sources()),
+        "pairing_window":{"required":s.instance.config.node.network == "direct" && !s.instance.config.outbound_only(),"closes_at":s.pairing_closes_at()},
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
     ))
 }
 async fn stop(
@@ -648,26 +782,10 @@ async fn peers(
         if peer.status == "trusted" && !s.reaches(&peer) {
             view.node_connectivity = NodeConnectivity::OutboundOnly;
         } else if peer.status == "trusted" {
-            let hello = Client::new(
-                &s.instance,
-                &peer.card.endpoint,
-                &peer.card.fingerprint,
-                true,
-                false,
-            )
-            .map_err(internal)?;
-            view.node_connectivity = if matches!(
-                tokio::time::timeout(
-                    std::time::Duration::from_millis(750),
-                    hello.get::<NodeCard>("/hmesh/v1/hello")
-                )
-                .await,
-                Ok(Ok(_))
-            ) {
-                NodeConnectivity::Online
-            } else {
-                NodeConnectivity::Unreachable
-            };
+            // Asked with this computer's certificate first: a direct node
+            // answers the anonymous hello only while its pairing window is
+            // open. One that no longer accepts this computer (it revoked the
+            // pairing there) still answers hello.
             let client = Client::new(
                 &s.instance,
                 &peer.card.endpoint,
@@ -676,6 +794,41 @@ async fn peers(
                 false,
             )
             .map_err(internal)?;
+            let accepted = matches!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(750),
+                    client.get::<NodeCard>("/hmesh/v1/node")
+                )
+                .await,
+                Ok(Ok(_))
+            );
+            let online = accepted || {
+                let hello = Client::new(
+                    &s.instance,
+                    &peer.card.endpoint,
+                    &peer.card.fingerprint,
+                    true,
+                    false,
+                )
+                .map_err(internal)?;
+                matches!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(750),
+                        hello.get::<NodeCard>("/hmesh/v1/hello")
+                    )
+                    .await,
+                    Ok(Ok(_))
+                )
+            };
+            view.node_connectivity = if online {
+                NodeConnectivity::Online
+            } else {
+                NodeConnectivity::Unreachable
+            };
+            if !accepted {
+                views.push(view);
+                continue;
+            }
             if let Ok(Ok(agents)) = tokio::time::timeout(
                 std::time::Duration::from_millis(750),
                 client.get::<Vec<AgentCard>>("/hmesh/v1/agents"),
@@ -2186,18 +2339,44 @@ pub fn local_client(instance: &Instance) -> anyhow::Result<Client> {
     if card.node_id != instance.card.node_id || card.fingerprint != instance.card.fingerprint {
         anyhow::bail!("daemon endpoint identity does not match instance");
     }
-    let endpoint = if instance.config.node.network == "tailscale" {
-        let url = hmesh_security::validate_endpoint(&card.endpoint)?;
+    // A daemon listening for other computers also listens on loopback, on
+    // the same port, for its owner. Judged by the running daemon's card, not
+    // this configuration: setup may have just switched it to only MCP.
+    let url = hmesh_security::validate_endpoint(&card.endpoint)?;
+    let endpoint = if hmesh_security::endpoint_is_loopback(&card.endpoint) {
+        card.endpoint
+    } else {
         format!(
             "https://127.0.0.1:{}",
             url.port_or_known_default().context("missing daemon port")?
         )
-    } else {
-        card.endpoint
     };
     Client::new(instance, &endpoint, &card.fingerprint, false, true)
 }
 
+#[cfg(test)]
+mod local_client_tests {
+    use super::*;
+    /// Setup switched this node to only MCP while its daemon still listens
+    /// for other computers: the owner reaches that daemon on loopback, the
+    /// same port, to stop it.
+    #[test]
+    fn the_owner_reaches_a_daemon_on_loopback_whatever_the_configuration_says() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = NodeConfig::default();
+        config.node.network = "direct".into();
+        let instance = Instance::init(&root.path().join("node"), config).unwrap();
+        assert!(instance.config.outbound_only());
+        let mut card = instance.card.clone();
+        card.endpoint = "https://192.168.1.20:39880".into();
+        fs::write(
+            instance.dir.join("daemon.json"),
+            serde_json::to_vec(&card).unwrap(),
+        )
+        .unwrap();
+        local_client(&instance).expect("owner client on loopback");
+    }
+}
 #[cfg(test)]
 mod verification_limits_tests {
     use super::*;
