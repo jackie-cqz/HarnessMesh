@@ -317,6 +317,15 @@ pub fn endpoint_is_loopback(endpoint: &str) -> bool {
         None => false,
     })
 }
+/// Whether a computer configured as `config` can call a peer whose card
+/// names `endpoint`. A full Tailnet node reads a loopback endpoint as a peer
+/// set up with only MCP: it accepts no connections, so there is nothing to
+/// call. A loopback node (one computer, tests) calls loopback peers as usual.
+pub fn can_call(config: &NodeConfig, endpoint: &str) -> bool {
+    !(config.node.network == "tailscale"
+        && !config.outbound_only()
+        && endpoint_is_loopback(endpoint))
+}
 pub fn validate_endpoint(endpoint: &str) -> Result<url::Url> {
     let url = url::Url::parse(endpoint)?;
     let permitted = match url.host() {

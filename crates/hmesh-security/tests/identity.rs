@@ -40,6 +40,27 @@ fn an_outbound_identity_already_names_its_tailnet_ip_for_a_later_switch() {
 }
 
 #[test]
+fn a_full_tailnet_node_does_not_call_peers_that_only_connect_out() {
+    let only_mcp_peer = "https://127.0.0.1:39880";
+    let full_peer = "https://100.99.145.23:39880";
+    // Full Tailnet node: calls full peers, never an only-MCP one.
+    let mut full = NodeConfig::default();
+    full.node.network = "tailscale".into();
+    full.node.expose_to_tailnet = true;
+    full.node.listen_address = "100.99.145.22".parse().unwrap();
+    assert!(can_call(&full, full_peer));
+    assert!(!can_call(&full, only_mcp_peer));
+    assert!(!can_call(&full, "https://localhost:39880"));
+    // An only-MCP node calls out to full peers.
+    let mut outbound = NodeConfig::default();
+    outbound.node.network = "tailscale".into();
+    outbound.node.tailnet_address = Some("100.99.145.22".parse().unwrap());
+    assert!(can_call(&outbound, full_peer));
+    // A loopback node (one computer) calls loopback peers as before.
+    assert!(can_call(&NodeConfig::default(), only_mcp_peer));
+}
+
+#[test]
 fn initialization_is_idempotent_and_instances_have_distinct_keys_and_tokens() {
     let root = tempfile::tempdir().expect("tempdir");
     let a = Instance::init(&root.path().join("a"), NodeConfig::default()).expect("init a");

@@ -90,7 +90,7 @@ cargo build --release --locked -p hmesh-cli
 - whether to start the daemon at login (macOS and Windows);
 - whether to add the MCP server to Claude Code (`claude mcp add -s user harnessmesh`) and to Codex (`~/.codex/config.toml`).
 
-`--connect claude,codex` or `--connect none` answers the second question in advance, and `--no-startup` skips the first. Running setup again leaves what is already set up alone. Switching a computer from `--mcp-only` to `--full` later keeps its identity and its pairings.
+`--connect claude,codex` or `--connect none` answers the second question in advance, and `--startup` or `--no-startup` the first. With nobody to ask (no terminal, or `--json`), an unanswered question means no. Running setup again leaves what is already set up alone. Switching a computer from `--mcp-only` to `--full` later keeps its identity and its pairings.
 
 HarnessMesh never installs agents. `hmesh agent detect` shows what it found and how to install the rest:
 

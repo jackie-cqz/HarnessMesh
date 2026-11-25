@@ -122,7 +122,10 @@ enum Commands {
         /// MCP clients to connect without asking: claude, codex, or none.
         #[arg(long, value_delimiter = ',')]
         connect: Option<Vec<String>>,
-        /// Do not start the daemon at login.
+        /// Start the daemon at login without asking (macOS, Windows).
+        #[arg(long, conflicts_with = "no_startup")]
+        startup: bool,
+        /// Do not start the daemon at login, and do not ask.
         #[arg(long)]
         no_startup: bool,
         #[arg(long)]
@@ -133,7 +136,7 @@ enum Commands {
         /// Full: the project directory registered agents work in.
         #[arg(long)]
         project: Option<PathBuf>,
-        /// Full: register only these installed agents (opencode, claude-code, codex, pi).
+        /// Full: register only these installed agents (opencode, claude-code, codex, pi, dsh).
         #[arg(long, value_delimiter = ',')]
         agents: Option<Vec<String>>,
     },
@@ -810,6 +813,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         name,
         port,
         connect,
+        startup,
         no_startup,
         tailscale_executable,
         tailnet_address,
@@ -828,7 +832,11 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             name,
             port,
             connect,
-            startup: !no_startup,
+            startup: match (startup, no_startup) {
+                (true, _) => Some(true),
+                (_, true) => Some(false),
+                _ => None,
+            },
             tailscale_executable,
             tailnet_address,
             project,
@@ -990,7 +998,14 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             match CliTailscale::discover(instance.config.node.tailscale_executable.as_deref()) {
                 Ok(provider) => match provider.status().await {
                     Ok(status) => {
-                        match status.require_local_ip(instance.config.node.listen_address) {
+                        // Only-MCP nodes listen on loopback; their Tailnet IP is the one to check.
+                        let address = instance
+                            .config
+                            .node
+                            .tailnet_address
+                            .filter(|_| instance.config.outbound_only())
+                            .unwrap_or(instance.config.node.listen_address);
+                        match status.require_local_ip(address) {
                             Ok(()) => serde_json::to_value(status)?,
                             Err(error) => {
                                 json!({"state":"not_ready", "status":status, "error":error.to_string(), "hint":"Check coordination connectivity and local Tailnet IP; do not reset identity"})

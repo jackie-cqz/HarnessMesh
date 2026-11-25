@@ -87,6 +87,25 @@ fn outbound_only() -> ApiError {
         "this computer only connects out; it accepts no connections from other computers",
     ))
 }
+/// Ctrl-C, or SIGTERM on Unix (a login item or service manager stopping
+/// the daemon), so it still shuts down cleanly and removes daemon.json.
+async fn stop_signal() -> bool {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let Ok(mut terminate) = signal(SignalKind::terminate()) else {
+            return tokio::signal::ctrl_c().await.is_ok();
+        };
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result.is_ok(),
+            _ = terminate.recv() => true,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.is_ok()
+    }
+}
 fn internal(error: impl std::fmt::Display) -> ApiError {
     ApiError(MeshError::new(ErrorCode::Internal, error.to_string()))
 }
@@ -201,9 +220,7 @@ impl AppState {
     /// Nodes that themselves use loopback (one computer) call every peer.
     fn reaches(&self, peer: &Peer) -> bool {
         let config = &self.instance.config;
-        !(config.node.network == "tailscale"
-            && !config.outbound_only()
-            && hmesh_security::endpoint_is_loopback(&peer.card.endpoint))
+        hmesh_security::can_call(config, &peer.card.endpoint)
     }
     fn handshake_limit(&self) -> std::result::Result<(), ApiError> {
         self.anonymous_limit("handshake", 60)
@@ -472,7 +489,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     )?;
     let signal_shutdown = shutdown.clone();
     let signal = tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
+        if stop_signal().await {
             let _ = signal_shutdown.send(true);
         }
     });
@@ -593,7 +610,7 @@ async fn status(
     s.owner(&headers, &c)?;
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
-        "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
+        "tailscale":if s.instance.config.outbound_only() {"not_checked"} else if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
         "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1"],"schema_version":9,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
     ))
 }

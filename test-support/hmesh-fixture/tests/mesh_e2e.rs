@@ -423,6 +423,66 @@ async fn sessions_span_paired_computers_with_delegation_permissions_and_access_r
     daemon_b.stop().await;
 }
 
+/// A computer set up with only MCP (`hmesh setup --mcp-only`) opens sessions
+/// on a paired computer through its MCP server and gets the answers, while
+/// that computer can open nothing on it, not even with its own agent there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_computer_that_only_connects_out_opens_sessions_but_none_open_on_it() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = NodeConfig::default();
+    config.node.name = "laptop".into();
+    config.node.network = "tailscale".into();
+    config.node.tailnet_address = Some("100.64.0.7".parse().unwrap());
+    config.node.listen_port = free_port();
+    let laptop = Instance::init(&root.path().join("laptop"), config).unwrap();
+    assert!(laptop.config.outbound_only());
+    let studio = init(root.path(), "studio");
+    Store::open(&laptop.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&studio.card)
+        .unwrap();
+    Store::open(&studio.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&laptop.card)
+        .unwrap();
+    register_fixture(&studio, &root.path().join("studio-project"));
+    let laptop_agent = register_named(&laptop, &root.path().join("laptop-project"), "local");
+    let daemon_laptop = Daemon::start(&laptop.dir);
+    let daemon_studio = Daemon::start(&studio.dir);
+    daemon_laptop.ready().await;
+    daemon_studio.ready().await;
+
+    let mut mcp = initialized(&laptop.dir).await;
+    let answer = call(
+        &mut mcp,
+        "mesh_send",
+        json!({"agent":"studio/fixture","message":"fixture:reply","wait_seconds":60}),
+    )
+    .await;
+    assert_eq!(answer["done"], true, "{answer}");
+    assert_eq!(answer["final_text"], "Final answer: the build is green.");
+
+    let refused = daemon_studio
+        .owner()
+        .post::<_, SessionRecord>(
+            "/local/sessions",
+            &json!({"agent_id":laptop_agent,"peer_id":laptop.card.node_id,"message":"fixture:reply"}),
+        )
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    let listed: Value = daemon_laptop.owner().get("/local/sessions").await.unwrap();
+    assert!(
+        listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["agent_id"] != json!(laptop_agent)),
+        "{listed}"
+    );
+    daemon_laptop.stop().await;
+    daemon_studio.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_survives_a_daemon_restart_and_turns_can_be_cancelled() {
     let root = tempfile::tempdir().unwrap();

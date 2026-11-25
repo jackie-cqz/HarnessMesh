@@ -57,7 +57,17 @@ async fn peer_card(
         )));
     }
     validate_card(&card).map_err(|e| ApiError(MeshError::input(e.to_string())))?;
-    Ok(Json(json!({"updated": s.store.update_peer_card(&card)?})))
+    let updated = s.store.update_peer_card(&card)?;
+    if updated {
+        s.store.audit(
+            Some(actor.node_id),
+            "peer.card",
+            &card.endpoint,
+            "updated",
+            Uuid::new_v4(),
+        )?;
+    }
+    Ok(Json(json!({"updated": updated})))
 }
 
 /// Tell every paired computer this one's current card, now and every few

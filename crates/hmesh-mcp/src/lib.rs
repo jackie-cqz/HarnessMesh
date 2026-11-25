@@ -281,15 +281,17 @@ impl OwnerBackend {
     /// owner runs the daemon by hand are left to them, and a server bound to
     /// a session never starts one (that session runs in a daemon already).
     async fn connect(&self) -> Result<Client> {
-        if let Ok(client) = self.client() {
-            return Ok(client);
-        }
         let set_up = std::fs::read(self.data_dir.join("setup.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .is_some_and(|record| record["start_daemon_on_demand"] == true);
         if self.session.is_some() || !set_up {
             return self.client();
+        }
+        // Ask the daemon itself: one that was killed or crashed leaves its
+        // address in daemon.json without answering there.
+        if let Some(client) = hmesh_daemon::running(&self.data_dir).await {
+            return Ok(client);
         }
         let started = match daemon_binary() {
             Ok(binary) => hmesh_daemon::start_detached(&binary, &self.data_dir, DAEMON_START).await,

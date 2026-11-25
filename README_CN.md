@@ -90,7 +90,7 @@ cargo build --release --locked -p hmesh-cli
 - 要不要开机自动启动 daemon（macOS 和 Windows）；
 - 要不要把 MCP 服务器加到 Claude Code（`claude mcp add -s user harnessmesh`）和 Codex（`~/.codex/config.toml`）。
 
-`--connect claude,codex` 或 `--connect none` 预先回答第二个问题，`--no-startup` 跳过第一个。重复运行不会改动已经装好的部分。以后把一台电脑从 `--mcp-only` 换成 `--full`，它的身份和已有的配对都保留。
+`--connect claude,codex` 或 `--connect none` 预先回答第二个问题，`--startup` 或 `--no-startup` 回答第一个。没人可问时（没有终端，或者用了 `--json`），没预先回答的一律当作不要。重复运行不会改动已经装好的部分。以后把一台电脑从 `--mcp-only` 换成 `--full`，它的身份和已有的配对都保留。
 
 HarnessMesh 不会替你安装 Agent。`hmesh agent detect` 会列出找到了哪些，没找到的该怎么装：
 

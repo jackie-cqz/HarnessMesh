@@ -42,7 +42,9 @@ pub struct Options {
     pub port: u16,
     /// MCP clients to connect without asking (`none` for none); `None` asks.
     pub connect: Option<Vec<String>>,
-    pub startup: bool,
+    /// Start the daemon at login: yes (--startup), no (--no-startup), or
+    /// ask (neither; nobody to ask means no).
+    pub startup: Option<bool>,
     pub tailscale_executable: Option<PathBuf>,
     pub tailnet_address: Option<IpAddr>,
     pub project: Option<PathBuf>,
@@ -145,7 +147,7 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
     // Start at login (Mac, Windows), and now.
     let binary = std::env::current_exe()?;
     let mut startup = json!(null);
-    if options.startup {
+    if options.startup != Some(false) {
         match std::env::consts::OS {
             "macos" | "windows" => {
                 let status = crate::startup::execute(dir, &crate::StartupCommand::Status)?;
@@ -153,9 +155,13 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
                     report.step(true, "Already starts at login");
                 } else if status["record_exists"] == true {
                     report.step(false, "A login item exists but was changed; inspect it with `hmesh startup status`");
-                } else {
+                } else if consented(options.startup, interactive, || {
+                    confirm("Start the HarnessMesh daemon when you log in?")
+                })? {
                     startup = crate::startup::execute(dir, &crate::StartupCommand::Install)?;
                     report.step(true, "Starts at login from now on");
+                } else {
+                    report.step(false, "Does not start at login; to add it later: hmesh startup install (`hmesh mcp` starts the daemon when it is needed)");
                 }
             }
             _ => report.step(false, "Login startup is not available on this system; `hmesh mcp` starts the daemon when it is needed"),
@@ -180,8 +186,9 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
     // Connect HarnessMesh's MCP server to the MCP clients found here.
     let mut command = vec![binary.display().to_string(), "mcp".into()];
     if options.explicit_dir {
+        // Clients start it from anywhere: always an absolute directory.
         command.push("--data-dir".into());
-        command.push(dir.display().to_string());
+        command.push(std::fs::canonicalize(dir)?.display().to_string());
     }
     let connected = connect_clients(
         &command,
@@ -375,7 +382,7 @@ async fn register_agents(
     let installed = detect_installed_agents();
     let wanted = options.agents.as_deref();
     for name in wanted.unwrap_or_default() {
-        if !installed.iter().any(|a| kind_name(a.harness) == name) {
+        if !installed.iter().any(|a| a.harness.to_string() == *name) {
             bail!("not installed on this computer: {name} (HarnessMesh does not install agents)");
         }
     }
@@ -383,13 +390,9 @@ async fn register_agents(
     let mut registered = vec![];
     for agent in installed
         .iter()
-        .filter(|a| wanted.is_none_or(|w| w.iter().any(|n| n == kind_name(a.harness))))
+        .filter(|a| wanted.is_none_or(|w| w.iter().any(|n| *n == a.harness.to_string())))
     {
-        let name = format!(
-            "{}-{}",
-            instance.card.display_name,
-            kind_name(agent.harness)
-        );
+        let name = agent_name(&instance.card.display_name, agent.harness);
         if existing.iter().any(|card| card.name == name) {
             report.step(true, format!("Agent {name} is already registered"));
             continue;
@@ -411,13 +414,12 @@ async fn register_agents(
     }
     Ok(registered)
 }
-fn kind_name(kind: HarnessKind) -> &'static str {
+/// `<node>-<kind>`, as scripts/start-tailnet.mjs names them. The official
+/// DSH ACP registration keeps apart from earlier headless DSH agents.
+fn agent_name(node: &str, kind: HarnessKind) -> String {
     match kind {
-        HarnessKind::Opencode => "opencode",
-        HarnessKind::ClaudeCode => "claude-code",
-        HarnessKind::Codex => "codex",
-        HarnessKind::Pi => "pi",
-        _ => "acp",
+        HarnessKind::Dsh => format!("{node}-dsh-acp"),
+        _ => format!("{node}-{kind}"),
     }
 }
 
@@ -430,12 +432,12 @@ fn connect_clients(
     interactive: bool,
     report: &mut Report,
 ) -> Result<Vec<Value>> {
-    let chosen = |client: &str, question: &str| -> Result<bool> {
-        match wanted {
-            Some(list) => Ok(list.iter().any(|c| c == client)),
-            None if interactive => confirm(question),
-            None => Ok(false),
-        }
+    let chosen = |client: &str, question: &str| {
+        consented(
+            wanted.map(|list| list.iter().any(|c| c == client)),
+            interactive,
+            || confirm(question),
+        )
     };
     let mut results = vec![];
     // Claude Code: `claude mcp add -s user harnessmesh -- <hmesh> mcp`.
@@ -490,7 +492,13 @@ fn connect_clients(
     match codex_home.filter(|home| home.exists() || on_path("codex").is_some()) {
         Some(codex_home) => {
             let path = codex_home.join("config.toml");
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => {
+                    return Err(error).with_context(|| format!("read {}", path.display()));
+                }
+            };
             let parsed: toml::Table = toml::from_str(&text)
                 .with_context(|| format!("{} is not valid TOML", path.display()))?;
             let present = parsed
@@ -535,7 +543,15 @@ fn connect_clients(
                 toml::from_str::<toml::Table>(&updated)
                     .context("the updated Codex configuration would not be valid TOML")?;
                 std::fs::create_dir_all(&codex_home)?;
-                atomic_write(&path, updated.as_bytes())?;
+                // A config.toml kept as a symlink (dotfiles) stays one: write
+                // the file it points to.
+                let target =
+                    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+                        std::fs::canonicalize(&path)?
+                    } else {
+                        path.clone()
+                    };
+                atomic_write(&target, updated.as_bytes())?;
                 report.step(true, format!("Connected Codex ({})", path.display()));
                 results.push(json!({"client": "codex", "state": "connected", "config": path}));
             } else {
@@ -558,6 +574,20 @@ fn connect_clients(
         }
     }
     Ok(results)
+}
+
+/// A flag answers in advance; otherwise ask when someone can answer, and
+/// take no for an answer when nobody can.
+fn consented(
+    answer: Option<bool>,
+    interactive: bool,
+    ask: impl FnOnce() -> Result<bool>,
+) -> Result<bool> {
+    match answer {
+        Some(answer) => Ok(answer),
+        None if interactive => ask(),
+        None => Ok(false),
+    }
 }
 
 fn home() -> Option<PathBuf> {
@@ -586,7 +616,7 @@ mod tests {
             name: Some("studio".into()),
             port: 39880,
             connect: None,
-            startup: false,
+            startup: Some(false),
             tailscale_executable: None,
             tailnet_address: None,
             project: None,
@@ -621,6 +651,25 @@ mod tests {
         assert!(switch(&mut config, Mode::Full, "100.64.0.8".parse().unwrap()).is_err());
         let mut local = NodeConfig::default();
         assert!(switch(&mut local, Mode::Full, ip).is_err());
+    }
+
+    #[test]
+    fn nobody_to_ask_means_no_and_flags_answer_without_asking() {
+        let never = || -> Result<bool> { panic!("asked") };
+        assert!(!consented(None, false, never).unwrap());
+        assert!(consented(Some(true), false, never).unwrap());
+        assert!(!consented(Some(false), true, never).unwrap());
+        assert!(consented(None, true, || Ok(true)).unwrap());
+        assert!(!consented(None, true, || Ok(false)).unwrap());
+    }
+
+    #[test]
+    fn dsh_keeps_its_acp_name_apart_from_earlier_headless_agents() {
+        assert_eq!(agent_name("studio", HarnessKind::Dsh), "studio-dsh-acp");
+        assert_eq!(
+            agent_name("studio", HarnessKind::ClaudeCode),
+            "studio-claude-code"
+        );
     }
 
     #[test]

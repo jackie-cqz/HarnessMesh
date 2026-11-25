@@ -26,8 +26,8 @@ hmesh setup --full            # 完整安装：同时把本机 agent 共享给�
 
 - 节点建在 `~/.harnessmesh`（`--data-dir` 可改）。证书里一开始就带着 Tailnet IP，所以以后从只装 MCP 换成完整安装（再跑一次 `hmesh setup --full`），指纹和已有配对都不变。
 - 改 HarnessMesh 以外的东西之前都会先问：开机自启（macOS、Windows；Linux 给提示），以及把 MCP 服务器加到 Claude Code（`claude mcp add -s user harnessmesh -- <hmesh> mcp`）和 Codex（在 `config.toml` 末尾追加 `[mcp_servers.harnessmesh]`，`tool_timeout_sec = 660`）。已经有 `harnessmesh` 这一项的客户端不再改动。
-- 没有终端可问时（例如 `--json`），不带 `--connect` 就一个客户端都不碰；`--connect claude,codex` 或 `--connect none` 预先回答。`--no-startup` 不加开机自启。`--name`、`--port`、`--tailnet-address`、`--project`、`--agents` 见 `hmesh setup --help`。
-- setup 会在节点目录写 `setup.json`。有这个标记时，`hmesh mcp` 发现 daemon 没在运行，会自己在后台把它启动起来（最多等 15 秒；起不来时工具返回 daemon 日志里的原因）。绑定到会话的服务器（`--session`）和手动 `hmesh init` 的节点不会这样做。
+- 没有终端可问时（例如 `--json`），没预先回答的一律当作不要：不带 `--connect` 就一个客户端都不碰，不带 `--startup` 就不加开机自启。`--connect claude,codex` 或 `--connect none`、`--startup` 或 `--no-startup` 预先回答。客户端配置里写的是节点目录的绝对路径；Codex 的 `config.toml` 是符号链接时，写的是它指向的文件，链接保留。`--name`、`--port`、`--tailnet-address`、`--project`、`--agents` 见 `hmesh setup --help`。
+- setup 会在节点目录写 `setup.json`。有这个标记时，`hmesh mcp` 每次先向 daemon 确认它在运行（被强杀或崩溃时留下的 `daemon.json` 不算），没在运行就自己在后台把它启动起来（最多等 15 秒；起不来时工具返回 daemon 日志里的原因）。daemon 收到 SIGTERM 也会正常退出、清理 `daemon.json`。绑定到会话的服务器（`--session`）和手动 `hmesh init` 的节点不会这样做。
 - 名片同步：每个 daemon 启动时把自己的名片（地址、端口、是否只装 MCP）发给每台已配对的电脑，没送达就每 5 分钟重试，所以换装法、换端口后对方会更新。**已知限制**：只装 MCP 的电脑不接受连入，收不到别人的新名片；Tailscale IP 一般不变，但对方改了端口后，只装 MCP 的电脑会连不上它。
 
 ## 手动接入
@@ -104,7 +104,8 @@ hmesh peers access <对端名字或节点ID> auto      # 恢复直接开始
 - `test-support/hmesh-fixture/tests/mesh_e2e.rs`：本机起两个真实 daemon（loopback mTLS）和说 ACP 的 fixture agent，覆盖跨电脑多轮会话、打开者回答权限、agent 跨电脑委派（自动允许）、防循环、跨第三台电脑被拦、confirm 等批准、撤销配对关闭会话、daemon 重启后 `session/load` 续上对话、取消与关闭。
 - `node scripts/mcp-smoke.mjs`：发布形态的 `hmesh` 二进制走 CLI 配对，再通过真实 `hmesh mcp` 子进程完成开会话、追问、confirm 批准。
 - `node scripts/sessions-panel-smoke.mjs`：真实浏览器在面板里完成同样的流程。
-- `crates/hmesh-cli/tests/setup.rs`：用假的 `claude` 命令和临时 HOME 跑 `hmesh setup --mcp-only`，核对节点配置、Claude Code 和 Codex 各只接入一次、不同意就一个都不碰、`hmesh mcp` 自己拉起 daemon、daemon 起不来时立刻报出原因。
+- `crates/hmesh-cli/tests/setup.rs`：用假的 `claude` 命令和临时 HOME 跑 `hmesh setup --mcp-only`，核对节点配置、Claude Code 和 Codex 各只接入一次、不同意就一个客户端和开机自启都不碰、`hmesh mcp` 自己拉起 daemon（包括 daemon 被强杀之后）、daemon 起不来时立刻报出原因、Codex 配置是符号链接时链接保留。
+- `test-support/hmesh-fixture/tests/mesh_e2e.rs` 的 `a_computer_that_only_connects_out_opens_sessions_but_none_open_on_it`：只装 MCP 的电脑经 MCP 在配对电脑上开会话、拿回答复；对方在它上面开会话被拒。
 - `crates/hmesh-cli/tests/two_nodes.rs`：只装 MCP 的电脑能向外配对和调用，对方发来的配对申请、`hello` 和节点请求都被拒；换了端口的电脑会把新名片发给配对的电脑。
 - 以上只用 fixture，不调用模型。
 
