@@ -279,3 +279,203 @@ async fn two_daemon_processes_pair_bidirectionally_and_revoke_without_owner_leak
     let status = cli(&b_dir, &["daemon", "status"]);
     assert_eq!(status["tailscale"], json!("not_required"));
 }
+
+/// The status of one of `dir`'s pair requests, once it is `status` (or the
+/// wait runs out).
+async fn pair_status(dir: &Path, request_id: &str, status: &str) -> String {
+    let mut seen = String::new();
+    for _ in 0..40 {
+        let pairs = cli(dir, &["pair", "list"]);
+        seen = pairs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["request_id"] == request_id)
+            .map(|p| p["status"].as_str().unwrap().to_string())
+            .unwrap_or_default();
+        if seen == status {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    seen
+}
+
+#[tokio::test]
+async fn one_approval_on_the_other_computer_pairs_both_ways() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let dirs: Vec<_> = ["asks", "approves", "declined", "restarts"]
+        .iter()
+        .map(|name| root.path().join(name))
+        .collect();
+    for (dir, name) in dirs.iter().zip(["node-a", "node-b", "node-c", "node-d"]) {
+        cli(dir, &["init", "--name", name, "--port", "0"]);
+    }
+    let (a_dir, b_dir, c_dir, d_dir) = (&dirs[0], &dirs[1], &dirs[2], &dirs[3]);
+    let _a = daemon(a_dir);
+    let _b = daemon(b_dir);
+    let _c = daemon(c_dir);
+    let mut d = daemon(d_dir);
+    let a_card = ready(a_dir).await;
+    let b_card = ready(b_dir).await;
+    let c_card = ready(c_dir).await;
+    ready(d_dir).await;
+    let b_code = cli(b_dir, &["pair", "show"])["pair_code"]
+        .as_str()
+        .expect("pairing code")
+        .to_string();
+    assert_eq!(
+        b_code,
+        format!(
+            "hmesh://{}/{}",
+            b_card.endpoint.trim_start_matches("https://"),
+            b_card.fingerprint
+        )
+    );
+
+    // A pastes B's code. Until B's owner approves, neither side trusts the
+    // other, and B reports the request as pending to whoever holds its ID.
+    let request = cli(a_dir, &["pair", "request", "--code", &b_code]);
+    let id = request["request_id"]
+        .as_str()
+        .expect("request id")
+        .to_string();
+    let mut a = Instance::load(a_dir).expect("a");
+    a.card = a_card.clone();
+    let b = Instance::load(b_dir).expect("b");
+    let anonymous =
+        Client::new(&a, &b_card.endpoint, &b_card.fingerprint, true, false).expect("anonymous");
+    let pending: Value = anonymous
+        .get(&format!("/hmesh/v1/pair/requests/{id}"))
+        .await
+        .expect("status");
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(
+        anonymous
+            .get::<Value>(&format!("/hmesh/v1/pair/requests/{}", uuid::Uuid::new_v4()))
+            .await
+            .expect_err("unknown request")
+            .code,
+        ErrorCode::InvalidInput
+    );
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(pair_status(a_dir, &id, "pending").await, "pending");
+    let b_to_a =
+        Client::new(&b, &a_card.endpoint, &a_card.fingerprint, false, false).expect("b to a");
+    assert!(b_to_a.get::<NodeCard>("/hmesh/v1/node").await.is_err());
+
+    // B approves once; A finishes on its own and both directions work.
+    cli(
+        b_dir,
+        &[
+            "pair",
+            "approve",
+            &id,
+            "--expect-fingerprint",
+            &a_card.fingerprint,
+        ],
+    );
+    assert_eq!(pair_status(a_dir, &id, "approved").await, "approved");
+    let a_to_b =
+        Client::new(&a, &b_card.endpoint, &b_card.fingerprint, false, false).expect("a to b");
+    assert_eq!(
+        a_to_b
+            .get::<NodeCard>("/hmesh/v1/node")
+            .await
+            .expect("a to b")
+            .node_id,
+        b_card.node_id
+    );
+    assert_eq!(
+        b_to_a
+            .get::<NodeCard>("/hmesh/v1/node")
+            .await
+            .expect("b to a")
+            .node_id,
+        a_card.node_id
+    );
+    // Approving by hand afterwards, as before this change, still works.
+    let again = cli(
+        a_dir,
+        &[
+            "pair",
+            "approve",
+            &id,
+            "--expect-fingerprint",
+            &b_card.fingerprint,
+        ],
+    );
+    assert_eq!(again["status"], "trusted");
+    // Revoking B ends A's open requests to it: B approving one of them
+    // afterwards does not quietly make A trust B again.
+    let late = cli(a_dir, &["pair", "request", "--code", &b_code]);
+    let late = late["request_id"].as_str().unwrap().to_string();
+    cli(a_dir, &["pair", "revoke", &b_card.node_id.to_string()]);
+    assert_eq!(pair_status(a_dir, &late, "cancelled").await, "cancelled");
+    cli(
+        b_dir,
+        &[
+            "pair",
+            "approve",
+            &late,
+            "--expect-fingerprint",
+            &a_card.fingerprint,
+        ],
+    );
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(pair_status(a_dir, &late, "cancelled").await, "cancelled");
+    assert!(b_to_a.get::<NodeCard>("/hmesh/v1/node").await.is_err());
+
+    // B declines C: C learns it and trusts nothing.
+    let declined = cli(c_dir, &["pair", "request", "--code", &b_code]);
+    let declined = declined["request_id"].as_str().unwrap().to_string();
+    cli(b_dir, &["pair", "decline", &declined]);
+    assert_eq!(pair_status(c_dir, &declined, "declined").await, "declined");
+    let b_to_c =
+        Client::new(&b, &c_card.endpoint, &c_card.fingerprint, false, false).expect("b to c");
+    assert!(b_to_c.get::<NodeCard>("/hmesh/v1/node").await.is_err());
+
+    // C cancels its own request: even if B approves it afterwards, C does
+    // not start trusting B.
+    let cancelled = cli(c_dir, &["pair", "request", "--code", &b_code]);
+    let cancelled = cancelled["request_id"].as_str().unwrap().to_string();
+    cli(c_dir, &["pair", "decline", &cancelled]);
+    cli(
+        b_dir,
+        &[
+            "pair",
+            "approve",
+            &cancelled,
+            "--expect-fingerprint",
+            &c_card.fingerprint,
+        ],
+    );
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(
+        pair_status(c_dir, &cancelled, "cancelled").await,
+        "cancelled"
+    );
+    assert!(b_to_c.get::<NodeCard>("/hmesh/v1/node").await.is_err());
+
+    // D asks, stops before B approves, and finishes after it starts again.
+    let waiting = cli(d_dir, &["pair", "request", "--code", &b_code]);
+    let waiting = waiting["request_id"].as_str().unwrap().to_string();
+    let d_fingerprint = Instance::load(d_dir).unwrap().card.fingerprint;
+    let _ = d.0.kill();
+    let _ = d.0.wait();
+    let _ = std::fs::remove_file(d_dir.join("daemon.json"));
+    cli(
+        b_dir,
+        &[
+            "pair",
+            "approve",
+            &waiting,
+            "--expect-fingerprint",
+            &d_fingerprint,
+        ],
+    );
+    d = daemon(d_dir);
+    ready(d_dir).await;
+    assert_eq!(pair_status(d_dir, &waiting, "approved").await, "approved");
+    drop(d);
+}

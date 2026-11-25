@@ -9,8 +9,15 @@ const inboxLatestTime=(a,b)=>Math.max(a||0,b||0)||null;
 
 // Kept independent of browser state so status/freshness rules can be verified
 // without a model, a running Node or a browser.
-function buildInboxItems({tasks=[],sessions=[],localNodeId=null,taskObserved=null,sessionObserved=null}={}){
+function buildInboxItems({tasks=[],sessions=[],pairs=[],localNodeId=null,taskObserved=null,sessionObserved=null,now=Date.now()/1000}={}){
  const items=[];
+ // Pair requests: another computer asking this one (yours to approve), and
+ // requests sent from here that wait for the other side.
+ for(const pair of pairs){
+  if(pair.status!=='pending'||!(pair.expires_at>now))continue;
+  const incoming=pair.direction==='incoming';
+  items.push({key:`pair:${pair.request_id}`,kind:'pair',id:pair.request_id,title:incoming?`${pair.card?.display_name} 想和这台电脑配对`:`等 ${pair.card?.display_name} 批准配对`,nodeId:pair.card?.node_id,category:incoming?'approval':'execution',status:'pending',statusLabel:incoming?'等你批准配对':'等对方批准配对',acceptance:null,observedAt:null,cached:false,record:pair,needsOwner:incoming});
+ }
  for(const task of tasks){
   const outbound=task._direction==='outbound',status=task.status||'UNCONFIRMED',check=task._acceptance||{state:task.request?.expected_artifacts?.length?'pending':'not_required'};
   let category='recent';
@@ -77,29 +84,30 @@ function inboxModel(){
  const tasks=inboxTasks();
  // Unknown POST acknowledgements are held in the existing stable-ID ledger.
  if(typeof pendingDraft!=='undefined'&&pendingDraft&&!tasks.some(t=>t.task_id===pendingDraft.request_id))tasks.push({task_id:pendingDraft.request_id,_request_id:pendingDraft.request_id,_direction:'outbound',target_node_id:pendingDraft.peer_id,project_id:pendingDraft.project_id,request:{goal:pendingDraft.goal,expected_artifacts:pendingDraft.expected_artifacts},status:'UNCONFIRMED'});
- return buildInboxItems({tasks,sessions:inboxSessions(),localNodeId:data('node',{}).node?.node_id,taskObserved:inboxState.taskObserved,sessionObserved:inboxState.sessionsObserved});
+ return buildInboxItems({tasks,sessions:inboxSessions(),pairs:typeof pairingReady==='function'&&pairingReady()?data('pairs'):[],localNodeId:data('node',{}).node?.node_id,taskObserved:inboxState.taskObserved,sessionObserved:inboxState.sessionsObserved});
 }
 function inboxMatches(item,category){return category==='all'||(category==='attention'?['attention','approval','permission','acceptance'].includes(item.category):item.category===category);}
 async function inboxOpen(item){
  if(item.kind==='task'){await openTask(item.record);return;}
+ if(item.kind==='pair'){showView('nodes');setTimeout(()=>document.querySelector(`.pair-check[data-request="${item.id}"]`)?.focus(),0);return;}
  showView('sessions');selectSession(item.record);
 }
 // Plain words for the read failures people meet most; other codes as they are.
 function inboxProblem(code){return ({PEER_UNREACHABLE:'对方电脑连不上',READ_UNAVAILABLE:'暂时读不到',VERIFICATION_UNAVAILABLE:'验收结果暂时读不到',UNAUTHENTICATED:'对方不认这台电脑',PERMISSION_DENIED:'对方不允许读取'})[code]||code;}
 function inboxCard(item){
  const card=el('article','inbox-item');card.dataset.key=item.key;card.dataset.kind=item.kind;card.dataset.category=item.category;
- const text=el('div','inbox-item-main'),heading=el('div','inbox-item-heading');heading.append(el('span','inbox-kind',item.kind==='task'?'任务':'会话'),el('strong','inbox-status',item.statusLabel));
+ const text=el('div','inbox-item-main'),heading=el('div','inbox-item-heading');heading.append(el('span','inbox-kind',({task:'任务',pair:'配对'})[item.kind]||'会话'),el('strong','inbox-status',item.statusLabel));
  if(item.acceptance)heading.append(el('span',`badge ${item.acceptance==='passed'?'good':item.acceptance==='failed'?'bad':'warn'}`,inboxAcceptanceNames[item.acceptance]||'验收状态未知'));
  const title=el('p','inbox-title',String(item.title).slice(0,240));
  // Where it runs, and when its state was last read: from the other computer
  // (a cached copy) or here.
- const where=[item.kind==='session'?item.record?.agent_name:null,nodeName(item.nodeId)].filter(Boolean).join(' · ');
+ const where=item.kind==='pair'?(typeof pairHost==='function'?`${pairHost(item.record)} · ${pairLeft(item.record)}`:''):[item.kind==='session'?item.record?.agent_name:null,nodeName(item.nodeId)].filter(Boolean).join(' · ');
  const when=item.observedAt?time(item.observedAt):null;
  const observedText=item.cached?(when?`上次同步 ${when}`:'还没从对方读到最新状态'):(when?`更新于 ${when}`:'');
  const details=el('p','inbox-location',observedText?`${where} · ${observedText}`:where);details.title=item.id;if(item.observedAt)details.dataset.observedAt=item.observedAt;
  text.append(heading,title,details);
  const failure=inboxState.failures.get(item.key);if(failure)text.append(el('p','inbox-connection-note',`当前读取失败（${inboxProblem(failure)}），显示的是上次同步到的状态，没有重新执行。`));
- const actions=el('div','inbox-item-actions'),label=item.kind==='task'?'查看任务与验收':item.category==='permission'?'审阅工具授权':item.category==='approval'?'审阅会话审批':'打开会话';
+ const actions=el('div','inbox-item-actions'),label=item.kind==='pair'?(item.needsOwner?'去批准':'查看'):item.kind==='task'?'查看任务与验收':item.category==='permission'?'审阅工具授权':item.category==='approval'?'审阅会话审批':'打开会话';
  actions.append(button(label,'button secondary',()=>inboxOpen(item)));
  if(item.kind==='task'&&item.status==='UNCONFIRMED'&&item.requestId&&typeof recoverOriginal==='function'){
   const recover=button('检查原请求','text-button',()=>recoverOriginal(item.requestId));recover.disabled=!canWrite();actions.append(recover);

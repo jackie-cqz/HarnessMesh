@@ -4,6 +4,7 @@ mod development;
 mod discovery;
 mod integration;
 mod onboarding;
+mod pairing;
 mod preflight;
 mod relay;
 mod service_test;
@@ -46,7 +47,7 @@ pub struct AppState {
     pub instance: Arc<Instance>,
     pub store: Store,
     policy: Arc<RwLock<Policy>>,
-    handshake_requests: Arc<Mutex<HashMap<i64, usize>>>,
+    handshake_requests: Arc<Mutex<HashMap<(i64, &'static str), usize>>>,
     acceptance: Arc<Mutex<HashMap<Uuid, Value>>>,
     pub shutdown: watch::Sender<bool>,
     sessions: Arc<sessions::Sessions>,
@@ -185,12 +186,22 @@ impl AppState {
         }
     }
     fn handshake_limit(&self) -> std::result::Result<(), ApiError> {
+        self.anonymous_limit("handshake", 60)
+    }
+    /// Anonymous requests per minute, counted separately per kind so that a
+    /// computer waiting for its pair request to be answered does not use up
+    /// the budget for new pairing handshakes.
+    fn anonymous_limit(
+        &self,
+        kind: &'static str,
+        per_minute: usize,
+    ) -> std::result::Result<(), ApiError> {
         let minute = now() / 60;
         let mut counts = self.handshake_requests.lock().map_err(internal)?;
-        counts.retain(|key, _| *key == minute);
-        let count = counts.entry(minute).or_default();
+        counts.retain(|key, _| key.0 == minute);
+        let count = counts.entry((minute, kind)).or_default();
         *count += 1;
-        if *count > 60 {
+        if *count > per_minute {
             Err(ApiError(MeshError::new(
                 ErrorCode::RateLimited,
                 "handshake request limit reached",
@@ -296,6 +307,7 @@ pub fn router(state: AppState) -> Router {
         .merge(discovery::routes())
         .merge(preflight::routes())
         .merge(sessions::routes())
+        .merge(pairing::routes())
         .route("/hmesh/v1/hello", get(hello))
         .route("/hmesh/v1/pair/challenge", get(challenge))
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
@@ -427,6 +439,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
         );
     }
     services::recover(&state)?;
+    pairing::resume(&state)?;
     atomic_write(
         &instance.dir.join("daemon.json"),
         &serde_json::to_vec(&instance.card)?,
@@ -553,7 +566,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","agent-service-relay-v1"],"schema_version":9}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","agent-service-relay-v1","pairing-auto-complete-v1"],"schema_version":9,"pair_code":hmesh_security::pair_code(&s.instance.card)}),
     ))
 }
 async fn stop(
@@ -694,6 +707,8 @@ async fn outgoing_pair(
         expires_at: response.expires_at,
     };
     s.store.save_outgoing_pair(&record)?;
+    // Trust the other computer as soon as its owner approves this request.
+    pairing::watch(s.clone(), record.clone());
     Ok(Json(record))
 }
 #[derive(Serialize, Deserialize)]

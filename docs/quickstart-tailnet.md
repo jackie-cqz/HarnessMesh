@@ -50,27 +50,20 @@ node .\scripts\start-tailnet.mjs
 
 ## 配对和首条任务
 
-先在两端核对 `node show` 的 node_id、endpoint 和完整 fingerprint。下列占位符必须替换为实际值；请求会过期，不复用旧请求。
+最简单的是用面板：Mac 打开面板「配对节点」→「配对新电脑」，复制「这台电脑的配对码」发给自己；Windows 在同一个弹窗里粘贴它、点「发出配对申请」，弹窗显示 6 位校验码；Mac 的「配对节点」页（或「工作待办」）出现这条申请，输入校验码后点「批准」。Windows 几秒内自动完成，两边就都配好了。申请 5 分钟内有效，过期重新申请。
 
-Windows 请求 Mac：
+只用命令行时，先在 Mac 本机取配对码（`pair show` 的 `pair_code`，形如 `hmesh://100.69.246.117:39880/<Mac指纹>`），Windows 请求 Mac：
 
 ```powershell
 $hmesh = '.\target\debug\hmesh.exe'
 $node = '.\.hmesh-v0\tailnet-win32\node'
-& $hmesh --data-dir $node pair request --peer https://100.69.246.117:39880 --expect-fingerprint <Mac指纹>
+& $hmesh --data-dir $node pair request --code hmesh://100.69.246.117:39880/<Mac指纹>
 ```
 
-Mac 批准请求，并反向请求 Windows：
+Mac 核对 Windows 的完整指纹后批准，Windows 不需要再批准：
 
 ```sh
 "$HM" --data-dir "$MAC_NODE" pair approve <Windows请求ID> --expect-fingerprint <Windows指纹>
-"$HM" --data-dir "$MAC_NODE" pair request --peer https://100.99.145.22:39880 --expect-fingerprint <Windows指纹>
-```
-
-Windows 批准反向请求：
-
-```powershell
-& $hmesh --data-dir $node pair approve <Mac请求ID> --expect-fingerprint <Mac指纹>
 ```
 
 配对完成后不需要写 policy：两边都能看到对方的 agent。在 Windows 打开面板，进入「会话」→「新会话」，电脑选 Mac、Agent 选 `mac-a-opencode` 之类，写第一条消息即可。agent 要用工具时，权限请求出现在**你打开会话的那台电脑**的面板里，点「允许一次」或「拒绝」。

@@ -1376,3 +1376,36 @@ table.usage-table td:first-child{white-space:normal}
 @media(max-width:1100px){.entity-list .entity-card{display:block}.entity-list .entity-meta{grid-template-columns:85px minmax(0,1fr);grid-template-rows:none;grid-auto-flow:row;grid-auto-columns:auto}.entity-list .entity-id{display:block}.entity-list .entity-actions{border-top:0;padding-top:0;margin-top:14px}}
 /* Keep the footer line clear of the last card on every page. */
 footer{margin-top:28px}
+
+/* Pairing: the toolbar on 配对节点, open requests, and the pair dialog. */
+.pair-toolbar{display:flex;justify-content:flex-end;margin:-10px 0 20px}
+#pair-new{flex:none}
+.pair-requests{margin:0 0 16px}
+.entity-list .pair-card{display:block}
+.entity-list .pair-card .entity-top{margin-bottom:8px}
+.entity-list .pair-card .entity-actions{margin-top:14px}
+.pair-card[data-direction="incoming"]{border-color:var(--amber-border)}
+.pair-facts{margin:0;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.pair-ask{margin:0 0 6px;font-size:13px}
+.pair-digits-inline{font:600 13px var(--mono);letter-spacing:.12em;padding:1px 6px;border-radius:5px;background:var(--secondary)}
+.pair-approve{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0 0}
+.pair-check-label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.pair-check{width:9ch;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--background);color:var(--foreground);font:600 13px var(--mono);letter-spacing:.14em;text-transform:uppercase}
+.pair-check:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+.pair-card .form-note{margin:10px 0 0}
+.pair-message{color:var(--destructive)}
+.pair-message[hidden]{display:none}
+.pair-dialog .pair-message{color:var(--muted)}
+.pair-dialog .pair-message.error{color:var(--destructive)}
+.pair-dialog textarea{font:12px/1.6 var(--mono);word-break:break-all}
+.pair-own{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:6px 0 4px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;font-size:12px;line-height:1.55}
+.pair-own>div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.pair-own b{font-size:13px}
+.pair-own span{color:var(--muted)}
+.pair-own-code{font:12px/1.5 var(--mono);color:var(--foreground);word-break:break-all;user-select:all}
+.pair-own .button{flex:none}
+.pair-sent{font-size:13px;line-height:1.7}
+.pair-sent p{margin:0 0 8px}
+.pair-sent-title{font-size:15px;font-weight:600}
+.pair-digits{display:inline-block;margin:6px 0 14px;padding:10px 18px;border:1px solid var(--border);border-radius:12px;font:600 26px/1.2 var(--mono);letter-spacing:.22em}
+@media(max-width:700px){.pair-own{flex-direction:column}}

@@ -6,7 +6,8 @@
     "test:development-panel": "node scripts/development-panel-smoke.mjs",
     "test:delegation-ux": "node scripts/delegation-ux-smoke.mjs",
     "test:project-work": "node scripts/project-work-smoke.mjs",
-    "test:sessions-panel": "node scripts/sessions-panel-smoke.mjs"
+    "test:sessions-panel": "node scripts/sessions-panel-smoke.mjs",
+    "test:pairing-panel": "node scripts/pairing-panel-smoke.mjs"
   },
   "devDependencies": {"playwright": "1.62.1"}
 }

@@ -46,13 +46,13 @@ cargo +stable build --locked -p hmesh-cli
 ```powershell
 $a = & $hmesh --json --data-dir $aDir pair show | ConvertFrom-Json
 $b = & $hmesh --json --data-dir $bDir pair show | ConvertFrom-Json
-$pair = & $hmesh --json --data-dir $aDir pair request --peer $b.endpoint --expect-fingerprint $b.fingerprint | ConvertFrom-Json
+$pair = & $hmesh --json --data-dir $aDir pair request --code $b.pair_code | ConvertFrom-Json
 & $hmesh --data-dir $bDir pair approve $pair.request_id --expect-fingerprint $a.fingerprint
-& $hmesh --data-dir $aDir pair approve $pair.request_id --expect-fingerprint $b.fingerprint
+Start-Sleep -Seconds 5
 & $hmesh --data-dir $aDir peers list
 ```
 
-指纹应从目标实例本机 `pair show` 核对。信任与任务授权分开，配对完成后仍默认拒绝任务。
+配对码（`pair show` 的 `pair_code`）带着地址和完整指纹，应从目标实例本机取得。B 批准后，A 的 Daemon 几秒内自动完成，A 不需要再批准；面板里同样可以做（「配对节点」→「配对新电脑」）。配对后两边都能看到对方的 agent；对方发来的任务默认直接执行，用 `hmesh peers access <peer> confirm` 可以改成先由本机确认。
 
 ## 登记 Agent、验证、授权和委派
 
