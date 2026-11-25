@@ -722,6 +722,15 @@ impl Store {
             Ok(task)
         })
     }
+    /// How many tasks there are, without reading them: the daemon status
+    /// carries it, and MCP servers ask for that status before every call.
+    pub fn task_count(&self) -> Result<usize> {
+        self.read(|c| {
+            c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))
+                .map(|n| n as usize)
+                .map_err(internal)
+        })
+    }
     pub fn tasks(&self) -> Result<Vec<TaskRecord>> {
         self.read(|c| {
             let mut q = c

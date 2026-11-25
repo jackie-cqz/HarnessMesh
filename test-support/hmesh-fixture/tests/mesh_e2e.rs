@@ -469,7 +469,8 @@ async fn a_computer_that_only_connects_out_opens_sessions_but_none_open_on_it() 
             &json!({"agent_id":laptop_agent,"peer_id":laptop.card.node_id,"message":"fixture:reply"}),
         )
         .await;
-    assert!(refused.is_err(), "{refused:?}");
+    let refused = refused.expect_err("laptop accepts no sessions");
+    assert_eq!(refused.code, ErrorCode::PermissionDenied, "{refused:?}");
     let listed: Value = daemon_laptop.owner().get("/local/sessions").await.unwrap();
     assert!(
         listed["sessions"]
