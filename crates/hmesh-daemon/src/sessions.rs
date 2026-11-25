@@ -384,8 +384,9 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
     let mut secrets = hmesh_runtime::run_secrets(&config);
     if let Some(service) = &service {
+        let relay = |endpoint: &str, key: &str| s.relay.route(endpoint, key);
         let env = service
-            .launch_env(card.harness)
+            .launch_env(card.harness, Some(&relay))
             .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
         hmesh_runtime::apply_env(&mut command, &env);
         secrets.extend(service.secrets());

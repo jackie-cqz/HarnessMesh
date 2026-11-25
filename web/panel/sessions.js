@@ -462,6 +462,7 @@ function setServiceMode(mode){
   $('#service-url').required=mode==='custom';
   $('#service-model').placeholder=serviceTakesList(mode)?'不填就用下面第一个':mode==='custom'?'这个地址上的模型名':'不填就用 Agent 自己的默认';
   $('#service-model-list-label').hidden=!serviceTakesList(mode);
+  $('#service-relay').hidden=!serviceTakesList(mode)||state.runtime?.capabilities?.agent_service_relay!==true;
   $('#service-test-row').hidden=!serviceTestable(mode);
   showServiceTest(null);
   if(service.view)showOwnLogin(service.view.own_login,$('#service-own-check').disabled);

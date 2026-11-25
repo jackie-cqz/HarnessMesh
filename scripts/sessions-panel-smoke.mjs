@@ -169,6 +169,7 @@ try{
  await page.locator('#service-dialog[open]').waitFor();
  await page.locator('#service-modes').getByRole('radio',{name:/自定义地址/}).click();
  assert(await page.locator('#service-model-list').isVisible()&&await page.locator('#service-test').isVisible(),'model list or test button missing for OpenCode with a custom address');
+ assert((await page.locator('#service-relay').innerText()).includes('key 不交给 OpenCode'),'relay note missing for OpenCode with a custom address');
  const serviceKey='sk-panel-0123456789';
  await page.locator('#service-url').fill(models.base);await page.locator('#service-key').fill(serviceKey);
  await page.locator('#service-test').click();

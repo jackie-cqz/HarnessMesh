@@ -21,11 +21,15 @@ use tokio::{
 };
 
 pub type ExecutionAuthorizer = Arc<dyn Fn(&TaskRecord) -> Result<()> + Send + Sync>;
+/// The daemon's local model relay (see [`service::AgentService::relayed`]).
+pub type RelayFn = dyn Fn(&str, &str) -> anyhow::Result<service::Relayed> + Send + Sync;
+pub type ServiceRelay = Arc<RelayFn>;
 pub async fn run_queue(
     store: Store,
     data_dir: PathBuf,
     limits: RuntimeOptions,
     authorize: ExecutionAuthorizer,
+    relay: Option<ServiceRelay>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut workers = JoinSet::new();
@@ -36,9 +40,9 @@ pub async fn run_queue(
             _ = tick.tick(), if workers.len() < limits.max_concurrent_runs => {
                 match store.claim_next_with_limits(&limits) {
                     Ok(Some(task)) => {
-                        let store = store.clone(); let dir = data_dir.clone(); let stop = shutdown.clone(); let authorize=authorize.clone();
+                        let store = store.clone(); let dir = data_dir.clone(); let stop = shutdown.clone(); let authorize=authorize.clone(); let relay=relay.clone();
                         workers.spawn(async move {
-                            let result=match authorize(&task) {Ok(())=>execute(&store,&dir,&task,stop, &authorize).await,Err(error)=>Err(error)};
+                            let result=match authorize(&task) {Ok(())=>execute(&store,&dir,&task,stop, &authorize, relay.as_deref()).await,Err(error)=>Err(error)};
                             if let Err(error) = result {
                                 let current = store.task(task.task_id);
                                 if let Ok(current) = current && !current.status.is_terminal() {
@@ -177,6 +181,7 @@ async fn execute(
     task: &TaskRecord,
     mut shutdown: watch::Receiver<bool>,
     authorize: &ExecutionAuthorizer,
+    relay: Option<&RelayFn>,
 ) -> Result<()> {
     let (_, config) = store.agent(task.agent_id)?;
     // Also check the exact configuration captured for this attempt. A later
@@ -206,7 +211,7 @@ async fn execute(
     let mut prepared = prepare::prepare(&config, task, &dir).map_err(failure)?;
     if let Some(service) = service::load(data_dir, task.agent_id).map_err(failure)? {
         let env = service
-            .launch_env(config.agent.harness)
+            .launch_env(config.agent.harness, relay.map(|r| r as service::Relay))
             .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
         prepared.add_service(&env, service.secrets());
     }

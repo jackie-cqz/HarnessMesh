@@ -25,8 +25,18 @@ fn client(base: &str) -> reqwest::Result<reqwest::Client> {
     let builder = reqwest::Client::builder()
         // A redirect would carry the key to an address nobody chose.
         .redirect(reqwest::redirect::Policy::none());
-    // Proxies configured for this computer apply to remote services only.
-    let local = reqwest::Url::parse(base)
+    if is_loopback(base) {
+        builder.no_proxy()
+    } else {
+        builder
+    }
+    .build()
+}
+
+/// Whether a service runs on this computer: proxies configured for this
+/// computer apply to remote services only.
+pub(crate) fn is_loopback(base: &str) -> bool {
+    reqwest::Url::parse(base)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.trim_matches(['[', ']']).to_owned()))
         .is_some_and(|host| {
@@ -34,8 +44,7 @@ fn client(base: &str) -> reqwest::Result<reqwest::Client> {
                 || host
                     .parse::<std::net::IpAddr>()
                     .is_ok_and(|ip| ip.is_loopback())
-        });
-    if local { builder.no_proxy() } else { builder }.build()
+        })
 }
 
 async fn call(

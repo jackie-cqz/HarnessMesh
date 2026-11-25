@@ -21,6 +21,37 @@ const OPENCODE_KEY_VAR: &str = "HMESH_OPENCODE_API_KEY";
 /// OpenCode's provider ID for a custom endpoint configured here.
 pub const OPENCODE_PROVIDER: &str = "hmesh";
 
+/// Where an agent reaches its custom endpoint through the daemon's local
+/// relay: the relay's address and the token it accepts in place of the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Relayed {
+    pub url: String,
+    pub token: String,
+}
+
+/// One proxy exclusion list from several (`NO_PROXY` and `no_proxy`, from
+/// the agent's extra variables and the daemon's environment) that also leaves
+/// the relay's address alone. Clients disagree on which name wins when both
+/// are set, so both get every exclusion.
+fn with_loopback<'a>(lists: impl IntoIterator<Item = &'a str>) -> String {
+    const RELAY_HOST: &str = "127.0.0.1";
+    let mut entries: Vec<&str> = Vec::new();
+    for entry in lists
+        .into_iter()
+        .flat_map(|list| list.split(','))
+        .map(str::trim)
+        .chain([RELAY_HOST])
+    {
+        if !entry.is_empty() && !entries.contains(&entry) {
+            entries.push(entry);
+        }
+    }
+    entries.join(",")
+}
+
+/// Registers an endpoint and its key with the relay: `(endpoint, key)`.
+pub type Relay<'a> = &'a dyn Fn(&str, &str) -> Result<Relayed>;
+
 /// The stored settings, secrets included. Never sent over the network.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -357,9 +388,30 @@ pub fn update(
 impl AgentService {
     /// Environment changes for the agent process: `Some` sets a variable,
     /// `None` removes one inherited from the daemon that would conflict.
-    pub fn launch_env(&self, harness: HarnessKind) -> Result<Vec<(String, Option<String>)>> {
+    ///
+    /// With a relay, an agent that goes through it (see [`Self::relayed`])
+    /// gets the relay's address and token instead of the endpoint and key.
+    pub fn launch_env(
+        &self,
+        harness: HarnessKind,
+        relay: Option<Relay>,
+    ) -> Result<Vec<(String, Option<String>)>> {
         let key = self.key()?.unwrap_or_default();
-        self.env_with_key(harness, &key)
+        match (relay, self.relayed(harness)) {
+            (Some(relay), Some(endpoint)) => {
+                let route = relay(endpoint, &key)?;
+                self.env_for(harness, &route.token, Some(&route.url))
+            }
+            _ => self.env_with_key(harness, &key),
+        }
+    }
+    /// The endpoint an agent reaches through the daemon's relay rather than
+    /// directly: OpenCode on a custom endpoint, whose strict client rejects
+    /// replies some OpenAI-compatible gateways send.
+    pub fn relayed(&self, harness: HarnessKind) -> Option<&str> {
+        (harness == HarnessKind::Opencode && self.mode == MODE_CUSTOM)
+            .then_some(self.base_url.as_deref())
+            .flatten()
     }
     /// The key the agent receives: the stored one, or the named variable of
     /// the daemon's environment, which must be set.
@@ -379,6 +431,14 @@ impl AgentService {
         harness: HarnessKind,
         key: &str,
     ) -> Result<Vec<(String, Option<String>)>> {
+        self.env_for(harness, key, None)
+    }
+    fn env_for(
+        &self,
+        harness: HarnessKind,
+        key: &str,
+        relay_url: Option<&str>,
+    ) -> Result<Vec<(String, Option<String>)>> {
         let set = |name: &str, value: &str| (name.to_owned(), Some(value.to_owned()));
         let unset = |name: &str| (name.to_owned(), None);
         let mut env = match (self.mode.as_str(), harness) {
@@ -394,7 +454,7 @@ impl AgentService {
             }
             (MODE_CUSTOM, HarnessKind::Opencode) => {
                 let model = self.default_model.as_deref().unwrap_or_default();
-                let url = self.base_url.as_deref().unwrap_or_default();
+                let url = relay_url.or(self.base_url.as_deref()).unwrap_or_default();
                 let models: serde_json::Map<String, serde_json::Value> = self
                     .model_list()
                     .into_iter()
@@ -449,6 +509,23 @@ impl AgentService {
             (mode, _) => bail!("this agent type does not support the model service mode {mode:?}"),
         };
         env.extend(self.env.iter().map(|(k, v)| (k.clone(), Some(v.clone()))));
+        if relay_url.is_some() {
+            // The relay is on this computer: a proxy the agent inherits must
+            // not carry its requests, or the relay token, anywhere else.
+            const NAMES: [&str; 2] = ["NO_PROXY", "no_proxy"];
+            let inherited: Vec<String> = NAMES
+                .iter()
+                .filter_map(|name| std::env::var(name).ok())
+                .collect();
+            let lists = NAMES
+                .iter()
+                .filter_map(|name| self.env.get(*name).map(String::as_str))
+                .chain(inherited.iter().map(String::as_str));
+            let merged = with_loopback(lists);
+            for name in NAMES {
+                env.push(set(name, &merged));
+            }
+        }
         Ok(env)
     }
     /// Models offered through the custom endpoint, default first.
@@ -675,6 +752,80 @@ mod tests {
         );
     }
     #[test]
+    fn opencode_on_a_custom_endpoint_gets_the_relay_and_never_the_key() {
+        let service = AgentService {
+            mode: MODE_CUSTOM.into(),
+            base_url: Some("https://gateway.example/v1".into()),
+            default_model: Some("demo-model".into()),
+            api_key: Some("sk-test-0123456789".into()),
+            env: BTreeMap::from([("NO_PROXY".into(), "corp.example".into())]),
+            ..AgentService::default()
+        };
+        let asked = std::sync::Mutex::new(Vec::new());
+        let relay = |endpoint: &str, key: &str| {
+            asked
+                .lock()
+                .unwrap()
+                .push((endpoint.to_owned(), key.to_owned()));
+            Ok(Relayed {
+                url: "http://127.0.0.1:7/relay".into(),
+                token: "hmr-local-token".into(),
+            })
+        };
+        let env: BTreeMap<_, _> = service
+            .launch_env(HarnessKind::Opencode, Some(&relay))
+            .unwrap()
+            .into_iter()
+            .collect();
+        let config: serde_json::Value =
+            serde_json::from_str(env["OPENCODE_CONFIG_CONTENT"].as_deref().unwrap()).unwrap();
+        assert_eq!(
+            config["provider"]["hmesh"]["options"]["baseURL"],
+            "http://127.0.0.1:7/relay"
+        );
+        assert_eq!(env[OPENCODE_KEY_VAR].as_deref(), Some("hmr-local-token"));
+        assert!(env.values().flatten().all(|v| !v.contains("sk-test")));
+        // A proxy the agent inherits leaves the relay alone; the owner's own
+        // exclusions stay.
+        // Both names carry every exclusion: a client reading either one
+        // still skips the proxy for the owner's own hosts.
+        assert_eq!(env["NO_PROXY"], env["no_proxy"]);
+        let merged = env["no_proxy"].as_deref().unwrap();
+        assert!(
+            merged.starts_with("corp.example,") && merged.contains("127.0.0.1"),
+            "{merged}"
+        );
+        assert_eq!(with_loopback([""]), "127.0.0.1");
+        assert_eq!(
+            with_loopback(["localhost, 127.0.0.1", "internal.corp,localhost,"]),
+            "localhost,127.0.0.1,internal.corp"
+        );
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [(
+                "https://gateway.example/v1".to_owned(),
+                "sk-test-0123456789".to_owned()
+            )]
+        );
+        // Other agents and other modes reach their service directly.
+        let claude: BTreeMap<_, _> = service
+            .launch_env(HarnessKind::ClaudeCode, Some(&relay))
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            claude["ANTHROPIC_BASE_URL"].as_deref(),
+            Some("https://gateway.example/v1")
+        );
+        assert_eq!(claude["NO_PROXY"].as_deref(), Some("corp.example"));
+        let own_key = AgentService {
+            mode: MODE_API_KEY.into(),
+            ..service.clone()
+        };
+        assert_eq!(own_key.relayed(HarnessKind::Opencode), None);
+        assert_eq!(asked.lock().unwrap().len(), 1);
+    }
+    #[test]
     fn each_agent_type_receives_its_own_variables_and_secrets_are_hidden() {
         let service = AgentService {
             mode: MODE_CUSTOM.into(),
@@ -686,7 +837,7 @@ mod tests {
             env: BTreeMap::from([("EXTRA_TOKEN".into(), "extra-secret-value".into())]),
         };
         let env: BTreeMap<_, _> = service
-            .launch_env(HarnessKind::Opencode)
+            .launch_env(HarnessKind::Opencode, None)
             .unwrap()
             .into_iter()
             .collect();
@@ -707,7 +858,7 @@ mod tests {
         assert_eq!(env[OPENCODE_KEY_VAR].as_deref(), Some("sk-test-0123456789"));
         assert_eq!(env["EXTRA_TOKEN"].as_deref(), Some("extra-secret-value"));
         let claude: BTreeMap<_, _> = service
-            .launch_env(HarnessKind::ClaudeCode)
+            .launch_env(HarnessKind::ClaudeCode, None)
             .unwrap()
             .into_iter()
             .collect();
@@ -915,7 +1066,7 @@ mod tests {
         assert_eq!(stored.api_key, None, "nothing stored");
         let expected = std::env::var("CARGO_MANIFEST_DIR").unwrap();
         let env: BTreeMap<_, _> = stored
-            .launch_env(HarnessKind::Codex)
+            .launch_env(HarnessKind::Codex, None)
             .unwrap()
             .into_iter()
             .collect();
@@ -953,7 +1104,7 @@ mod tests {
             ..Default::default()
         };
         let error = missing
-            .launch_env(HarnessKind::Codex)
+            .launch_env(HarnessKind::Codex, None)
             .unwrap_err()
             .to_string();
         assert!(error.contains("NOT_SET_ANYWHERE_0123"), "{error}");

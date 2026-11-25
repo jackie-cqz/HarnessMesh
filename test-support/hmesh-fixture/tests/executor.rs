@@ -108,6 +108,7 @@ impl Fixture {
             self.instance.dir.clone(),
             RuntimeOptions::default(),
             Arc::new(|_| Ok(())),
+            None,
             receiver,
         ));
         (sender, job)
@@ -548,6 +549,7 @@ async fn execution_authorization_is_rechecked_before_a_queued_process_starts() {
                 "grant revoked after admission",
             ))
         }),
+        None,
         receiver,
     ));
     let task = f.terminal(task.task_id).await;
@@ -737,6 +739,7 @@ async fn running_grant_revocation_stops_execution_without_retry() {
                 ))
             }
         }),
+        None,
         receiver,
     ));
     let result = f.terminal(task.task_id).await;

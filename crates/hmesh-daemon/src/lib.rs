@@ -5,6 +5,7 @@ mod discovery;
 mod integration;
 mod onboarding;
 mod preflight;
+mod relay;
 mod service_test;
 mod services;
 mod sessions;
@@ -49,6 +50,7 @@ pub struct AppState {
     acceptance: Arc<Mutex<HashMap<Uuid, Value>>>,
     pub shutdown: watch::Sender<bool>,
     sessions: Arc<sessions::Sessions>,
+    relay: Arc<relay::ModelRelay>,
 }
 #[derive(Debug)]
 pub struct ApiError(pub MeshError);
@@ -103,6 +105,7 @@ impl AppState {
             policy: Arc::new(RwLock::new(policy)),
             handshake_requests: Arc::new(Mutex::new(HashMap::new())),
             acceptance: Arc::new(Mutex::new(HashMap::new())),
+            relay: Arc::new(relay::ModelRelay::new(shutdown.subscribe())),
             shutdown,
             sessions: Arc::default(),
         })
@@ -437,11 +440,15 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     tracing::info!(node_id=%instance.card.node_id, endpoint=%instance.card.endpoint, recovered, "daemon listening");
     let tls_instance = instance.clone();
     let execution_state = state.clone();
+    let relay = state.relay.clone();
     let runtime = tokio::spawn(hmesh_runtime::run_queue(
         store.clone(),
         instance.dir.clone(),
         instance.config.runtime.clone(),
         Arc::new(move |task| execution_state.authorize_execution(task)),
+        Some(Arc::new(move |endpoint: &str, key: &str| {
+            relay.route(endpoint, key)
+        })),
         shutdown.subscribe(),
     ));
     let managed = tokio::spawn(services::run(state.clone(), shutdown.subscribe()));
@@ -546,7 +553,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1"],"schema_version":9}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","agent-service-relay-v1"],"schema_version":9}),
     ))
 }
 async fn stop(

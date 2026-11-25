@@ -22,7 +22,7 @@ cargo +stable build --locked -p hmesh-cli
 - agent 通过 `hmesh mcp` 打开的子会话也在列表里，标出调用者和调用链。
 - 输入框下面是 agent 报上来的会话设置（模型、模式、思考强度）：新会话发第一条消息前就能选（用的是这个 agent 上次报的选项），会话里两轮之间可以切，切换会记在对话里。只有打开会话的电脑能改。
 - 「Agents」页每个本机 agent 有「模型服务」：用它自己的登录、API key 或自定义地址，以及默认模型和额外环境变量。key 只存在这台电脑上，保存后不再显示，只给末 4 位；配对电脑只看到「已配置」。CLI 对应 `hmesh agent service <agent> --mode … --api-key-stdin` 和 `hmesh session config <session> <setting> <value>`；额外变量用 `--env NAME`，值取自这条命令自己的同名环境变量，不出现在命令行和 shell 历史里（`--keep-env NAME` 保留已存的值，`--clear-env` 全部删除）。
-- OpenCode 用自定义地址时可以填「可切换的模型」（每行一个，最多 100 个，CLI 是可重复的 `--model NAME`，`--clear-models` 清空）：这些模型都注册给 OpenCode，会话里的模型选单只显示它们；默认模型不填就用第一个。
+- OpenCode 用自定义地址时可以填「可切换的模型」（每行一个，最多 100 个，CLI 是可重复的 `--model NAME`，`--clear-models` 清空）：这些模型都注册给 OpenCode，会话里的模型选单只显示它们；默认模型不填就用第一个。OpenCode 经这台电脑上的 HarnessMesh 转发连这个地址：key 不交给 OpenCode；有的网关回复里带 OpenCode 不认的空字段（如最后一块的 `"role":""`），转发时会去掉。
 - 「测试连接」（CLI 加 `--test`）用弹窗里正在填的内容测试，key 没重新输入就用已存的：先问服务商要模型列表，不花 token，能列出来就可以一键填入「可切换的模型」（合起来超过 100 个时不提供一键填入，需要手动挑）；列不出来才用默认模型发一次很小的请求。有的服务列模型时不检查 key，所以「列出了 N 个模型」只说明地址能连上，key 是否有效要等第一轮对话或小请求才知道。用它自己的登录、以及 OpenCode 自己的服务（API key 模式）不能在这里测。
 - 弹窗顶部会说明这个 agent **自己**配好了没有（打开弹窗时检测一次，也可以点「重新检测」；CLI 是 `hmesh agent service <agent> --check`）：比如「检测到 Claude 订阅（max 套餐），you@example.com」「已存的凭据：OpenCode (api)」「4 个服务商、29 个模型」，或者「没检测到它自己的登录」并提示怎么登录。配好了就不用在这里填 key；想让它单独用别的 key 或服务，直接选「单独给它一个 key」或「自定义地址」重新配置，选回「用它自己的登录」就恢复。Agents 页的卡片也会写「用它自己的登录（已配好）」或「单独配置」；配对电脑只看到配没配好，看不到登录方式和账号。
 - 「自定义地址」可以从预设里选（31 个：AgentMeld 的 28 个加 DeepSeek、OpenAI、火山方舟），只列这个 agent 能用的地址：Claude Code 只列有 Anthropic 兼容地址的，Codex 只列有 Responses 接口的，OpenCode 列 Chat Completions 地址。CLI 是 `--preset <id>`。
