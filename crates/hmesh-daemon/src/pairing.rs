@@ -116,8 +116,12 @@ async fn peer_told(state: &AppState, peer: &Peer) -> bool {
 /// Anonymous like the rest of the handshake, because the asking computer is
 /// not trusted yet. Only whoever holds the request's random ID learns its
 /// status word, and nothing else.
-async fn status(State(s): State<AppState>, Path(id): Path<Uuid>) -> ApiResult<PairStatus> {
-    s.anonymous_limit("pair-status", STATUS_PER_MINUTE)?;
+async fn status(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<PairStatus> {
+    s.anonymous_limit("pair-status", STATUS_PER_MINUTE, c.address.ip())?;
     let record = s
         .store
         .pair(id)?

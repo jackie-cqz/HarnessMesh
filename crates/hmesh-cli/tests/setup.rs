@@ -389,3 +389,107 @@ fn a_symlinked_codex_config_stays_a_link_and_clients_get_an_absolute_node_dir() 
     let node = std::fs::canonicalize(&home.node).unwrap();
     assert_eq!(args, ["mcp", "--data-dir", &node.display().to_string()]);
 }
+
+impl Home {
+    fn setup_with(&self, args: &[&str]) -> Value {
+        let mut all = vec!["--json", "setup", "--no-startup", "--connect", "none"];
+        all.extend_from_slice(&["--name", "probe", "--port", "0"]);
+        all.extend_from_slice(args);
+        let output = self.hmesh(&all, None);
+        assert!(
+            output.status.success(),
+            "setup failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+    fn config(&self) -> toml::Table {
+        toml::from_str(&std::fs::read_to_string(self.node.join("node.toml")).unwrap()).unwrap()
+    }
+}
+
+#[test]
+fn without_tailscale_only_mcp_connects_out_over_this_computers_own_network() {
+    let home = Home::new();
+    // No Tailscale here (forced, so a developer machine with it behaves the same).
+    let summary = home.setup_with(&[
+        "--mcp-only",
+        "--tailscale-executable",
+        "/nonexistent/tailscale",
+    ]);
+    assert_eq!(summary["network"], "direct");
+    assert_eq!(summary["outbound_only"], true);
+    assert!(summary["tailnet_address"].is_null());
+    let config = home.config();
+    assert_eq!(config["node"]["network"].as_str(), Some("direct"));
+    assert_eq!(config["node"]["expose_to_tailnet"].as_bool(), Some(false));
+    assert_eq!(config["node"]["listen_address"].as_str(), Some("127.0.0.1"));
+    let status = home.hmesh(&["--json", "daemon", "status"], None);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["outbound_only"], true);
+    assert_eq!(status["pairing_window"]["required"], false);
+}
+
+#[test]
+fn full_on_a_direct_network_listens_on_the_given_address_and_switches_back() {
+    let home = Home::new();
+    // Loopback stands in for this computer's LAN address.
+    let summary = home.setup_with(&[
+        "--full",
+        "--network",
+        "direct",
+        "--listen",
+        "127.0.0.1",
+        "--allow-from",
+        "127.0.0.0/8",
+    ]);
+    assert_eq!(summary["network"], "direct");
+    assert_eq!(summary["outbound_only"], false);
+    assert_eq!(summary["listen_address"], "127.0.0.1");
+    let config = home.config();
+    assert_eq!(config["node"]["expose_to_tailnet"].as_bool(), Some(true));
+    assert_eq!(
+        config["node"]["allowed_sources"]
+            .as_array()
+            .map(|a| a.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>()),
+        Some(vec!["127.0.0.0/8"])
+    );
+    let status = home.hmesh(&["--json", "daemon", "status"], None);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["network"], "direct");
+    assert_eq!(status["pairing_window"]["required"], true);
+    let fingerprint = summary["node"]["fingerprint"].clone();
+
+    // Not an address of this computer: refused before anything changes.
+    let refused = home.hmesh(
+        &[
+            "--json",
+            "setup",
+            "--full",
+            "--no-startup",
+            "--connect",
+            "none",
+            "--network",
+            "direct",
+            "--listen",
+            "192.0.2.10",
+        ],
+        None,
+    );
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("not an address of this computer"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(
+        home.config()["node"]["listen_address"].as_str(),
+        Some("127.0.0.1")
+    );
+
+    // Back to only MCP on Tailscale: same identity, pairings would stay.
+    let back = home.setup_with(&["--mcp-only", "--tailnet-address", "100.64.0.9"]);
+    assert_eq!(back["network"], "tailscale");
+    assert_eq!(back["node"]["fingerprint"], fingerprint);
+    assert!(home.config()["node"].get("allowed_sources").is_none());
+}

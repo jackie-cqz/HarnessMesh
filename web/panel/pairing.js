@@ -93,7 +93,32 @@ function endedPairCard(p){
  return card;
 }
 
-function openPairDialog(){pairingState.sent=null;drawPairDialog();$('#pair-dialog').showModal();$('#pair-code')?.focus();}
+// Direct network: this computer answers pairing for ten minutes after the
+// dialog opens it. Redraws reuse an open window; opening the dialog renews it.
+function pairingWindowNote(){
+ const note=el('span','pair-window'),line=el('span','pair-window-line');
+ const again=button('再开 10 分钟','button secondary small',()=>openPairingWindow(note,again));again.type='button';again.hidden=true;
+ line.append(note,again);
+ if((pairingState.windowClosesAt||0)>Date.now()/1000)tickPairingWindow(note,again);else openPairingWindow(note,again);
+ return line;
+}
+async function openPairingWindow(note,again){
+ note.textContent='正在打开配对窗口…';again.hidden=true;
+ try{pairingState.windowClosesAt=unwrap(await api('/pairing/window',{method:'POST',body:'{}'})).closes_at;}
+ catch(e){note.textContent=`没能打开配对窗口：${pairProblem(e)}`;again.hidden=false;return;}
+ tickPairingWindow(note,again);
+}
+function tickPairingWindow(note,again){
+ clearInterval(pairingState.windowTimer);
+ const tick=()=>{
+  if(!note.isConnected){clearInterval(pairingState.windowTimer);return;}
+  const left=Math.round((pairingState.windowClosesAt||0)-Date.now()/1000);
+  if(left<=0){note.textContent='配对窗口已关闭：别的电脑现在用这个配对码申请会被拒绝。';again.hidden=false;clearInterval(pairingState.windowTimer);return;}
+  note.textContent=`配对窗口还剩 ${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}，这段时间里别的电脑才能用这个配对码申请。`;
+ };
+ tick();pairingState.windowTimer=setInterval(tick,1000);
+}
+function openPairDialog(){pairingState.sent=null;pairingState.windowClosesAt=0;drawPairDialog();$('#pair-dialog').showModal();$('#pair-code')?.focus();}
 function drawPairDialog(){
  const body=$('#pair-body'),sent=pairingState.sent;
  if(sent){
@@ -110,6 +135,8 @@ function drawPairDialog(){
  ownText.append(el('b','','这台电脑的配对码'),ownCode,el('span','','也可以把它发给对方，让对方来申请；对方的申请会出现在「配对节点」里，由你批准。'));
  const copy=button('复制','button secondary small',async()=>{try{await navigator.clipboard.writeText(own);copy.textContent='已复制';}catch{getSelection().selectAllChildren(ownCode);copy.textContent='已选中，请按复制';}});copy.type='button';copy.disabled=!own;
  ownBox.append(ownText,copy);
+ // A direct network answers pairing only while this window is open.
+ if(data('node',{}).pairing_window?.required&&own)ownText.append(pairingWindowNote());
  // A computer that only connects out cannot be reached: pairing starts here.
  if(typeof outboundOnly==='function'&&outboundOnly())ownBox.replaceChildren(el('span','pair-outbound','这台电脑只用 MCP，不接受别的电脑连进来，所以配对要从这里发起：粘贴对方的配对码。'));
  const message=el('p','form-note pair-message');message.id='pair-message';message.setAttribute('role','status');message.hidden=true;

@@ -89,20 +89,29 @@ enum Commands {
         name: String,
         #[arg(long, default_value_t = 38880)]
         port: u16,
-        #[arg(long, default_value = "loopback", value_parser = ["loopback", "tailscale"])]
+        /// loopback (one computer), tailscale, or direct (a LAN, ZeroTier,
+        /// WireGuard: any network this computer is on).
+        #[arg(long, default_value = "loopback", value_parser = ["loopback", "tailscale", "direct"])]
         network: String,
+        /// The address other computers connect to (required for a direct
+        /// node that accepts connections).
         #[arg(long)]
         listen_address: Option<std::net::IpAddr>,
         #[arg(long)]
         tailscale_executable: Option<PathBuf>,
-        /// With --network tailscale: reach paired computers but accept no
-        /// connection from them (listen on loopback only).
+        /// With --network tailscale or direct: reach paired computers but
+        /// accept no connection from them (listen on loopback only).
         #[arg(long)]
         outbound_only: bool,
         /// This computer's Tailnet IP for --outbound-only; asked from
         /// Tailscale when omitted.
         #[arg(long, requires = "outbound_only")]
         tailnet_address: Option<std::net::IpAddr>,
+        /// Direct network: the source ranges other computers may connect
+        /// from (CIDR, comma-separated). Default: private, overlay and
+        /// loopback networks; required for a public address.
+        #[arg(long, value_delimiter = ',')]
+        allow_from: Option<Vec<hmesh_core::IpNet>>,
     },
     /// Set this computer up: only MCP (its own agents call agents on other
     /// computers; it accepts no connections), or full (it also shares its
@@ -133,6 +142,19 @@ enum Commands {
         /// This computer's Tailnet IP; asked from Tailscale when omitted.
         #[arg(long)]
         tailnet_address: Option<std::net::IpAddr>,
+        /// How other computers reach this one: tailscale, or direct (a LAN,
+        /// ZeroTier, WireGuard: any network it is on). Default: Tailscale
+        /// when it is installed here.
+        #[arg(long, value_parser = ["tailscale", "direct"])]
+        network: Option<String>,
+        /// Direct, full: this computer's address that others connect to;
+        /// asked (or the only one) when omitted.
+        #[arg(long)]
+        listen: Option<std::net::IpAddr>,
+        /// Direct, full: who may connect (CIDR, comma-separated). Default:
+        /// private networks; required for a public address.
+        #[arg(long, value_delimiter = ',')]
+        allow_from: Option<Vec<hmesh_core::IpNet>>,
         /// Full: the project directory registered agents work in.
         #[arg(long)]
         project: Option<PathBuf>,
@@ -817,6 +839,9 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         no_startup,
         tailscale_executable,
         tailnet_address,
+        network,
+        listen,
+        allow_from,
         project,
         agents,
     } = cli.command
@@ -839,6 +864,9 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             },
             tailscale_executable,
             tailnet_address,
+            network,
+            listen,
+            allow_from,
             project,
             agents,
             explicit_dir,
@@ -854,6 +882,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         tailscale_executable,
         outbound_only,
         tailnet_address,
+        allow_from,
     } = cli.command
     {
         let mut config = NodeConfig::default();
@@ -861,10 +890,22 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         config.node.listen_port = port;
         config.node.network = network.clone();
         config.node.tailscale_executable = tailscale_executable;
-        if outbound_only && network != "tailscale" {
-            anyhow::bail!("--outbound-only needs --network tailscale");
+        if outbound_only && network == "loopback" {
+            anyhow::bail!("--outbound-only needs --network tailscale or direct");
         }
-        if outbound_only {
+        if allow_from.is_some() && (network != "direct" || outbound_only) {
+            anyhow::bail!("--allow-from is for a direct node that accepts connections");
+        }
+        if network == "direct" {
+            // Only connects out: loopback for its owner, nothing else.
+            if !outbound_only {
+                config.node.listen_address = listen_address.context(
+                    "a direct node needs --listen-address: the address of this computer that other computers connect to (or --outbound-only)",
+                )?;
+                config.node.expose_to_tailnet = true;
+                config.node.allowed_sources = allow_from;
+            }
+        } else if outbound_only {
             // Listen for the owner only; the Tailnet IP goes into the
             // certificate so the node can listen on it later.
             config.node.tailnet_address = Some(match tailnet_address {
@@ -1077,6 +1118,22 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             }
         ) {
             value["pair_code"] = json!(hmesh_security::pair_code(&card));
+            // A direct node answers the pairing handshake for ten minutes
+            // after its owner asks for the code.
+            if instance.config.node.network == "direct" && !instance.config.outbound_only() {
+                value["pairing_window"] = match local_client(&instance) {
+                    Ok(client) => match client
+                        .post::<_, Value>("/local/pairing/window", &json!({}))
+                        .await
+                    {
+                        Ok(window) => window,
+                        Err(error) => json!({"closes_at": null, "error": error.message}),
+                    },
+                    Err(_) => {
+                        json!({"closes_at": null, "error": "the daemon is not running; start it, then run hmesh pair show again to open pairing for 10 minutes"})
+                    }
+                };
+            }
         }
         return Ok(Some(value));
     }

@@ -649,3 +649,146 @@ async fn a_computer_that_moved_tells_the_computers_it_paired_with() {
     );
     drop(b);
 }
+
+/// A direct network (a LAN, ZeroTier, WireGuard...): the pairing handshake
+/// answers only while the owner has pairing open, and paired computers then
+/// talk as on any other network.
+#[tokio::test]
+async fn a_direct_computer_answers_pairing_only_while_its_owner_has_it_open() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let a_dir = root.path().join("laptop");
+    let b_dir = root.path().join("studio");
+    // Loopback stands in for a LAN address; the rules are the same.
+    cli(
+        &b_dir,
+        &[
+            "init",
+            "--name",
+            "studio",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--listen-address",
+            "127.0.0.1",
+        ],
+    );
+    cli(
+        &a_dir,
+        &[
+            "init",
+            "--name",
+            "laptop",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--outbound-only",
+        ],
+    );
+    let _a = daemon(&a_dir);
+    let _b = daemon(&b_dir);
+    let a_card = ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+    let status = cli(&b_dir, &["daemon", "status"]);
+    assert_eq!(status["network"], "direct");
+    assert_eq!(status["pairing_window"]["required"], true);
+    assert!(status["pairing_window"]["closes_at"].is_null(), "{status}");
+    assert!(
+        status["allowed_sources"]
+            .as_array()
+            .is_some_and(|s| !s.is_empty())
+    );
+
+    // Closed: neither a pair request nor an anonymous hello is answered.
+    let code = hmesh_security::pair_code(&b_card);
+    let refused = cli_fails(&a_dir, &["pair", "request", "--code", &code]);
+    assert!(refused.contains("pairing is closed"), "{refused}");
+    let a = Instance::load(&a_dir).expect("a");
+    let anonymous =
+        Client::new(&a, &b_card.endpoint, &b_card.fingerprint, true, false).expect("anonymous");
+    assert_eq!(
+        anonymous
+            .get::<Value>("/hmesh/v1/hello")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+
+    // Its owner opens it (the panel's 配对新电脑 does the same).
+    let shown = cli(&b_dir, &["pair", "show"]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs() as i64;
+    assert!(
+        shown["pairing_window"]["closes_at"]
+            .as_i64()
+            .is_some_and(|t| t > now),
+        "{shown}"
+    );
+    let request = cli(&a_dir, &["pair", "request", "--code", &code]);
+    let id = request["request_id"].as_str().unwrap().to_string();
+    cli(
+        &b_dir,
+        &[
+            "pair",
+            "approve",
+            &id,
+            "--expect-fingerprint",
+            &a_card.fingerprint,
+        ],
+    );
+    assert_eq!(pair_status(&a_dir, &id, "approved").await, "approved");
+    let mut a = Instance::load(&a_dir).expect("a");
+    a.card = a_card;
+    let a_to_b =
+        Client::new(&a, &b_card.endpoint, &b_card.fingerprint, false, false).expect("a to b");
+    assert_eq!(
+        a_to_b
+            .get::<NodeCard>("/hmesh/v1/node")
+            .await
+            .expect("a reaches b")
+            .node_id,
+        b_card.node_id
+    );
+}
+
+/// A direct node set up for an address this computer no longer has (a new
+/// DHCP lease) says so instead of failing to bind.
+#[test]
+fn a_direct_computer_whose_address_is_gone_says_how_to_fix_it() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("moved");
+    // 192.0.2.0/24 is reserved for documentation; no computer has it.
+    cli(
+        &dir,
+        &[
+            "init",
+            "--name",
+            "moved",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--listen-address",
+            "192.0.2.10",
+            "--allow-from",
+            "192.0.2.0/24",
+        ],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_hmesh"))
+        .arg("--data-dir")
+        .arg(&dir)
+        .args(["daemon", "start"])
+        .output()
+        .expect("daemon process");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no longer has the address 192.0.2.10"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("hmesh setup"), "{stderr}");
+}

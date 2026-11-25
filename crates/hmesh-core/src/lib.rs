@@ -1,6 +1,7 @@
 //! Harness-independent contracts. No network, process or credential access.
 mod network;
-pub use network::is_tailnet_ip;
+pub use ipnet::IpNet;
+pub use network::{default_allowed_sources, is_private_address, is_tailnet_ip};
 pub mod development;
 mod git_version;
 pub mod managed;
@@ -618,7 +619,12 @@ pub struct NodeOptions {
     pub name: String,
     pub listen_address: IpAddr,
     pub listen_port: u16,
+    /// `loopback` (one computer), `tailscale`, or `direct` (any network
+    /// this computer is on: a LAN, ZeroTier, WireGuard, ...).
     pub network: String,
+    /// Accept connections from other computers on `listen_address`
+    /// (Tailscale and direct networks; the name predates the direct one).
+    /// Without it the node only connects out: the "only MCP" install.
     pub expose_to_tailnet: bool,
     pub tailscale_executable: Option<PathBuf>,
     /// This computer's Tailnet IP when it only connects out (Tailscale
@@ -626,6 +632,11 @@ pub struct NodeOptions {
     /// so the node can later listen on it without new pairings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tailnet_address: Option<IpAddr>,
+    /// Direct network: the source ranges other computers may connect from.
+    /// Omitted means `default_allowed_sources()`: private networks, overlay
+    /// networks and loopback. A public listen address needs them spelled out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_sources: Option<Vec<IpNet>>,
 }
 impl Default for NodeOptions {
     fn default() -> Self {
@@ -637,6 +648,7 @@ impl Default for NodeOptions {
             expose_to_tailnet: false,
             tailscale_executable: None,
             tailnet_address: None,
+            allowed_sources: None,
         }
     }
 }
@@ -691,10 +703,24 @@ impl Default for SecurityOptions {
     }
 }
 impl NodeConfig {
-    /// Reaches paired computers over Tailscale but accepts no connection from
-    /// them: the "only MCP" install.
+    /// Reaches paired computers but accepts no connection from them: the
+    /// "only MCP" install, on Tailscale or a direct network.
     pub fn outbound_only(&self) -> bool {
-        self.node.network == "tailscale" && !self.node.expose_to_tailnet
+        matches!(self.node.network.as_str(), "tailscale" | "direct") && !self.node.expose_to_tailnet
+    }
+    /// Other computers connect to `listen_address`, and the owner reaches the
+    /// daemon on a separate loopback listener on the same port.
+    pub fn listens_for_peers(&self) -> bool {
+        matches!(self.node.network.as_str(), "tailscale" | "direct")
+            && self.node.expose_to_tailnet
+            && !self.node.listen_address.is_loopback()
+    }
+    /// The sources a direct node accepts connections from.
+    pub fn allowed_sources(&self) -> Vec<IpNet> {
+        self.node
+            .allowed_sources
+            .clone()
+            .unwrap_or_else(default_allowed_sources)
     }
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.node.name)?;
@@ -714,7 +740,9 @@ impl NodeConfig {
                 "policy_file must be absolute or relative to the instance; ~ is not expanded",
             ));
         }
+        let listen = self.node.listen_address;
         let valid_network = match self.node.network.as_str() {
+            _ if self.node.network != "direct" && self.node.allowed_sources.is_some() => false,
             "loopback" if self.node.tailnet_address.is_some() => false,
             "loopback" => self.node.listen_address.is_loopback() && !self.node.expose_to_tailnet,
             "tailscale" if self.node.expose_to_tailnet => {
@@ -730,11 +758,26 @@ impl NodeConfig {
                 self.node.listen_address.is_loopback()
                     && self.node.tailnet_address.is_some_and(is_tailnet_ip)
             }
+            "direct" if self.node.tailnet_address.is_some() => false,
+            // One literal address of this computer. A public one must say who
+            // may connect; private, overlay and loopback ones default to
+            // those ranges.
+            "direct" if self.node.expose_to_tailnet => {
+                !listen.is_unspecified()
+                    && !listen.is_multicast()
+                    && listen != IpAddr::V4(Ipv4Addr::BROADCAST)
+                    && match &self.node.allowed_sources {
+                        Some(sources) => !sources.is_empty(),
+                        None => is_private_address(listen),
+                    }
+            }
+            // Only connects out, over whatever network reaches its peers.
+            "direct" => listen.is_loopback() && self.node.allowed_sources.is_none(),
             _ => false,
         };
         if !valid_network {
             return Err(MeshError::input(
-                "use loopback; tailscale listening on one literal Tailnet IP; or tailscale that only connects out (loopback listener, tailnet_address set); wildcard/LAN/public listeners are forbidden",
+                "use loopback; tailscale listening on one literal Tailnet IP; tailscale or direct that only connects out (loopback listener; tailscale also sets tailnet_address); or direct listening on one literal address of this computer (a public one needs allowed_sources); wildcard listeners are forbidden",
             ));
         }
         if self
