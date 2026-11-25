@@ -168,7 +168,46 @@ fn node(name: &str, local: bool, agents: &[&str]) -> MeshNode {
         access: None,
         error: None,
         agents: agents.iter().map(|a| card(node_id, a)).collect(),
+        projects: vec![],
     }
+}
+#[test]
+fn projects_resolve_by_name_or_id_among_those_a_computer_offers() {
+    use hmesh_core::projects::SharedProject;
+    let shared = |id: &str, name: &str| SharedProject {
+        project_id: id.into(),
+        name: name.into(),
+    };
+    let mut studio = node("studio", false, &["codex"]);
+    assert!(
+        hmesh_mcp::resolve_project(&studio, "web")
+            .unwrap_err()
+            .message
+            .contains("offers no projects")
+    );
+    studio.projects = vec![
+        shared("p-1", "web"),
+        shared("p-2", "api"),
+        shared("p-3", "api"),
+    ];
+    assert_eq!(hmesh_mcp::resolve_project(&studio, " web ").unwrap(), "p-1");
+    assert_eq!(hmesh_mcp::resolve_project(&studio, "p-3").unwrap(), "p-3");
+    assert!(
+        hmesh_mcp::resolve_project(&studio, "api")
+            .unwrap_err()
+            .message
+            .contains("pass a project ID")
+    );
+    let unknown = hmesh_mcp::resolve_project(&studio, "docs")
+        .unwrap_err()
+        .message;
+    assert!(unknown.contains("available: web, api, api"), "{unknown}");
+    // A follow-up cannot move a session to another project.
+    let call = hmesh_mcp::parse_call(
+        "mesh_send",
+        serde_json::json!({"session_id":Uuid::new_v4(),"message":"hi","project":"web"}),
+    );
+    assert!(call.is_err());
 }
 #[test]
 fn agent_references_resolve_by_node_and_name_id_or_unique_name() {

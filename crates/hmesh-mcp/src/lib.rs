@@ -79,6 +79,10 @@ pub struct SendMessage {
     pub message: String,
     #[serde(default)]
     pub wait_seconds: Option<u64>,
+    /// Work in this project (name or ID from the agent's
+    /// `available_projects`) instead of the agent's own directory.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -134,6 +138,16 @@ pub fn parse_call(name: &str, args: Value) -> Result<ToolCall> {
                     "pass either agent (to open a new session) or session_id (to continue one)",
                 ));
             }
+            if let Some(project) = &args.project {
+                if args.session_id.is_some() {
+                    return Err(MeshError::input(
+                        "project applies when opening a new session; a session keeps its project",
+                    ));
+                }
+                if project.trim().is_empty() || project.len() > MAX_REFERENCE_BYTES {
+                    return Err(MeshError::input("invalid project"));
+                }
+            }
             if args
                 .agent
                 .as_deref()
@@ -173,11 +187,12 @@ pub fn tools() -> Value {
         ),
         (
             "mesh_send",
-            "Talk to another agent. With `agent`, open a new session with it; with `session_id`, send a follow-up in a session you opened before (the agent keeps the conversation). The agent works in its own project directory on its computer. Returns the session_id; set wait_seconds to also wait for the reply, or call mesh_wait.",
+            "Talk to another agent. With `agent`, open a new session with it; with `session_id`, send a follow-up in a session you opened before (the agent keeps the conversation). The agent works in its own project directory on its computer, or in `project` when you name one of its available_projects. Returns the session_id; set wait_seconds to also wait for the reply, or call mesh_wait.",
             json!({
                 "agent":{"type":"string","maxLength":MAX_REFERENCE_BYTES,"description":"Agent ref from mesh_list_agents (node/agent), a unique agent name, or an agent ID. Opens a new session."},
                 "session_id":{"type":"string","format":"uuid","description":"Continue this session instead of opening a new one."},
                 "message":{"type":"string","minLength":1,"maxLength":MAX_PROMPT_BYTES,"description":"What the agent should do or answer."},
+                "project":{"type":"string","maxLength":MAX_REFERENCE_BYTES,"description":"Name or ID of one of the agent's available_projects (from mesh_list_agents) to work in instead of its own directory. Only with agent."},
                 "wait_seconds":wait
             }),
             vec!["message"],
@@ -391,6 +406,11 @@ impl OwnerBackend {
                         let nodes: Vec<MeshNode> = client.get("/local/mesh/agents").await?;
                         let (node, card) = resolve(&nodes, &reference)?;
                         let reference = agent_ref(&nodes, &node, &card);
+                        let project_id = args
+                            .project
+                            .as_deref()
+                            .map(|project| resolve_project(&node, project))
+                            .transpose()?;
                         let record: SessionRecord = client
                             .post(
                                 "/local/sessions",
@@ -400,6 +420,9 @@ impl OwnerBackend {
                                     message: Some(args.message),
                                     parent_session_id: self.session,
                                     config: Default::default(),
+                                    project_id,
+                                    resume: None,
+                                    title: None,
                                 },
                             )
                             .await?;
@@ -613,12 +636,41 @@ fn agent_view(nodes: &[MeshNode], node: &MeshNode, card: &AgentCard) -> Value {
         "local":node.local,
         "harness":card.harness,
         "projects":card.project_ids,
+        "available_projects":node.projects.iter().map(|p| json!({"name":p.name,"project_id":p.project_id})).collect::<Vec<_>>(),
         "availability":card.availability,
         "ready":ready,
         "not_ready_reason":reason,
         "agent_id":card.agent_id,
         "node_id":node.node_id,
     })
+}
+/// Resolve a project name or ID among those the agent's computer offers.
+pub fn resolve_project(node: &MeshNode, reference: &str) -> Result<String> {
+    let reference = reference.trim();
+    let matches: Vec<&hmesh_core::projects::SharedProject> = node
+        .projects
+        .iter()
+        .filter(|p| p.project_id == reference || p.name == reference)
+        .collect();
+    match matches.as_slice() {
+        [project] => Ok(project.project_id.clone()),
+        [] => {
+            let known: Vec<&str> = node.projects.iter().map(|p| p.name.as_str()).collect();
+            Err(MeshError::input(if known.is_empty() {
+                format!("{} offers no projects to work in", node.name)
+            } else {
+                format!(
+                    "{} has no project {reference:?}; available: {}",
+                    node.name,
+                    known.join(", ")
+                )
+            }))
+        }
+        _ => Err(MeshError::input(format!(
+            "several projects on {} are called {reference:?}; pass a project ID",
+            node.name
+        ))),
+    }
 }
 /// Resolve `node/agent`, a unique agent name, or an agent ID (prefixes of at
 /// least eight hex characters are accepted for IDs).

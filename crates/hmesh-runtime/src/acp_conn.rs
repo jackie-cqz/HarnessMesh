@@ -266,6 +266,21 @@ impl AcpConnection {
             .ok_or_else(|| failure("the agent created a session without an ID"))?;
         Ok((session, result))
     }
+    /// One page of the agent's own sessions (`session/list`): the result
+    /// holds `sessions` and, when more follow, `nextCursor`.
+    pub async fn list_sessions(
+        &self,
+        cwd: Option<&std::path::Path>,
+        cursor: Option<&str>,
+    ) -> Result<Value> {
+        let id = self.id();
+        self.call(
+            id,
+            acp::list_sessions_request(id, cwd, cursor),
+            SETUP_TIMEOUT,
+        )
+        .await
+    }
     /// Restore the same session using the method advertised during initialization.
     pub async fn restore_session(
         &self,

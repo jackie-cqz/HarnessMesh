@@ -41,6 +41,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "agent-service-relay-v1",
     "pairing-auto-complete-v1",
     "session-commands-v1",
+    "agent-projects-v1",
 ];
 
 #[derive(Clone)]
@@ -270,6 +271,12 @@ pub async fn run(
         )
         .route("/api/agents/{id}/service/test", post(test_agent_service))
         .route("/api/agents/{id}/service/check", post(check_agent_service))
+        .route("/api/projects", get(projects).post(add_project))
+        .route("/api/projects/{id}", post(update_project))
+        .route("/api/projects/{id}/remove", post(remove_project))
+        .route("/api/projects/{id}/history", get(project_history))
+        .route("/api/history", get(history_folders))
+        .route("/api/sessions/{id}/mark", post(mark_session))
         .route("/api/sessions", get(sessions).post(open_session))
         .route("/api/sessions/summary", get(session_summary))
         .route("/api/sessions/{id}/events", get(session_events))
@@ -407,7 +414,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -890,14 +897,91 @@ struct OpenSessionForm {
     message: Option<String>,
     #[serde(default)]
     config: std::collections::BTreeMap<String, Value>,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    resume: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
 }
 async fn open_session(State(s): State<Panel>, Json(body): Json<OpenSessionForm>) -> Response {
+    let mut request = json!({"agent_id":body.agent_id,"peer_id":body.peer_id,"message":body.message,"config":body.config});
+    for (key, value) in [
+        ("project_id", body.project_id),
+        ("resume", body.resume),
+        ("title", body.title),
+    ] {
+        if let Some(value) = value {
+            request[key] = json!(value);
+        }
+    }
+    session_reply(s.client.post::<_, Value>("/local/sessions", &request).await)
+}
+/// A project ID from the address bar, checked before it reaches a daemon path.
+fn project_path(id: &str, rest: &str) -> Option<String> {
+    hmesh_core::projects::validate_project_id(id)
+        .ok()
+        .map(|_| format!("/local/projects/{id}{rest}"))
+}
+fn invalid_project() -> Response {
+    error(StatusCode::BAD_REQUEST, "INVALID_PROJECT")
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryForm {
+    #[serde(default)]
+    refresh: bool,
+}
+async fn projects(State(s): State<Panel>) -> Response {
+    session_reply(s.client.get::<Value>("/local/projects").await)
+}
+async fn add_project(
+    State(s): State<Panel>,
+    Json(body): Json<hmesh_core::projects::AddProject>,
+) -> Response {
+    session_reply(s.client.post::<_, Value>("/local/projects", &body).await)
+}
+async fn update_project(
+    State(s): State<Panel>,
+    Path(id): Path<String>,
+    Json(body): Json<hmesh_core::projects::UpdateProject>,
+) -> Response {
+    match project_path(&id, "") {
+        Some(path) => session_reply(s.client.post::<_, Value>(&path, &body).await),
+        None => invalid_project(),
+    }
+}
+async fn remove_project(State(s): State<Panel>, Path(id): Path<String>) -> Response {
+    match project_path(&id, "/remove") {
+        Some(path) => session_reply(s.client.post::<_, Value>(&path, &json!({})).await),
+        None => invalid_project(),
+    }
+}
+async fn project_history(
+    State(s): State<Panel>,
+    Path(id): Path<String>,
+    Query(form): Query<HistoryForm>,
+) -> Response {
+    match project_path(&id, &format!("/history?refresh={}", form.refresh)) {
+        Some(path) => session_reply(s.client.get::<Value>(&path).await),
+        None => invalid_project(),
+    }
+}
+async fn history_folders(State(s): State<Panel>, Query(form): Query<HistoryForm>) -> Response {
     session_reply(
         s.client
-            .post::<_, Value>(
-                "/local/sessions",
-                &json!({"agent_id":body.agent_id,"peer_id":body.peer_id,"message":body.message,"config":body.config}),
-            )
+            .get::<Value>(&format!("/local/history?refresh={}", form.refresh))
+            .await,
+    )
+}
+async fn mark_session(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<hmesh_core::projects::UpdateSessionMark>,
+) -> Response {
+    session_reply(
+        s.client
+            .post::<_, Value>(&format!("/local/sessions/{id}/mark"), &body)
             .await,
     )
 }

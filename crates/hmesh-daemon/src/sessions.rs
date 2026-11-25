@@ -28,6 +28,7 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 mod commands;
+mod projects;
 
 /// Longest single long-poll wait; clients loop.
 pub const MAX_WAIT_SECONDS: u64 = 10;
@@ -46,6 +47,9 @@ struct Live {
     permissions: Mutex<HashMap<String, (Value, Vec<Value>)>>,
     reply: Mutex<Reply>,
     replaying: std::sync::atomic::AtomicBool,
+    /// Replayed updates are this session's history: it continues a session
+    /// the agent already had and is being reloaded for the first time.
+    keep_replay: std::sync::atomic::AtomicBool,
     last_active: Mutex<Instant>,
     /// The model service settings the process was started with.
     service_digest: String,
@@ -90,6 +94,7 @@ pub struct Sessions {
     /// Sessions whose settings are being changed; no turn starts meanwhile.
     configuring: Mutex<std::collections::HashSet<Uuid>>,
     refreshing: std::sync::atomic::AtomicBool,
+    history: projects::HistoryCache,
 }
 /// Marks a session's setting change as finished when dropped.
 struct Configuring<'a> {
@@ -347,6 +352,19 @@ async fn pump(
         record_text(&s, id, "agent_message_chunk", &message.finish());
         record_text(&s, id, "agent_thought_chunk", &thought.finish());
     };
+    // A replayed user message, recorded once the agent moves on.
+    let mut replayed_user = String::new();
+    let flush_user = |text: &mut String| {
+        let text = std::mem::take(text);
+        if !text.trim().is_empty() {
+            let _ = record_event(
+                &s,
+                id,
+                "user_message",
+                json!({"text":clipped(&live.secrets, text.trim(), MAX_EVENT_TEXT_BYTES),"from":{"replayed":true}}),
+            );
+        }
+    };
     while let Some(message) = messages.recv().await {
         match message {
             AgentMessage::Update(params) => {
@@ -358,6 +376,17 @@ async fn pump(
                     continue;
                 }
                 let update = &params["update"];
+                if live.keep_replay.load(std::sync::atomic::Ordering::SeqCst) {
+                    if update["sessionUpdate"] == "user_message_chunk" {
+                        finish_text(&mut message_text, &mut thought_text);
+                        if let Some(text) = update.pointer("/content/text").and_then(Value::as_str)
+                        {
+                            replayed_user.push_str(text);
+                        }
+                        continue;
+                    }
+                    flush_user(&mut replayed_user);
+                }
                 // Context and cost reports can come many times a turn; the
                 // latest is recorded once, when the turn ends.
                 if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
@@ -449,7 +478,8 @@ async fn pump(
                 }
             }
             AgentMessage::Barrier { end_turn, done } => {
-                if end_turn {
+                flush_user(&mut replayed_user);
+                if end_turn || live.keep_replay.load(std::sync::atomic::Ordering::SeqCst) {
                     finish_text(&mut message_text, &mut thought_text);
                 }
                 let _ = done.send(());
@@ -457,6 +487,7 @@ async fn pump(
             AgentMessage::Exited => break,
         }
     }
+    flush_user(&mut replayed_user);
     finish_text(&mut message_text, &mut thought_text);
     // The process is gone; a later prompt starts a new one.
     if let Ok(mut live_map) = s.sessions.live.lock()
@@ -521,8 +552,15 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         .find(|o| o.is_category("model"))
         .and_then(|o| o.current.as_str());
     let relay = |endpoint: &str, key: &str, protocol| s.relay.route(endpoint, key, protocol);
+    // A session in another project runs the same agent in that folder.
+    let cwd = record
+        .cwd
+        .clone()
+        .unwrap_or_else(|| config.project.root.clone());
+    let mut launch = config.clone();
+    launch.project.root = cwd.clone();
     let (command, secrets) = hmesh_runtime::agent_launch(
-        &config,
+        &launch,
         &s.instance.dir,
         record.agent_id,
         service.as_ref(),
@@ -537,7 +575,13 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         None => config.adapter.model.clone().map(|model| (model, false)),
     };
     let (conn, messages) = AcpConnection::start(command).await?;
-    let cwd = config.project.root.clone();
+    if record.history_pending && acp::SessionRestore::advertised(&conn.initialize).is_none() {
+        conn.shutdown().await;
+        return Err(MeshError::new(
+            ErrorCode::AdapterNotSupported,
+            "this agent cannot continue its earlier sessions",
+        ));
+    }
     let mcp = mcp_server(s, record.session_id);
     let restore = record
         .agent_session_id
@@ -560,10 +604,12 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         permissions: Mutex::new(HashMap::new()),
         reply: Mutex::new(Reply::default()),
         // Updates the agent replays while reloading are not new events.
-        replaying: std::sync::atomic::AtomicBool::new(matches!(
-            restore,
-            Some((_, acp::SessionRestore::Load))
-        )),
+        replaying: std::sync::atomic::AtomicBool::new(
+            matches!(restore, Some((_, acp::SessionRestore::Load))) && !record.history_pending,
+        ),
+        keep_replay: std::sync::atomic::AtomicBool::new(
+            matches!(restore, Some((_, acp::SessionRestore::Load))) && record.history_pending,
+        ),
         last_active: Mutex::new(Instant::now()),
         service_digest: digest,
         // A restarted agent may report only tokens at first: its last known
@@ -590,6 +636,9 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         ));
     }
     const RELOADED: &str = "the agent reloaded this conversation";
+    const CONTINUED: &str = "continued a session the agent already had";
+    const CONTINUED_QUIETLY: &str =
+        "continued a session the agent already had; this agent does not show its earlier messages";
     const NO_RELOAD: &str =
         "this agent cannot reload conversations; it continues without the earlier context";
     let started = match restore {
@@ -599,7 +648,20 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
             conn.barrier().await;
             live.replaying
                 .store(false, std::sync::atomic::Ordering::SeqCst);
-            restored.map(|result| (previous.clone(), result, false, Some(RELOADED)))
+            if live
+                .keep_replay
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+                && let Ok(mut reply) = live.reply.lock()
+            {
+                // The replayed answers are history, not the next turn's reply.
+                reply.take();
+            }
+            let note = match (record.history_pending, method) {
+                (false, _) => RELOADED,
+                (true, acp::SessionRestore::Load) => CONTINUED,
+                (true, acp::SessionRestore::Resume) => CONTINUED_QUIETLY,
+            };
+            restored.map(|result| (previous.clone(), result, false, Some(note)))
         }
         None => {
             let note = record.agent_session_id.as_ref().map(|_| NO_RELOAD);
@@ -663,6 +725,7 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
     }
     let current = update_record(s, record.session_id, |current| {
         current.agent_session_id = Some(agent_session.clone());
+        current.history_pending = false;
         if card.harness == HarnessKind::Dsh || !options.is_empty() {
             current.config_options = options;
         }
@@ -827,6 +890,15 @@ fn begin_checked_turn(
             return Err(MeshError::new(
                 ErrorCode::PermissionDenied,
                 "the computer that started this session is no longer paired",
+            ));
+        }
+        if record.origin.root_node_id != s.instance.card.node_id
+            && let Some(cwd) = &record.cwd
+            && !projects::still_shared(s, cwd)
+        {
+            return Err(MeshError::new(
+                ErrorCode::PermissionDenied,
+                "this project is no longer shared with other computers",
             ));
         }
         if let Some(name) = &command {
@@ -1241,6 +1313,21 @@ fn running_children(s: &AppState, parent: Uuid) -> usize {
         + remote.iter().filter(|(_, r)| child_of(r)).count()
 }
 
+/// Projects this computer's agents can work in when asked: every project
+/// that is not hidden.
+pub(crate) fn usable_projects(
+    s: &AppState,
+) -> hmesh_core::Result<Vec<hmesh_core::projects::SharedProject>> {
+    Ok(projects::projects(s)?
+        .into_iter()
+        .filter(|p| !p.hidden)
+        .map(|p| hmesh_core::projects::SharedProject {
+            project_id: p.project_id,
+            name: p.name,
+        })
+        .collect())
+}
+
 /// Create a session on one of this node's agents.
 #[allow(clippy::too_many_arguments)]
 fn open_here(
@@ -1252,6 +1339,7 @@ fn open_here(
     needs_approval: bool,
     message: Option<String>,
     config: BTreeMap<String, Value>,
+    place: projects::Place,
 ) -> hmesh_core::Result<SessionRecord> {
     let (card, config_file) = s.store.agent(agent_id)?;
     if s.store.agent_retired(agent_id)? || card.availability == "disabled" {
@@ -1269,6 +1357,21 @@ fn open_here(
     check_chain(&origin.chain, s.instance.card.node_id, agent_id)?;
     if let Some(message) = &message {
         validate_prompt(message)?;
+    }
+    if let Some(resume) = &place.resume {
+        if message.is_some() {
+            return Err(MeshError::input(
+                "continue the session first, then send a message",
+            ));
+        }
+        // The same earlier session is continued once at a time.
+        if let Some(open) = s.store.sessions(1000)?.into_iter().find(|r| {
+            r.agent_id == agent_id
+                && r.status.is_open()
+                && r.agent_session_id.as_deref() == Some(resume.as_str())
+        }) {
+            return Ok(open);
+        }
     }
     validate_config(&config)?;
     // Until the agent starts, show the settings it offered last time with
@@ -1307,17 +1410,23 @@ fn open_here(
         node_id: s.instance.card.node_id,
         agent_id,
         agent_name: card.name,
-        project_id: config_file.agent.project_id,
+        project_id: place
+            .project_id
+            .clone()
+            .unwrap_or(config_file.agent.project_id),
         origin,
         approver,
         status: if needs_approval {
             SessionStatus::PendingApproval
+        } else if place.resume.is_some() {
+            // Busy until the agent has reloaded it.
+            SessionStatus::Running
         } else {
             SessionStatus::Idle
         },
-        title: String::new(),
+        title: place.title.clone().unwrap_or_default(),
         turns: 0,
-        agent_session_id: None,
+        agent_session_id: place.resume.clone(),
         last_stop_reason: None,
         last_final_text: None,
         last_error: None,
@@ -1326,6 +1435,8 @@ fn open_here(
         config_values: config,
         created_at: at,
         updated_at: at,
+        cwd: place.cwd.clone(),
+        history_pending: place.resume.is_some(),
     };
     if needs_approval {
         record.pending_message = message.clone();
@@ -1347,6 +1458,11 @@ fn open_here(
         "status",
         json!({"status":record.status,"message":opened_by}),
     )?;
+    if place.resume.is_some() {
+        let state = s.clone();
+        tokio::spawn(async move { continue_earlier(state, session_id).await });
+        return Ok(record);
+    }
     match message {
         Some(message) if !needs_approval => {
             let from = json!({"node_id":record.origin.node_id,"label":record.origin.label});
@@ -1354,6 +1470,31 @@ fn open_here(
         }
         _ => Ok(record),
     }
+}
+
+/// Start the agent for a session that continues one it already had, so its
+/// earlier conversation is shown before the first message.
+async fn continue_earlier(s: AppState, id: Uuid) {
+    let Ok(record) = s.store.session(id) else {
+        return;
+    };
+    let error = match ensure_live(&s, &record).await {
+        Ok(_) => None,
+        Err(e) => Some(e.message),
+    };
+    let _ = update_record(&s, id, |r| {
+        if r.status == SessionStatus::Running {
+            r.status = SessionStatus::Idle;
+        }
+        if let Some(error) = &error {
+            r.last_error = Some(error.clone());
+        }
+    });
+    if let Some(error) = error {
+        let _ = record_event(&s, id, "error", json!({"message":error}));
+    }
+    let status = s.store.session(id).map(|r| r.status).ok();
+    let _ = record_event(&s, id, "status", json!({"status":status}));
 }
 
 fn peer_client(s: &AppState, peer: Uuid) -> std::result::Result<Client, ApiError> {
@@ -1418,6 +1559,24 @@ pub async fn open(s: &AppState, body: OpenSession) -> std::result::Result<Sessio
     };
     let session_id = Uuid::new_v4();
     let target = body.peer_id.filter(|p| *p != me);
+    if let Some(project) = &body.project_id {
+        hmesh_core::projects::validate_project_id(project)?;
+    }
+    if let Some(resume) = &body.resume {
+        hmesh_core::projects::validate_agent_session_id(resume)?;
+        // An agent's earlier sessions stay with its computer's owner.
+        if target.is_some() || parent.is_some() {
+            return Err(err(
+                ErrorCode::PermissionDenied,
+                "only this computer's owner can continue an agent's earlier sessions",
+            ));
+        }
+    }
+    let title = body
+        .title
+        .as_deref()
+        .map(hmesh_core::projects::clean_name)
+        .transpose()?;
     if target.is_some() && root != me {
         // Pairing is between two computers; a chain another computer started
         // must not reach further computers with this computer's identity.
@@ -1455,6 +1614,10 @@ pub async fn open(s: &AppState, body: OpenSession) -> std::result::Result<Sessio
                     }
                 },
             };
+            let mut place =
+                projects::place(s, body.agent_id, body.project_id.as_deref(), root == me)?;
+            place.resume = body.resume;
+            place.title = title.filter(|_| place.resume.is_some());
             Ok(open_here(
                 s,
                 session_id,
@@ -1464,6 +1627,7 @@ pub async fn open(s: &AppState, body: OpenSession) -> std::result::Result<Sessio
                 needs_approval,
                 body.message,
                 body.config,
+                place,
             )?)
         }
         Some(peer) => {
@@ -1478,6 +1642,7 @@ pub async fn open(s: &AppState, body: OpenSession) -> std::result::Result<Sessio
                 chain,
                 message: body.message,
                 config: body.config,
+                project_id: body.project_id,
             };
             let record: SessionRecord = client.post("/hmesh/v1/sessions", &request).await?;
             if record.session_id != session_id || record.node_id != peer {
@@ -1631,6 +1796,8 @@ struct EventQuery {
 struct SessionList {
     sessions: Vec<SessionRecord>,
     remote: Vec<RemoteSession>,
+    /// This computer's names, pins and hidden flags for sessions.
+    marks: Vec<hmesh_core::projects::SessionMark>,
 }
 #[derive(Serialize)]
 struct RemoteSession {
@@ -1652,6 +1819,7 @@ async fn list(
             .into_iter()
             .map(|(peer_id, session)| RemoteSession { peer_id, session })
             .collect(),
+        marks: s.store.session_marks()?,
     }))
 }
 async fn owner_open(
@@ -2061,16 +2229,21 @@ async fn peer_open(
         chain: body.chain,
         root_node_id: actor.node_id,
     };
-    Ok(Json(open_here(
-        &s,
-        body.session_id,
-        body.agent_id,
-        origin,
-        approver,
-        needs_approval,
-        body.message,
-        body.config,
-    )?))
+    let place = projects::place(&s, body.agent_id, body.project_id.as_deref(), actor.owner)?;
+    Ok(Json(
+        open_here(
+            &s,
+            body.session_id,
+            body.agent_id,
+            origin,
+            approver,
+            needs_approval,
+            body.message,
+            body.config,
+            place,
+        )?
+        .for_peer(),
+    ))
 }
 async fn peer_get(
     State(s): State<AppState>,
@@ -2079,7 +2252,7 @@ async fn peer_get(
     Path(id): Path<Uuid>,
 ) -> ApiResult<SessionRecord> {
     let actor = s.actor(&headers, &c)?;
-    Ok(Json(peer_session(&s, actor, id)?))
+    Ok(Json(peer_session(&s, actor, id)?.for_peer()))
 }
 async fn peer_events(
     State(s): State<AppState>,
@@ -2090,9 +2263,9 @@ async fn peer_events(
 ) -> ApiResult<SessionEventPage> {
     let actor = s.actor(&headers, &c)?;
     peer_session(&s, actor, id)?;
-    Ok(Json(
-        wait_events(&s, id, q.after, q.wait, q.status_only).await?,
-    ))
+    let mut page = wait_events(&s, id, q.after, q.wait, q.status_only).await?;
+    page.session = page.session.for_peer();
+    Ok(Json(page))
 }
 async fn peer_prompt(
     State(s): State<AppState>,
@@ -2104,7 +2277,7 @@ async fn peer_prompt(
     let actor = s.actor(&headers, &c)?;
     let record = peer_session(&s, actor, id)?;
     let from = json!({"node_id":actor.node_id,"label":record.origin.label});
-    Ok(Json(begin_turn(&s, id, &body.message, from)?))
+    Ok(Json(begin_turn(&s, id, &body.message, from)?.for_peer()))
 }
 async fn peer_permission(
     State(s): State<AppState>,
@@ -2121,7 +2294,7 @@ async fn peer_permission(
             "permission requests in this session are answered on the agent's computer",
         ));
     }
-    Ok(Json(answer(&s, id, &key, body.allow, "origin")?))
+    Ok(Json(answer(&s, id, &key, body.allow, "origin")?.for_peer()))
 }
 async fn peer_cancel(
     State(s): State<AppState>,
@@ -2131,7 +2304,7 @@ async fn peer_cancel(
 ) -> ApiResult<SessionRecord> {
     let actor = s.actor(&headers, &c)?;
     peer_session(&s, actor, id)?;
-    Ok(Json(cancel(&s, id)?))
+    Ok(Json(cancel(&s, id)?.for_peer()))
 }
 async fn peer_close(
     State(s): State<AppState>,
@@ -2141,11 +2314,9 @@ async fn peer_close(
 ) -> ApiResult<SessionRecord> {
     let actor = s.actor(&headers, &c)?;
     peer_session(&s, actor, id)?;
-    Ok(Json(close_session(
-        &s,
-        id,
-        "closed by the computer that opened it",
-    )?))
+    Ok(Json(
+        close_session(&s, id, "closed by the computer that opened it")?.for_peer(),
+    ))
 }
 async fn peer_config(
     State(s): State<AppState>,
@@ -2163,11 +2334,12 @@ async fn peer_config(
             "only the computer that opened this session may change its settings",
         ));
     }
-    Ok(Json(set_config(&s, id, body).await?))
+    Ok(Json(set_config(&s, id, body).await?.for_peer()))
 }
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .merge(projects::routes())
         .merge(commands::routes())
         .route("/local/sessions", get(list).post(owner_open))
         .route("/local/sessions/{id}", get(owner_get))

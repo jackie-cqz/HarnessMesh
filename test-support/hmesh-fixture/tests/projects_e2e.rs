@@ -1,0 +1,763 @@
+//! Projects and the sessions agents already keep: listing them through ACP
+//! `session/list`, continuing one with its history, working in another
+//! folder, this computer's marks, and projects shared with a paired computer.
+//! Uses the fixture ACP agent; never calls a model.
+use hmesh_core::projects::*;
+use hmesh_core::sessions::*;
+use hmesh_core::*;
+use hmesh_mcp::{OwnerBackend, Protocol};
+use hmesh_security::Instance;
+use hmesh_store::Store;
+use serde_json::{Value, json};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+use uuid::Uuid;
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+fn init(root: &Path, name: &str) -> Instance {
+    let mut config = NodeConfig::default();
+    config.node.name = name.into();
+    config.node.listen_port = free_port();
+    Instance::init(&root.join(name), config).unwrap()
+}
+fn register(instance: &Instance, project: &Path, name: &str, args: &[&str]) -> Uuid {
+    std::fs::create_dir_all(project).unwrap();
+    let project_id = format!("demo-{name}");
+    let config: AgentConfig = serde_json::from_value(json!({
+        "agent":{"name":name,"harness":"acp","project_id":project_id},
+        "project":{"root":project,"allowed_tools":["read","write","edit"]},
+        "adapter":{"executable":env!("CARGO_BIN_EXE_hmesh-fixture"),"args":args,"provider":"fixture","model":"fixture"}
+    }))
+    .unwrap();
+    let agent_id = Uuid::new_v4();
+    let card: AgentCard = serde_json::from_value(json!({
+        "agent_id":agent_id,"node_id":instance.card.node_id,"name":name,"harness":"acp","project_ids":[project_id],"availability":"idle","capabilities":[],
+        "probe":{"installed":true,"version":"test-fixture","version_supported":true,"protocol_probe":"fixture","authentication":"not_applicable_test_fixture","managed_run":"passed","streaming":"fixture","cancel":"not_checked","session_resume":"not_checked","unavailable_reason":null}
+    }))
+    .unwrap();
+    Store::open(&instance.dir.join("state.sqlite3"))
+        .unwrap()
+        .register_agent(&card, &config)
+        .unwrap();
+    agent_id
+}
+/// A session the agent kept before HarnessMesh saw it, in the fixture's store.
+fn seed(state: &Path, id: &str, cwd: &Path, history: &[(&str, &str)]) {
+    std::fs::create_dir_all(state).unwrap();
+    let history: Vec<Value> = history.iter().map(|(r, t)| json!([r, t])).collect();
+    std::fs::write(
+        state.join(format!("{id}.json")),
+        json!({"cwd":cwd,"history":history}).to_string(),
+    )
+    .unwrap();
+}
+fn real(path: &Path) -> PathBuf {
+    std::fs::create_dir_all(path).unwrap();
+    std::fs::canonicalize(path).unwrap()
+}
+struct Daemon {
+    dir: PathBuf,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Daemon {
+    fn start(dir: &Path) -> Self {
+        let owned = dir.to_path_buf();
+        let thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(hmesh_daemon::run(&owned)).unwrap();
+        });
+        Self {
+            dir: dir.to_path_buf(),
+            thread: Some(thread),
+        }
+    }
+    fn owner(&self) -> hmesh_transport::Client {
+        hmesh_daemon::local_client(&Instance::load(&self.dir).unwrap()).unwrap()
+    }
+    async fn ready(&self) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(instance) = Instance::load(&self.dir)
+                && let Ok(client) = hmesh_daemon::local_client(&instance)
+                && client.get::<Value>("/local/status").await.is_ok()
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "daemon did not start");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    async fn stop(mut self) {
+        let _ = self
+            .owner()
+            .post::<_, Value>("/local/stop", &json!({}))
+            .await;
+        if let Some(thread) = self.thread.take() {
+            tokio::task::spawn_blocking(move || thread.join().unwrap())
+                .await
+                .unwrap();
+        }
+    }
+}
+type Owner = hmesh_transport::Client;
+
+async fn page(owner: &Owner, id: Uuid, after: u64, wait: u64) -> SessionEventPage {
+    owner
+        .get(&format!(
+            "/local/sessions/{id}/events?after={after}&wait={wait}"
+        ))
+        .await
+        .unwrap()
+}
+async fn until(
+    owner: &Owner,
+    id: Uuid,
+    done: impl Fn(&SessionRecord, &[SessionEvent]) -> bool,
+) -> (SessionRecord, Vec<SessionEvent>) {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut events = vec![];
+    let mut after = 0;
+    loop {
+        let next = page(owner, id, after, 5).await;
+        after = next.next;
+        events.extend(next.events);
+        if done(&next.session, &events) {
+            return (next.session, events);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session {id} stuck: {:?} {events:#?}",
+            next.session.status
+        );
+    }
+}
+async fn idle_after(owner: &Owner, id: Uuid, turns: u64) -> (SessionRecord, Vec<SessionEvent>) {
+    until(owner, id, |s, _| {
+        s.turns >= turns && !s.status.is_busy() || s.status == SessionStatus::Closed
+    })
+    .await
+}
+async fn prompt(owner: &Owner, id: Uuid, message: &str) {
+    let _: SessionRecord = owner
+        .post(
+            &format!("/local/sessions/{id}/prompt"),
+            &json!({"message":message}),
+        )
+        .await
+        .unwrap();
+}
+fn texts<'a>(events: &'a [SessionEvent], kind: &str) -> Vec<&'a str> {
+    events
+        .iter()
+        .filter(|e| e.kind == kind)
+        .filter_map(|e| e.payload["text"].as_str())
+        .collect()
+}
+async fn initialized(dir: &Path) -> Protocol<OwnerBackend> {
+    let mut mcp = Protocol::new(OwnerBackend::load(dir).unwrap());
+    mcp.handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}))
+        .await
+        .unwrap();
+    mcp
+}
+async fn call(mcp: &mut Protocol<OwnerBackend>, name: &str, arguments: Value) -> Value {
+    let reply = mcp
+        .handle(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}}))
+        .await
+        .unwrap();
+    assert!(reply.get("error").is_none(), "{reply}");
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    reply["result"]["structuredContent"].clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn earlier_sessions_are_listed_per_folder_and_continue_with_their_history() {
+    unsafe { std::env::set_var("HMESH_MCP_COMMAND", env!("CARGO_BIN_EXE_hmesh-fixture")) };
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "node-a");
+    let home = real(&root.path().join("home"));
+    let web = real(&root.path().join("work/web"));
+    let api = real(&root.path().join("work/api"));
+    let state = root.path().join("fixture-state");
+    let state_arg = state.to_str().unwrap();
+    // Sessions the agent already had, in two folders. Paths as the agent
+    // reports them may differ from the resolved folder (e.g. /tmp on macOS):
+    // `web/.` resolves to the same folder.
+    seed(
+        &state,
+        "native-login",
+        &web.join("."),
+        &[
+            ("user", "Fix the login bug"),
+            ("agent", "Fixed the token check."),
+        ],
+    );
+    seed(
+        &state,
+        "native-readme",
+        &web,
+        &[("user", "Rewrite the README"), ("agent", "Done.")],
+    );
+    seed(
+        &state,
+        "native-api",
+        &api,
+        &[("user", "Add /health"), ("agent", "Added.")],
+    );
+    let agent = register(
+        &a,
+        &home,
+        "fixture",
+        &["--state-dir", state_arg, "--list-page-size", "2"],
+    );
+    let quiet = register(
+        &a,
+        &root.path().join("quiet"),
+        "quiet",
+        &["--no-list", "--state-dir", state_arg],
+    );
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+
+    // Each agent's registered folder is a project already.
+    let projects: Vec<Project> = owner.get("/local/projects").await.unwrap();
+    let own = projects.iter().find(|p| p.path == home).unwrap();
+    assert_eq!(
+        (
+            own.source,
+            own.project_id.as_str(),
+            own.agent_ids.as_slice()
+        ),
+        (ProjectSource::Agent, "demo-fixture", [agent].as_slice())
+    );
+
+    // Adding a folder: absolute, existing, once.
+    for bad in [
+        json!({"path":"work/web"}),
+        json!({"path":root.path().join("missing")}),
+        json!({"path":home}),
+    ] {
+        assert!(
+            owner
+                .post::<_, Project>("/local/projects", &bad)
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
+    let web_project: Project = owner
+        .post(
+            "/local/projects",
+            &json!({"path":root.path().join("work/../work/web")}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (web_project.path.as_path(), web_project.name.as_str()),
+        (web.as_path(), "web")
+    );
+    let again = owner
+        .post::<_, Project>("/local/projects", &json!({"path":web}))
+        .await
+        .unwrap_err();
+    assert_eq!(again.code, ErrorCode::TaskConflict);
+
+    // Folders in the agents' histories, for adding projects. Three sessions
+    // in pages of two; the agent that cannot list says so.
+    let found: HistoryFolders = owner.get("/local/history").await.unwrap();
+    let folder = |path: &Path| found.folders.iter().find(|f| f.path == path).unwrap();
+    assert_eq!(folder(&web).sessions, 2);
+    assert_eq!(
+        folder(&web).project_id.as_deref(),
+        Some(web_project.project_id.as_str())
+    );
+    assert_eq!(folder(&api).sessions, 1);
+    assert_eq!(folder(&api).project_id, None);
+    let state_of = |id: Uuid| {
+        found
+            .agents
+            .iter()
+            .find(|h| h.agent_id == id)
+            .unwrap()
+            .state
+    };
+    assert_eq!(state_of(agent), HistoryState::Listed);
+    assert_eq!(state_of(quiet), HistoryState::Unsupported);
+
+    // One project's earlier sessions, from the agents that can list them.
+    let history: ProjectHistory = owner
+        .get(&format!(
+            "/local/projects/{}/history",
+            web_project.project_id
+        ))
+        .await
+        .unwrap();
+    let listed = &history
+        .agents
+        .iter()
+        .find(|h| h.agent_id == agent)
+        .unwrap()
+        .sessions;
+    let mut ids: Vec<&str> = listed.iter().map(|s| s.agent_session_id.as_str()).collect();
+    ids.sort();
+    assert_eq!(ids, ["native-login", "native-readme"]);
+    assert!(
+        listed
+            .iter()
+            .all(|s| s.cwd == web && s.session_id.is_none())
+    );
+    let login = listed
+        .iter()
+        .find(|s| s.agent_session_id == "native-login")
+        .unwrap();
+    assert_eq!(login.title.as_deref(), Some("Fix the login bug"));
+
+    // Continuing one shows its conversation, once, then carries on in its folder.
+    let opened: SessionRecord = owner
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":agent,"project_id":web_project.project_id,"resume":"native-login","title":"Fix the login bug"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(opened.status, SessionStatus::Running);
+    assert_eq!(opened.cwd.as_deref(), Some(web.as_path()));
+    assert_eq!(opened.project_id, web_project.project_id);
+    assert_eq!(opened.title, "Fix the login bug");
+    let (loaded, events) = until(&owner, opened.session_id, |s, _| {
+        s.status == SessionStatus::Idle
+    })
+    .await;
+    assert!(!loaded.history_pending);
+    assert_eq!(texts(&events, "user_message"), ["Fix the login bug"]);
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "user_message" && e.payload["from"]["replayed"] == true)
+    );
+    assert_eq!(
+        texts(&events, "agent_message_chunk").concat(),
+        "Fixed the token check."
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.payload["message"] == "continued a session the agent already had"),
+        "{events:#?}"
+    );
+    // The same earlier session is not continued twice.
+    let twice: SessionRecord = owner
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":agent,"project_id":web_project.project_id,"resume":"native-login"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(twice.session_id, opened.session_id);
+    let linked: ProjectHistory = owner
+        .get(&format!(
+            "/local/projects/{}/history?refresh=true",
+            web_project.project_id
+        ))
+        .await
+        .unwrap();
+    assert!(
+        linked.agents[0].sessions.iter().any(
+            |s| s.agent_session_id == "native-login" && s.session_id == Some(opened.session_id)
+        )
+    );
+
+    prompt(&owner, opened.session_id, "fixture:cwd").await;
+    let (record, events) = idle_after(&owner, opened.session_id, 1).await;
+    let expected = format!("cwd={} process={}", web.display(), web.display());
+    assert_eq!(record.last_final_text.as_deref(), Some(expected.as_str()));
+    // The replayed answer is history, not this turn's reply; it stays single.
+    assert_eq!(
+        texts(&events, "user_message"),
+        ["Fix the login bug", "fixture:cwd"]
+    );
+
+    // After a restart the agent reloads quietly: no second copy of the history.
+    daemon.stop().await;
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    prompt(&owner, opened.session_id, "fixture:echo still here").await;
+    let (_, events) = idle_after(&owner, opened.session_id, 2).await;
+    assert_eq!(
+        texts(&events, "user_message"),
+        [
+            "Fix the login bug",
+            "fixture:cwd",
+            "fixture:echo still here"
+        ]
+    );
+
+    // A new session in another project runs there.
+    let api_project: Project = owner
+        .post("/local/projects", &json!({"path":api,"name":" API "}))
+        .await
+        .unwrap();
+    assert_eq!(api_project.name, "API");
+    let fresh: SessionRecord = owner
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":agent,"project_id":api_project.project_id,"message":"fixture:cwd"}),
+        )
+        .await
+        .unwrap();
+    let (record, _) = idle_after(&owner, fresh.session_id, 1).await;
+    assert_eq!(
+        record.last_final_text.as_deref(),
+        Some(format!("cwd={} process={}", api.display(), api.display()).as_str())
+    );
+    // Without a project the agent keeps its own folder, as before.
+    let plain: SessionRecord = owner
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":agent,"message":"fixture:cwd"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plain.cwd, None);
+    let (record, _) = idle_after(&owner, plain.session_id, 1).await;
+    assert!(
+        record
+            .last_final_text
+            .unwrap()
+            .starts_with(&format!("cwd={}", home.display()))
+    );
+
+    // Continuing an earlier session needs no message and a real ID.
+    for bad in [
+        json!({"agent_id":agent,"resume":"native-api","message":"hi"}),
+        json!({"agent_id":agent,"resume":"has space"}),
+        json!({"agent_id":agent,"project_id":"../etc","message":"hi"}),
+        json!({"agent_id":agent,"project_id":"no-such","message":"hi"}),
+    ] {
+        assert!(
+            owner
+                .post::<_, SessionRecord>("/local/sessions", &bad)
+                .await
+                .is_err(),
+            "{bad}"
+        );
+    }
+
+    // This computer's marks: a name, a pin, hidden; an empty name clears it.
+    let mark: SessionMark = owner
+        .post(
+            &format!("/local/sessions/{}/mark", opened.session_id),
+            &json!({"title":"Login","pinned":true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (mark.title.as_deref(), mark.pinned, mark.hidden),
+        (Some("Login"), true, false)
+    );
+    owner
+        .post::<_, SessionMark>(
+            &format!("/local/sessions/{}/mark", plain.session_id),
+            &json!({"hidden":true}),
+        )
+        .await
+        .unwrap();
+    let list: Value = owner.get("/local/sessions").await.unwrap();
+    assert_eq!(list["marks"].as_array().unwrap().len(), 2, "{list}");
+    let cleared: SessionMark = owner
+        .post(
+            &format!("/local/sessions/{}/mark", opened.session_id),
+            &json!({"title":""}),
+        )
+        .await
+        .unwrap();
+    assert_eq!((cleared.title, cleared.pinned), (None, true));
+    assert!(
+        owner
+            .post::<_, SessionMark>(
+                &format!("/local/sessions/{}/mark", Uuid::new_v4()),
+                &json!({"pinned":true})
+            )
+            .await
+            .is_err()
+    );
+    // The session's own title is untouched.
+    let record: SessionRecord = owner
+        .get(&format!("/local/sessions/{}", opened.session_id))
+        .await
+        .unwrap();
+    assert_eq!(record.title, "Fix the login bug");
+
+    // Projects: rename, pin, hide, reorder, remove what was added.
+    let renamed: Project = owner
+        .post(
+            &format!("/local/projects/{}", api_project.project_id),
+            &json!({"name":"Backend","pinned":true}),
+        )
+        .await
+        .unwrap();
+    assert!(renamed.pinned && renamed.name == "Backend");
+    let order = |list: Vec<Project>| list.into_iter().map(|p| p.project_id).collect::<Vec<_>>();
+    let before = order(owner.get("/local/projects").await.unwrap());
+    assert_eq!(before[0], api_project.project_id);
+    let _: Project = owner
+        .post(
+            &format!("/local/projects/{}", web_project.project_id),
+            &json!({"move_by":-1}),
+        )
+        .await
+        .unwrap();
+    let after = order(owner.get("/local/projects").await.unwrap());
+    let position = |list: &[String], id: &str| list.iter().position(|p| p == id).unwrap();
+    assert_eq!(
+        position(&after, &web_project.project_id) + 1,
+        position(&before, &web_project.project_id),
+        "{before:?} -> {after:?}"
+    );
+    // A pinned project stays above the others however far one moves.
+    let _: Project = owner
+        .post(
+            &format!("/local/projects/{}", web_project.project_id),
+            &json!({"move_by":-10}),
+        )
+        .await
+        .unwrap();
+    let after = order(owner.get("/local/projects").await.unwrap());
+    assert_eq!(
+        &after[..2],
+        [
+            api_project.project_id.clone(),
+            web_project.project_id.clone()
+        ]
+    );
+    let hidden: Project = owner
+        .post("/local/projects/demo-fixture", &json!({"hidden":true}))
+        .await
+        .unwrap();
+    assert!(hidden.hidden);
+    assert!(
+        owner
+            .post::<_, Value>("/local/projects/demo-fixture/remove", &json!({}))
+            .await
+            .is_err()
+    );
+    let _: Value = owner
+        .post(
+            &format!("/local/projects/{}/remove", api_project.project_id),
+            &json!({}),
+        )
+        .await
+        .unwrap();
+    // The local directory offers every visible project to MCP clients.
+    let mut mcp = initialized(&a.dir).await;
+    let agents = call(&mut mcp, "mesh_list_agents", json!({})).await;
+    let offered: Vec<&str> = agents["agents"][0]["available_projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        offered.contains(&"web") && !offered.contains(&"demo-fixture"),
+        "{offered:?}"
+    );
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
+    unsafe { std::env::set_var("HMESH_MCP_COMMAND", env!("CARGO_BIN_EXE_hmesh-fixture")) };
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "node-a");
+    let b = init(root.path(), "node-b");
+    Store::open(&a.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&b.card)
+        .unwrap();
+    Store::open(&b.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&a.card)
+        .unwrap();
+    let state = root.path().join("fixture-state-b");
+    seed(
+        &state,
+        "native-secret",
+        &real(&root.path().join("b/site")),
+        &[("user", "private notes"), ("agent", "ok")],
+    );
+    let agent_b = register(
+        &b,
+        &root.path().join("b/home"),
+        "fixture",
+        &["--state-dir", state.to_str().unwrap()],
+    );
+    let site = real(&root.path().join("b/site"));
+    let private = real(&root.path().join("b/private"));
+    let daemon_a = Daemon::start(&a.dir);
+    let daemon_b = Daemon::start(&b.dir);
+    daemon_a.ready().await;
+    daemon_b.ready().await;
+    let owner_a = daemon_a.owner();
+    let owner_b = daemon_b.owner();
+    let shared: Project = owner_b
+        .post("/local/projects", &json!({"path":site}))
+        .await
+        .unwrap();
+    let kept: Project = owner_b
+        .post("/local/projects", &json!({"path":private}))
+        .await
+        .unwrap();
+    let _: Project = owner_b
+        .post(
+            &format!("/local/projects/{}", shared.project_id),
+            &json!({"shared":true}),
+        )
+        .await
+        .unwrap();
+
+    // node-a sees only the shared project, by name and ID, never its folder.
+    let nodes: Vec<MeshNode> = owner_a.get("/local/mesh/agents").await.unwrap();
+    let node_b = nodes.iter().find(|n| n.node_id == b.card.node_id).unwrap();
+    assert_eq!(
+        node_b.projects,
+        [SharedProject {
+            project_id: shared.project_id.clone(),
+            name: "site".into()
+        }]
+    );
+    let raw: Value = owner_a.get("/local/mesh/agents").await.unwrap();
+    assert!(!raw.to_string().contains(site.to_str().unwrap()));
+
+    // A session in the shared project runs there; node-a never sees the path.
+    let opened: SessionRecord = owner_a
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":agent_b,"peer_id":b.card.node_id,"project_id":shared.project_id,"message":"fixture:cwd"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(opened.cwd, None);
+    assert_eq!(opened.project_id, shared.project_id);
+    let (record, _) = idle_after(&owner_a, opened.session_id, 1).await;
+    assert_eq!(record.cwd, None);
+    assert!(
+        record
+            .last_final_text
+            .unwrap()
+            .starts_with(&format!("cwd={}", site.display()))
+    );
+    let on_b: SessionRecord = owner_b
+        .get(&format!("/local/sessions/{}", opened.session_id))
+        .await
+        .unwrap();
+    assert_eq!(on_b.cwd.as_deref(), Some(site.as_path()));
+    // (The agent's own reply may name its folder; the records never do.)
+    let mirrored: Value = owner_a.get("/local/sessions").await.unwrap();
+    let remote = mirrored["remote"].as_array().unwrap();
+    assert!(!remote.is_empty());
+    assert!(
+        remote.iter().all(|r| r["session"].get("cwd").is_none()),
+        "{mirrored}"
+    );
+
+    // Not shared, earlier sessions, unknown projects: refused.
+    for body in [
+        json!({"agent_id":agent_b,"peer_id":b.card.node_id,"project_id":kept.project_id,"message":"fixture:cwd"}),
+        json!({"agent_id":agent_b,"peer_id":b.card.node_id,"resume":"native-secret"}),
+        json!({"agent_id":agent_b,"peer_id":b.card.node_id,"project_id":"no-such","message":"hi"}),
+    ] {
+        assert!(
+            owner_a
+                .post::<_, SessionRecord>("/local/sessions", &body)
+                .await
+                .is_err(),
+            "{body}"
+        );
+    }
+    // The agent's own folder needs no sharing, and a request without a
+    // project (as older computers send it) works as before.
+    let own: SessionRecord = owner_a
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":agent_b,"peer_id":b.card.node_id,"project_id":"demo-fixture","message":"fixture:echo own"}),
+        )
+        .await
+        .unwrap();
+    idle_after(&owner_a, own.session_id, 1).await;
+    let plain: SessionRecord = owner_a
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":agent_b,"peer_id":b.card.node_id,"message":"fixture:echo plain"}),
+        )
+        .await
+        .unwrap();
+    idle_after(&owner_a, plain.session_id, 1).await;
+
+    // Through MCP on node-a: the project is offered and used by name.
+    let mut mcp = initialized(&a.dir).await;
+    let listed = call(&mut mcp, "mesh_list_agents", json!({"node":"node-b"})).await;
+    assert_eq!(
+        listed["agents"][0]["available_projects"],
+        json!([{"name":"site","project_id":shared.project_id}])
+    );
+    let sent = call(
+        &mut mcp,
+        "mesh_send",
+        json!({"agent":"node-b/fixture","project":"site","message":"fixture:cwd","wait_seconds":60}),
+    )
+    .await;
+    assert!(
+        sent["final_text"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("cwd={}", site.display())),
+        "{sent}"
+    );
+
+    // Unsharing stops the next turn of sessions node-a opened there.
+    let _: Project = owner_b
+        .post(
+            &format!("/local/projects/{}", shared.project_id),
+            &json!({"shared":false}),
+        )
+        .await
+        .unwrap();
+    let refused = owner_a
+        .post::<_, SessionRecord>(
+            &format!("/local/sessions/{}/prompt", opened.session_id),
+            &json!({"message":"fixture:cwd"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(refused.message.contains("no longer shared"), "{refused:?}");
+    // The agent's own folder is unaffected.
+    let _: SessionRecord = owner_a
+        .post(
+            &format!("/local/sessions/{}/prompt", own.session_id),
+            &json!({"message":"fixture:echo again"}),
+        )
+        .await
+        .unwrap();
+    idle_after(&owner_a, own.session_id, 2).await;
+    let nodes: Vec<MeshNode> = owner_a.get("/local/mesh/agents").await.unwrap();
+    assert!(
+        nodes
+            .iter()
+            .find(|n| n.node_id == b.card.node_id)
+            .unwrap()
+            .projects
+            .is_empty()
+    );
+    daemon_a.stop().await;
+    daemon_b.stop().await;
+}

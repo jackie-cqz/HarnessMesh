@@ -10,6 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 mod development;
+mod projects;
 mod reliability;
 mod sessions;
 use reliability::scoped_admission;
@@ -60,7 +61,7 @@ impl Store {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(internal)?;
-        if !(0..=9).contains(&version) {
+        if !(0..=10).contains(&version) {
             return Err(MeshError::new(
                 ErrorCode::UnsupportedVersion,
                 "unsupported database schema; refusing to alter it",
@@ -70,7 +71,7 @@ impl Store {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )
         .map_err(internal)?;
-        if version < 9 {
+        if version < 10 {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(internal)?;
@@ -84,6 +85,7 @@ impl Store {
                 include_str!("../migrations/007_reliability.sql"),
                 include_str!("../migrations/008_development.sql"),
                 include_str!("../migrations/009_sessions.sql"),
+                include_str!("../migrations/010_projects.sql"),
             ];
             for migration in migrations.iter().skip(version as usize) {
                 tx.execute_batch(migration).map_err(internal)?;
