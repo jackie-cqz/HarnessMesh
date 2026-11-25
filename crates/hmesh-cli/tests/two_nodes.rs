@@ -1606,25 +1606,21 @@ async fn a_computer_on_every_interface_opens_only_to_networks_it_trusts() {
     );
 }
 
-/// A computer on every interface whose address changes tells the computers
-/// it is paired with within seconds: its card names the new address, and
-/// its address list has every address on its trusted networks.
-#[tokio::test]
-async fn a_computer_whose_address_changes_tells_its_peers_within_seconds() {
-    if !has_ipv6_loopback() {
-        return;
-    }
-    let root = tempfile::tempdir().expect("tempdir");
-    let a_dir = root.path().join("laptop");
-    let b_dir = root.path().join("studio");
-    let a_networks = networks_file(
-        &root.path().join("laptop-networks.json"),
-        json!([ipv6_loopback()]),
-    );
-    let b_networks = networks_file(
-        &root.path().join("studio-networks.json"),
-        json!([ipv6_loopback()]),
-    );
+/// Two computers on every interface, paired over ::1, that see the networks
+/// their files say (`HMESH_TEST_NETWORKS`). The studio also trusts
+/// 192.0.2.0/24 (`studio_lan`), where rewriting its file moves it.
+struct Moving {
+    a_dir: std::path::PathBuf,
+    b_dir: std::path::PathBuf,
+    b_networks: std::path::PathBuf,
+    b_card: NodeCard,
+    _daemons: (Daemon, Daemon),
+}
+async fn paired_while_moving(root: &Path) -> Moving {
+    let a_dir = root.join("laptop");
+    let b_dir = root.join("studio");
+    let a_networks = networks_file(&root.join("laptop-networks.json"), json!([ipv6_loopback()]));
+    let b_networks = networks_file(&root.join("studio-networks.json"), json!([ipv6_loopback()]));
     for (dir, name, extra) in [
         (&b_dir, "workshop", vec!["--trust", "192.0.2.0/24"]),
         (&a_dir, "tablet", vec![]),
@@ -1646,8 +1642,8 @@ async fn a_computer_whose_address_changes_tells_its_peers_within_seconds() {
             node.insert("host_names".into(), toml::Value::Array(vec![]));
         });
     }
-    let _a = daemon_seeing(&a_dir, &a_networks);
-    let _b = daemon_seeing(&b_dir, &b_networks);
+    let a = daemon_seeing(&a_dir, &a_networks);
+    let b = daemon_seeing(&b_dir, &b_networks);
     ready(&a_dir).await;
     let b_card = ready(&b_dir).await;
     let port = port_of(&b_card.endpoint);
@@ -1655,17 +1651,42 @@ async fn a_computer_whose_address_changes_tells_its_peers_within_seconds() {
     join(&a_dir, &b_dir, &format!("[::1]:{port}"));
     let b_id = b_card.node_id.to_string();
     assert!(cli(&a_dir, &["agents", "--peer", &b_id]).is_array());
+    Moving {
+        a_dir,
+        b_dir,
+        b_networks,
+        b_card,
+        _daemons: (a, b),
+    }
+}
+/// The studio's network in 192.0.2.0/24.
+fn studio_lan() -> Value {
+    json!({"interface": "en0", "address": "192.0.2.10", "subnet": "192.0.2.0/24",
+           "gateway": "192.0.2.1", "gateway_mac": "02:00:5e:00:53:01"})
+}
+
+/// A computer on every interface whose address changes tells the computers
+/// it is paired with within seconds: its card names the new address, and
+/// its address list has every address on its trusted networks.
+#[tokio::test]
+async fn a_computer_whose_address_changes_tells_its_peers_within_seconds() {
+    if !has_ipv6_loopback() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("tempdir");
+    let Moving {
+        a_dir,
+        b_dir,
+        b_networks,
+        b_card,
+        _daemons,
+    } = paired_while_moving(root.path()).await;
+    let port = port_of(&b_card.endpoint);
+    let b_id = b_card.node_id.to_string();
 
     // The studio's network gives it another address, first in its list.
     let moved = format!("https://192.0.2.10:{port}");
-    networks_file(
-        &b_networks,
-        json!([
-            {"interface": "en0", "address": "192.0.2.10", "subnet": "192.0.2.0/24",
-             "gateway": "192.0.2.1", "gateway_mac": "02:00:5e:00:53:01"},
-            ipv6_loopback()
-        ]),
-    );
+    networks_file(&b_networks, json!([studio_lan(), ipv6_loopback()]));
     let peer = peer_until(&a_dir, |p| {
         p["card"]["endpoint"] == moved
             && p["routes"]["advertised"]
@@ -1694,4 +1715,42 @@ async fn a_computer_whose_address_changes_tells_its_peers_within_seconds() {
     assert!(cli(&a_dir, &["agents", "--peer", &b_id]).is_array());
     let peer = &cli(&a_dir, &["peers", "list"])[0];
     assert_eq!(peer["routes"]["last_good"], b_card.endpoint, "{peer}");
+}
+
+/// A computer that moves, moves back and moves again (A, B, A once paired)
+/// tells the computers it is paired with every time. The third card names
+/// an address a card was already told with, and is told all the same: the
+/// other computer's card names it again, and its address list is that
+/// address's list again.
+#[tokio::test]
+async fn a_computer_that_moves_back_and_forth_tells_its_peers_each_time() {
+    if !has_ipv6_loopback() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("tempdir");
+    let moving = paired_while_moving(root.path()).await;
+    let first = moving.b_card.endpoint.clone();
+    let moved = format!("https://192.0.2.10:{}", port_of(&first));
+    let there = || {
+        (
+            json!([studio_lan(), ipv6_loopback()]),
+            &moved,
+            json!([moved, first]),
+        )
+    };
+    let back = (json!([ipv6_loopback()]), &first, json!([first]));
+    for (step, (networks, endpoint, advertised)) in [there(), back, there()].into_iter().enumerate()
+    {
+        networks_file(&moving.b_networks, networks);
+        let peer = peer_until(&moving.a_dir, |p| {
+            p["card"]["endpoint"] == *endpoint && p["routes"]["advertised"] == advertised
+        })
+        .await;
+        assert_eq!(peer["card"]["endpoint"], *endpoint, "move {step}: {peer}");
+        assert_eq!(
+            peer["routes"]["advertised"], advertised,
+            "move {step}: {peer}"
+        );
+        assert_eq!(cli(&moving.b_dir, &["node", "show"])["endpoint"], *endpoint);
+    }
 }

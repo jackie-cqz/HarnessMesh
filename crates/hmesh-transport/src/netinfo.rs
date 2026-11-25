@@ -3,7 +3,7 @@
 //! parsing is separate from asking the system, so every platform's output
 //! is tested on any platform. Commands run by absolute path, with a
 //! deadline; whatever cannot be read is left out (`None`), never guessed.
-use crate::tailscale::{CliTailscale, TailscaleProvider};
+use crate::tailscale::{CliTailscale, TailnetStatus};
 use hmesh_core::{IpNet, LocalNetwork, is_tailnet_ip, normalize_hardware_address};
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -106,10 +106,23 @@ pub fn parse_windows_arp(arp: &str, gateway: Ipv4Addr) -> Option<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Tailscale {
     /// It answered: these, and only these, are its addresses (none when it
-    /// is not running or signed in).
+    /// is not running here).
     Addresses(Vec<IpAddr>),
     /// It could not be asked (no CLI, no answer in time).
     Unknown,
+}
+impl Tailscale {
+    /// What its status says: this device's addresses whenever Tailscale is
+    /// running here, signed in, even while it cannot reach its coordination
+    /// server (`Self.Online` false), because connections with the computers
+    /// it is already in touch with go on without it.
+    pub fn from_status(status: &TailnetStatus) -> Self {
+        Self::Addresses(if status.running() {
+            status.self_node.ips.clone()
+        } else {
+            vec![]
+        })
+    }
 }
 /// Whether `address` on `interface` is one of Tailscale's. Its range
 /// (100.64.0.0/10) is carrier-grade NAT, which hotels, campuses and carriers
@@ -228,12 +241,8 @@ async fn ask_tailscale(executable: Option<&Path>, candidates: Vec<IpAddr>) -> Ta
     }
     let answer = match CliTailscale::discover(executable) {
         Err(_) => Tailscale::Unknown,
-        Ok(cli) => match tokio::time::timeout(COMMAND_DEADLINE, cli.status()).await {
-            Ok(Ok(status)) if status.require_running().is_ok() => {
-                Tailscale::Addresses(status.self_node.ips)
-            }
-            // It answered, and is not running or signed in: none are its.
-            Ok(Ok(_)) => Tailscale::Addresses(vec![]),
+        Ok(cli) => match tokio::time::timeout(COMMAND_DEADLINE, cli.own_status()).await {
+            Ok(Ok(status)) => Tailscale::from_status(&status),
             Ok(Err(_)) | Err(_) => Tailscale::Unknown,
         },
     };

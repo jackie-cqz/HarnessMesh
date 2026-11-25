@@ -361,3 +361,53 @@ fn a_carrier_grade_nat_wifi_is_not_tailscale() {
         &Tailscale::Unknown
     ));
 }
+
+/// Tailscale runs here (`Running`) but cannot reach its coordination server
+/// just now (`Self.Online` is false): connections with the computers it is
+/// already in touch with go on, so its addresses are still Tailscale's and
+/// the door on them stays open. Stopped, signed out or starting, none are.
+#[test]
+fn tailscale_running_without_its_server_still_has_its_addresses() {
+    let status = |state: &str| {
+        hmesh_transport::tailscale::parse_status(
+            format!(
+                r#"{{"BackendState":"{state}","Self":{{"Online":false,"TailscaleIPs":["100.101.102.103","fd7a:115c:a1e0::5"]}}}}"#
+            )
+            .as_bytes(),
+        )
+        .expect("status")
+    };
+    let running = Tailscale::from_status(&status("Running"));
+    assert_eq!(
+        running,
+        Tailscale::Addresses(vec![ip("100.101.102.103"), ip("fd7a:115c:a1e0::5")])
+    );
+    for interface in ["tailscale0", "utun4", "Tailscale"] {
+        assert!(
+            is_tailscale_address(interface, ip("100.101.102.103"), &running),
+            "{interface}"
+        );
+    }
+    let found = networks_from(
+        &[("tailscale0".to_owned(), ip("100.101.102.103"), 32)],
+        None,
+        None,
+        &running,
+    );
+    assert!(found[0].tailnet, "{found:?}");
+    for state in [
+        "Stopped",
+        "NeedsLogin",
+        "NeedsMachineAuth",
+        "Starting",
+        "NoState",
+    ] {
+        let answer = Tailscale::from_status(&status(state));
+        assert_eq!(answer, Tailscale::Addresses(vec![]), "{state}");
+        assert!(!is_tailscale_address(
+            "tailscale0",
+            ip("100.101.102.103"),
+            &answer
+        ));
+    }
+}

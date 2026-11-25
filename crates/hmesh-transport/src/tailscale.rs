@@ -26,11 +26,13 @@ pub struct TailnetStatus {
     pub candidates: Vec<TailnetNode>,
 }
 impl TailnetStatus {
+    /// Tailscale runs on this device and is signed in, whether or not it
+    /// reaches its coordination server just now.
+    pub fn running(&self) -> bool {
+        self.backend_state == "Running"
+    }
     pub fn require_running(&self) -> Result<()> {
-        if self.backend_state != "Running"
-            || !self.self_node.online
-            || self.self_node.ips.is_empty()
-        {
+        if !self.running() || !self.self_node.online || self.self_node.ips.is_empty() {
             bail!(
                 "Tailscale must be logged in, running and online with a node IP (state: {})",
                 self.backend_state
@@ -109,12 +111,17 @@ impl CliTailscale {
             .context("Tailscale CLI not found; set --tailscale-executable to its absolute path")?;
         Ok(Self { executable })
     }
-}
-impl TailscaleProvider for CliTailscale {
-    async fn status(&self) -> Result<TailnetStatus> {
+    /// This device's own status (`--peers=false`): whether Tailscale runs
+    /// here, and its addresses, without the rest of the tailnet, which can
+    /// be large and slow to list.
+    pub async fn own_status(&self) -> Result<TailnetStatus> {
+        self.status_with(&["status", "--json", "--peers=false"])
+            .await
+    }
+    async fn status_with(&self, args: &[&str]) -> Result<TailnetStatus> {
         let mut command = Command::new(&self.executable);
         command
-            .args(["status", "--json"])
+            .args(args)
             .env("TAILSCALE_BE_CLI", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -136,6 +143,11 @@ impl TailscaleProvider for CliTailscale {
             if !child.wait().await?.success() { bail!("Tailscale status failed; check local CLI access and sign-in with tailscale status"); }
             parse_status(&bytes)
         }).await.context("Tailscale status timed out after 5 seconds")?
+    }
+}
+impl TailscaleProvider for CliTailscale {
+    async fn status(&self) -> Result<TailnetStatus> {
+        self.status_with(&["status", "--json"]).await
     }
 }
 
