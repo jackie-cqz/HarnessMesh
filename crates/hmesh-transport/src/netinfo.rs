@@ -3,10 +3,13 @@
 //! parsing is separate from asking the system, so every platform's output
 //! is tested on any platform. Commands run by absolute path, with a
 //! deadline; whatever cannot be read is left out (`None`), never guessed.
+use crate::tailscale::{CliTailscale, TailscaleProvider};
 use hmesh_core::{IpNet, LocalNetwork, is_tailnet_ip, normalize_hardware_address};
 use std::{
     net::{IpAddr, Ipv4Addr},
-    time::Duration,
+    path::Path,
+    sync::Mutex,
+    time::{Duration, Instant},
 };
 
 /// How long one system command (or file read) may take.
@@ -99,14 +102,38 @@ pub fn parse_windows_arp(arp: &str, gateway: Ipv4Addr) -> Option<String> {
             .flatten()
     })
 }
+/// What Tailscale says this computer's own addresses are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Tailscale {
+    /// It answered: these, and only these, are its addresses (none when it
+    /// is not running or signed in).
+    Addresses(Vec<IpAddr>),
+    /// It could not be asked (no CLI, no answer in time).
+    Unknown,
+}
+/// Whether `address` on `interface` is one of Tailscale's. Its range
+/// (100.64.0.0/10) is carrier-grade NAT, which hotels, campuses and carriers
+/// also hand out on ordinary Wi-Fi, so the range alone never says so: it
+/// takes Tailscale's own answer, or, when it cannot be asked, an interface
+/// it names (`tailscale0` on Linux, `Tailscale` on Windows). Unsure is no:
+/// macOS gives every VPN a `utunN`.
+pub fn is_tailscale_address(interface: &str, address: IpAddr, tailscale: &Tailscale) -> bool {
+    is_tailnet_ip(address)
+        && match tailscale {
+            Tailscale::Addresses(addresses) => addresses.contains(&address),
+            Tailscale::Unknown => interface.to_ascii_lowercase().starts_with("tailscale"),
+        }
+}
 /// The networks behind interface addresses `(interface, address, prefix)`:
 /// those another computer could reach (not loopback, link-local and the
 /// like; see `peer_address`), once each. The one the default gateway is on
-/// comes first and carries it; Tailscale addresses are marked and last.
+/// comes first and carries it; Tailscale addresses (`is_tailscale_address`)
+/// are marked and last.
 pub fn networks_from(
     interfaces: &[(String, IpAddr, u8)],
     gateway: Option<Ipv4Addr>,
     gateway_mac: Option<String>,
+    tailscale: &Tailscale,
 ) -> Vec<LocalNetwork> {
     let mut found: Vec<LocalNetwork> = Vec::new();
     for (interface, address, prefix) in interfaces {
@@ -120,7 +147,7 @@ pub fn networks_from(
         let Ok(subnet) = IpNet::new(address, *prefix).map(|net| net.trunc()) else {
             continue;
         };
-        let tailnet = is_tailnet_ip(address);
+        let tailnet = is_tailscale_address(interface, address, tailscale);
         let gateway = gateway
             .map(IpAddr::V4)
             .filter(|gateway| !tailnet && subnet.contains(gateway));
@@ -143,11 +170,13 @@ pub fn networks_from(
     found
 }
 
-/// The networks this computer is on now. Debug builds read them from the
-/// JSON file `HMESH_TEST_NETWORKS` names instead, when it is set (read
-/// again each time, so a test can move a computer between networks);
-/// release builds have no such path.
-pub async fn observe() -> Vec<LocalNetwork> {
+/// The networks this computer is on now. Tailscale (its CLI, at
+/// `tailscale_executable` or where it is usually installed) is asked which
+/// addresses are its own only when an address in its range is here. Debug
+/// builds read the networks from the JSON file `HMESH_TEST_NETWORKS` names
+/// instead, when it is set (read again each time, so a test can move a
+/// computer between networks); release builds have no such path.
+pub async fn observe(tailscale_executable: Option<&Path>) -> Vec<LocalNetwork> {
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("HMESH_TEST_NETWORKS") {
         return std::fs::read(&path)
@@ -171,7 +200,47 @@ pub async fn observe() -> Vec<LocalNetwork> {
         Some(gateway) => hardware_address(gateway).await,
         None => None,
     };
-    networks_from(&interfaces, gateway, gateway_mac)
+    let candidates: Vec<IpAddr> = interfaces
+        .iter()
+        .map(|(_, address, _)| address.to_canonical())
+        .filter(|address| is_tailnet_ip(*address))
+        .collect();
+    let tailscale = if candidates.is_empty() {
+        Tailscale::Addresses(vec![])
+    } else {
+        ask_tailscale(tailscale_executable, candidates).await
+    };
+    networks_from(&interfaces, gateway, gateway_mac, &tailscale)
+}
+
+/// How long Tailscale's answer is reused while the same addresses are here.
+const TAILSCALE_ANSWER_KEPT: Duration = Duration::from_secs(30);
+type Answer = (Instant, Vec<IpAddr>, Tailscale);
+static TAILSCALE_ANSWER: Mutex<Option<Answer>> = Mutex::new(None);
+/// Tailscale's own addresses, if its CLI answers within the deadline.
+async fn ask_tailscale(executable: Option<&Path>, candidates: Vec<IpAddr>) -> Tailscale {
+    if let Ok(kept) = TAILSCALE_ANSWER.lock()
+        && let Some((at, seen, answer)) = kept.as_ref()
+        && *seen == candidates
+        && at.elapsed() < TAILSCALE_ANSWER_KEPT
+    {
+        return answer.clone();
+    }
+    let answer = match CliTailscale::discover(executable) {
+        Err(_) => Tailscale::Unknown,
+        Ok(cli) => match tokio::time::timeout(COMMAND_DEADLINE, cli.status()).await {
+            Ok(Ok(status)) if status.require_running().is_ok() => {
+                Tailscale::Addresses(status.self_node.ips)
+            }
+            // It answered, and is not running or signed in: none are its.
+            Ok(Ok(_)) => Tailscale::Addresses(vec![]),
+            Ok(Err(_)) | Err(_) => Tailscale::Unknown,
+        },
+    };
+    if let Ok(mut kept) = TAILSCALE_ANSWER.lock() {
+        *kept = Some((Instant::now(), candidates, answer.clone()));
+    }
+    answer
 }
 
 async fn default_gateway() -> Option<Ipv4Addr> {

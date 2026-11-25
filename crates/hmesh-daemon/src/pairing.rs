@@ -78,8 +78,8 @@ async fn peer_card(
 /// new address (a computer on every interface moved) and a newer list are
 /// told again. Nothing waits on this.
 pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
-    let mut told = std::collections::HashSet::new();
-    let mut told_addresses = std::collections::HashSet::new();
+    let mut told = Told::default();
+    let mut told_addresses = Told::default();
     loop {
         if let Ok(peers) = state.store.peers() {
             let revision = state.addresses().revision;
@@ -94,13 +94,11 @@ pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
                     continue;
                 }
                 let id = peer.card.node_id;
-                if !told.contains(&(id, endpoint.clone())) && peer_told(&state, &client).await {
-                    told.insert((id, endpoint.clone()));
+                if told.needs(id, &endpoint) && peer_told(&state, &client).await {
+                    told.record(id, endpoint.clone());
                 }
-                if !told_addresses.contains(&(id, revision))
-                    && addresses::push(&state, &client).await
-                {
-                    told_addresses.insert((id, revision));
+                if told_addresses.needs(id, &revision) && addresses::push(&state, &client).await {
+                    told_addresses.record(id, revision);
                 }
             }
         }
@@ -109,6 +107,23 @@ pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
             _ = tokio::time::sleep(ANNOUNCE_EVERY) => {}
             _ = state.announce_now.notified() => {}
         }
+    }
+}
+/// What each paired computer was last told (a card's address, an address
+/// list's revision): told again whenever this computer's is something else,
+/// so moving back to an earlier address is told too.
+struct Told<T>(HashMap<Uuid, T>);
+impl<T> Default for Told<T> {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+impl<T: PartialEq> Told<T> {
+    fn needs(&self, peer: Uuid, value: &T) -> bool {
+        self.0.get(&peer) != Some(value)
+    }
+    fn record(&mut self, peer: Uuid, value: T) {
+        self.0.insert(peer, value);
     }
 }
 pub(crate) async fn peer_told(state: &AppState, client: &Client) -> bool {
@@ -295,6 +310,21 @@ pub(crate) async fn check(s: &AppState, record: &PairRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A computer that moves from A to B and back to A tells its peers each
+    /// time, not only the first time it is at an address.
+    #[test]
+    fn a_card_is_told_again_whenever_it_names_another_address() {
+        let peer = Uuid::new_v4();
+        let mut told = Told::default();
+        assert!(told.needs(peer, &"https://192.168.1.20:39880".to_owned()));
+        told.record(peer, "https://192.168.1.20:39880".to_owned());
+        assert!(!told.needs(peer, &"https://192.168.1.20:39880".to_owned()));
+        assert!(told.needs(peer, &"https://10.0.0.5:39880".to_owned()));
+        told.record(peer, "https://10.0.0.5:39880".to_owned());
+        assert!(told.needs(peer, &"https://192.168.1.20:39880".to_owned()));
+        assert!(told.needs(Uuid::new_v4(), &"https://10.0.0.5:39880".to_owned()));
+    }
     use hmesh_transport::serve;
     use tokio::net::TcpListener;
 

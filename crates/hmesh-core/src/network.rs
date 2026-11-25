@@ -93,6 +93,12 @@ impl TrustedNetwork {
             (Some(trusted), Some(seen)) => trusted.eq_ignore_ascii_case(seen).then_some(false),
         }
     }
+    /// Trusted by its subnet alone: no gateway hardware address was seen
+    /// when it was trusted, so any other network with the same subnet (the
+    /// same 192.168.1.0/24 in a café) counts as this one.
+    pub fn subnet_only(&self) -> bool {
+        !self.tailnet && self.gateway.is_none()
+    }
     /// The entry's own problems, if any.
     pub fn problem(&self) -> Option<&'static str> {
         if self
@@ -136,18 +142,24 @@ pub struct LocalNetwork {
 }
 
 /// How `trusted` recognizes `network`: which entry, and whether its gateway
-/// could not be checked. An entry whose gateway checked out wins over one
-/// that could not be checked.
+/// could not be checked now. The best match wins: an entry whose gateway
+/// checked out (or the Tailscale entry), then one trusted by its subnet
+/// only, then one whose gateway cannot be seen now.
 pub fn recognize(trusted: &[TrustedNetwork], network: &LocalNetwork) -> Option<(usize, bool)> {
-    let mut unverified = None;
-    for (index, entry) in trusted.iter().enumerate() {
-        match entry.recognizes(network) {
-            Some(false) => return Some((index, false)),
-            Some(true) if unverified.is_none() => unverified = Some((index, true)),
-            _ => {}
-        }
-    }
-    unverified
+    trusted
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let unverified = entry.recognizes(network)?;
+            let rank = match (unverified, entry.subnet_only()) {
+                (false, false) => 0,
+                (false, true) => 1,
+                (true, _) => 2,
+            };
+            Some((rank, index, unverified))
+        })
+        .min_by_key(|(rank, index, _)| (*rank, *index))
+        .map(|(_, index, unverified)| (index, unverified))
 }
 
 /// Trust the network this computer is on now with `subnet`: its gateway's

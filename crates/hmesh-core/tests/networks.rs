@@ -162,6 +162,33 @@ fn trusting_a_network_takes_its_gateway_from_what_is_observed() {
     assert!(list.is_empty());
 }
 
+/// A network trusted without its gateway's hardware address (none could be
+/// read) is trusted by its subnet alone, and says so: any other network
+/// with that subnet counts as trusted too. One trusted behind its gateway
+/// wins over it.
+#[test]
+fn a_network_trusted_without_its_gateway_is_trusted_by_subnet_only() {
+    let home = "a0:b1:c2:d3:e4:f5";
+    let at_home = lan("192.168.1.20", "192.168.1.0/24", Some(home));
+    let anywhere = trusted("192.168.1.0/24", None);
+    assert!(anywhere.subnet_only());
+    assert!(!trusted("192.168.1.0/24", Some(home)).subnet_only());
+    assert!(!TrustedNetwork::tailnet().subnet_only());
+    let list = [anywhere.clone(), trusted("192.168.1.0/24", Some(home))];
+    assert_eq!(recognize(&list, &at_home), Some((1, false)));
+    assert_eq!(recognize(&list[..1], &at_home), Some((0, false)));
+    // Trusted where no gateway can be read: by subnet only.
+    let mut list = vec![];
+    let entry = trust_network(
+        &mut list,
+        &[lan("10.0.0.5", "10.0.0.0/24", None)],
+        "10.0.0.0/24".parse().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert!(entry.subnet_only(), "{entry:?}");
+}
+
 #[test]
 fn hardware_addresses_are_read_as_six_lowercase_octets() {
     for (text, read) in [

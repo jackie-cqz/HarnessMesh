@@ -99,33 +99,67 @@ pub fn open_addresses(
     open
 }
 /// What the owner sees: the networks this computer is on (each trusted or
-/// not, and whether its gateway could be checked), the trusted ones, and
-/// the network to offer trusting: the one with the default route (or the
-/// first) when it is not trusted.
+/// not, by its subnet only or not, and whether its gateway could be checked
+/// now), the trusted ones, the network to offer trusting (the one with the
+/// default route, or the first, when it is not trusted), and `notes` in
+/// words for each network trusted by its subnet only.
 pub fn view(every_interface: bool, trusted: &[TrustedNetwork], observed: &[LocalNetwork]) -> Value {
+    let mut notes: Vec<String> = Vec::new();
     let current: Vec<Value> = observed
         .iter()
         .map(|network| {
-            let recognized = recognize(trusted, network);
+            let recognized = recognize(trusted, network).filter(|_| every_interface);
+            let entry = recognized.map(|(i, _)| &trusted[i]);
+            let unverified = recognized.is_some_and(|(_, u)| u);
             let mut shown = json!(network);
-            shown["trusted"] = json!(every_interface && recognized.is_some());
-            shown["gateway_unverified"] =
-                json!(every_interface && recognized.is_some_and(|(_, u)| u));
-            shown["name"] = json!(recognized.and_then(|(i, _)| trusted[i].name.clone()));
+            shown["trusted"] = json!(entry.is_some());
+            shown["subnet_only"] = json!(entry.is_some_and(TrustedNetwork::subnet_only));
+            shown["gateway_unverified"] = json!(unverified);
+            shown["name"] = json!(entry.and_then(|e| e.name.clone()));
+            if unverified {
+                notes.push(format!(
+                    "{}: its gateway's hardware address cannot be read now, so it is recognized by its subnet only",
+                    network.subnet
+                ));
+            }
             shown
         })
         .collect();
+    let listed: Vec<Value> = trusted
+        .iter()
+        .map(|entry| {
+            let mut shown = json!(entry);
+            shown["subnet_only"] = json!(entry.subnet_only());
+            shown
+        })
+        .collect();
+    if every_interface {
+        for entry in trusted.iter().filter(|e| e.subnet_only()) {
+            notes.push(format!(
+                "{} is trusted by its subnet only (no gateway hardware address was seen when it was trusted): any other network with the same subnet counts as trusted too. Trust it again where its gateway can be seen to tie it to that gateway.",
+                entry.subnet
+            ));
+        }
+    }
     let suggested = observed
         .iter()
         .find(|n| !n.tailnet)
         .filter(|n| every_interface && recognize(trusted, n).is_none())
-        .map(|n| json!({"subnet": n.subnet, "interface": n.interface, "address": n.address}));
+        .map(|n| {
+            json!({
+                "subnet": n.subnet,
+                "interface": n.interface,
+                "address": n.address,
+                "subnet_only": n.gateway_mac.is_none(),
+            })
+        });
     json!({
         "every_interface": every_interface,
         "current": current,
-        "trusted": trusted,
+        "trusted": listed,
         "suggested": suggested,
         "tailnet": observed.iter().any(|n| n.tailnet),
+        "notes": notes,
     })
 }
 
@@ -200,6 +234,11 @@ impl AppState {
                 open: open.clone(),
                 observed: observed.iter().map(|n| n.address).collect(),
                 sources: self.networks.sources.clone(),
+                lans: observed
+                    .iter()
+                    .filter(|n| !n.tailnet)
+                    .map(|n| n.subnet)
+                    .collect(),
             };
         }
         if open == before && !startup {
@@ -255,6 +294,11 @@ impl AppState {
             self.nearby.changed.notify_one();
         }
     }
+    /// The Tailscale CLI node.toml names, if any (asked which addresses are
+    /// Tailscale's own).
+    pub(crate) fn tailscale(&self) -> Option<&std::path::Path> {
+        self.instance.config.node.tailscale_executable.as_deref()
+    }
     fn every_interface_only(&self) -> std::result::Result<(), ApiError> {
         if self.networks.every_interface() {
             return Ok(());
@@ -276,7 +320,7 @@ pub async fn watch(state: AppState, mut stop: watch::Receiver<bool>) {
             changed = stop.changed() => if changed.is_err() || *stop.borrow() { return },
             _ = tokio::time::sleep(LOOK_EVERY) => {}
         }
-        let observed = netinfo::observe().await;
+        let observed = netinfo::observe(state.tailscale()).await;
         let _one = state.networks.changing.lock().await;
         state.apply_networks(observed, None, false);
     }
@@ -291,10 +335,14 @@ async fn list(
     s.owner(&headers, &c)?;
     if !s.networks.every_interface() {
         // Nothing is trusted on one address; still say what is here.
-        return Ok(Json(view(false, &[], &netinfo::observe().await)));
+        return Ok(Json(view(
+            false,
+            &[],
+            &netinfo::observe(s.tailscale()).await,
+        )));
     }
     let _one = s.networks.changing.lock().await;
-    s.apply_networks(netinfo::observe().await, None, false);
+    s.apply_networks(netinfo::observe(s.tailscale()).await, None, false);
     Ok(Json(s.networks_view()))
 }
 
@@ -327,7 +375,7 @@ async fn trust(
     s.owner(&headers, &c)?;
     s.every_interface_only()?;
     let _one = s.networks.changing.lock().await;
-    let observed = netinfo::observe().await;
+    let observed = netinfo::observe(s.tailscale()).await;
     let mut trusted = s.networks.trusted();
     let entry = trust_network(&mut trusted, &observed, body.subnet, body.name)
         .map_err(|e| ApiError(MeshError::input(e)))?;
@@ -367,7 +415,7 @@ async fn forget(
         ))));
     }
     write_trusted(&s.instance.dir, &trusted)?;
-    s.apply_networks(netinfo::observe().await, Some(trusted), false);
+    s.apply_networks(netinfo::observe(s.tailscale()).await, Some(trusted), false);
     s.store.audit(
         Some(s.instance.card.node_id),
         "network.forget",
@@ -432,5 +480,72 @@ mod tests {
         let shown = view(false, &[], &observed);
         assert!(shown["suggested"].is_null());
         assert_eq!(shown["current"][0]["trusted"], false);
+    }
+
+    /// Trusted without its gateway (none could be read), a network is
+    /// trusted by its subnet alone, and the owner is told what that means.
+    #[test]
+    fn a_network_trusted_by_subnet_only_is_said_to_be() {
+        let observed = [network("192.168.1.20", "192.168.1.0/24", false)];
+        let subnet_only = [TrustedNetwork {
+            subnet: "192.168.1.0/24".parse().unwrap(),
+            gateway: None,
+            name: None,
+            tailnet: false,
+        }];
+        let shown = view(true, &subnet_only, &observed);
+        assert_eq!(shown["current"][0]["trusted"], true);
+        assert_eq!(shown["current"][0]["subnet_only"], true, "{shown}");
+        assert_eq!(shown["trusted"][0]["subnet_only"], true, "{shown}");
+        let notes = shown["notes"].to_string();
+        assert!(
+            notes.contains("192.168.1.0/24 is trusted by its subnet only"),
+            "{shown}"
+        );
+        assert!(notes.contains("same subnet"), "{shown}");
+        // Behind its gateway: nothing to say.
+        let mac = "a0:b1:c2:d3:e4:f5";
+        let checked = [TrustedNetwork {
+            gateway: Some(mac.into()),
+            ..subnet_only[0].clone()
+        }];
+        let seen = [LocalNetwork {
+            gateway: Some("192.168.1.1".parse().unwrap()),
+            gateway_mac: Some(mac.into()),
+            ..observed[0].clone()
+        }];
+        let shown = view(true, &checked, &seen);
+        assert_eq!(shown["current"][0]["subnet_only"], false);
+        assert_eq!(shown["notes"], json!([]), "{shown}");
+        // The Tailscale entry is not a subnet.
+        let shown = view(true, &[TrustedNetwork::tailnet()], &[]);
+        assert_eq!(shown["trusted"][0]["subnet_only"], false);
+    }
+
+    /// A hotel Wi-Fi with carrier-grade NAT addresses is not Tailscale: with
+    /// the Tailscale entry trusted, a computer next door on that Wi-Fi is
+    /// still dropped before TLS.
+    #[test]
+    fn a_carrier_grade_nat_wifi_stays_closed_with_tailscale_trusted() {
+        let observed = hmesh_transport::netinfo::networks_from(
+            &[("en0".to_owned(), "100.80.1.5".parse().unwrap(), 16)],
+            Some("100.80.0.1".parse().unwrap()),
+            Some("a0:b1:c2:d3:e4:f5".into()),
+            &hmesh_transport::netinfo::Tailscale::Unknown,
+        );
+        let trusted = [TrustedNetwork::tailnet()];
+        let open = open_addresses(&trusted, &observed);
+        assert!(open.is_empty(), "{open:?}");
+        let fence = Fence {
+            open,
+            observed: observed.iter().map(|n| n.address).collect(),
+            sources: default_allowed_sources(),
+            ..Fence::default()
+        };
+        assert_eq!(
+            fence.door("100.80.1.5".parse().unwrap(), "100.80.7.7".parse().unwrap()),
+            hmesh_transport::Door::Closed
+        );
+        assert!(view(true, &trusted, &observed)["current"][0]["trusted"] == false);
     }
 }

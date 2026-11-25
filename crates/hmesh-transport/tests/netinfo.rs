@@ -165,6 +165,10 @@ fn networks_are_the_addresses_other_computers_could_reach() {
         ],
         Some(GATEWAY),
         Some("a0:b1:c2:d3:e4:f5".into()),
+        &Tailscale::Addresses(vec![
+            "100.101.102.103".parse().unwrap(),
+            "fd7a:115c:a1e0::1".parse().unwrap(),
+        ]),
     );
     let network = |name: &str, address: &str, subnet: &str, tailnet: bool| LocalNetwork {
         interface: name.into(),
@@ -190,9 +194,14 @@ fn networks_are_the_addresses_other_computers_could_reach() {
     );
     // No default route: no gateway anywhere.
     assert!(
-        networks_from(&[interface("en0", "192.168.1.20", 24)], None, None)[0]
-            .gateway
-            .is_none()
+        networks_from(
+            &[interface("en0", "192.168.1.20", 24)],
+            None,
+            None,
+            &Tailscale::Unknown
+        )[0]
+        .gateway
+        .is_none()
     );
 }
 
@@ -209,6 +218,10 @@ fn the_fence_opens_trusted_networks_to_allowed_sources_only() {
         open: vec![(ip("192.168.1.20"), false), (ip("100.101.102.103"), true)],
         observed: vec![ip("192.168.1.20"), ip("10.0.0.42"), ip("100.101.102.103")],
         sources: default_allowed_sources(),
+        lans: vec![
+            "192.168.1.0/24".parse().unwrap(),
+            "10.0.0.0/24".parse().unwrap(),
+        ],
     };
     for (local, source, door) in [
         // The owner, on loopback (IPv4, mapped into IPv6, IPv6).
@@ -267,6 +280,7 @@ fn the_fence_opens_trusted_networks_to_allowed_sources_only() {
         open: vec![(ip("::1"), false)],
         observed: vec![ip("::1")],
         sources: default_allowed_sources(),
+        lans: vec![],
     };
     assert_eq!(standing_in.door(ip("::1"), ip("::1")), Door::Peers);
     assert_eq!(
@@ -279,4 +293,71 @@ fn the_fence_opens_trusted_networks_to_allowed_sources_only() {
     };
     assert_eq!(untrusted_stand_in.door(ip("::1"), ip("::1")), Door::Closed);
     assert_eq!(Fence::default().door(ip("::1"), ip("::1")), Door::Owner);
+    // On carrier-grade NAT Wi-Fi, a computer next door has an address in
+    // Tailscale's range: it does not get in through the Tailscale address.
+    let hotel = Fence {
+        open: vec![(ip("100.101.102.103"), true)],
+        observed: vec![ip("100.80.1.5"), ip("100.101.102.103")],
+        sources: default_allowed_sources(),
+        lans: vec!["100.80.0.0/16".parse().unwrap()],
+    };
+    assert_eq!(
+        hotel.door(ip("100.101.102.103"), ip("100.80.7.7")),
+        Door::Closed
+    );
+    assert_eq!(
+        hotel.door(ip("100.101.102.103"), ip("100.64.0.5")),
+        Door::Peers
+    );
+    assert_eq!(hotel.door(ip("100.80.1.5"), ip("100.80.7.7")), Door::Closed);
+}
+
+/// Hotels, campuses and carriers hand out carrier-grade NAT addresses
+/// (100.64.0.0/10, Tailscale's range) on ordinary Wi-Fi: such a network is
+/// not Tailscale, so the Tailscale entry never opens the port on it.
+#[test]
+fn a_carrier_grade_nat_wifi_is_not_tailscale() {
+    for tailscale in [Tailscale::Unknown, Tailscale::Addresses(vec![])] {
+        let found = networks_from(
+            &[("en0".to_owned(), ip("100.80.1.5"), 16)],
+            Some(Ipv4Addr::new(100, 80, 0, 1)),
+            Some("a0:b1:c2:d3:e4:f5".into()),
+            &tailscale,
+        );
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].tailnet, "{tailscale:?}: {found:?}");
+        assert_eq!(found[0].gateway, Some(ip("100.80.0.1")));
+    }
+    // Tailscale's own answer decides; without one, only an interface named
+    // for it counts (macOS gives every VPN a utun, so that is not enough).
+    let ours = ip("100.101.102.103");
+    let confirmed = Tailscale::Addresses(vec![ours]);
+    assert!(is_tailscale_address("utun4", ours, &confirmed));
+    assert!(!is_tailscale_address(
+        "utun4",
+        ip("100.101.102.104"),
+        &confirmed
+    ));
+    assert!(!is_tailscale_address("utun4", ours, &Tailscale::Unknown));
+    assert!(!is_tailscale_address(
+        "en0",
+        ip("100.80.1.5"),
+        &Tailscale::Unknown
+    ));
+    assert!(is_tailscale_address(
+        "tailscale0",
+        ours,
+        &Tailscale::Unknown
+    ));
+    assert!(is_tailscale_address("Tailscale", ours, &Tailscale::Unknown));
+    assert!(!is_tailscale_address(
+        "tailscale0",
+        ours,
+        &Tailscale::Addresses(vec![])
+    ));
+    assert!(!is_tailscale_address(
+        "tailscale0",
+        ip("192.168.1.20"),
+        &Tailscale::Unknown
+    ));
 }

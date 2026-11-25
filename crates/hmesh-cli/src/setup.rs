@@ -147,13 +147,29 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
             false,
             "Listens on every network interface, but trusts no network yet, so no other computer can connect: trust one with `hmesh networks trust <subnet>` (`hmesh networks list` shows them) or in the panel (配对节点 → 信任这个网络)",
         ),
-        Place::Networks(trusted) => report.step(
-            true,
-            format!(
-                "Listens on every network interface; other computers connect over the networks it trusts ({}), from {accepted}. On any other network nobody can connect",
-                trusted.iter().map(describe_network).collect::<Vec<_>>().join(", ")
-            ),
-        ),
+        Place::Networks(trusted) => {
+            report.step(
+                true,
+                format!(
+                    "Listens on every network interface; other computers connect over the networks it trusts ({}), from {accepted}. On any other network nobody can connect",
+                    trusted.iter().map(describe_network).collect::<Vec<_>>().join(", ")
+                ),
+            );
+            let subnet_only: Vec<String> = trusted
+                .iter()
+                .filter(|t| t.subnet_only())
+                .map(|t| t.subnet.to_string())
+                .collect();
+            if !subnet_only.is_empty() {
+                report.step(
+                    false,
+                    format!(
+                        "Trusted by subnet only ({}): no gateway hardware address was seen, so any other network with the same subnet counts as trusted too. Trust it again there with `hmesh networks trust <subnet>` once its gateway can be seen",
+                        subnet_only.join(", ")
+                    ),
+                );
+            }
+        }
         Place::Direct(Some(address)) => report.step(
             true,
             format!("Other computers on this network connect to {address}; it accepts them from {accepted}"),
@@ -485,15 +501,16 @@ async fn find_place(
 /// the networks it trusts: the one `--listen` names an address of, those
 /// `--trust` names, the ones it trusted before (one that listened on one
 /// address before trusts that address's network now), or, set up for the
-/// first time, the network with the default route (or the ones the owner
-/// picks). Tailscale is added when it runs here and the owner agrees. Only a
+/// first time, the ones the owner picks (the network with the default route
+/// offered first; nobody to ask, none). Tailscale is added when it runs here
+/// and the owner agrees (or with --with-tailscale). Only a
 /// loopback address listens there alone (one computer: tests, demos).
 async fn choose_networks(
     options: &Options,
     interactive: bool,
     existing: Option<&NodeConfig>,
 ) -> Result<Place> {
-    let observed = hmesh_transport::netinfo::observe().await;
+    let observed = hmesh_transport::netinfo::observe(options.tailscale_executable.as_deref()).await;
     let listed = || {
         observed
             .iter()
@@ -530,7 +547,8 @@ async fn choose_networks(
         match observed.iter().find(|n| n.address == address) {
             Some(network) => add(&mut trusted, trusted_entry(network)),
             None if address.is_loopback() && options.trust.is_empty() => return alone(address),
-            // That address is gone (a new lease): as for a new computer.
+            // That address is gone (a new lease): as for a new computer
+            // (asked; with nobody to ask, nothing).
             None if options.trust.is_empty() => {
                 for entry in pick_networks(&observed, interactive)? {
                     add(&mut trusted, entry);
@@ -560,12 +578,10 @@ async fn choose_networks(
     let tailscale_here = observed.iter().any(|n| n.tailnet);
     let with_tailscale = match options.with_tailscale {
         Some(choice) => choice,
-        // Asked once, when it first listens on every interface.
-        None if before.is_none() && tailscale_here => {
-            !interactive
-                || confirm(
-                    "Tailscale runs here. Also accept connections from computers on your Tailnet?",
-                )?
+        // Asked once, when it first listens on every interface; with
+        // nobody to ask, not without --with-tailscale.
+        None if before.is_none() && tailscale_here && interactive => {
+            confirm("Tailscale runs here. Also accept connections from computers on your Tailnet?")?
         }
         None => trusted.iter().any(|t| t.tailnet),
     };
@@ -600,25 +616,43 @@ fn describe_network(network: &TrustedNetwork) -> String {
     if network.tailnet {
         return "Tailscale".into();
     }
+    let only = if network.subnet_only() {
+        ", by subnet only"
+    } else {
+        ""
+    };
     match &network.name {
-        Some(name) => format!("{} ({name})", network.subnet),
+        Some(name) => format!("{} ({name}{only})", network.subnet),
+        None if network.subnet_only() => format!("{} (by subnet only)", network.subnet),
         None => network.subnet.to_string(),
     }
 }
-/// The networks to trust on a computer set up for the first time: the one
-/// with the default route, or the only one; asked when there are several
-/// and someone is there to ask.
+/// The network offered first: the one with the default route, or the only one.
+fn default_network(lans: &[&LocalNetwork]) -> Option<usize> {
+    lans.iter()
+        .position(|n| n.gateway.is_some())
+        .or((lans.len() == 1).then_some(0))
+}
+/// The networks to trust on a computer set up for the first time, asked
+/// (the one with the default route offered first). With nobody to ask, none.
 fn pick_networks(observed: &[LocalNetwork], interactive: bool) -> Result<Vec<TrustedNetwork>> {
     let lans: Vec<&LocalNetwork> = observed.iter().filter(|n| !n.tailnet).collect();
-    let default = lans
-        .iter()
-        .position(|n| n.gateway.is_some())
-        .or((lans.len() == 1).then_some(0));
-    if !interactive || lans.len() < 2 {
-        return Ok(default
-            .map(|i| trusted_entry(lans[i]))
-            .into_iter()
-            .collect());
+    let default = default_network(&lans);
+    // Nobody to ask: nothing is trusted that was not named (--trust, --listen).
+    if !interactive || lans.is_empty() {
+        return Ok(vec![]);
+    }
+    if let [only] = lans.as_slice() {
+        return Ok(
+            if confirm(&format!(
+                "Trust the network this computer is on, {} ({}), so computers on it can connect?",
+                only.subnet, only.interface
+            ))? {
+                vec![trusted_entry(only)]
+            } else {
+                vec![]
+            },
+        );
     }
     eprintln!(
         "Which networks do you trust? Computers on them can connect to this one; on any other network nobody can."
@@ -1167,6 +1201,32 @@ mod tests {
         assert_eq!(config.node.name, "studio");
         let mut local = NodeConfig::default();
         assert!(switch(&mut local, &at(Mode::Full, Place::Tailnet(ip))).is_err());
+    }
+
+    /// Offered first: the network with the default route, else the only one.
+    #[test]
+    fn the_network_offered_first_has_the_default_route() {
+        let lan = |address: &str, gateway: Option<&str>| LocalNetwork {
+            interface: "en0".into(),
+            address: address.parse().unwrap(),
+            subnet: format!("{address}/24").parse::<IpNet>().unwrap().trunc(),
+            gateway: gateway.map(|g| g.parse().unwrap()),
+            gateway_mac: None,
+            tailnet: false,
+        };
+        let plain = lan("10.0.0.5", None);
+        let routed = lan("192.168.1.20", Some("192.168.1.1"));
+        assert_eq!(default_network(&[&plain, &routed]), Some(1));
+        assert_eq!(default_network(&[&plain]), Some(0));
+        assert_eq!(default_network(&[&plain, &plain]), None);
+        assert_eq!(default_network(&[]), None);
+        // Nobody to ask: nothing, whatever is offered.
+        assert!(
+            pick_networks(std::slice::from_ref(&routed), false)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(pick_networks(&[], true).unwrap().is_empty());
     }
 
     #[test]

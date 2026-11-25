@@ -92,19 +92,29 @@ pub struct Fence {
     pub observed: Vec<IpAddr>,
     /// The sources other computers may connect from (`allowed_sources`).
     pub sources: Vec<hmesh_core::IpNet>,
+    /// The subnets of the other (not Tailscale) networks this computer is
+    /// on. A source in Tailscale's range on one of them is a computer next
+    /// door on carrier-grade NAT Wi-Fi, not one on the Tailnet.
+    pub lans: Vec<hmesh_core::IpNet>,
 }
 impl Fence {
     /// Where a connection to `local` from `source` goes. The owner: both
     /// on loopback, unless loopback is one of this computer's networks (only
     /// tests make it one). Another computer: `local` on a trusted network
-    /// and `source` allowed (a Tailnet address, for a Tailscale address).
+    /// and `source` allowed (for a Tailscale address: a Tailnet address that
+    /// is not on one of this computer's LANs).
     pub fn door(&self, local: IpAddr, source: IpAddr) -> Door {
         let (local, source) = (local.to_canonical(), source.to_canonical());
         if local.is_loopback() && source.is_loopback() && !self.observed.contains(&local) {
             return Door::Owner;
         }
         match self.open.iter().find(|(address, _)| *address == local) {
-            Some((_, true)) if hmesh_core::is_tailnet_ip(source) => Door::Peers,
+            Some((_, true))
+                if hmesh_core::is_tailnet_ip(source)
+                    && !self.lans.iter().any(|net| net.contains(&source)) =>
+            {
+                Door::Peers
+            }
             Some((_, false)) if self.sources.iter().any(|net| net.contains(&source)) => Door::Peers,
             _ => Door::Closed,
         }

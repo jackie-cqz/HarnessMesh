@@ -1542,6 +1542,19 @@ async fn a_computer_on_every_interface_opens_only_to_networks_it_trusts() {
     assert_eq!(trusted["trusted"][0]["subnet"], "::1/128", "{trusted}");
     assert_eq!(trusted["trusted"][0]["name"], "test", "{trusted}");
     assert!(trusted["suggested"].is_null(), "{trusted}");
+    // No gateway seen there: trusted by its subnet alone, and said so.
+    assert_eq!(trusted["current"][0]["subnet_only"], true, "{trusted}");
+    assert_eq!(trusted["trusted"][0]["subnet_only"], true, "{trusted}");
+    assert!(
+        trusted["notes"]
+            .to_string()
+            .contains("::1/128 is trusted by its subnet only"),
+        "{trusted}"
+    );
+    assert_eq!(
+        cli(&b_dir, &["networks", "list"])["notes"],
+        trusted["notes"]
+    );
     assert!(
         !closed_before_tls(&on_network).await,
         "still closed after trusting"
@@ -1667,6 +1680,16 @@ async fn a_computer_whose_address_changes_tells_its_peers_within_seconds() {
         "{peer}"
     );
     assert_eq!(cli(&b_dir, &["node", "show"])["endpoint"], moved);
+    // Doctor output is shared to get help: no gateway hardware address in it.
+    let doctor = cli(&b_dir, &["doctor"]);
+    assert!(
+        !doctor.to_string().contains("02:00:5e:00:53:01"),
+        "{doctor}"
+    );
+    assert_eq!(
+        doctor["daemon"]["status"]["networks"]["current"][0]["gateway_mac"], "hidden",
+        "{doctor}"
+    );
     // Still reached where it answers.
     assert!(cli(&a_dir, &["agents", "--peer", &b_id]).is_array());
     let peer = &cli(&a_dir, &["peers", "list"])[0];

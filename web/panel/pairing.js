@@ -57,9 +57,15 @@ function networkNotice(local){
   const trust=button(networkState.busy?'正在信任…':'信任这个网络','button small',()=>trustNetwork(suggested.subnet));
   trust.type='button';trust.id='trust-network';trust.disabled=networkState.busy||!canWrite();
   box.append(el('p','pair-network-text','这台电脑现在的网络还没认过：别的电脑连不进来。'),el('span','pair-network-detail mono',`${suggested.subnet} · ${suggested.interface}`),trust);
- }else if((networks.current||[]).some(n=>n.trusted&&n.gateway_unverified)){
-  box.append(el('p','pair-network-text muted','没能核对这个网络的路由器，只按网段认的。'));
- }else return null;
+  // No gateway hardware address seen here: trusting it would go by the subnet alone.
+  if(suggested.subnet_only)box.append(el('p','pair-network-note muted','读不到这个网络路由器的硬件地址：信任后只按网段认，同网段的别的网络也会被当成认过。'));
+ }else{
+  const current=(networks.current||[]).filter(n=>n.trusted&&!n.tailnet);
+  const subnetOnly=current.find(n=>n.subnet_only),unverified=current.find(n=>n.gateway_unverified);
+  if(subnetOnly)box.append(el('p','pair-network-text muted',`${subnetOnly.subnet} 只按网段认：同网段的别的网络也会被当成认过。`));
+  else if(unverified)box.append(el('p','pair-network-text muted',`${unverified.subnet} 的路由器现在核对不了，暂时只按网段认。`));
+  else return null;
+ }
  if(networkState.message){const message=el('p','form-note pair-message',networkState.message);message.setAttribute('role','status');box.append(message);}
  return box;
 }

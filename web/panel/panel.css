@@ -1413,6 +1413,7 @@ footer{margin-top:28px}
 .pair-network-detail{font-size:11.5px;color:var(--muted);min-width:0;overflow-wrap:anywhere}
 .pair-network .button{flex:none}
 .pair-network .pair-message{flex-basis:100%;margin:0}
+.pair-network-note{flex-basis:100%;margin:0;font-size:12px;overflow-wrap:anywhere}
 .pair-requests,.paired-computers{margin-top:24px}
 .pair-requests h2,.paired-computers h2{font-size:15px;margin:0 0 10px}
 .entity-list .pair-card{display:block}

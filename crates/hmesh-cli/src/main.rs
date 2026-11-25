@@ -1149,11 +1149,24 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         let daemon = match local_client(&instance) {
             Ok(client) => Some(match client.get::<Value>("/local/status").await {
                 Ok(mut status) => {
-                    // Doctor output is shared to get help: never the passcode.
+                    // Doctor output is shared to get help: never the passcode,
+                    // nor the hardware address of a network's gateway.
                     if let Some(passcode) = status.pointer_mut("/pairing_window/passcode")
                         && passcode.is_string()
                     {
                         *passcode = json!("hidden");
+                    }
+                    for (list, field) in [("current", "gateway_mac"), ("trusted", "gateway")] {
+                        for network in status
+                            .pointer_mut(&format!("/networks/{list}"))
+                            .and_then(Value::as_array_mut)
+                            .into_iter()
+                            .flatten()
+                        {
+                            if network[field].is_string() {
+                                network[field] = json!("hidden");
+                            }
+                        }
                     }
                     json!({"state":"reachable", "status":status})
                 }
@@ -2113,7 +2126,6 @@ fn setting_value(value: &str) -> Value {
         other => Value::String(other.to_owned()),
     }
 }
-/// The one paired computer with this node ID or display name.
 /// `hmesh networks`: through the daemon when it runs (it opens or closes
 /// its port at once); otherwise read from this computer and written to
 /// node.toml, for the daemon's next start.
@@ -2140,7 +2152,9 @@ async fn networks(instance: &Instance, command: NetworksCommand) -> Result<Value
         });
     }
     let every = instance.config.every_interface();
-    let observed = hmesh_transport::netinfo::observe().await;
+    let observed =
+        hmesh_transport::netinfo::observe(instance.config.node.tailscale_executable.as_deref())
+            .await;
     let mut trusted = instance
         .config
         .node
@@ -2168,6 +2182,7 @@ async fn networks(instance: &Instance, command: NetworksCommand) -> Result<Value
     }
     Ok(hmesh_daemon::networks_view(every, &trusted, &observed))
 }
+/// The one paired computer with this node ID or display name.
 fn one_peer<'a>(peers: &'a [PeerView], peer: &str) -> Result<&'a PeerView> {
     let matches: Vec<&PeerView> = peers
         .iter()

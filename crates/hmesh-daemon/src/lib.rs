@@ -717,7 +717,11 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let state = AppState::load(instance.clone(), store.clone(), shutdown.clone())?;
     if let Listeners::Every(listener) = &listeners {
         state.networks.set_port(listener.local_addr()?.port());
-        state.apply_networks(hmesh_transport::netinfo::observe().await, None, true);
+        state.apply_networks(
+            hmesh_transport::netinfo::observe(state.tailscale()).await,
+            None,
+            true,
+        );
     }
     let card = state.card();
     store.set_node(&card)?;

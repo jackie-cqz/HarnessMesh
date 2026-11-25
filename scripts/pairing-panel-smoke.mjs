@@ -190,7 +190,27 @@ try{
  assert(trustedNetworks.length===1&&trustedNetworks[0].subnet==='192.0.2.0/24'&&trustedNetworks[0].gateway==='02:00:5e:00:53:01','The panel did not trust the network: '+JSON.stringify(trustedNetworks));
  assert(every.mesh.call(['node','show']).endpoint.startsWith('https://192.0.2.10:'),'The card does not name the trusted network');
  await everyPage.screenshot({path:join(root,'trust-network-trusted.png')});
+ stage='trust-subnet-only';
+ // On a network whose router's hardware address cannot be read, trusting it
+ // goes by the subnet alone, and the panel says so before and after.
+ writeFileSync(networksFile,JSON.stringify([{interface:'en5',address:'198.51.100.7',subnet:'198.51.100.0/24'},{interface:'en0',address:'192.0.2.10',subnet:'192.0.2.0/24',gateway:'192.0.2.1',gateway_mac:'02:00:5e:00:53:01'}]));
+ every.mesh.call(['networks','list']);
+ await everyPage.locator('#refresh').click();
+ const before=everyPage.locator('.pair-network.untrusted').filter({hasText:'198.51.100.0/24 · en5'});
+ await before.filter({hasText:'信任后只按网段认'}).waitFor();
+ await everyPage.getByRole('button',{name:'信任这个网络',exact:true}).click();
+ const after=everyPage.locator('.pair-network').filter({hasText:'198.51.100.0/24 只按网段认：同网段的别的网络也会被当成认过。'});
+ await after.waitFor();
+ assert(!await everyPage.locator('.pair-network.untrusted').count(),'Still offered after trusting');
+ const listed=every.mesh.call(['networks','list']);
+ assert(listed.trusted.some(t=>t.subnet==='198.51.100.0/24'&&t.subnet_only===true)&&listed.notes.some(n=>n.includes('198.51.100.0/24 is trusted by its subnet only')),'The CLI does not say it is trusted by subnet only: '+JSON.stringify(listed));
+ for(const options of [{colorScheme:'dark'},{viewport:{width:360,height:740}}]){
+  const page=await open(everyUrl,options);await page.locator('.pair-network').filter({hasText:'只按网段认'}).waitFor();
+  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth&&document.querySelector('.pair-network').getBoundingClientRect().right<=innerWidth),'The subnet-only note overflows');
+  await page.screenshot({path:join(root,`trust-subnet-only-${options.colorScheme||'narrow'}.png`)});
+  await page.close();
+ }
  assert(!errors.length,'Browser errors: '+errors.join(' | '));
- console.log(JSON.stringify({passed:true,artifacts:root,model_calls:0,scope:'isolated mTLS nodes and headless browser',checks:['pairing-code-matches-cli','bad-code-explained','check-code-is-fingerprint-tail','no-trust-before-approval','request-counted-in-inbox','no-overflow','wrong-check-rejected','asking-side-finishes-itself','trusted-both-ways','agents-visible-both-ways','no-internal-fields','direct-pairing-window','mcp-only-pairs-outbound','peer-address-shown','peer-address-refused-explained','peer-address-saved-to-daemon','peer-address-no-overflow','peer-address-cleared','network-untrusted-said','network-notice-no-overflow','network-trusted-from-panel']}));
+ console.log(JSON.stringify({passed:true,artifacts:root,model_calls:0,scope:'isolated mTLS nodes and headless browser',checks:['pairing-code-matches-cli','bad-code-explained','check-code-is-fingerprint-tail','no-trust-before-approval','request-counted-in-inbox','no-overflow','wrong-check-rejected','asking-side-finishes-itself','trusted-both-ways','agents-visible-both-ways','no-internal-fields','direct-pairing-window','mcp-only-pairs-outbound','peer-address-shown','peer-address-refused-explained','peer-address-saved-to-daemon','peer-address-no-overflow','peer-address-cleared','network-untrusted-said','network-notice-no-overflow','network-trusted-from-panel','network-subnet-only-said-before','network-subnet-only-said-after','network-subnet-only-no-overflow']}));
 }catch(e){console.error(stage+': '+e.message+' diagnostics='+root);process.exitCode=1;}
 finally{await browser?.close();for(const p of owned.reverse()){if(p.exitCode===null){p.kill();await Promise.race([once(p,'exit'),new Promise(r=>setTimeout(r,3000))]);}}}
