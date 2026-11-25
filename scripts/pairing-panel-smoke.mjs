@@ -14,10 +14,10 @@ const root=mkdtempSync(join(tmpdir(),'hmesh-pairing-'));
 const binary=resolve('target/debug',process.platform==='win32'?'hmesh.exe':'hmesh');
 const fixture=resolve('target/debug',process.platform==='win32'?'hmesh-fixture.exe':'hmesh-fixture');
 const owned=[];let browser;let stage='setup';
-function start(args,stdout='ignore'){const child=spawn(binary,args,{stdio:['ignore',stdout,'ignore'],windowsHide:true});owned.push(child);return child;}
-async function node(name,agent,network=[]){
+function start(args,stdout='ignore',env={}){const child=spawn(binary,args,{stdio:['ignore',stdout,'ignore'],windowsHide:true,env:{...process.env,...env}});owned.push(child);return child;}
+async function node(name,agent,network=[],env={}){
  const dir=join(root,name),init=spawnSync(binary,['--json','--data-dir',dir,'init','--name',name,'--port','0',...network],{encoding:'utf8'});
- assert(init.status===0,'CLI init failed');const mesh=new Mesh(binary,dir);start(['--data-dir',dir,'daemon','start']);
+ assert(init.status===0,'CLI init failed');const mesh=new Mesh(binary,dir);start(['--data-dir',dir,'daemon','start'],'ignore',env);
  const card=await until(()=>{try{mesh.call(['daemon','status']);return mesh.call(['node','show']);}catch{return null;}});
  if(!agent)return{mesh,card,dir};
  const project=join(root,`${name}-project`),config=join(root,`${name}.toml`);mkdirSync(project);
@@ -164,7 +164,33 @@ try{
  const callerCard=directPage.locator('.paired-card').filter({hasText:'pair-mcp'});
  await callerCard.getByText('只调用',{exact:true}).waitFor();
  assert(await callerCard.getByRole('button',{name:'查看远端 Agent',exact:true}).count()===0,'MCP-only peer offered an inbound Agent action');
+ stage='trust-network';
+ // On every interface, the port is open only to trusted networks. The
+ // daemon reads the networks it seems to be on from a file (debug builds).
+ const networksFile=join(root,'every-networks.json');
+ writeFileSync(networksFile,JSON.stringify([{interface:'en0',address:'192.0.2.10',subnet:'192.0.2.0/24',gateway:'192.0.2.1',gateway_mac:'02:00:5e:00:53:01'}]));
+ const every=await node('pair-every',null,['--network','direct','--listen-address','::'],{HMESH_TEST_NETWORKS:networksFile});
+ const everyUrl=await panel(every),everyPage=await open(everyUrl);
+ const notice=everyPage.locator('.pair-network.untrusted');
+ await notice.filter({hasText:'这台电脑现在的网络还没认过：别的电脑连不进来。'}).waitFor();
+ assert((await notice.textContent()).includes('192.0.2.0/24 · en0'),'The untrusted network is not named');
+ assert(await everyPage.locator('.pair-identity .badge').textContent()==='局域网直连','Network badge is wrong');
+ for(const options of [{colorScheme:'dark'},{viewport:{width:360,height:740}}]){
+  const page=await open(everyUrl,options);await page.locator('.pair-network.untrusted').waitFor();
+  assert(await page.evaluate(()=>{
+   const box=document.querySelector('.pair-network').getBoundingClientRect(),trust=document.querySelector('#trust-network').getBoundingClientRect();
+   return document.documentElement.scrollWidth<=innerWidth&&trust.left>=box.left-1&&trust.right<=box.right+1&&box.right<=innerWidth;
+  }),'The network notice overflows');
+  await page.screenshot({path:join(root,`trust-network-${options.colorScheme||'narrow'}.png`)});
+  await page.close();
+ }
+ await everyPage.getByRole('button',{name:'信任这个网络',exact:true}).click();
+ await everyPage.locator('.pair-network').waitFor({state:'detached'});
+ const trustedNetworks=every.mesh.call(['networks','list']).trusted;
+ assert(trustedNetworks.length===1&&trustedNetworks[0].subnet==='192.0.2.0/24'&&trustedNetworks[0].gateway==='02:00:5e:00:53:01','The panel did not trust the network: '+JSON.stringify(trustedNetworks));
+ assert(every.mesh.call(['node','show']).endpoint.startsWith('https://192.0.2.10:'),'The card does not name the trusted network');
+ await everyPage.screenshot({path:join(root,'trust-network-trusted.png')});
  assert(!errors.length,'Browser errors: '+errors.join(' | '));
- console.log(JSON.stringify({passed:true,model_calls:0,scope:'isolated mTLS nodes and headless browser',checks:['pairing-code-matches-cli','bad-code-explained','check-code-is-fingerprint-tail','no-trust-before-approval','request-counted-in-inbox','no-overflow','wrong-check-rejected','asking-side-finishes-itself','trusted-both-ways','agents-visible-both-ways','no-internal-fields','direct-pairing-window','mcp-only-pairs-outbound','peer-address-shown','peer-address-refused-explained','peer-address-saved-to-daemon','peer-address-no-overflow','peer-address-cleared']}));
+ console.log(JSON.stringify({passed:true,artifacts:root,model_calls:0,scope:'isolated mTLS nodes and headless browser',checks:['pairing-code-matches-cli','bad-code-explained','check-code-is-fingerprint-tail','no-trust-before-approval','request-counted-in-inbox','no-overflow','wrong-check-rejected','asking-side-finishes-itself','trusted-both-ways','agents-visible-both-ways','no-internal-fields','direct-pairing-window','mcp-only-pairs-outbound','peer-address-shown','peer-address-refused-explained','peer-address-saved-to-daemon','peer-address-no-overflow','peer-address-cleared','network-untrusted-said','network-notice-no-overflow','network-trusted-from-panel']}));
 }catch(e){console.error(stage+': '+e.message+' diagnostics='+root);process.exitCode=1;}
 finally{await browser?.close();for(const p of owned.reverse()){if(p.exitCode===null){p.kill();await Promise.race([once(p,'exit'),new Promise(r=>setTimeout(r,3000))]);}}}

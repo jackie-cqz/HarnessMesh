@@ -44,6 +44,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "session-commands-v1",
     "agent-projects-v1",
     "peer-addresses-v1",
+    "trusted-networks-v1",
 ];
 
 #[derive(Clone)]
@@ -213,6 +214,7 @@ pub async fn run(
         .route("/api/services/{id}/{action}", post(service_action))
         .route("/api/peers/{id}/agents", get(remote_agents))
         .route("/api/peers/{id}/addresses", post(set_peer_addresses))
+        .route("/api/networks/trust", post(trust_network))
         .route("/api/pairs/request", post(request_pair))
         .route("/api/pairing/window", post(open_pairing_window))
         .route("/api/pairing/nearby", get(pairing_nearby))
@@ -435,7 +437,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1"),"peer_addresses":running && features.contains(&"peer-addresses-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1"),"peer_addresses":running && features.contains(&"peer-addresses-v1"),"trusted_networks":running && features.contains(&"trusted-networks-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -1402,6 +1404,31 @@ async fn set_peer_addresses(
             .post(
                 &format!("/local/peers/{id}/addresses"),
                 &hmesh_daemon::ManualAddresses { addresses },
+            )
+            .await,
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrustNetworkBody {
+    subnet: hmesh_core::IpNet,
+}
+/// Open this computer's port to a network it is on now (信任这个网络).
+async fn trust_network(
+    State(s): State<Panel>,
+    body: Result<Json<TrustNetworkBody>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return error(StatusCode::BAD_REQUEST, "INVALID_INPUT");
+    };
+    mutation(
+        s.client
+            .post::<_, Value>(
+                "/local/networks/trust",
+                &hmesh_daemon::TrustNetwork {
+                    subnet: body.subnet,
+                    name: None,
+                },
             )
             .await,
     )
