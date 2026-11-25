@@ -330,7 +330,7 @@ async fn peer_command(
     let actor = s.actor(&headers, &c)?;
     let record = peer_session(&s, actor, id)?;
     let from = json!({"node_id":actor.node_id, "label":record.origin.label});
-    Ok(Json(invoke(&s, id, body, from)?))
+    Ok(Json(invoke(&s, id, body, from)?.for_peer()))
 }
 
 pub(super) fn routes() -> Router<AppState> {

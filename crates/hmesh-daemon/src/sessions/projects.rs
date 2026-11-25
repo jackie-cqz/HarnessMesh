@@ -562,7 +562,8 @@ async fn shared_projects(
     Ok(Json(
         projects(&s)?
             .into_iter()
-            .filter(|p| p.shared)
+            // Hidden projects are not offered, here as on this computer.
+            .filter(|p| p.shared && !p.hidden)
             .map(|p| SharedProject {
                 project_id: p.project_id,
                 name: p.name,

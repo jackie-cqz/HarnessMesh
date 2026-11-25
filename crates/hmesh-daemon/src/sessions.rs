@@ -588,6 +588,11 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         .agent_session_id
         .as_ref()
         .zip(acp::SessionRestore::advertised(&conn.initialize));
+    // An earlier start may already have recorded the replayed history (the
+    // daemon stopped, or the reload failed, before it was noted as kept).
+    // Then this replay, answers included, is not recorded a second time.
+    let history_kept = record.history_pending && replay_recorded(s, record.session_id);
+    let keep_history = record.history_pending && !history_kept;
     // Cached options from an older process are useful when choosing an agent,
     // but must not create a command alias once a new process is starting.
     // DSH checks the old model when resuming, before it accepts a new one.
@@ -606,12 +611,10 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         reply: Mutex::new(Reply::default()),
         // Updates the agent replays while reloading are not new events.
         replaying: std::sync::atomic::AtomicBool::new(
-            matches!(restore, Some((_, acp::SessionRestore::Load))) && !record.history_pending,
+            matches!(restore, Some((_, acp::SessionRestore::Load))) && !keep_history,
         ),
         keep_replay: std::sync::atomic::AtomicBool::new(
-            matches!(restore, Some((_, acp::SessionRestore::Load)))
-                && record.history_pending
-                && !replay_recorded(s, record.session_id),
+            matches!(restore, Some((_, acp::SessionRestore::Load))) && keep_history,
         ),
         last_active: Mutex::new(Instant::now()),
         service_digest: digest,
@@ -659,7 +662,7 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
                 // The replayed answers are history, not the next turn's reply.
                 reply.take();
             }
-            let note = match (record.history_pending, method) {
+            let note = match (keep_history, method) {
                 (false, _) => RELOADED,
                 (true, acp::SessionRestore::Load) => CONTINUED,
                 (true, acp::SessionRestore::Resume) => CONTINUED_QUIETLY,

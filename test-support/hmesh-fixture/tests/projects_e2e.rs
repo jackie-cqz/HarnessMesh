@@ -409,6 +409,10 @@ async fn earlier_sessions_are_listed_per_folder_and_continue_with_their_history(
             "fixture:echo still here"
         ]
     );
+    // Nor are the agent's replayed answers recorded again as new output.
+    let said = texts(&events, "agent_message_chunk").concat();
+    assert_eq!(said.matches("Fixed the token check.").count(), 1, "{said}");
+    assert_eq!(said.matches("cwd=").count(), 1, "{said}");
 
     // A new session in another project runs there.
     let api_project: Project = owner
@@ -651,6 +655,23 @@ async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
     );
     let raw: Value = owner_a.get("/local/mesh/agents").await.unwrap();
     assert!(!raw.to_string().contains(site.to_str().unwrap()));
+    // A hidden project is not offered, even while it stays shared.
+    for hidden in [true, false] {
+        let _: Project = owner_b
+            .post(
+                &format!("/local/projects/{}", shared.project_id),
+                &json!({"hidden":hidden}),
+            )
+            .await
+            .unwrap();
+        let nodes: Vec<MeshNode> = owner_a.get("/local/mesh/agents").await.unwrap();
+        let listed = &nodes
+            .iter()
+            .find(|n| n.node_id == b.card.node_id)
+            .unwrap()
+            .projects;
+        assert_eq!(listed.len(), usize::from(!hidden), "{listed:?}");
+    }
 
     // A session in the shared project runs there; node-a never sees the path.
     let opened: SessionRecord = owner_a
@@ -675,6 +696,17 @@ async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
         .await
         .unwrap();
     assert_eq!(on_b.cwd.as_deref(), Some(site.as_path()));
+    // Running one of the agent's commands there answers with the same view
+    // of the record: no folder.
+    let commanded: Value = owner_a
+        .post(
+            &format!("/local/sessions/{}/command", opened.session_id),
+            &json!({"name":"compact"}),
+        )
+        .await
+        .unwrap();
+    assert!(commanded.get("cwd").is_none(), "{commanded}");
+    idle_after(&owner_a, opened.session_id, 2).await;
     // (The agent's own reply may name its folder; the records never do.)
     let mirrored: Value = owner_a.get("/local/sessions").await.unwrap();
     let remote = mirrored["remote"].as_array().unwrap();
