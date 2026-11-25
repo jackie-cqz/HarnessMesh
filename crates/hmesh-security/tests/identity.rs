@@ -22,6 +22,24 @@ fn tailnet_identity_has_exact_ip_san_without_rekeying_existing_instances() {
 }
 
 #[test]
+fn an_outbound_identity_already_names_its_tailnet_ip_for_a_later_switch() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = NodeConfig::default();
+    config.node.network = "tailscale".into();
+    config.node.tailnet_address = Some("100.99.145.22".parse().unwrap());
+    let instance = Instance::init(&root.path().join("outbound"), config).unwrap();
+    validate_card(&instance.card).unwrap();
+    assert!(endpoint_is_loopback(&instance.card.endpoint));
+    let der = certificate_der(&instance.card.certificate_pem).unwrap();
+    let (_, certificate) = x509_parser::parse_x509_certificate(der.as_ref()).unwrap();
+    let san = certificate.subject_alternative_name().unwrap().unwrap();
+    assert!(san.value.general_names.iter().any(|name| matches!(name,
+        x509_parser::extensions::GeneralName::IPAddress(bytes) if *bytes == [100, 99, 145, 22])));
+    assert!(endpoint_is_loopback("https://localhost:39880"));
+    assert!(!endpoint_is_loopback("https://100.99.145.22:39880"));
+}
+
+#[test]
 fn initialization_is_idempotent_and_instances_have_distinct_keys_and_tokens() {
     let root = tempfile::tempdir().expect("tempdir");
     let a = Instance::init(&root.path().join("a"), NodeConfig::default()).expect("init a");

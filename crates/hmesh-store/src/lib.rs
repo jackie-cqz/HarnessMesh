@@ -233,6 +233,19 @@ impl Store {
             Ok(())
         })
     }
+    /// A trusted peer's new card (a new address or name). Its identity and key
+    /// stay the same; an untrusted or unknown peer changes nothing.
+    pub fn update_peer_card(&self, card: &NodeCard) -> Result<bool> {
+        self.read(|c| {
+            let changed = c
+                .execute(
+                    "UPDATE trusted_peers SET card_json=?1 WHERE peer_node_id=?2 AND public_key_fingerprint=?3 AND status='trusted'",
+                    params![encode(card)?, card.node_id.to_string(), card.fingerprint],
+                )
+                .map_err(internal)?;
+            Ok(changed == 1)
+        })
+    }
     /// Stop trusting a peer, and end every open pair request with it: an
     /// approval that arrives later for a request sent before the revocation
     /// must not quietly trust that computer again.

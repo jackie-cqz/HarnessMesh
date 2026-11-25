@@ -621,6 +621,11 @@ pub struct NodeOptions {
     pub network: String,
     pub expose_to_tailnet: bool,
     pub tailscale_executable: Option<PathBuf>,
+    /// This computer's Tailnet IP when it only connects out (Tailscale
+    /// network, listening on loopback only). It goes into the certificate,
+    /// so the node can later listen on it without new pairings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tailnet_address: Option<IpAddr>,
 }
 impl Default for NodeOptions {
     fn default() -> Self {
@@ -631,6 +636,7 @@ impl Default for NodeOptions {
             network: "loopback".into(),
             expose_to_tailnet: false,
             tailscale_executable: None,
+            tailnet_address: None,
         }
     }
 }
@@ -685,6 +691,11 @@ impl Default for SecurityOptions {
     }
 }
 impl NodeConfig {
+    /// Reaches paired computers over Tailscale but accepts no connection from
+    /// them: the "only MCP" install.
+    pub fn outbound_only(&self) -> bool {
+        self.node.network == "tailscale" && !self.node.expose_to_tailnet
+    }
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.node.name)?;
         if !(1..=604800).contains(&self.security.pending_approval_ttl_seconds) {
@@ -704,13 +715,26 @@ impl NodeConfig {
             ));
         }
         let valid_network = match self.node.network.as_str() {
+            "loopback" if self.node.tailnet_address.is_some() => false,
             "loopback" => self.node.listen_address.is_loopback() && !self.node.expose_to_tailnet,
-            "tailscale" => is_tailnet_ip(self.node.listen_address) && self.node.expose_to_tailnet,
+            "tailscale" if self.node.expose_to_tailnet => {
+                is_tailnet_ip(self.node.listen_address)
+                    && self
+                        .node
+                        .tailnet_address
+                        .is_none_or(|a| a == self.node.listen_address)
+            }
+            // Only connects out: listens on loopback for its owner, and other
+            // computers cannot reach it.
+            "tailscale" => {
+                self.node.listen_address.is_loopback()
+                    && self.node.tailnet_address.is_some_and(is_tailnet_ip)
+            }
             _ => false,
         };
         if !valid_network {
             return Err(MeshError::input(
-                "use loopback, or explicitly enable tailscale with one literal Tailnet IP; wildcard/LAN/public listeners are forbidden",
+                "use loopback; tailscale listening on one literal Tailnet IP; or tailscale that only connects out (loopback listener, tailnet_address set); wildcard/LAN/public listeners are forbidden",
             ));
         }
         if self
@@ -1049,6 +1073,8 @@ pub enum NodeConnectivity {
     Online,
     Unreachable,
     NotProbed,
+    /// The peer only connects out (its "only MCP" install); nothing to probe.
+    OutboundOnly,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerView {

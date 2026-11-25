@@ -99,6 +99,12 @@ impl Instance {
         let mut names = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
         if config.node.network == "tailscale" {
             names.push(config.node.listen_address.to_string());
+            // Only connects out for now; the address it may listen on later.
+            if let Some(address) = config.node.tailnet_address
+                && address != config.node.listen_address
+            {
+                names.push(address.to_string());
+            }
         }
         let mut params = CertificateParams::new(names)?;
         params
@@ -301,6 +307,15 @@ pub fn parse_pair_code(code: &str) -> Result<(String, String)> {
     let endpoint = format!("https://{authority}");
     validate_endpoint(&endpoint)?;
     Ok((endpoint, normalize_fingerprint(fingerprint)?))
+}
+/// Whether an endpoint names this computer's own loopback address.
+pub fn endpoint_is_loopback(endpoint: &str) -> bool {
+    url::Url::parse(endpoint).is_ok_and(|url| match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(name)) => name == "localhost",
+        None => false,
+    })
 }
 pub fn validate_endpoint(endpoint: &str) -> Result<url::Url> {
     let url = url::Url::parse(endpoint)?;

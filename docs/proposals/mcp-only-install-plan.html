@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessMesh：「只用 MCP」做成一种安装方式，一条命令装好，只出不进</title>
+<style>
+  :root{--bg:#fff;--ink:#0a0a0a;--muted:#737373;--line:#e5e5e5;--card:#fff;--accent:#171717;--ok:#047857;--warn:#b45309;--bad:#b42318;--soft:#f5f5f5}
+  @media (prefers-color-scheme: dark){:root{--bg:#0a0a0a;--ink:#ededed;--muted:#a3a3a3;--line:#2a2a2a;--card:#171717;--accent:#e5e5e5;--ok:#34d399;--warn:#fbbf24;--bad:#f2877c;--soft:#1f1f1f}}
+  *{box-sizing:border-box}
+  html,body{background:var(--bg)}
+  body{margin:0;color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif}
+  main{max-width:1000px;margin:0 auto;padding:44px 28px 80px}
+  h1{font-size:27px;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
+  h2{font-size:19px;margin:48px 0 14px}
+  h3{font-size:15px;margin:0 0 8px}
+  p{margin:0 0 10px}
+  .sub{color:var(--muted)}
+  code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 5px;border:1px solid var(--line);border-radius:6px;overflow-wrap:anywhere}
+  pre{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow:auto;margin:8px 0 12px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0 8px}
+  .stat{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--card);min-width:0}
+  .stat b{display:block;font-size:15px;margin-bottom:4px}
+  .stat span{color:var(--muted);font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line);vertical-align:top;min-width:0}
+  th{color:var(--muted);font-weight:500;font-size:13px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--card);min-width:0}
+  .card .label{color:var(--muted);font-size:12px;margin-bottom:10px}
+  .note{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;margin:0 0 10px}
+  .note b{display:block;margin-bottom:2px}
+  .note.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+  .note span{color:var(--muted)}
+  ul,ol{padding-left:20px;margin:0}
+  li{margin-bottom:6px}
+  .ev li{font-size:13.5px}
+  svg{width:100%;height:auto;display:block}
+  svg text{font:12.5px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;fill:var(--ink)}
+  svg .muted{fill:var(--muted)}
+  svg .box{fill:var(--card);stroke:var(--line)}
+  svg .strong{stroke:var(--accent)}
+  svg .zone{fill:none;stroke:var(--line);stroke-dasharray:4 4}
+  svg .arrow{stroke:var(--ink);stroke-width:1.3;fill:none}
+  svg .dash{stroke-dasharray:5 4}
+  svg .no{stroke:var(--bad);stroke-width:1.6}
+  @media (max-width:760px){.stats{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}}
+  @media (max-width:520px){.stats{grid-template-columns:1fr}main{padding:28px 16px 60px}table{font-size:13px}th,td{padding:8px 6px}}
+</style>
+</head>
+<body>
+<main>
+<h1>「只用 MCP」做成一种安装方式：代码不拆，一条命令装好，这台电脑只主动连出去、不开端口</h1>
+<p class="sub">2026-11-25 定的方向：不拆代码、只出不进、权限仍在面板回答。核查发现 MCP 服务只是本机 daemon 的前端，所以「只装 MCP」的实际含义是：daemon 当连接器用，不登记本机 Agent，不对外开端口。</p>
+
+<div class="stats">
+  <div class="stat"><b>1 条命令</b><span><code>hmesh setup</code>，选「只用 MCP」或「全部」</span></div>
+  <div class="stat"><b>0 个对外端口</b><span>只用 MCP 时，daemon 只监听本机，只主动连配对的电脑</span></div>
+  <div class="stat"><b>不需要 Node.js 和 ACP Agent</b><span>只用 MCP 的电脑只装 <code>hmesh</code> 一个程序</span></div>
+  <div class="stat"><b>以后切到「全部」不用重新配对</b><span>证书一开始就带上 Tailnet 地址</span></div>
+</div>
+
+<h2>两种安装方式</h2>
+<div class="two">
+  <div class="card">
+    <div class="label">只用 MCP：让我的 Claude Code、Codex 调用别的电脑上的 Agent</div>
+    <svg viewBox="0 0 440 300" role="img" aria-label="只用 MCP 的结构">
+      <defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <rect class="zone" x="6" y="8" width="250" height="284" rx="10"/>
+      <text x="18" y="28" class="muted">这台电脑</text>
+      <rect class="box" x="22" y="42" width="210" height="40" rx="8"/><text x="36" y="67">Claude Code / Codex（你的 Agent）</text>
+      <rect class="box" x="22" y="112" width="210" height="40" rx="8"/><text x="36" y="137">hmesh mcp（六个工具）</text>
+      <rect class="box strong" x="22" y="182" width="210" height="48" rx="8"/><text x="36" y="203">hmesh daemon</text><text x="36" y="221" class="muted">只监听 127.0.0.1 · 不登记 Agent</text>
+      <rect class="box" x="22" y="250" width="210" height="34" rx="8"/><text x="36" y="272">面板：配对、回答权限</text>
+      <path class="arrow" d="M127 82 V110" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <path class="arrow" d="M127 152 V180" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <path class="arrow" d="M127 250 V232" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <rect class="box" x="290" y="150" width="140" height="76" rx="8"/><text x="302" y="174">配对的电脑</text><text x="302" y="194" class="muted">daemon + 它的</text><text x="302" y="212" class="muted">Agent</text>
+      <path class="arrow" d="M234 200 H288" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <text x="238" y="192" class="muted">只出</text>
+      <path class="arrow no" d="M288 218 H262"/><path class="no" d="M252 212 L262 224 M262 212 L252 224"/>
+      <text x="262" y="244" class="muted">不进</text>
+    </svg>
+  </div>
+  <div class="card">
+    <div class="label">全部：同时把本机 Agent 分享给配对的电脑</div>
+    <svg viewBox="0 0 440 300" role="img" aria-label="全部安装的结构">
+      <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <rect class="zone" x="6" y="8" width="250" height="284" rx="10"/>
+      <text x="18" y="28" class="muted">这台电脑</text>
+      <rect class="box" x="22" y="42" width="210" height="40" rx="8"/><text x="36" y="67">Claude Code / Codex（可选）</text>
+      <rect class="box" x="22" y="112" width="210" height="40" rx="8"/><text x="36" y="137">hmesh mcp</text>
+      <rect class="box strong" x="22" y="182" width="210" height="48" rx="8"/><text x="36" y="203">hmesh daemon</text><text x="36" y="221" class="muted">监听 Tailnet 端口 · 登记本机 Agent</text>
+      <rect class="box" x="22" y="250" width="100" height="34" rx="8"/><text x="32" y="272">面板</text>
+      <rect class="box" x="132" y="250" width="100" height="34" rx="8"/><text x="142" y="272">本机 Agent</text>
+      <path class="arrow" d="M127 82 V110" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <path class="arrow" d="M127 152 V180" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <path class="arrow" d="M72 250 V232" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <path class="arrow" d="M182 232 V248" marker-end="url(#a2)" style="color:var(--ink)"/><text x="188" y="244" class="muted">ACP</text>
+      <rect class="box" x="290" y="150" width="140" height="76" rx="8"/><text x="302" y="174">配对的电脑</text><text x="302" y="194" class="muted">daemon + 它的</text><text x="302" y="212" class="muted">Agent</text>
+      <path class="arrow" d="M234 196 H288" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <path class="arrow" d="M288 214 H236" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <text x="240" y="188" class="muted">出</text><text x="240" y="232" class="muted">进</text>
+    </svg>
+  </div>
+</div>
+
+<table style="margin-top:16px">
+  <tr><th></th><th>只用 MCP</th><th>全部</th></tr>
+  <tr><td>适合谁</td><td>平时在终端用 Claude Code、Codex，想让它们调用别的电脑上的 Agent</td><td>这台电脑上的 Agent 也要给别的电脑用</td></tr>
+  <tr><td>需要装</td><td><code>hmesh</code> 一个程序，Tailscale</td><td>再加上你自己装好的 ACP Agent</td></tr>
+  <tr><td>daemon 监听</td><td>只有本机 127.0.0.1</td><td>本机 + Tailnet IP</td></tr>
+  <tr><td>配对</td><td>只能由这台发起：粘贴对方的配对码</td><td>两个方向都行</td></tr>
+  <tr><td>别的电脑能调用这台的 Agent 吗</td><td>不能（这台没有登记 Agent，也连不进来）</td><td>能</td></tr>
+  <tr><td>对方 Agent 的权限请求</td><td colspan="2">都在这台电脑的面板或「工作待办」里回答（和现在一样）</td></tr>
+  <tr><td>开机自动运行 daemon</td><td colspan="2">Mac、Windows 装成登录项（已有 <code>hmesh startup install</code>）；Linux 由 MCP 在需要时自动拉起</td></tr>
+</table>
+
+<h2>安装时的样子</h2>
+<pre>$ hmesh setup
+这台电脑要怎么用 HarnessMesh？
+  1) 只用 MCP：让这台电脑上的 Claude Code、Codex 调用别的电脑上的 Agent（不对外开端口）
+  2) 全部：同时把这台电脑上的 Agent 分享给配对的电脑
+&gt; 1
+✓ 找到 Tailscale，这台电脑是 100.101.102.103
+✓ 建好节点 ~/.harnessmesh（只监听本机）
+✓ 登录时自动运行（macOS 登录项）
+找到 Claude Code，要把 HarnessMesh 的 MCP 接进去吗？[Y/n] y
+✓ 已执行 claude mcp add -s user harnessmesh -- /usr/local/bin/hmesh mcp
+找到 Codex，要写进 ~/.codex/config.toml 吗？[Y/n] y
+✓ 已写入 [mcp_servers.harnessmesh]
+下一步：hmesh panel 打开面板 →「配对节点」→「配对新电脑」，粘贴另一台电脑的配对码。</pre>
+<p>不想交互时用参数：<code>hmesh setup --mcp-only --connect claude,codex</code>，或 <code>hmesh setup --full</code>。只用 MCP 的电脑以后要分享 Agent，再跑一次 <code>hmesh setup --full</code>：打开 Tailnet 端口、登记本机 Agent，已有的配对不受影响。</p>
+
+<h2>要改的地方</h2>
+<table>
+  <tr><th>改动</th><th>内容</th><th>文件</th></tr>
+  <tr><td>新的网络方式「只出不进」</td><td>Tailscale 模式下也可以只监听本机；daemon 不开 Tailnet 端口，但仍能主动连 Tailnet 上的电脑；证书照样写进 Tailnet IP</td><td><code>hmesh-core</code> 配置校验，<code>hmesh-security</code> 证书，<code>hmesh-daemon</code> 启动</td></tr>
+  <tr><td><code>hmesh setup</code></td><td>选方式 → 检查 Tailscale → 建节点 → 登录自启 → 询问后接入 Claude Code、Codex → 「全部」时再登记本机已装的 ACP Agent（把 <code>scripts/tailnet-config.mjs</code> 的配置模板搬进 Rust，不再需要 Node.js）</td><td><code>hmesh-cli</code> 新增 <code>setup.rs</code></td></tr>
+  <tr><td>MCP 自动拉起 daemon</td><td><code>hmesh mcp</code> 连不上 daemon 时，在后台启动它，最多等 5 秒；已在运行就不动</td><td><code>hmesh-mcp</code></td></tr>
+  <tr><td>面板认得这两种方式</td><td>只用 MCP 时，配对弹窗不显示「这台电脑的配对码」（别人连不进来），Agents 页说明「这台电脑只调用别人的 Agent」并给出切换命令</td><td><code>web/panel</code>，<code>/local/status</code> 多返回一个 <code>role</code></td></tr>
+  <tr><td>对方怎么显示这台电脑</td><td>只用 MCP 的电脑在对方「配对节点」里显示为「只调用，不接受连接」，而不是红色的「不可达」，对方也不去探测它</td><td><code>hmesh-daemon</code> peers 视图，面板</td></tr>
+  <tr><td>旧脚本</td><td><code>scripts/start-tailnet.mjs</code> 改成调用 <code>hmesh setup --full</code>，原有用法照常</td><td>脚本</td></tr>
+  <tr><td>文档</td><td>两份 README 的「开始使用」改成先选方式；MCP 文档、安全说明补上「只出不进」</td><td><code>README*.md</code>，<code>docs/</code></td></tr>
+</table>
+<p class="sub">工作量估算：上面合计约一到两天的开发和测试；没有改会话、配对、MCP 工具的协议。</p>
+
+<h2>需要你定的事</h2>
+<div class="note"><b>1. 安装入口用 Rust 子命令 <code>hmesh setup</code>（推荐）</b><span>好处：预编译包里直接能用，只用 MCP 的电脑不用装 Node.js。另一个选择是在 <code>start-tailnet.mjs</code> 上加 <code>--mcp-only</code>，改动更小，但用户得先装 Node.js 并且要有源码。</span></div>
+<div class="note"><b>2. 接入 Claude Code、Codex 前逐个询问（推荐）</b><span>改的是你自己的配置文件，问一句更稳；带 <code>--connect</code> 参数就不问。另外两个选择：默认直接写（快，但会悄悄改配置），或者只打印命令让你自己执行（最保守，但多一步）。</span></div>
+<div class="note"><b>3. 「全部」也问要不要接入本机的 Claude Code、Codex（推荐）</b><span>这样本机 Agent 和你自己用的 Agent 都能调用别的电脑；不接入也不影响别的电脑调用本机。</span></div>
+
+<h2>风险和应对</h2>
+<div class="note warn"><b>从「只用 MCP」切到「全部」时，证书不对就得重新配对</b><span>应对：「只用 MCP」时生成证书就写进 Tailnet IP，切换时只是打开端口。Tailscale 换了 IP 时，两种方式本来就都要重新配对（现在也是这样）。</span></div>
+<div class="note warn"><b>对方不知道这台电脑不接受连接，会反复探测、显示为不可达</b><span>应对：对方自己是 Tailnet 节点、却看到这台电脑的地址是本机回环地址时，就当作「只调用」，不探测、不显示红色状态（同一台电脑上的演示节点本来就用回环地址，不受影响）。不用改配对协议，所以老版本的电脑照样能和它配对。</span></div>
+<div class="note warn"><b>MCP 自动拉起 daemon，可能和登录自启的那个同时启动</b><span>应对：daemon 本来就有目录锁，第二个会直接退出（已有测试覆盖），MCP 只等 <code>daemon.json</code> 出现。</span></div>
+<div class="note warn"><b>只用 MCP 的人仍然要打开面板配对、回答权限</b><span>这是这次定的（权限留在面板）。以后可以评估在 Claude Code 里直接问（MCP elicitation），本方案不包含。</span></div>
+
+<h2>怎么验证</h2>
+<ul>
+  <li>双节点端到端测试：A 用「只出不进」，粘贴 B 的配对码完成配对；A 通过 MCP 在 B 的 Agent 上开会话、拿回答复；B 主动连 A 失败；B 的面板显示 A 为「只调用」。</li>
+  <li><code>hmesh setup</code> 测试：在临时 HOME 下分别走两种方式，检查节点配置、登录项计划和写入的 Claude Code、Codex 配置；用假的 <code>claude</code> 命令确认只在同意后执行。</li>
+  <li>切换测试：「只用 MCP」配对后再 <code>setup --full</code>，原配对仍可用，对方现在能调用本机 Agent。</li>
+  <li>MCP 自动拉起：daemon 没在跑时调用 <code>mesh_list_agents</code> 成功；两个 MCP 同时启动只起一个 daemon。</li>
+  <li>面板冒烟：只用 MCP 时的配对弹窗、Agents 页、对方「配对节点」页，深浅色和窄屏截图。</li>
+</ul>
+
+<h2>依据</h2>
+<ul class="ev">
+  <li>MCP 的六个工具全部转发给本机 daemon：<code>crates/hmesh-mcp/src/lib.rs:247</code>（<code>local_client</code>），以及 <code>/local/sessions</code>、<code>/local/mesh/agents</code> 等调用。</li>
+  <li><code>hmesh-mcp</code> 依赖 <code>hmesh-daemon</code>，单独的 <code>hmesh-mcp</code> 是 9.1 MB，<code>hmesh</code> 是 23.5 MB（release，macOS arm64），拆编译省不了多少。</li>
+  <li>网络方式目前只有两种：<code>crates/hmesh-core/src/lib.rs:702</code>。证书只在 Tailscale 模式写入 Tailnet IP：<code>crates/hmesh-security/src/lib.rs:99</code>。</li>
+  <li>非本机连接只在 Tailscale 模式允许：<code>crates/hmesh-transport/src/lib.rs:129</code>。</li>
+  <li>登录自启只支持 Mac 和 Windows：<code>crates/hmesh-cli/src/startup.rs</code>（Linux 分支返回不支持）。</li>
+  <li>配对完成只需要发起方主动连对方（PR #12 的后台确认），所以「只出不进」的电脑也能配对。</li>
+</ul>
+</main>
+</body>
+</html>

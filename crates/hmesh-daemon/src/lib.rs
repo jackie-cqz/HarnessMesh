@@ -80,6 +80,13 @@ impl IntoResponse for ApiError {
     }
 }
 type ApiResult<T> = std::result::Result<Json<T>, ApiError>;
+/// This node only connects out: no other computer may call it.
+fn outbound_only() -> ApiError {
+    ApiError(MeshError::new(
+        ErrorCode::PermissionDenied,
+        "this computer only connects out; it accepts no connections from other computers",
+    ))
+}
 fn internal(error: impl std::fmt::Display) -> ApiError {
     ApiError(MeshError::new(ErrorCode::Internal, error.to_string()))
 }
@@ -150,6 +157,9 @@ impl AppState {
                 "local owner credential required",
             )));
         }
+        if self.instance.config.outbound_only() {
+            return Err(outbound_only());
+        }
         if let Some(peer) = self.store.peer_by_fingerprint(fingerprint)? {
             return Ok(Actor {
                 node_id: peer.card.node_id,
@@ -185,6 +195,16 @@ impl AppState {
             )))
         }
     }
+    /// Whether this node calls `peer` at all. A peer that only connects out
+    /// names a loopback address in its card; a node listening on its Tailnet
+    /// IP never calls it (that address is this node's own loopback).
+    /// Nodes that themselves use loopback (one computer) call every peer.
+    fn reaches(&self, peer: &Peer) -> bool {
+        let config = &self.instance.config;
+        !(config.node.network == "tailscale"
+            && !config.outbound_only()
+            && hmesh_security::endpoint_is_loopback(&peer.card.endpoint))
+    }
     fn handshake_limit(&self) -> std::result::Result<(), ApiError> {
         self.anonymous_limit("handshake", 60)
     }
@@ -196,6 +216,10 @@ impl AppState {
         kind: &'static str,
         per_minute: usize,
     ) -> std::result::Result<(), ApiError> {
+        // Pairing with this node starts on this node; nobody pairs into it.
+        if self.instance.config.outbound_only() {
+            return Err(outbound_only());
+        }
         let minute = now() / 60;
         let mut counts = self.handshake_requests.lock().map_err(internal)?;
         counts.retain(|key, _| key.0 == minute);
@@ -399,7 +423,9 @@ async fn contract_errors(request: axum::extract::Request, next: middleware::Next
 pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let mut instance = Instance::load(dir)?;
     let _lock = instance.lock_daemon()?;
-    let tailnet = instance.config.node.network == "tailscale";
+    // Listening on a Tailnet IP. A node that only connects out listens on
+    // loopback for its owner and needs Tailscale only to reach others.
+    let tailnet = instance.config.node.network == "tailscale" && !instance.config.outbound_only();
     if tailnet {
         CliTailscale::discover(instance.config.node.tailscale_executable.as_deref())?
             .status()
@@ -467,6 +493,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let managed = tokio::spawn(services::run(state.clone(), shutdown.subscribe()));
     let workflows = tokio::spawn(development::run(state.clone(), shutdown.subscribe()));
     let session_manager = tokio::spawn(sessions::run(state.clone(), shutdown.subscribe()));
+    let announce = tokio::spawn(pairing::announce(state.clone(), shutdown.subscribe()));
     let expiry_store = state.store.clone();
     let ttl = instance.config.security.pending_approval_ttl_seconds;
     let mut expiry_stop = shutdown.subscribe();
@@ -508,6 +535,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let _ = managed.await;
     let _ = workflows.await;
     let _ = session_manager.await;
+    announce.abort();
     let _ = expiry.await;
     services::recover(&state_for_cleanup)?;
     signal.abort();
@@ -566,7 +594,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1"],"schema_version":9,"pair_code":hmesh_security::pair_code(&s.instance.card)}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1"],"schema_version":9,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
     ))
 }
 async fn stop(
@@ -600,7 +628,9 @@ async fn peers(
             runnable_agent_count: None,
             services_status: "not_supported_in_v0".into(),
         };
-        if peer.status == "trusted" {
+        if peer.status == "trusted" && !s.reaches(&peer) {
+            view.node_connectivity = NodeConnectivity::OutboundOnly;
+        } else if peer.status == "trusted" {
             let hello = Client::new(
                 &s.instance,
                 &peer.card.endpoint,
@@ -923,6 +953,9 @@ async fn remote_agents(
             "peer is not trusted",
         )));
     }
+    if !s.reaches(&peer) {
+        return Ok(Json(vec![]));
+    }
     let client = Client::new(
         &s.instance,
         &peer.card.endpoint,
@@ -1026,7 +1059,8 @@ async fn mesh_agents(
         .store
         .peers()?
         .into_iter()
-        .filter(|peer| peer.status == "trusted")
+        // A computer that only connects out has no agents to offer.
+        .filter(|peer| peer.status == "trusted" && s.reaches(peer))
         .enumerate()
     {
         let instance = s.instance.clone();
@@ -2012,6 +2046,105 @@ async fn audits(
     Ok(Json(s.store.audits()?))
 }
 
+/// Start `hmesh daemon start` for `dir` in the background, detached from
+/// the caller and logging to `<dir>/daemon.log`, and return its owner client
+/// once it answers. The data-directory lock keeps a second daemon from
+/// running, so starting one while another starts is harmless. A daemon that
+/// exits early fails at once with the last line it logged.
+pub async fn start_detached(
+    binary: &FilePath,
+    dir: &FilePath,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Client> {
+    let log_path = dir.join("daemon.log");
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .context("open daemon.log")?;
+    let logged_before = log.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut command = std::process::Command::new(binary);
+    command
+        .arg("--data-dir")
+        .arg(dir)
+        .args(["daemon", "start"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(log);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        command.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
+    }
+    let mut child = command.spawn().context("start the daemon")?;
+    // Reap it whenever it ends, so it never lingers as a zombie of the caller.
+    let exited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = exited.clone();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let mut exited_at = None;
+    loop {
+        if let Some(client) = ready(dir).await {
+            return Ok(client);
+        }
+        let now = std::time::Instant::now();
+        if exited.load(std::sync::atomic::Ordering::SeqCst) {
+            // Another daemon may be starting for the same directory; give
+            // it a moment before reporting why this one stopped.
+            let since = *exited_at.get_or_insert(now);
+            if now.duration_since(since) >= std::time::Duration::from_secs(2) {
+                anyhow::bail!(
+                    "the daemon stopped: {} (log: {})",
+                    last_logged(&log_path, logged_before),
+                    log_path.display()
+                );
+            }
+        }
+        if now >= deadline {
+            anyhow::bail!(
+                "the daemon did not start within {} seconds; see {}",
+                timeout.as_secs(),
+                log_path.display()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+/// The owner client of the daemon for `dir` if it answers now.
+pub async fn running(dir: &FilePath) -> Option<Client> {
+    ready(dir).await
+}
+async fn ready(dir: &FilePath) -> Option<Client> {
+    let instance = Instance::load(dir).ok()?;
+    let client = local_client(&instance).ok()?;
+    client.get::<Value>("/local/status").await.ok()?;
+    Some(client)
+}
+/// The last line logged since `offset`, or its error message when it is a
+/// structured error.
+fn last_logged(path: &FilePath, offset: u64) -> String {
+    let text = fs::read(path)
+        .map(|bytes| {
+            String::from_utf8_lossy(&bytes[(offset as usize).min(bytes.len())..]).into_owned()
+        })
+        .unwrap_or_default();
+    let Some(line) = text.lines().rev().map(str::trim).find(|l| !l.is_empty()) else {
+        return "it logged nothing".into();
+    };
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| line.chars().take(300).collect())
+}
 pub fn local_client(instance: &Instance) -> anyhow::Result<Client> {
     let card: NodeCard = serde_json::from_slice(
         &fs::read(instance.dir.join("daemon.json"))

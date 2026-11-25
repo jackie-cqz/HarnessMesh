@@ -479,3 +479,173 @@ async fn one_approval_on_the_other_computer_pairs_both_ways() {
     assert_eq!(pair_status(d_dir, &waiting, "approved").await, "approved");
     drop(d);
 }
+
+/// The stderr of a CLI call that must fail.
+fn cli_fails(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_hmesh"))
+        .arg("--data-dir")
+        .arg(dir)
+        .arg("--json")
+        .args(args)
+        .output()
+        .expect("CLI process");
+    assert!(!output.status.success(), "CLI unexpectedly succeeded");
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+fn code_of(dir: &Path) -> String {
+    cli(dir, &["pair", "show"])["pair_code"]
+        .as_str()
+        .expect("pairing code")
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_computer_that_only_connects_out_pairs_and_calls_but_lets_nothing_in() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let a_dir = root.path().join("calls out");
+    let b_dir = root.path().join("shares");
+    // The "only MCP" install: Tailscale network, nothing listening on it.
+    // An explicit Tailnet address keeps Tailscale itself out of the test.
+    cli(
+        &a_dir,
+        &[
+            "init",
+            "--name",
+            "calls-out",
+            "--port",
+            "0",
+            "--network",
+            "tailscale",
+            "--outbound-only",
+            "--tailnet-address",
+            "100.64.0.7",
+        ],
+    );
+    cli(&b_dir, &["init", "--name", "shares", "--port", "0"]);
+    let _a = daemon(&a_dir);
+    let _b = daemon(&b_dir);
+    let a_card = ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+    assert!(hmesh_security::endpoint_is_loopback(&a_card.endpoint));
+    assert_eq!(cli(&a_dir, &["daemon", "status"])["outbound_only"], true);
+    assert_eq!(cli(&b_dir, &["daemon", "status"])["outbound_only"], false);
+
+    // Nobody pairs into it...
+    let refused = cli_fails(&b_dir, &["pair", "request", "--code", &code_of(&a_dir)]);
+    assert!(refused.contains("PERMISSION_DENIED"), "{refused}");
+
+    // ...but it pairs out, and the other side's one approval is enough.
+    let request = cli(&a_dir, &["pair", "request", "--code", &code_of(&b_dir)]);
+    let id = request["request_id"].as_str().unwrap().to_string();
+    cli(
+        &b_dir,
+        &[
+            "pair",
+            "approve",
+            &id,
+            "--expect-fingerprint",
+            &a_card.fingerprint,
+        ],
+    );
+    assert_eq!(pair_status(&a_dir, &id, "approved").await, "approved");
+    let mut a = Instance::load(&a_dir).expect("a");
+    a.card = a_card.clone();
+    let b = Instance::load(&b_dir).expect("b");
+    let a_to_b =
+        Client::new(&a, &b_card.endpoint, &b_card.fingerprint, false, false).expect("a to b");
+    assert_eq!(
+        a_to_b
+            .get::<NodeCard>("/hmesh/v1/node")
+            .await
+            .expect("a reaches b")
+            .node_id,
+        b_card.node_id
+    );
+    let listed = cli(&a_dir, &["agents", "list", "--all"]);
+    assert!(
+        listed.to_string().contains(&b_card.node_id.to_string()),
+        "{listed}"
+    );
+
+    // Not even the computer it paired with gets in.
+    let b_to_a =
+        Client::new(&b, &a_card.endpoint, &a_card.fingerprint, false, false).expect("b to a");
+    assert_eq!(
+        b_to_a
+            .get::<NodeCard>("/hmesh/v1/node")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    let anonymous =
+        Client::new(&b, &a_card.endpoint, &a_card.fingerprint, true, false).expect("anonymous");
+    assert_eq!(
+        anonymous
+            .get::<Value>("/hmesh/v1/hello")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    // Its owner still drives it.
+    assert_eq!(cli(&a_dir, &["peers", "list"]).as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_computer_that_moved_tells_the_computers_it_paired_with() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let a_dir = root.path().join("stays");
+    let b_dir = root.path().join("moves");
+    cli(&a_dir, &["init", "--name", "stays", "--port", "0"]);
+    cli(&b_dir, &["init", "--name", "moves", "--port", "0"]);
+    let _a = daemon(&a_dir);
+    let mut b = daemon(&b_dir);
+    let a_card = ready(&a_dir).await;
+    let old = ready(&b_dir).await;
+    let request = cli(&a_dir, &["pair", "request", "--code", &code_of(&b_dir)]);
+    let id = request["request_id"].as_str().unwrap().to_string();
+    cli(
+        &b_dir,
+        &[
+            "pair",
+            "approve",
+            &id,
+            "--expect-fingerprint",
+            &a_card.fingerprint,
+        ],
+    );
+    assert_eq!(pair_status(&a_dir, &id, "approved").await, "approved");
+
+    // B comes back on another port (port 0 picks a new one).
+    let _ = b.0.kill();
+    let _ = b.0.wait();
+    let _ = std::fs::remove_file(b_dir.join("daemon.json"));
+    b = daemon(&b_dir);
+    let moved = ready(&b_dir).await;
+    assert_ne!(moved.endpoint, old.endpoint);
+    let mut known = String::new();
+    for _ in 0..40 {
+        known = cli(&a_dir, &["peers", "list"])[0]["card"]["endpoint"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if known == moved.endpoint {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(known, moved.endpoint, "A still has B's old address");
+    let mut a = Instance::load(&a_dir).expect("a");
+    a.card = a_card;
+    let a_to_b = Client::new(&a, &known, &moved.fingerprint, false, false).expect("a to b");
+    assert_eq!(
+        a_to_b
+            .get::<NodeCard>("/hmesh/v1/node")
+            .await
+            .expect("a reaches b")
+            .node_id,
+        moved.node_id
+    );
+    drop(b);
+}

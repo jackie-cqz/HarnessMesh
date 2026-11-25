@@ -27,6 +27,28 @@ use std::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
+/// How long a tool call waits for a daemon this server started.
+const DAEMON_START: Duration = Duration::from_secs(15);
+/// The `hmesh` program that runs the daemon: this program when it is
+/// `hmesh` (`hmesh mcp`), or `hmesh` next to a separate `hmesh-mcp`.
+fn daemon_binary() -> anyhow::Result<PathBuf> {
+    let current = std::env::current_exe()?;
+    let stem = current
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    if stem != "hmesh-mcp" {
+        return Ok(current);
+    }
+    let sibling = current.with_file_name(format!("hmesh{}", std::env::consts::EXE_SUFFIX));
+    anyhow::ensure!(
+        sibling.is_file(),
+        "no hmesh program next to {}",
+        current.display()
+    );
+    Ok(sibling)
+}
+
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 /// Versions this tools-only server can speak; a client's choice is echoed.
 pub const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
@@ -253,6 +275,35 @@ impl OwnerBackend {
             )
         })
     }
+    /// The daemon's client, starting the daemon first when `hmesh setup` set
+    /// this node up (it records that in setup.json) and its daemon is not
+    /// running: Linux has no login item, or it was stopped. Nodes whose
+    /// owner runs the daemon by hand are left to them, and a server bound to
+    /// a session never starts one (that session runs in a daemon already).
+    async fn connect(&self) -> Result<Client> {
+        if let Ok(client) = self.client() {
+            return Ok(client);
+        }
+        let set_up = std::fs::read(self.data_dir.join("setup.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|record| record["start_daemon_on_demand"] == true);
+        if self.session.is_some() || !set_up {
+            return self.client();
+        }
+        let started = match daemon_binary() {
+            Ok(binary) => hmesh_daemon::start_detached(&binary, &self.data_dir, DAEMON_START).await,
+            Err(error) => Err(error),
+        };
+        started.map_err(|error| {
+            MeshError::new(
+                ErrorCode::PeerUnreachable,
+                format!(
+                    "the local HarnessMesh daemon is not running and could not be started ({error}); start it with `hmesh daemon start`"
+                ),
+            )
+        })
+    }
     /// A bound server may only drive the sessions its own session opened.
     async fn child(&self, client: &Client, id: Uuid) -> Result<SessionRecord> {
         let record: SessionRecord = client.get(&format!("/local/sessions/{id}")).await?;
@@ -267,7 +318,7 @@ impl OwnerBackend {
         }
     }
     async fn execute(&mut self, call: ToolCall) -> Result<Value> {
-        let client = self.client()?;
+        let client = self.connect().await?;
         match call {
             ToolCall::Agents(args) => {
                 let nodes: Vec<MeshNode> = client.get("/local/mesh/agents").await?;

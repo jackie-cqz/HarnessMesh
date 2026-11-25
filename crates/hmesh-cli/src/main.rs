@@ -12,6 +12,7 @@ use std::{fs, path::PathBuf, process::ExitCode};
 use uuid::Uuid;
 mod maintenance;
 mod panel;
+mod setup;
 mod startup;
 mod storage;
 
@@ -94,6 +95,47 @@ enum Commands {
         listen_address: Option<std::net::IpAddr>,
         #[arg(long)]
         tailscale_executable: Option<PathBuf>,
+        /// With --network tailscale: reach paired computers but accept no
+        /// connection from them (listen on loopback only).
+        #[arg(long)]
+        outbound_only: bool,
+        /// This computer's Tailnet IP for --outbound-only; asked from
+        /// Tailscale when omitted.
+        #[arg(long, requires = "outbound_only")]
+        tailnet_address: Option<std::net::IpAddr>,
+    },
+    /// Set this computer up: only MCP (its own agents call agents on other
+    /// computers; it accepts no connections), or full (it also shares its
+    /// agents). Adds a login item and MCP entries only with your consent.
+    Setup {
+        /// Only call agents on other computers from this one.
+        #[arg(long, conflicts_with = "full")]
+        mcp_only: bool,
+        /// Also share this computer's agents with paired computers.
+        #[arg(long)]
+        full: bool,
+        /// Node name; defaults to this computer's Tailscale host name.
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, default_value_t = 39880)]
+        port: u16,
+        /// MCP clients to connect without asking: claude, codex, or none.
+        #[arg(long, value_delimiter = ',')]
+        connect: Option<Vec<String>>,
+        /// Do not start the daemon at login.
+        #[arg(long)]
+        no_startup: bool,
+        #[arg(long)]
+        tailscale_executable: Option<PathBuf>,
+        /// This computer's Tailnet IP; asked from Tailscale when omitted.
+        #[arg(long)]
+        tailnet_address: Option<std::net::IpAddr>,
+        /// Full: the project directory registered agents work in.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Full: register only these installed agents (opencode, claude-code, codex, pi).
+        #[arg(long, value_delimiter = ',')]
+        agents: Option<Vec<String>>,
     },
     Doctor {
         #[arg(long)]
@@ -711,6 +753,7 @@ async fn main() -> ExitCode {
 }
 
 async fn execute(cli: Cli) -> Result<Option<Value>> {
+    let explicit_dir = cli.data_dir.is_some();
     let dir = cli.data_dir.unwrap_or_else(|| {
         std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
             .map(PathBuf::from)
@@ -761,12 +804,48 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 .await?;
         return Ok(Some(serde_json::to_value(status)?));
     }
+    if let Commands::Setup {
+        mcp_only,
+        full,
+        name,
+        port,
+        connect,
+        no_startup,
+        tailscale_executable,
+        tailnet_address,
+        project,
+        agents,
+    } = cli.command
+    {
+        let options = setup::Options {
+            mode: if mcp_only {
+                Some(setup::Mode::McpOnly)
+            } else if full {
+                Some(setup::Mode::Full)
+            } else {
+                None
+            },
+            name,
+            port,
+            connect,
+            startup: !no_startup,
+            tailscale_executable,
+            tailnet_address,
+            project,
+            agents,
+            explicit_dir,
+        };
+        let summary = setup::run(&dir, options, cli.json).await?;
+        return Ok(cli.json.then_some(summary));
+    }
     if let Commands::Init {
         name,
         port,
         network,
         listen_address,
         tailscale_executable,
+        outbound_only,
+        tailnet_address,
     } = cli.command
     {
         let mut config = NodeConfig::default();
@@ -774,7 +853,23 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         config.node.listen_port = port;
         config.node.network = network.clone();
         config.node.tailscale_executable = tailscale_executable;
-        if network == "tailscale" {
+        if outbound_only && network != "tailscale" {
+            anyhow::bail!("--outbound-only needs --network tailscale");
+        }
+        if outbound_only {
+            // Listen for the owner only; the Tailnet IP goes into the
+            // certificate so the node can listen on it later.
+            config.node.tailnet_address = Some(match tailnet_address {
+                Some(address) => address,
+                None => CliTailscale::discover(config.node.tailscale_executable.as_deref())?
+                    .status()
+                    .await?
+                    .preferred_local_ip()?,
+            });
+            if let Some(address) = listen_address {
+                config.node.listen_address = address;
+            }
+        } else if network == "tailscale" {
             let status = CliTailscale::discover(config.node.tailscale_executable.as_deref())?
                 .status()
                 .await?;

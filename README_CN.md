@@ -53,6 +53,7 @@ flowchart LR
 ```
 
 - 每台电脑运行一个 **daemon**（`hmesh daemon start`），由它启动你登记的 Agent，并把会话、任务和事件存在本机的 SQLite 数据库里。
+- **只装 MCP** 的电脑也跑 daemon，但只监听 127.0.0.1：它的 Agent 往外调用，没有任何东西能调用进来。
 - **面板**（`hmesh panel`）只监听 127.0.0.1，用终端里打印的私有链接打开。本机 owner 凭据只留在 CLI 进程里。
 - 电脑之间经 Tailscale 通信，使用 TLS 1.3 双向认证，两边都固定对方的证书指纹。不需要 SSH，也不经过云端中转。
 
@@ -61,9 +62,35 @@ flowchart LR
 需要：
 
 - [Rust](https://rustup.rs) 1.90 或更新。
-- Node.js 20 或更新（运行辅助脚本）。
-- 至少一个你自己装好并登录过的 ACP Agent。
 - 连接多台电脑时需要 [Tailscale](https://tailscale.com)。
+- 完整安装时：至少一个你自己装好并登录过的 ACP Agent。
+
+### 每台电脑选一种装法
+
+每台电脑跑的都是同一个 `hmesh` 程序，有两种装法：
+
+| | 只装 MCP（`--mcp-only`） | 完整安装（`--full`） |
+|---|---|---|
+| 这台电脑上的 Agent（Claude Code、Codex 等）调用别的电脑上的 Agent | ✓ | ✓ |
+| 把这台电脑的 Agent 共享给配对的电脑 | — | ✓ |
+| 别的电脑能连进来 | 不能 | 能，经 Tailscale |
+| 需要本机装 ACP Agent | 不需要 | 需要 |
+
+只负责派活的笔记本用「只装 MCP」，真正干活的机器用「完整安装」。
+
+```sh
+git clone https://github.com/jackie-cqz/HarnessMesh.git
+cd HarnessMesh
+cargo build --release --locked -p hmesh-cli
+./target/release/hmesh setup --mcp-only     # 或者 --full
+```
+
+`hmesh setup` 会找出本机的 Tailscale IP，在 `~/.harnessmesh` 创建节点并启动 daemon；`--full` 还会登记本机已装的每个 ACP Agent。改动 HarnessMesh 以外的东西之前，它会先问你：
+
+- 要不要开机自动启动 daemon（macOS 和 Windows）；
+- 要不要把 MCP 服务器加到 Claude Code（`claude mcp add -s user harnessmesh`）和 Codex（`~/.codex/config.toml`）。
+
+`--connect claude,codex` 或 `--connect none` 预先回答第二个问题，`--no-startup` 跳过第一个。重复运行不会改动已经装好的部分。以后把一台电脑从 `--mcp-only` 换成 `--full`，它的身份和已有的配对都保留。
 
 HarnessMesh 不会替你安装 Agent。`hmesh agent detect` 会列出找到了哪些，没找到的该怎么装：
 
@@ -76,53 +103,50 @@ HarnessMesh 不会替你安装 Agent。`hmesh agent detect` 会列出找到了�
 | DeepSeek Harness | `dsh --profile acp` | `npm install -g @deepseek-ai/dsh@0.2.2-rc.5` (Node.js 24.9+) |
 | 其他 ACP Agent | 你填写的命令和参数 | — |
 
+### 配对电脑
+
+打开面板（`hmesh panel`），进入「配对节点」→「配对新电脑」：
+
+1. 在完整安装的电脑 B 上，复制「这台电脑的配对码」。
+2. 在电脑 A 的同一个弹窗里粘贴，发出申请。A 会显示一个校验码。
+3. 在 B 上输入校验码，批准。A 会自己完成配对。
+
+只装 MCP 的电脑不接受任何连入，所以配对总是从它发起，它就是电脑 A。两台只装 MCP 的电脑之间不能配对。防火墙说明和对应的命令行（`hmesh pair show`、`hmesh pair request --code`、`hmesh pair approve`）见 [Tailscale 指南](docs/quickstart-tailnet.md)。
+
 ### 在一台电脑上试用
 
+不需要 Tailscale：
+
 ```sh
-git clone https://github.com/jackie-cqz/HarnessMesh.git
-cd HarnessMesh
-cargo build --release --locked -p hmesh-cli
 ./target/release/hmesh agent detect
 ./target/release/hmesh panel --start-daemon
 ```
 
-1. 打开面板打印的链接。
-2. 在「Agents」页点「接入项目与 Agent」，给一个项目目录登记 Agent。
-3. 回到「新会话」，选 Agent，发出第一条消息。
+1. 打开面板打印出来的链接。
+2. 在「Agents」页用「接入项目与 Agent」，给一个项目目录登记 Agent。
+3. 到「新会话」，选这个 Agent，发第一条消息。
 
-登记 Agent 只做一次 ACP `initialize` 握手；你发消息之前不会调用模型。数据放在 `~/.harnessmesh`，想换目录就加 `--data-dir 绝对路径`。
+登记 Agent 只做一次 ACP `initialize` 握手，发消息之前不会调用模型。数据在 `~/.harnessmesh`，想换目录就加 `--data-dir /absolute/path`。
 
-### 多台电脑（Tailscale）
-
-在每台电脑的仓库目录里运行下面的命令。它会编译 CLI、选出本机的 Tailscale IP、创建节点、登记本机已装的所有 ACP Agent，并保持 daemon 在前台运行：
-
-```sh
-node scripts/start-tailnet.mjs --name studio
-```
-
-然后在其中一台上打开面板：
-
-```sh
-./target/debug/hmesh --data-dir "$PWD/.hmesh-v0/tailnet-darwin/node" panel
-```
-
-配对：
-
-1. 在 B 电脑上打开「配对节点」→「配对新电脑」，复制「这台电脑的配对码」。
-2. 在 A 电脑的同一个弹窗里粘贴，发出申请。A 会显示一个校验码。
-3. 在 B 电脑上输入校验码，批准。
-
-Windows 的节点目录是 `.hmesh-v0/tailnet-win32/node`。选项、防火墙说明和对应的命令行（`hmesh pair show`、`hmesh pair request --code`、`hmesh pair approve`）见 [Tailscale 指南](docs/quickstart-tailnet.md)。
+在开发 HarnessMesh 本身？`node scripts/start-tailnet.mjs --name studio`（需要 Node.js 20 或更新）会编译当前仓库，并在前台跑一个完整节点，见 [Tailscale 指南](docs/quickstart-tailnet.md)。
 
 ### 让你自己的 Agent 也能调用
 
-HarnessMesh 打开的会话会自动带上 MCP 工具。想让你自己运行的 Agent 也能用，比如终端里的 Claude Code：
+HarnessMesh 打开的会话会自动带上 MCP 工具。`hmesh setup` 会在你同意后把它加到 Claude Code 和 Codex。手动添加：
 
 ```sh
 claude mcp add -s user harnessmesh -- /absolute/path/to/hmesh mcp
 ```
 
-Codex 在 `~/.codex/config.toml` 里配置同一个服务器。六个工具和它们的限制见 [MCP](docs/mcp.md)。
+```toml
+# ~/.codex/config.toml
+[mcp_servers.harnessmesh]
+command = "/absolute/path/to/hmesh"
+args = ["mcp"]
+tool_timeout_sec = 660
+```
+
+用 `hmesh setup` 装过的电脑，daemon 没在运行时 MCP 服务器会自己把它启动起来。六个工具和它们的限制见 [MCP](docs/mcp.md)。
 
 ## 安全要点
 
@@ -130,6 +154,7 @@ Codex 在 `~/.codex/config.toml` 里配置同一个服务器。六个工具和�
 - **批准一次，两边都核验。** 发起配对的电脑要等对方 owner 批准、并且对方接受了自己的证书，才信任对方。
 - **证书固定。** 每个连接都用 TLS 1.3 并固定证书；匿名接口只用于配对握手。
 - **owner 操作只在本机。** owner 接口和面板只监听本机回环地址。
+- **只装 MCP 的电脑什么都不放进来。** 它只监听本机回环地址，拒绝别的电脑发来的所有请求，包括配对申请。
 - **按电脑设访问模式。** 每台配对电脑可以是 `auto`（它开的会话直接开始）或 `confirm`（先由你批准）：`hmesh peers access <peer> confirm`。
 - **key 不离开本机。** 模型 key 不会离开 Agent 所在的电脑，保存后不再显示；HarnessMesh 不读 Agent 自己的凭据文件。
 

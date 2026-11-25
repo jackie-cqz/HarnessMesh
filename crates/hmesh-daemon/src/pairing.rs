@@ -13,6 +13,8 @@ const GRACE_SECONDS: i64 = 60;
 const LATE_CHECK_EVERY: Duration = Duration::from_secs(60);
 /// Give up on a computer that cannot be reached for this long.
 const GIVE_UP_SECONDS: i64 = 24 * 60 * 60;
+/// How often to retry telling paired computers this one's card.
+const ANNOUNCE_EVERY: Duration = Duration::from_secs(300);
 /// Status questions per minute; counted apart from new pairing handshakes.
 const STATUS_PER_MINUTE: usize = 600;
 
@@ -34,6 +36,71 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/hmesh/v1/pair/requests/{id}", get(status))
         .route("/local/pairs/decline", post(decline))
+        .route("/hmesh/v1/peers/card", post(peer_card))
+}
+
+/// A paired computer tells this one its new card: it moved to another
+/// address (switched between "only MCP" and "full", or a new port) or was
+/// renamed. Only its own card, with the same identity and key, is accepted.
+async fn peer_card(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Json(card): Json<NodeCard>,
+) -> ApiResult<Value> {
+    let actor = s.actor(&headers, &c)?;
+    let fingerprint = c.fingerprint.as_deref().unwrap_or_default();
+    if actor.owner || card.node_id != actor.node_id || card.fingerprint != fingerprint {
+        return Err(ApiError(MeshError::new(
+            ErrorCode::PermissionDenied,
+            "a computer may only update its own card",
+        )));
+    }
+    validate_card(&card).map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+    Ok(Json(json!({"updated": s.store.update_peer_card(&card)?})))
+}
+
+/// Tell every paired computer this one's current card, now and every few
+/// minutes until each has it. Computers that are off, or too old to take it,
+/// are tried again later; nothing waits on this.
+pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
+    let mut told = std::collections::HashSet::new();
+    loop {
+        if let Ok(peers) = state.store.peers() {
+            for peer in peers {
+                if peer.status != "trusted"
+                    || told.contains(&peer.card.node_id)
+                    || !state.reaches(&peer)
+                {
+                    continue;
+                }
+                if peer_told(&state, &peer).await {
+                    told.insert(peer.card.node_id);
+                }
+            }
+        }
+        tokio::select! {
+            changed = stop.changed() => if changed.is_err() || *stop.borrow() { return },
+            _ = tokio::time::sleep(ANNOUNCE_EVERY) => {}
+        }
+    }
+}
+async fn peer_told(state: &AppState, peer: &Peer) -> bool {
+    let Ok(client) = Client::new(
+        &state.instance,
+        &peer.card.endpoint,
+        &peer.card.fingerprint,
+        false,
+        false,
+    ) else {
+        return false;
+    };
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        client.post::<_, Value>("/hmesh/v1/peers/card", &state.instance.card),
+    )
+    .await
+    .is_ok_and(|r| r.is_ok())
 }
 
 /// Anonymous like the rest of the handshake, because the asking computer is
