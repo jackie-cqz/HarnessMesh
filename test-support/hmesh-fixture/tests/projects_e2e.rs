@@ -601,6 +601,12 @@ async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
         "fixture",
         &["--state-dir", state.to_str().unwrap()],
     );
+    let worker_b = register(
+        &b,
+        &root.path().join("b/worker"),
+        "worker",
+        &["--state-dir", state.to_str().unwrap()],
+    );
     let site = real(&root.path().join("b/site"));
     let private = real(&root.path().join("b/private"));
     let daemon_a = Daemon::start(&a.dir);
@@ -698,6 +704,20 @@ async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
         assert!(refused.message.contains(reason), "{body}: {refused:?}");
     }
     assert_eq!(sessions_on_b().await, before);
+    // A chain node-a started (its session on node-b calling another agent
+    // there) is held to the same rule: shared projects only.
+    let child = |project: &str| json!({"agent_id":worker_b,"parent_session_id":opened.session_id,"project_id":project,"message":"fixture:echo child"});
+    let refused = owner_b
+        .post::<_, SessionRecord>("/local/sessions", &child(&kept.project_id))
+        .await
+        .unwrap_err();
+    assert!(refused.message.contains("not shared"), "{refused:?}");
+    let allowed: SessionRecord = owner_b
+        .post("/local/sessions", &child(&shared.project_id))
+        .await
+        .unwrap();
+    assert_eq!(allowed.cwd.as_deref(), Some(site.as_path()));
+    idle_after(&owner_b, allowed.session_id, 1).await;
     // The agent's own folder needs no sharing, and a request without a
     // project (as older computers send it) works as before.
     let own: SessionRecord = owner_a
@@ -750,6 +770,16 @@ async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
         .post::<_, SessionRecord>(
             &format!("/local/sessions/{}/prompt", opened.session_id),
             &json!({"message":"fixture:cwd"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(refused.message.contains("no longer shared"), "{refused:?}");
+    // Nor can node-a start the agent there another way, e.g. to read its
+    // commands.
+    let refused = owner_a
+        .post::<_, Value>(
+            &format!("/local/sessions/{}/commands", opened.session_id),
+            &json!({}),
         )
         .await
         .unwrap_err();

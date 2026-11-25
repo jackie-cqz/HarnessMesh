@@ -523,6 +523,7 @@ impl Live {
 /// Start (or reuse) the agent process for a session and open or reload the
 /// agent-side session, then apply the session's settings.
 async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result<Arc<Live>> {
+    check_place(s, record)?;
     let (card, config) = s.store.agent(record.agent_id)?;
     let service = service::load(&s.instance.dir, record.agent_id)
         .map_err(|e| MeshError::new(ErrorCode::Internal, e.to_string()))?;
@@ -671,7 +672,14 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         }
     };
     let (agent_session, result, fresh, note) = match started {
-        Ok(started) => started,
+        Ok(started) => {
+            // The replay is recorded; a later start must not record it again,
+            // even if applying settings fails below.
+            if record.history_pending && !started.2 {
+                update_record(s, record.session_id, |r| r.history_pending = false)?;
+            }
+            started
+        }
         Err(mut error) => {
             // Native DSH validates the persisted route during session/resume,
             // before ACP permits a model change. Its native profile may no
@@ -892,15 +900,7 @@ fn begin_checked_turn(
                 "the computer that started this session is no longer paired",
             ));
         }
-        if record.origin.root_node_id != s.instance.card.node_id
-            && let Some(cwd) = &record.cwd
-            && !projects::still_shared(s, cwd)
-        {
-            return Err(MeshError::new(
-                ErrorCode::PermissionDenied,
-                "this project is no longer shared with other computers",
-            ));
-        }
+        check_place(s, &record)?;
         if let Some(name) = &command {
             commands::require_advertised(s.sessions.live(id).as_deref(), name)?;
         }
@@ -1313,6 +1313,21 @@ fn running_children(s: &AppState, parent: Uuid) -> usize {
         + remote.iter().filter(|(_, r)| child_of(r)).count()
 }
 
+/// A session a paired computer started may only run in a project that is
+/// still shared. Checked before every turn and every agent start.
+fn check_place(s: &AppState, record: &SessionRecord) -> hmesh_core::Result<()> {
+    if record.origin.root_node_id != s.instance.card.node_id
+        && let Some(cwd) = &record.cwd
+        && !projects::still_shared(s, cwd)
+    {
+        return Err(MeshError::new(
+            ErrorCode::PermissionDenied,
+            "this project is no longer shared with other computers",
+        ));
+    }
+    Ok(())
+}
+
 /// Projects this computer's agents can work in when asked: every project
 /// that is not hidden.
 pub(crate) fn usable_projects(
@@ -1358,6 +1373,17 @@ fn open_here(
     if let Some(message) = &message {
         validate_prompt(message)?;
     }
+    // Checking for an existing continuation and creating one happen under
+    // the turn lock, so two quick requests continue the session once.
+    let continuing = match &place.resume {
+        Some(_) => Some(
+            s.sessions
+                .starting
+                .lock()
+                .map_err(|_| MeshError::new(ErrorCode::Internal, "session lock poisoned"))?,
+        ),
+        None => None,
+    };
     if let Some(resume) = &place.resume {
         if message.is_some() {
             return Err(MeshError::input(
@@ -1445,6 +1471,7 @@ fn open_here(
         }
     }
     s.store.create_session(&record)?;
+    drop(continuing);
     let opened_by = match (&record.origin.kind, &record.origin.label) {
         (_, Some(label)) => format!("opened by {label}"),
         (OriginKind::Human, None) if record.origin.node_id == s.instance.card.node_id => {

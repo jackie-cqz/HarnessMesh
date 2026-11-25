@@ -179,6 +179,7 @@ async fn prepare(s: &AppState, id: Uuid) -> hmesh_core::Result<()> {
                 "the computer that started this session is no longer paired",
             ));
         }
+        super::check_place(s, &record)?;
         if !s
             .sessions
             .configuring

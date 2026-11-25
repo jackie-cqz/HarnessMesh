@@ -437,7 +437,10 @@ function heroProjectOptions(target){
   if(target.node.local){
     const list=(proj.list||[]).filter(p=>!p.hidden);if(!list.length)return null;
     const own=list.find(p=>(p.agent_ids||[]).includes(target.agent.agent_id));
-    return {options:list.map(p=>({value:p.project_id,name:p.name,title:p.path})),fallback:own?.project_id??list[0].project_id};
+    // Its own folder may be a hidden project: then it is offered by name.
+    const options=list.map(p=>({value:p.project_id,name:p.name,title:p.path}));
+    if(!own)options.unshift({value:'',name:'Agent 自己的目录'});
+    return {options,fallback:own?.project_id??''};
   }
   // A paired computer's agent: its own folder, or a project that computer shares.
   const shared=target.node.projects||[];if(!shared.length)return null;
