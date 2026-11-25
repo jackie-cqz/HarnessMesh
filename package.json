@@ -1,6 +1,12 @@
 {
   "name": "harnessmesh-regression-tools",
   "private": true,
-  "scripts": {"test:panel": "node scripts/panel-smoke.mjs", "test:development-panel":"node scripts/development-panel-smoke.mjs", "test:delegation-ux":"node scripts/delegation-ux-smoke.mjs", "test:sessions-panel":"node scripts/sessions-panel-smoke.mjs"},
+  "scripts": {
+    "test:panel": "node scripts/panel-smoke.mjs",
+    "test:development-panel": "node scripts/development-panel-smoke.mjs",
+    "test:delegation-ux": "node scripts/delegation-ux-smoke.mjs",
+    "test:project-work": "node scripts/project-work-smoke.mjs",
+    "test:sessions-panel": "node scripts/sessions-panel-smoke.mjs"
+  },
   "devDependencies": {"playwright": "1.62.1"}
 }

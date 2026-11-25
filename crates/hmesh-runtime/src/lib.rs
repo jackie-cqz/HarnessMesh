@@ -3,6 +3,7 @@ pub mod acp_conn;
 mod prepare;
 pub use prepare::inspect_references;
 pub use prepare::{agent_command, apply_env, run_secrets};
+pub mod git_version;
 pub mod process_tree;
 pub mod service;
 pub mod verification;
@@ -221,6 +222,7 @@ async fn execute(
     }
     // Workspace preparation may take time; recheck the current grant immediately before spawning.
     authorize(task)?;
+    workspace::enforce_prepared(store, task, &config).map_err(failure)?;
     prepared
         .command
         .stdin(Stdio::piped())
@@ -437,7 +439,8 @@ async fn execute(
     }
     match result {
         Ok(()) => {
-            workspace::finish(store, task, &dir).map_err(failure)?;
+            workspace::finish_with_secrets(store, task, &dir, &prepared.secrets)
+                .map_err(failure)?;
             let entries = verification::capture(&config);
             for entry in &entries {
                 if let Some(bytes) = &entry.bytes {

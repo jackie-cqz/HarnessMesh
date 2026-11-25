@@ -1,0 +1,16 @@
+.inbox-filters{display:flex;flex-wrap:wrap;margin:12px 0 18px;gap:3px}
+.inbox-list{display:grid;gap:10px}
+.inbox-item{display:flex;gap:20px;justify-content:space-between;align-items:center;border:1px solid var(--line);border-radius:6px;background:var(--surface,#fff);padding:18px 20px;min-width:0}
+.inbox-item-main{min-width:0;flex:1}
+.inbox-item-heading{display:flex;align-items:center;flex-wrap:wrap;gap:9px}
+.inbox-kind{font-size:10px;letter-spacing:.06em;color:var(--muted);border:1px solid var(--line);padding:2px 5px;border-radius:3px}
+.inbox-status{font-size:12px;font-weight:600}
+.inbox-title{font-size:13px;margin:10px 0 6px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}
+.inbox-location,.inbox-observed{color:var(--muted);font-size:11px;margin:4px 0;overflow-wrap:anywhere}
+.inbox-item-actions{display:flex;align-items:flex-end;flex-direction:column;gap:8px;flex-shrink:0}
+.inbox-connectivity{border:1px solid #d9b77b;background:#fff9eb;padding:15px 18px;margin:0 0 16px;border-radius:6px;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.inbox-connectivity h3{font-size:13px;margin:0 0 8px}
+.inbox-connectivity p{margin:4px 0}
+.inbox-connection-note{font-size:11px;color:#815d20;line-height:1.6}
+.inbox-item[data-category=approval],.inbox-item[data-category=permission]{border-left:3px solid var(--green,#456b58)}
+@media(max-width:700px){.inbox-item{align-items:stretch;flex-direction:column;padding:14px;gap:12px}.inbox-item-actions{align-items:flex-start;flex-direction:row;flex-wrap:wrap}.inbox-filters button{padding:7px 9px}.inbox-item-heading{gap:7px}.inbox-connectivity{padding:13px}.inbox-item .button{max-width:100%;white-space:normal;text-align:left}}

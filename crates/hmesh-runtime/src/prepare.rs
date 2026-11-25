@@ -14,7 +14,7 @@ pub struct Prepared {
     /// Drives the ACP turn: initialize, session/new, the prompt, and answers
     /// to the agent's permission requests.
     pub driver: AcpTaskDriver,
-    secrets: Vec<String>,
+    pub(super) secrets: Vec<String>,
     pending_text: String,
 }
 impl Prepared {

@@ -17,6 +17,8 @@ pub struct Report {
     pub project_id: String,
     pub requires_approval: bool,
     pub configuration_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_version: Option<hmesh_runtime::git_version::GitInspection>,
     pub checks: Vec<Check>,
     pub observed_at: i64,
 }
@@ -26,6 +28,17 @@ pub fn routes() -> Router<AppState> {
         .route("/local/tasks/{id}/preflight", get(owner_existing))
         .route("/hmesh/v1/tasks/preflight", post(incoming))
         .route("/hmesh/v1/tasks/{id}/preflight", get(peer_existing))
+        .route("/local/agents/{id}/git", get(owner_git))
+}
+async fn owner_git(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<hmesh_runtime::git_version::GitInspection> {
+    s.owner(&headers, &c)?;
+    let (_, config) = s.store.agent(id)?;
+    Ok(Json(hmesh_runtime::git_version::inspect(&config, None)))
 }
 fn check(code: &str, passed: bool) -> Check {
     Check {
@@ -49,6 +62,18 @@ pub(super) fn enforce_artifacts(s: &AppState, task: &TaskSubmit) -> Result<()> {
     }
     Ok(())
 }
+pub(super) fn enforce_version(s: &AppState, task: &TaskSubmit) -> Result<()> {
+    if let Some(version) = &task.git_version {
+        let (_, config) = s.store.agent(task.target_agent_id)?;
+        hmesh_runtime::git_version::enforce(&config, version).map_err(|_| {
+            MeshError::new(
+                ErrorCode::PermissionDenied,
+                "execution repository does not meet the task Git version restriction",
+            )
+        })?;
+    }
+    Ok(())
+}
 pub(super) fn origin_actor(s: &AppState, task: &TaskRecord) -> Actor {
     Actor {
         node_id: task.origin_node_id,
@@ -59,6 +84,21 @@ pub(super) fn inspect_task(
     s: &AppState,
     actor: Actor,
     task: &TaskSubmit,
+) -> std::result::Result<Report, ApiError> {
+    inspect_task_with_git(s, actor, task, false)
+}
+
+#[derive(Deserialize)]
+struct InspectQuery {
+    #[serde(default)]
+    observe_git: bool,
+}
+
+fn inspect_task_with_git(
+    s: &AppState,
+    actor: Actor,
+    task: &TaskSubmit,
+    observe_git: bool,
 ) -> std::result::Result<Report, ApiError> {
     task.validate()?;
     // Pairing is the trust boundary; the peer access mode selects auto/confirm.
@@ -71,6 +111,7 @@ pub(super) fn inspect_task(
         )
         .into());
     }
+    super::validate_source_session(s, actor, task)?;
     let (agent, config) = s.store.agent(task.target_agent_id)?;
     let mut checks = vec![
         check(
@@ -89,8 +130,10 @@ pub(super) fn inspect_task(
         ),
         check(
             "AGENT_NOT_VERIFIED",
-            agent.probe.managed_run == "passed"
-                && matches!(agent.availability.as_str(), "idle" | "busy"),
+            !matches!(agent.availability.as_str(), "disabled" | "retired")
+                && (actor.owner
+                    || (agent.probe.managed_run == "passed"
+                        && matches!(agent.availability.as_str(), "idle" | "busy"))),
         ),
         check(
             "REFERENCES_INVALID",
@@ -112,6 +155,17 @@ pub(super) fn inspect_task(
             field: Some(path.to_string_lossy().into_owned()),
         });
     }
+    // Older peers deserialize a strict response. Preserve its shape unless they
+    // ask to observe Git or explicitly send a version restriction.
+    let git_version = (observe_git || task.git_version.is_some())
+        .then(|| hmesh_runtime::git_version::inspect(&config, task.git_version.as_ref()));
+    if let (Some(inspection), Some(version)) = (&git_version, &task.git_version) {
+        checks.extend(
+            hmesh_runtime::git_version::version_checks(&config, inspection, version)
+                .into_iter()
+                .map(|(code, passed)| check(code, passed)),
+        );
+    }
     Ok(Report {
         ready: checks.iter().all(|c| c.passed),
         agent_id: agent.agent_id,
@@ -120,6 +174,7 @@ pub(super) fn inspect_task(
         configuration_sha256: Some(hmesh_security::sha256_hex(
             &serde_json::to_vec(&config).map_err(internal)?,
         )),
+        git_version,
         checks,
         observed_at: now(),
     })
@@ -136,6 +191,7 @@ fn unavailable(task: &TaskSubmit, error: MeshError) -> Report {
         project_id: task.project_id.clone(),
         requires_approval: true,
         configuration_sha256: None,
+        git_version: None,
         checks: vec![check(code, false)],
         observed_at: now(),
     }
@@ -144,18 +200,20 @@ async fn outgoing(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
+    Query(query): Query<InspectQuery>,
     Json(body): Json<RemoteTask>,
 ) -> ApiResult<Report> {
     s.owner(&headers, &c)?;
     body.task.validate()?;
     if body.peer_id == s.instance.card.node_id {
-        return inspect_task(
+        return inspect_task_with_git(
             &s,
             Actor {
                 node_id: s.instance.card.node_id,
                 owner: true,
             },
             &body.task,
+            query.observe_git,
         )
         .map(Json);
     }
@@ -173,7 +231,12 @@ async fn outgoing(
     .map_err(internal)?;
     let mut envelope = Envelope::new(s.instance.card.node_id, "task.preflight", body.task.clone());
     envelope.request_id = body.request_id;
-    let result = client.post("/hmesh/v1/tasks/preflight", &envelope).await;
+    let path = if query.observe_git {
+        "/hmesh/v1/tasks/preflight?observe_git=true"
+    } else {
+        "/hmesh/v1/tasks/preflight"
+    };
+    let result = client.post(path, &envelope).await;
     Ok(Json(
         result.unwrap_or_else(|error| unavailable(&body.task, error)),
     ))
@@ -182,11 +245,12 @@ async fn incoming(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
+    Query(query): Query<InspectQuery>,
     Json(envelope): Json<Envelope<TaskSubmit>>,
 ) -> ApiResult<Report> {
     let actor = s.actor(&headers, &c)?;
     envelope.validate(actor.node_id, "task.preflight")?;
-    inspect_task(&s, actor, &envelope.payload).map(Json)
+    inspect_task_with_git(&s, actor, &envelope.payload, query.observe_git).map(Json)
 }
 async fn owner_existing(
     State(s): State<AppState>,
@@ -243,6 +307,43 @@ mod tests {
         let mut task = TaskSubmit::new(id, "fixture", "synthetic preflight; do not execute");
         task.expected_artifacts = Some(vec!["out/health.json".into()]);
         (root, state, task)
+    }
+
+    #[tokio::test]
+    async fn originating_peer_can_read_summary_but_not_a_flagged_workspace_patch() {
+        let (root, state, mut request) = fixture();
+        let peer = Instance::init(&root.path().join("peer"), NodeConfig::default()).unwrap();
+        state.store.trust_peer(&peer.card).unwrap();
+        request.source_session_id = Some(Uuid::new_v4());
+        let id = request.task_id;
+        let envelope = Envelope::new(peer.card.node_id, "task.submit", request);
+        state
+            .store
+            .admit(state.instance.card.node_id, &envelope, false, 20)
+            .unwrap();
+        let workspace =
+            json!({"state":"review","patch":"synthetic patch","patch_contains_credential":true});
+        state.store.workspace_put(id, &workspace).unwrap();
+        let connection = ConnectionIdentity {
+            address: "127.0.0.1:1234".parse().unwrap(),
+            fingerprint: Some(peer.card.fingerprint.clone()),
+        };
+        let read = |diff| {
+            peer_task_workspace(
+                State(state.clone()),
+                Extension(connection.clone()),
+                HeaderMap::new(),
+                Path(id),
+                Query(WorkspaceQuery { diff, offset: 0 }),
+            )
+        };
+        let summary = read(false).await.unwrap().0;
+        assert_eq!(summary["state"], "review");
+        assert!(summary.get("patch").is_none());
+        assert_eq!(
+            read(true).await.unwrap_err().0.code,
+            ErrorCode::PermissionDenied
+        );
     }
 
     #[test]
@@ -378,5 +479,127 @@ mod tests {
                     .iter()
                     .any(|c| c.code == "TOOLS_MISMATCH" && !c.passed)
         );
+    }
+
+    #[tokio::test]
+    async fn git_observations_are_optional_but_restrictions_block_admission_approval_and_execution()
+    {
+        let (root, state, mut task) = fixture();
+        task.expected_artifacts = None;
+        let owner = Actor {
+            node_id: state.instance.card.node_id,
+            owner: true,
+        };
+        let report = inspect_task(&state, owner, &task).unwrap();
+        assert!(report.ready);
+        assert!(
+            serde_json::to_value(report)
+                .unwrap()
+                .get("git_version")
+                .is_none()
+        );
+        let observed = inspect_task_with_git(&state, owner, &task, true).unwrap();
+        assert!(observed.ready && !observed.git_version.unwrap().available);
+        let project = root.path().join("git-project");
+        std::fs::create_dir(&project).unwrap();
+        let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .filter(|p| p.is_absolute())
+            .map(|p| p.join(if cfg!(windows) { "git.exe" } else { "git" }))
+            .find(|p| p.is_file())
+            .unwrap();
+        let git = |args: &[&str]| {
+            let result = std::process::Command::new(&executable)
+                .arg("-C")
+                .arg(&project)
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(result.status.success());
+            String::from_utf8(result.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-b", "main"]);
+        git(&["commit", "--allow-empty", "-m", "first"]);
+        let first = git(&["rev-parse", "HEAD"]);
+        let (mut card, mut config) = state.store.agent(task.target_agent_id).unwrap();
+        card.agent_id = Uuid::new_v4();
+        card.project_ids = vec!["git-fixture".into()];
+        card.name = "git-fixture".into();
+        config.agent.name = "git-fixture".into();
+        config.agent.project_id = "git-fixture".into();
+        config.project.root = project.clone();
+        config.project.git_executable = Some(executable.clone());
+        state.store.register_agent(&card, &config).unwrap();
+        task.target_agent_id = card.agent_id;
+        task.project_id = "git-fixture".into();
+        task.git_version = Some(GitVersionRequirement::Current {
+            expected_commit: Some("0".repeat(40)),
+            require_clean: false,
+        });
+        let report = inspect_task(&state, owner, &task).unwrap();
+        assert!(!report.ready);
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|c| c.code == "GIT_COMMIT_MISMATCH" && !c.passed)
+        );
+        assert_eq!(report.git_version.unwrap().current.unwrap().commit, first);
+        assert!(
+            admit_task(
+                &state,
+                owner,
+                Envelope::new(owner.node_id, "task.submit", task.clone())
+            )
+            .is_err()
+        );
+        assert!(state.store.tasks().unwrap().is_empty());
+        task.git_version = Some(GitVersionRequirement::Current {
+            expected_commit: Some(first),
+            require_clean: false,
+        });
+        task.requires_approval = true;
+        assert!(inspect_task(&state, owner, &task).unwrap().ready);
+        let admitted = admit_task(
+            &state,
+            owner,
+            Envelope::new(owner.node_id, "task.submit", task),
+        )
+        .unwrap();
+        git(&["commit", "--allow-empty", "-m", "changed before approval"]);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", state.instance.owner_token())
+                .parse()
+                .unwrap(),
+        );
+        let connection = ConnectionIdentity {
+            address: "127.0.0.1:1234".parse().unwrap(),
+            fingerprint: Some(state.instance.card.fingerprint.clone()),
+        };
+        assert!(
+            approve_task(
+                State(state.clone()),
+                Extension(connection),
+                headers,
+                Path(admitted.task_id)
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            state.store.task(admitted.task_id).unwrap().status,
+            TaskStatus::PendingApproval
+        );
+        assert!(enforce_version(&state, &admitted.request).is_err());
+        assert!(state.store.workspace(admitted.task_id).unwrap().is_none());
     }
 }

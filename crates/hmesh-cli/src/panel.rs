@@ -7,7 +7,10 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
-use hmesh_core::{MeshError, NodeConfig, RunLimits, TaskSubmit, now};
+use hmesh_core::{
+    GitVersionRequirement, GitVersionState, MeshError, NodeConfig, RunLimits,
+    TaskAcceptanceContract, TaskSubmit, now,
+};
 use hmesh_daemon::{OnboardingRequest, RemoteTask, VerificationRequest};
 use hmesh_security::Instance;
 use hmesh_transport::Client;
@@ -31,6 +34,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "development-workflows-v1",
     "reliability-v2",
     "acp-sessions-v1",
+    "project-collaboration-v1",
     "agent-settings-v1",
     "agent-service-test-v1",
     "agent-own-login-v1",
@@ -188,6 +192,10 @@ pub async fn run(
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/preflight", post(preflight_task))
         .route("/api/tasks/{id}", get(task))
+        .route("/api/tasks/{id}/observation", get(task_observation))
+        .route("/api/tasks/{id}/result", get(task_reply))
+        .route("/api/discovery", get(project_discovery))
+        .route("/api/agents/{id}/git", get(agent_git))
         .route("/api/tasks/{id}/preflight", get(existing_task_preflight))
         .route("/api/tasks/{id}/verify", post(verify_artifact))
         .route("/api/requests/{id}/recover", post(recover))
@@ -205,6 +213,33 @@ pub async fn run(
                 )
             }),
         )
+        .route(
+            "/assets/project-work.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/project-work.js"),
+                )
+            }),
+        )
+        .route(
+            "/assets/inbox.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/inbox.js"),
+                )
+            }),
+        )
+        .route(
+            "/assets/inbox.css",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+                    include_str!("../../../web/panel/inbox.css"),
+                )
+            }),
+        )
         .route("/api/agents/detect", get(detect_agents))
         .route(
             "/api/agents/{id}/service",
@@ -213,6 +248,7 @@ pub async fn run(
         .route("/api/agents/{id}/service/test", post(test_agent_service))
         .route("/api/agents/{id}/service/check", post(check_agent_service))
         .route("/api/sessions", get(sessions).post(open_session))
+        .route("/api/sessions/summary", get(session_summary))
         .route("/api/sessions/{id}/events", get(session_events))
         .route("/api/sessions/{id}/prompt", post(session_prompt))
         .route("/api/sessions/{id}/config", post(session_config))
@@ -311,6 +347,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
     let task_preflight = running && features.contains(&"task-preflight-v1");
     let development_workflows = running && features.contains(&"development-workflows-v1");
     let sessions = running && features.contains(&"acp-sessions-v1");
+    let project_collaboration = running && features.contains(&"project-collaboration-v1");
     let mode = if !task_workflow || !task_preflight {
         "read_only"
     } else if development_workflows {
@@ -342,7 +379,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -516,6 +553,49 @@ async fn task(State(s): State<Panel>, Path(id): Path<Uuid>) -> Json<Value> {
         json!({"observed_at":now(),"task":result(task),"verification":result(verification),"artifacts":result(artifacts),"workspace":result(workspace)}),
     )
 }
+
+async fn task_observation(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
+    let path = format!("/local/tasks/{id}");
+    let task = match s.client.get::<Value>(&path).await {
+        Ok(task) => task,
+        Err(e) => return mutation(Err(e)),
+    };
+    let observed_at = now();
+    let verification = if task["status"] == "SUCCEEDED" {
+        Some(result(
+            s.client.get::<Value>(&format!("{path}/verification")).await,
+        ))
+    } else {
+        None
+    };
+    mutation(Ok(
+        json!({"task":task,"observed_at":observed_at,"verification":verification}),
+    ))
+}
+
+async fn task_reply(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
+    mutation(s.client.get(&format!("/local/tasks/{id}/result")).await)
+}
+
+#[derive(Deserialize)]
+struct DiscoveryQuery {
+    peer_id: Option<Uuid>,
+}
+
+async fn project_discovery(
+    State(s): State<Panel>,
+    Query(query): Query<DiscoveryQuery>,
+) -> Response {
+    let path = match query.peer_id {
+        Some(id) => format!("/local/discovery?peer_id={id}"),
+        None => "/local/discovery".to_owned(),
+    };
+    mutation(s.client.get(&path).await)
+}
+
+async fn agent_git(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
+    mutation(s.client.get(&format!("/local/agents/{id}/git")).await)
+}
 async fn preview_onboarding(
     State(s): State<Panel>,
     Json(body): Json<OnboardingRequest>,
@@ -557,6 +637,14 @@ struct NewTask {
     max_output_bytes: usize,
     #[serde(default)]
     expected_artifacts: Option<Vec<PathBuf>>,
+    #[serde(default)]
+    source_session_id: Option<Uuid>,
+    #[serde(default)]
+    acceptance_contract: Option<TaskAcceptanceContract>,
+    #[serde(default)]
+    git_version: Option<GitVersionRequirement>,
+    #[serde(default)]
+    origin_git: Option<GitVersionState>,
 }
 fn remote_task(body: NewTask) -> Result<RemoteTask, MeshError> {
     let mut task = TaskSubmit::new(body.agent_id, &body.project_id, &body.goal);
@@ -568,6 +656,10 @@ fn remote_task(body: NewTask) -> Result<RemoteTask, MeshError> {
     // An empty composer selection means no artifact contract. Explicit empty
     // contracts remain invalid at the core protocol boundary.
     task.expected_artifacts = body.expected_artifacts.filter(|paths| !paths.is_empty());
+    task.source_session_id = body.source_session_id;
+    task.acceptance_contract = body.acceptance_contract;
+    task.git_version = body.git_version;
+    task.origin_git = body.origin_git;
     task.validate()?;
     Ok(RemoteTask {
         peer_id: body.peer_id,
@@ -592,7 +684,8 @@ fn preflight_view(value: Value) -> Value {
         "ready":value["ready"] == true,"agent_id":value["agent_id"].as_str(),
         "project_id":value["project_id"].as_str(),"requires_approval":value["requires_approval"].as_bool(),
         "configuration_sha256":value["configuration_sha256"].as_str(),"checks":checks,
-        "observed_at":value["observed_at"].as_i64()
+        "observed_at":value["observed_at"].as_i64(),
+        "git_version":value.get("git_version")
     })
 }
 fn not_submitted(status: StatusCode, code: &str) -> Response {
@@ -602,8 +695,14 @@ fn not_submitted(status: StatusCode, code: &str) -> Response {
     )
         .into_response()
 }
+#[derive(Deserialize)]
+struct PreflightOptions {
+    #[serde(default)]
+    observe_git: bool,
+}
 async fn preflight_task(
     State(s): State<Panel>,
+    Query(query): Query<PreflightOptions>,
     body: Result<Json<NewTask>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
@@ -612,9 +711,14 @@ async fn preflight_task(
     let Ok(request) = remote_task(body) else {
         return not_submitted(StatusCode::BAD_REQUEST, "INVALID_TASK_REQUEST");
     };
+    let path = if query.observe_git {
+        "/local/tasks/preflight?observe_git=true"
+    } else {
+        "/local/tasks/preflight"
+    };
     mutation(
         s.client
-            .post::<_, Value>("/local/tasks/preflight", &request)
+            .post::<_, Value>(path, &request)
             .await
             .map(preflight_view),
     )
@@ -727,6 +831,10 @@ async fn sessions(State(s): State<Panel>) -> Json<Value> {
     );
     Json(json!({"observed_at":now(),"sessions":result(sessions),"nodes":result(nodes)}))
 }
+async fn session_summary(State(s): State<Panel>) -> Json<Value> {
+    let sessions = s.client.get::<Value>("/local/sessions").await;
+    Json(json!({"observed_at":now(),"sessions":result(sessions)}))
+}
 /// Session errors carry the daemon's explanation; it is shown as text.
 fn session_reply(value: Result<Value, MeshError>) -> Response {
     match value {
@@ -825,6 +933,8 @@ struct SessionCursor {
     after: u64,
     #[serde(default)]
     wait: u64,
+    #[serde(default)]
+    status_only: bool,
 }
 async fn session_events(
     State(s): State<Panel>,
@@ -834,9 +944,10 @@ async fn session_events(
     session_reply(
         s.client
             .get::<Value>(&format!(
-                "/local/sessions/{id}/events?after={}&wait={}",
+                "/local/sessions/{id}/events?after={}&wait={}&status_only={}",
                 cursor.after,
-                cursor.wait.min(10)
+                cursor.wait.min(10),
+                cursor.status_only
             ))
             .await,
     )

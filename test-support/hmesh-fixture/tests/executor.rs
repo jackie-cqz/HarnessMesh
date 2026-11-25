@@ -558,6 +558,107 @@ async fn execution_authorization_is_rechecked_before_a_queued_process_starts() {
     job.await.expect("join");
 }
 
+#[tokio::test]
+async fn pinned_git_task_runs_fixture_in_detached_workspace_and_captures_its_patch_and_artifact() {
+    let mut f = Fixture::new();
+    let executable = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join(if cfg!(windows) { "git.exe" } else { "git" }))
+        .find(|p| p.is_file())
+        .expect("Git for pinned fixture");
+    let git = |args: &[&str]| {
+        let result = std::process::Command::new(&executable)
+            .arg("-C")
+            .arg(&f.config.project.root)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        String::from_utf8(result.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "-b", "main"]);
+    std::fs::write(f.config.project.root.join("code.txt"), "reviewed\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "reviewed"]);
+    let pinned = git(&["rev-parse", "HEAD"]);
+    std::fs::write(f.config.project.root.join("code.txt"), "executor current\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "executor current"]);
+    let original_head = git(&["rev-parse", "HEAD"]);
+    f.config.project.git_executable = Some(executable.clone());
+    f.store.replace_agent(&f.agent, &f.config).unwrap();
+    // The fixture writes this literal in the patch. Treat it as a synthetic
+    // private service value to exercise the same path as a stored credential.
+    let service = hmesh_runtime::service::AgentService {
+        mode: service::MODE_AGENT_LOGIN.into(),
+        env: [("FIXTURE_PRIVATE".into(), r#""harness":"fixture""#.into())].into(),
+        ..Default::default()
+    };
+    hmesh_runtime::service::save(&f.instance.dir, f.agent.agent_id, Some(&service)).unwrap();
+    let mut request = TaskSubmit::new(f.agent.agent_id, "fixture", "fixture:create");
+    request.git_version = Some(GitVersionRequirement::Pinned {
+        commit: pinned.clone(),
+    });
+    request.expected_artifacts = Some(vec!["out/health.json".into()]);
+    let task = f
+        .store
+        .admit(
+            f.instance.card.node_id,
+            &Envelope::new(f.instance.card.node_id, "task.submit", request),
+            true,
+            20,
+        )
+        .unwrap();
+    assert_eq!(task.status, TaskStatus::PendingApproval);
+    // Approval is persisted separately; the next executor has no in-memory plan.
+    let (stop, job) = f.executor();
+    stop.send(true).unwrap();
+    job.await.unwrap();
+    f.store.approve_pending(task.task_id, 300).unwrap();
+    let (stop, job) = f.executor();
+    let terminal = f.terminal(task.task_id).await;
+    assert_eq!(
+        terminal.status,
+        TaskStatus::Succeeded,
+        "{:?}",
+        terminal.error
+    );
+    let workspace = f.store.workspace(task.task_id).unwrap().unwrap();
+    assert_eq!(workspace["actual_git"]["commit"], pinned);
+    assert_eq!(workspace["state"], "review");
+    assert_eq!(workspace["patch_contains_credential"], true);
+    assert!(
+        workspace["patch"]
+            .as_str()
+            .unwrap()
+            .contains("out/health.json")
+    );
+    let artifacts = f.store.artifact_set(task.task_id).unwrap().unwrap();
+    assert!(
+        artifacts
+            .entries
+            .iter()
+            .any(|entry| entry.name == "out/health.json" && entry.bytes.is_some())
+    );
+    assert!(!f.config.project.root.join("out/health.json").exists());
+    assert_eq!(git(&["rev-parse", "HEAD"]), original_head);
+    assert_eq!(
+        std::fs::read_to_string(f.config.project.root.join("code.txt")).unwrap(),
+        "executor current\n"
+    );
+    assert_eq!(f.store.attempt_count(task.task_id).unwrap(), 1);
+    stop.send(true).unwrap();
+    job.await.unwrap();
+}
+
 #[cfg(windows)]
 struct Daemon(Child);
 #[cfg(windows)]

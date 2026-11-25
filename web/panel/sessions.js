@@ -208,9 +208,15 @@ function renderSettings(box,options,values,disabled,onChange,key){
   box.replaceChildren(...shown.map(o=>settingControl(o,values?.[o.id]??o.current,disabled,onChange)));
 }
 async function changeSetting(id,value){
-  if(!conv.selected||conv.settingBusy)return;conv.settingBusy=true;renderConversation();
-  try{const record=unwrap(await api(`/sessions/${conv.selected}/config`,{method:'POST',body:JSON.stringify({config_id:id,value})}));conv.record={...conv.record,...record};}
-  catch(e){toast(`没有切换：${e.message||e.code}`);$('#composer-settings').dataset.key='';}
+  if(!conv.selected||conv.settingBusy)return;
+  const sessionId=conv.selected,generation=conv.generation;
+  conv.settingBusy=true;renderConversation();
+  try {
+    const record=unwrap(await api(`/sessions/${sessionId}/config`,{method:'POST',body:JSON.stringify({config_id:id,value})}));
+    if(generation===conv.generation&&sessionId===conv.selected)conv.record={...conv.record,...record};
+  } catch(e){
+    if(generation===conv.generation&&sessionId===conv.selected){toast(`没有切换：${e.message||e.code}`);$('#composer-settings').dataset.key='';}
+  }
   finally{conv.settingBusy=false;renderConversation();}
 }
 
@@ -224,9 +230,11 @@ async function follow(generation){
   let failures=0;
   while(generation===conv.generation&&state.view==='sessions'&&!state.stopped&&conv.selected){
     try{
+      const inboxEpoch=typeof inboxObservationToken==='function'?inboxObservationToken():null;
       const page=unwrap(await api(`/sessions/${conv.selected}/events?after=${conv.cursor}&wait=${document.hidden?0:10}`));
       if(generation!==conv.generation)return;
       failures=0;conv.record={...conv.record,...page.session};conv.cursor=page.next;syncListRow(conv.record);
+      if(typeof noteInboxSession==='function')noteInboxSession(conv.record,Date.now()/1000,inboxEpoch);
       if(page.events.length)conv.events.push(...page.events);
       renderConversation();
       if(document.hidden)await new Promise(r=>setTimeout(r,3000));
@@ -253,6 +261,10 @@ function renderHeader(s){
   const crumb=el('div','crumb');crumb.append(el('span','',shortNode(s.node_id)),icon('chevron-right','sm'),el('strong','',s.agent_name));
   if(s.title){crumb.append(icon('chevron-right','sm'),el('span','',s.title));}
   const actions=el('div','chat-actions');actions.append(sessionBadge(s.status));
+  if(hasProjectWork()&&canWrite()&&s.origin?.node_id===localNodeId()&&s.status!=='pending_approval'){
+    actions.append(button('作为任务执行','button secondary',()=>startTaskFromSession(s)));
+  }
+
   if(s.status==='pending_approval'&&!conv.remote&&canWrite())actions.append(button('拒绝','ghost',()=>sessionAction('reject')),button('批准','button',()=>sessionAction('approve')));
   if(s.status!=='closed'&&canWrite())actions.append(button('关闭会话','ghost',async()=>{if(await confirmAction('关闭这个会话？',`${s.agent_name}\n关闭后会停掉它的 Agent 进程，不能再继续对话。`))sessionAction('close');}));
   $('#conversation-header').replaceChildren(crumb,actions);
@@ -263,6 +275,7 @@ function renderConversation(){
   // "New session" is the current page only while no conversation is open.
   $('#new-session').classList.toggle('selected',state.view==='sessions'&&!s);
   renderHeader(s);
+  renderSessionWork();
   if(!s){renderHero();return;}
   $('#conversation-note').hidden=true;
   const stream=$('#conversation-stream'),atBottom=stream.scrollHeight-stream.scrollTop-stream.clientHeight<80;
@@ -334,8 +347,12 @@ function renderConversation(){
   renderSettings(settings,s.config_options,null,locked,changeSetting,JSON.stringify([s.session_id,s.config_options,locked]));
 }
 async function sessionAction(name){
-  try{const record=unwrap(await api(`/sessions/${conv.selected}/${name}`,{method:'POST',body:'{}'}));conv.record={...conv.record,...record};renderConversation();loadSessions();}
-  catch(e){toast(`操作失败：${e.message||e.code}`);}
+  const id=conv.selected,generation=conv.generation;
+  try {
+    const record=unwrap(await api(`/sessions/${id}/${name}`,{method:'POST',body:'{}'}));
+    if(generation===conv.generation&&id===conv.selected){conv.record={...conv.record,...record};renderConversation();}
+    loadSessions();
+  } catch(e){toast(`操作失败：${e.message||e.code}`);}
 }
 async function answerPermission(key,allow){
   try{await api(`/sessions/${conv.selected}/permissions/${encodeURIComponent(key)}`,{method:'POST',body:JSON.stringify({allow})});}
@@ -345,9 +362,16 @@ async function sendMessage(event){
   event.preventDefault();
   const s=conv.record;if(!s||conv.busy)return;
   if(s.status==='running'||s.status==='waiting_permission')return sessionAction('cancel');
-  const input=$('#composer-input'),message=input.value.trim();if(!message)return;
+  const input=$('#composer-input'),draft=input.value,message=draft.trim();if(!message)return;
+  const id=conv.selected,generation=conv.generation;
   conv.busy=true;renderConversation();
-  try{const record=unwrap(await api(`/sessions/${conv.selected}/prompt`,{method:'POST',body:JSON.stringify({message})}));input.value='';conv.record={...conv.record,...record};}
+  try {
+    const record=unwrap(await api(`/sessions/${id}/prompt`,{method:'POST',body:JSON.stringify({message})}));
+    if(generation===conv.generation&&id===conv.selected){
+      if(input.value===draft)input.value='';
+      conv.record={...conv.record,...record};
+    }
+  }
   catch(e){toast(`发送失败：${e.message||e.code}`);}
   finally{conv.busy=false;renderConversation();loadSessions();}
 }

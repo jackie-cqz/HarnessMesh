@@ -1,6 +1,7 @@
 //! Owner and peer RPC boundaries. Every request rechecks current trust/policy.
 mod acceptance;
 mod development;
+mod discovery;
 mod integration;
 mod onboarding;
 mod preflight;
@@ -239,6 +240,8 @@ impl AppState {
         }
     }
     fn authorize_execution(&self, task: &TaskRecord) -> Result<()> {
+        // Rechecked every 100 ms during ACP turns: keep this process-free.
+        // Git contracts are enforced by workspace preparation and before spawn.
         preflight::enforce_artifacts(self, &task.request)?;
         if let Some(expected) = &task.request.expected_tools {
             let (_, config) = self.store.agent(task.agent_id)?;
@@ -287,6 +290,7 @@ pub fn router(state: AppState) -> Router {
         .merge(services::routes())
         .merge(integration::routes())
         .merge(development::routes())
+        .merge(discovery::routes())
         .merge(preflight::routes())
         .merge(sessions::routes())
         .route("/hmesh/v1/hello", get(hello))
@@ -301,6 +305,7 @@ pub fn router(state: AppState) -> Router {
         .route("/hmesh/v1/tasks/{id}/cancel", post(cancel_task))
         .route("/hmesh/v1/tasks/{id}/verification", get(task_verifications))
         .route("/hmesh/v1/tasks/{id}/artifacts", get(peer_task_artifacts))
+        .route("/hmesh/v1/tasks/{id}/workspace", get(peer_task_workspace))
         .route("/hmesh/v1/tasks/{id}/verify", post(peer_verify_task))
         .route("/local/status", get(status))
         .route("/local/queue", get(queue_status))
@@ -541,7 +546,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1"],"schema_version":9}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1"],"schema_version":9}),
     ))
 }
 async fn stop(
@@ -1058,6 +1063,27 @@ async fn submit_task(
     let actor = s.actor(&headers, &c)?;
     Ok(Json(admit_task(&s, actor, envelope)?))
 }
+fn validate_source_session(
+    s: &AppState,
+    actor: Actor,
+    task: &TaskSubmit,
+) -> std::result::Result<(), ApiError> {
+    if let Some(id) = task.source_session_id {
+        let session = s.store.session(id)?;
+        if session.origin.node_id != actor.node_id
+            || session.agent_id != task.target_agent_id
+            || session.project_id != task.project_id
+        {
+            return Err(MeshError::new(
+                ErrorCode::PermissionDenied,
+                "linked task must use its source session's origin, Agent and project",
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn admit_task(
     s: &AppState,
     actor: Actor,
@@ -1080,8 +1106,10 @@ fn admit_task(
             "sender is not a currently paired peer",
         )));
     }
+    validate_source_session(s, actor, &envelope.payload)?;
     let (agent, config) = s.store.agent(envelope.payload.target_agent_id)?;
     preflight::enforce_artifacts(s, &envelope.payload)?;
+    preflight::enforce_version(s, &envelope.payload)?;
     if let Some(expected) = &envelope.payload.expected_tools {
         let mut actual = config.project.allowed_tools.clone();
         let mut expected = expected.clone();
@@ -1475,7 +1503,8 @@ async fn approve_task(
     let pending = s.store.task(id)?;
     if pending.status == TaskStatus::PendingApproval
         && (pending.request.expected_artifacts.is_some()
-            || pending.request.expected_tools.is_some())
+            || pending.request.expected_tools.is_some()
+            || pending.request.git_version.is_some())
     {
         let report =
             preflight::inspect_task(&s, preflight::origin_actor(&s, &pending), &pending.request)?;
@@ -1661,7 +1690,79 @@ async fn task_workspace(
     Query(query): Query<WorkspaceQuery>,
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
-    let mut value = s.store.workspace(id)?.unwrap_or(json!({"state":"shared"}));
+    if let Some(client) = outbound_client(&s, id)? {
+        return Ok(Json(
+            client
+                .get(&format!(
+                    "/hmesh/v1/tasks/{id}/workspace?diff={}&offset={}",
+                    query.diff, query.offset
+                ))
+                .await?,
+        ));
+    }
+    Ok(Json(workspace_page(s.store.workspace(id)?, query)?))
+}
+
+async fn peer_task_workspace(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(query): Query<WorkspaceQuery>,
+) -> ApiResult<Value> {
+    let task = s.task_access(s.actor(&headers, &c)?, id)?;
+    // Share only requested collaboration results, with the original sender.
+    if task.request.source_session_id.is_none() && task.request.git_version.is_none() {
+        return Err(MeshError::new(
+            ErrorCode::PermissionDenied,
+            "this task has no collaboration workspace contract",
+        )
+        .into());
+    }
+    let workspace = s.store.workspace(id)?;
+    if query.diff
+        && let Some(record) = &workspace
+        && let Some(patch) = record["patch"].as_str()
+    {
+        let (_, config) = s.store.agent(task.agent_id)?;
+        if record["patch_contains_credential"] == true
+            || patch.contains(s.instance.owner_token())
+            || hmesh_runtime::run_secrets(&config)
+                .iter()
+                .any(|secret| patch.contains(secret))
+        {
+            return Err(MeshError::new(
+                ErrorCode::PermissionDenied,
+                "the diff contains a local credential reference; review it on the execution node",
+            )
+            .into());
+        }
+    }
+    let mut value = workspace_page(workspace, query)?;
+    if let Some(fields) = value.as_object_mut() {
+        fields.retain(|name, _| {
+            matches!(
+                name.as_str(),
+                "state"
+                    | "base_commit"
+                    | "actual_git"
+                    | "requested_git_version"
+                    | "patch"
+                    | "patch_offset"
+                    | "patch_next_offset"
+                    | "patch_size_bytes"
+                    | "patch_sha256"
+            )
+        });
+    }
+    Ok(Json(value))
+}
+
+fn workspace_page(
+    value: Option<Value>,
+    query: WorkspaceQuery,
+) -> std::result::Result<Value, ApiError> {
+    let mut value = value.unwrap_or(json!({"state":"shared"}));
     if let Some(patch) = value.get("patch").and_then(Value::as_str) {
         let length = patch.len();
         if query.offset > length || !patch.is_char_boundary(query.offset) {
@@ -1685,7 +1786,7 @@ async fn task_workspace(
         }
         value["patch_size_bytes"] = json!(length);
     }
-    Ok(Json(value))
+    Ok(value)
 }
 fn artifact_names(s: &AppState, actor: Actor, id: Uuid) -> std::result::Result<Value, ApiError> {
     let task = artifact_task(s, actor, id)?;
@@ -1752,6 +1853,14 @@ fn verify_task_as(
     body: VerificationRequest,
 ) -> std::result::Result<Value, ApiError> {
     let task = artifact_task(s, actor, id)?;
+    if let Some(contract) = &task.request.acceptance_contract
+        && contract.artifact == body.artifact
+        && contract.expected != body.expected
+    {
+        return Err(
+            MeshError::input("expected JSON differs from this task's acceptance contract").into(),
+        );
+    }
     if body.artifact.as_os_str().is_empty()
         || body
             .artifact

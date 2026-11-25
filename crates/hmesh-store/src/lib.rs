@@ -549,9 +549,9 @@ impl Store {
     }
     pub fn outbound_tasks(&self) -> Result<Vec<Value>> {
         self.read(|c| {
-            let mut q = c.prepare("SELECT task_id,peer_id,last_record_json,request_id,last_observed_at FROM outbound_tasks ORDER BY task_id").map_err(internal)?;
-            q.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<i64>>(4)?))).map_err(internal)?
-                .map(|r| { let (id,peer,record,request,observed) = r.map_err(internal)?; Ok(json!({"task_id":id,"peer_id":peer,"request_id":request,"last_observed_at":observed,"direction":"outbound","last_observed":record.map(|r| decode::<Value>(&r)).transpose()?})) }).collect()
+            let mut q = c.prepare("SELECT task_id,peer_id,last_record_json,request_id,last_observed_at,json_extract(envelope_json,'$.payload.source_session_id') FROM outbound_tasks ORDER BY task_id").map_err(internal)?;
+            q.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,Option<String>>(5)?))).map_err(internal)?
+                .map(|r| { let (id,peer,record,request,observed,session) = r.map_err(internal)?; Ok(json!({"task_id":id,"peer_id":peer,"request_id":request,"last_observed_at":observed,"direction":"outbound","last_observed":record.map(|r| decode::<Value>(&r)).transpose()?,"source_session_id":session})) }).collect()
         })
     }
     pub fn admit(
