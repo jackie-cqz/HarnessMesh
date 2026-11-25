@@ -213,13 +213,42 @@ impl Store {
             Ok(())
         })
     }
+    /// Stop trusting a peer, and end every open pair request with it: an
+    /// approval that arrives later for a request sent before the revocation
+    /// must not quietly trust that computer again.
     pub fn revoke_peer(&self, node_id: Uuid) -> Result<()> {
-        self.read(|c| {
-            c.execute(
+        self.transaction(|tx| {
+            tx.execute(
                 "UPDATE trusted_peers SET status='revoked' WHERE peer_node_id=?1",
                 [node_id.to_string()],
             )
             .map_err(internal)?;
+            let rows: Vec<(String, String)> = {
+                let mut q = tx
+                    .prepare("SELECT request_id,record_json FROM pair_requests")
+                    .map_err(internal)?;
+                q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(internal)?
+                    .collect::<std::result::Result<_, _>>()
+                    .map_err(internal)?
+            };
+            for (id, text) in rows {
+                let mut record: PairRecord = decode(&text)?;
+                if record.card.node_id != node_id || record.status != "pending" {
+                    continue;
+                }
+                record.status = if record.direction == "incoming" {
+                    "declined"
+                } else {
+                    "cancelled"
+                }
+                .into();
+                tx.execute(
+                    "UPDATE pair_requests SET record_json=?1 WHERE request_id=?2",
+                    params![encode(&record)?, id],
+                )
+                .map_err(internal)?;
+            }
             Ok(())
         })
     }
@@ -271,11 +300,74 @@ impl Store {
                 .collect()
         })
     }
+    pub fn pair(&self, request_id: Uuid) -> Result<Option<PairRecord>> {
+        self.read(|c| {
+            let text: Option<String> = c
+                .query_row(
+                    "SELECT record_json FROM pair_requests WHERE request_id=?1",
+                    [request_id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(internal)?;
+            text.map(|text| decode(&text)).transpose()
+        })
+    }
+    /// End a pending request without trusting anyone: this side declined an
+    /// incoming request or cancelled its own, the other side declined, or it
+    /// expired. A request that is no longer pending is left as it is.
+    pub fn close_pair(&self, request_id: Uuid, status: &str) -> Result<PairRecord> {
+        self.transaction(|tx| {
+            let text: Option<String> = tx
+                .query_row(
+                    "SELECT record_json FROM pair_requests WHERE request_id=?1",
+                    [request_id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(internal)?;
+            let mut record: PairRecord =
+                decode(&text.ok_or_else(|| MeshError::input("pair request not found"))?)?;
+            if record.status != "pending" {
+                return Err(MeshError::new(
+                    ErrorCode::TaskConflict,
+                    "pair request is already decided",
+                ));
+            }
+            record.status = status.into();
+            tx.execute(
+                "UPDATE pair_requests SET record_json=?1 WHERE request_id=?2",
+                params![encode(&record)?, request_id.to_string()],
+            )
+            .map_err(internal)?;
+            Ok(record)
+        })
+    }
     pub fn approve_pair(&self, request_id: Uuid, expected: &str) -> Result<Peer> {
+        self.decide_pair(request_id, expected, true)
+    }
+    /// Trust the computer this one asked to pair with, once that computer has
+    /// approved. Its approval happened inside the request's lifetime, so the
+    /// lifetime is not checked again here.
+    pub fn complete_outgoing_pair(&self, request_id: Uuid, expected: &str) -> Result<Peer> {
+        self.decide_pair(request_id, expected, false)
+    }
+    fn decide_pair(&self, request_id: Uuid, expected: &str, check_expiry: bool) -> Result<Peer> {
         self.transaction(|tx| {
             let text: Option<String> = tx.query_row("SELECT record_json FROM pair_requests WHERE request_id=?1", [request_id.to_string()], |r| r.get(0)).optional().map_err(internal)?;
             let mut record: PairRecord = decode(&text.ok_or_else(|| MeshError::input("pair request not found"))?)?;
-            if record.status != "pending" || record.expires_at < now() || record.card.fingerprint != expected {
+            if !check_expiry && record.direction != "outgoing" {
+                return Err(MeshError::input("only this computer's own pair requests complete on the other side's approval"));
+            }
+            // Approving again (by hand after the automatic completion, or
+            // twice) returns the peer it already trusts.
+            if record.status == "approved" && record.card.fingerprint == expected {
+                let peer: Option<(String, Option<i64>)> = tx.query_row("SELECT status,approved_at FROM trusted_peers WHERE peer_node_id=?1 AND public_key_fingerprint=?2", params![record.card.node_id.to_string(), expected], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(internal)?;
+                if let Some(("trusted", approved_at)) = peer.as_ref().map(|(s, a)| (s.as_str(), *a)) {
+                    return Ok(Peer { card: record.card, status: "trusted".into(), approved_at });
+                }
+            }
+            if record.status != "pending" || (check_expiry && record.expires_at < now()) || record.card.fingerprint != expected {
                 return Err(MeshError::new(ErrorCode::PermissionDenied, "pair request is expired, decided, or fingerprint does not match"));
             }
             let old: Option<String> = tx.query_row("SELECT public_key_fingerprint FROM trusted_peers WHERE peer_node_id=?1", [record.card.node_id.to_string()], |r| r.get(0)).optional().map_err(internal)?;

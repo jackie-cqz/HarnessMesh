@@ -23,6 +23,15 @@ test('only local task/session approvals and answerable permissions count as owne
  assert.equal(rows.find(row=>row.id==='local-permission').category,'execution');
 });
 
+test('a pair request from another computer is owner work; one sent from here waits; settled or expired ones are gone',()=>{
+ const {model}=context();
+ const pair=(id,direction,status='pending',expires_at=500)=>({request_id:id,direction,status,expires_at,card:{node_id:`node-${id}`,display_name:`mac-${id}`,endpoint:'https://127.0.0.1:7443'}});
+ const rows=model({now:100,pairs:[pair('in','incoming'),pair('out','outgoing'),pair('old','incoming','pending',50),pair('done','incoming','approved'),pair('no','outgoing','declined')]});
+ assert.deepEqual(rows.map(row=>[row.id,row.kind,row.category,row.needsOwner]).sort(),[['in','pair','approval',true],['out','pair','execution',false]]);
+ assert.equal(rows[0].id,'in');
+ assert.equal(rows.find(row=>row.id==='in').title,'mac-in 想和这台电脑配对');
+});
+
 test('execution success, pending acceptance and failed acceptance remain different facts',()=>{
  const {model}=context();const rows=model({tasks:[task('pending','SUCCEEDED',{_acceptance:{state:'pending'}}),task('passed','SUCCEEDED',{_acceptance:{state:'passed'}}),task('assertion','SUCCEEDED',{_acceptance:{state:'failed'}}),task('execution','FAILED')]});
  assert.deepEqual(rows.map(row=>[row.id,row.status,row.acceptance,row.category]).sort(),[['assertion','SUCCEEDED','failed','attention'],['execution','FAILED',null,'attention'],['passed','SUCCEEDED','passed','recent'],['pending','SUCCEEDED','pending','acceptance']]);

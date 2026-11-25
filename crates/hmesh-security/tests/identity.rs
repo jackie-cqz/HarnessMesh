@@ -69,6 +69,37 @@ fn wrong_fingerprint_and_non_loopback_card_are_rejected() {
 }
 
 #[test]
+fn pairing_code_carries_the_address_and_fingerprint_and_survives_wrapping() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut a = Instance::init(&root.path().join("a"), NodeConfig::default()).expect("init");
+    a.card.endpoint = "https://127.0.0.1:7443".into();
+    let code = pair_code(&a.card);
+    assert_eq!(
+        code,
+        format!("hmesh://127.0.0.1:7443/{}", a.card.fingerprint)
+    );
+    let wrapped = format!("  {}\n{}  ", &code[..30], &code[30..]);
+    assert_eq!(
+        parse_pair_code(&wrapped).expect("wrapped code"),
+        (
+            "https://127.0.0.1:7443".to_string(),
+            a.card.fingerprint.clone()
+        )
+    );
+    a.card.endpoint = "https://[fd7a:115c:a1e0::1]:7443".into();
+    let (endpoint, _) = parse_pair_code(&pair_code(&a.card)).expect("IPv6 Tailnet code");
+    assert_eq!(endpoint, "https://[fd7a:115c:a1e0::1]:7443");
+    for bad in [
+        "https://127.0.0.1:7443/abc".to_string(),
+        "hmesh://127.0.0.1:7443/abc".to_string(),
+        format!("hmesh://8.8.8.8:7443/{}", a.card.fingerprint),
+        format!("hmesh://127.0.0.1:7443/x/{}", a.card.fingerprint),
+    ] {
+        assert!(parse_pair_code(&bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn partial_identity_is_not_silently_replaced() {
     let root = tempfile::tempdir().expect("tempdir");
     let dir = root.path().join("a");

@@ -72,7 +72,7 @@ function toast(message) { clearTimeout(toastTimer); $('#toast').textContent=mess
 // tasks; services, diagnostics and usage form the settings page. Sections that
 // need development workflows stay hidden when the daemon lacks them.
 const pages={sessions:['sessions'],inbox:['inbox'],tasks:['tasks','development'],agents:['agents'],nodes:['nodes'],settings:['operations','services']};
-const pageNames={sessions:['会话','和本机、配对电脑上的 Agent 对话；它们也能互相调用。'],inbox:['工作待办','集中查看审批、执行和验收进度。'],tasks:['任务','委派给本机或配对电脑上 Agent 的任务，以及可复用的模板和多阶段工作流。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],nodes:['配对节点','连接可达性与项目授权分别呈现。'],settings:['设置与诊断','运行版本、Agent 检查、用量与磁盘，以及本机发布的服务和连接。']};
+const pageNames={sessions:['会话','和本机、配对电脑上的 Agent 对话；它们也能互相调用。'],inbox:['工作待办','集中查看审批、执行和验收进度。'],tasks:['任务','委派给本机或配对电脑上 Agent 的任务，以及可复用的模板和多阶段工作流。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],nodes:['配对节点','和这台电脑配对的电脑。配对后，两边可以互相使用对方的 Agent。'],settings:['设置与诊断','运行版本、Agent 检查、用量与磁盘，以及本机发布的服务和连接。']};
 function shownSections(name=state.view){return (pages[name]||[]).filter(part=>!['development','operations'].includes(part)||hasDevelopment());}
 // The development part of the current page: 'development' (templates and
 // workflows) on tasks, 'operations' (diagnostics and usage) on settings.
@@ -139,7 +139,9 @@ function renderServices() {
   $('#connection-list').replaceChildren(...(connections.length?connections.map(c=>{const row=el('div','connection-row'),name=el('div');name.append(el('strong','',c.name||`${c._kind} ${short(c.id)}`),el('div','mono',c.id));row.append(name,el('div','mono',c.status?.endpoint||c.project_id||c._kind),badge(c.status?.state));return row;}):[empty('没有有效的转发连接或隧道')]));
 }
 function renderNodes() {
-  const peers=data('peers');$('#node-list').replaceChildren(...(peers.length?peers.map(p=>{const card=el('article','entity-card'),top=el('div','entity-top');top.append(el('h3','entity-name',p.card.display_name),badge(p.node_connectivity));card.append(top,meta([['信任状态',labels[p.status]||p.status],['地址',p.card.endpoint],['可见 / 可运行',`${p.visible_agent_count??'—'} / ${p.runnable_agent_count??'—'}`],['Agent 注册表',p.registry_readable?'可读取':'未授权或不可达']]),el('div','entity-id',p.card.node_id));const actions=el('div','entity-actions'),b=button('查看远端 Agent','button secondary',()=>loadRemote(p));b.disabled=p.status!=='trusted';actions.append(b);card.append(actions);return card;}):[empty('还没有配对节点','通过 CLI 核对指纹并完成双端配对。')]));
+  if(typeof renderPairing==='function')renderPairing();
+  const pairing=typeof pairingReady==='function'&&pairingReady();
+  const peers=data('peers');$('#node-list').replaceChildren(...(peers.length?peers.map(p=>{const card=el('article','entity-card'),top=el('div','entity-top');top.append(el('h3','entity-name',p.card.display_name),badge(p.node_connectivity));card.append(top,meta([['信任状态',labels[p.status]||p.status],['地址',p.card.endpoint],['可见 / 可运行',`${p.visible_agent_count??'—'} / ${p.runnable_agent_count??'—'}`],['Agent 注册表',p.registry_readable?'可读取':'未授权或不可达']]),el('div','entity-id',p.card.node_id));const actions=el('div','entity-actions'),b=button('查看远端 Agent','button secondary',()=>loadRemote(p));b.disabled=p.status!=='trusted';actions.append(b);card.append(actions);return card;}):[pairing?empty('还没有配对的电脑','点「配对新电脑」，粘贴另一台电脑的配对码；或者把这台电脑的配对码发给对方。'):empty('还没有配对节点','通过 CLI 核对指纹并完成双端配对。')]));
 }
 async function loadRemote(peer) {
   const box=$('#remote-agents');box.hidden=false;box.replaceChildren(el('h2','',`${peer.card.display_name} / Agents`),empty('正在读取授权的 Agent…'));

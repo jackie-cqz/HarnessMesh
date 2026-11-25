@@ -39,6 +39,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "agent-service-test-v1",
     "agent-own-login-v1",
     "agent-service-relay-v1",
+    "pairing-auto-complete-v1",
 ];
 
 #[derive(Clone)]
@@ -205,6 +206,8 @@ pub async fn run(
         .route("/api/agents/{id}/{action}", post(agent_action))
         .route("/api/services/{id}/{action}", post(service_action))
         .route("/api/peers/{id}/agents", get(remote_agents))
+        .route("/api/pairs/request", post(request_pair))
+        .route("/api/pairs/{id}/{action}", post(pair_action))
         .route(
             "/assets/sessions.js",
             get(|| async {
@@ -229,6 +232,15 @@ pub async fn run(
                 (
                     [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
                     include_str!("../../../web/panel/inbox.js"),
+                )
+            }),
+        )
+        .route(
+            "/assets/pairing.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/pairing.js"),
                 )
             }),
         )
@@ -380,7 +392,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -523,9 +535,10 @@ fn resources(value: Result<Value, MeshError>) -> Value {
     }).collect())))
 }
 async fn overview(State(s): State<Panel>) -> Json<Value> {
-    let (node, peers, agents, retired, tasks, services, connections, tunnels, queue) = tokio::join!(
+    let (node, peers, pairs, agents, retired, tasks, services, connections, tunnels, queue) = tokio::join!(
         s.client.get::<Value>("/local/status"),
         s.client.get::<Value>("/local/peers"),
+        s.client.get::<Value>("/local/pairs"),
         s.client.get::<Value>("/hmesh/v1/agents"),
         s.client.get::<Value>("/local/agents/retired"),
         s.client.get::<Value>("/local/tasks"),
@@ -535,7 +548,7 @@ async fn overview(State(s): State<Panel>) -> Json<Value> {
         s.client.get::<Value>("/local/queue"),
     );
     Json(
-        json!({"observed_at":now(),"node":result(node),"peers":result(peers),"agents":result(agents),
+        json!({"observed_at":now(),"node":result(node),"peers":result(peers),"pairs":result(pairs.map(recent_pairs)),"agents":result(agents),
         "retired":result(retired),"tasks":result(tasks),"services":resources(services),"connections":resources(connections),"tunnels":resources(tunnels),"queue":result(queue)}),
     )
 }
@@ -1007,6 +1020,137 @@ async fn session_action(
             .post::<_, Value>(&format!("/local/sessions/{id}/{name}"), &body)
             .await,
     )
+}
+/// Pair requests worth showing: open ones, and ones settled in the last few
+/// minutes so the person sees how theirs ended. Certificates stay out.
+fn recent_pairs(rows: Value) -> Value {
+    let recent = now() - 600;
+    Value::Array(
+        rows.as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| {
+                let expires = r["expires_at"].as_i64().unwrap_or(0);
+                // A request from another computer that expired can no longer be
+                // approved; one sent from here stays until its answer is known.
+                if r["status"] == "pending" {
+                    r["direction"] == "outgoing" || expires > now()
+                } else {
+                    expires > recent
+                }
+            })
+            .map(|r| {
+                let card = &r["card"];
+                json!({"request_id":r["request_id"],"direction":r["direction"],"status":r["status"],"expires_at":r["expires_at"],
+                    "card":{"node_id":card["node_id"],"display_name":card["display_name"],"fingerprint":card["fingerprint"],"endpoint":card["endpoint"]}})
+            })
+            .collect(),
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairCode {
+    code: String,
+}
+/// Send a pair request to the computer whose pairing code was pasted.
+async fn request_pair(
+    State(s): State<Panel>,
+    body: Result<Json<PairCode>, JsonRejection>,
+) -> Response {
+    let Some((endpoint, expected_fingerprint)) = body
+        .ok()
+        .and_then(|Json(body)| hmesh_security::parse_pair_code(&body.code).ok())
+    else {
+        return error(StatusCode::BAD_REQUEST, "INVALID_PAIR_CODE");
+    };
+    mutation(
+        s.client
+            .post(
+                "/local/pairs/request",
+                &hmesh_daemon::PairTarget {
+                    endpoint,
+                    expected_fingerprint,
+                },
+            )
+            .await,
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairCheck {
+    #[serde(default)]
+    check: String,
+}
+/// Approve or decline a request from another computer, or cancel one sent
+/// from here. Approving takes the last six digits of the other computer's
+/// fingerprint, which its panel shows after it sends the request.
+async fn pair_action(
+    State(s): State<Panel>,
+    Path((id, name)): Path<(Uuid, String)>,
+    body: Result<Json<PairCheck>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return error(StatusCode::BAD_REQUEST, "UNSUPPORTED_ACTION");
+    };
+    match name.as_str() {
+        "decline" => mutation(
+            s.client
+                .post("/local/pairs/decline", &json!({"request_id": id}))
+                .await,
+        ),
+        "approve" => {
+            let pairs = match s.client.get::<Value>("/local/pairs").await {
+                Ok(pairs) => pairs,
+                Err(e) => return mutation(Err(e)),
+            };
+            let Some(record) = pairs.as_array().into_iter().flatten().find(|r| {
+                r["request_id"] == json!(id)
+                    && r["direction"] == "incoming"
+                    && r["status"] == "pending"
+            }) else {
+                return error(StatusCode::CONFLICT, "PAIR_REQUEST_CLOSED");
+            };
+            let fingerprint = record["card"]["fingerprint"]
+                .as_str()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let check = body.check.trim().to_ascii_lowercase();
+            if check.len() != 6 || !fingerprint.ends_with(&check) {
+                return error(StatusCode::BAD_REQUEST, "PAIR_CHECK_MISMATCH");
+            }
+            // Six digits can be matched by a certificate made for the purpose.
+            // When another open request carries the same check code, one of
+            // them is not who it says: approve neither from here.
+            let alike = pairs
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|r| {
+                    r["direction"] == "incoming"
+                        && r["status"] == "pending"
+                        && r["expires_at"].as_i64().is_some_and(|t| t > now())
+                        && r["card"]["fingerprint"]
+                            .as_str()
+                            .is_some_and(|f| f.to_ascii_lowercase().ends_with(&check))
+                })
+                .count();
+            if alike > 1 {
+                return error(StatusCode::CONFLICT, "PAIR_CHECK_AMBIGUOUS");
+            }
+            mutation(
+                s.client
+                    .post(
+                        "/local/pairs/approve",
+                        &hmesh_daemon::PairApproval {
+                            request_id: id,
+                            expected_fingerprint: fingerprint,
+                        },
+                    )
+                    .await,
+            )
+        }
+        _ => error(StatusCode::BAD_REQUEST, "UNSUPPORTED_ACTION"),
+    }
 }
 async fn remote_agents(State(s): State<Panel>, Path(id): Path<Uuid>) -> Json<Value> {
     Json(result(

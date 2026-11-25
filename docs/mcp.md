@@ -7,7 +7,7 @@
 
 ## 前提
 
-- 每台电脑 `hmesh init`、`hmesh daemon start`，并完成一次配对（`hmesh pair request` / `hmesh pair approve`）。**配对就是信任边界**：配对后对方能看到你登记的 agent，并能和它们开会话。
+- 每台电脑 `hmesh init`、`hmesh daemon start`，并完成一次配对：面板「配对节点」→「配对新电脑」粘贴对方的配对码，对方批准一次即可（CLI 是 `hmesh pair request --code` 和对方的 `hmesh pair approve`）。**配对就是信任边界**：配对后对方能看到你登记的 agent，并能和它们开会话。
 - 用 `hmesh agent detect` 看本机装了哪些 ACP agent（`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`），再 `hmesh agent register` 登记。登记只做一次 ACP `initialize` 握手，不调用模型。HarnessMesh 不会替你安装 agent。
 
 ## 手动接入

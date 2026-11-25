@@ -275,6 +275,33 @@ pub fn normalize_fingerprint(value: &str) -> Result<String> {
     }
     Ok(value)
 }
+/// One line a person copies to another computer to pair with this one: the
+/// node's HTTPS address and its certificate fingerprint,
+/// `hmesh://100.64.0.1:7443/<64 hex digits>`.
+pub fn pair_code(card: &NodeCard) -> String {
+    let authority = card
+        .endpoint
+        .strip_prefix("https://")
+        .unwrap_or(&card.endpoint)
+        .trim_end_matches('/');
+    let fingerprint =
+        normalize_fingerprint(&card.fingerprint).unwrap_or_else(|_| card.fingerprint.clone());
+    format!("hmesh://{authority}/{fingerprint}")
+}
+/// The endpoint and fingerprint in a pairing code. Whitespace is ignored, so
+/// a code that wrapped across lines when pasted still reads.
+pub fn parse_pair_code(code: &str) -> Result<(String, String)> {
+    let code: String = code.split_whitespace().collect();
+    let Some((authority, fingerprint)) = code
+        .strip_prefix("hmesh://")
+        .and_then(|rest| rest.split_once('/'))
+    else {
+        bail!("a pairing code looks like hmesh://<address>:<port>/<fingerprint>");
+    };
+    let endpoint = format!("https://{authority}");
+    validate_endpoint(&endpoint)?;
+    Ok((endpoint, normalize_fingerprint(fingerprint)?))
+}
 pub fn validate_endpoint(endpoint: &str) -> Result<url::Url> {
     let url = url::Url::parse(endpoint)?;
     let permitted = match url.host() {

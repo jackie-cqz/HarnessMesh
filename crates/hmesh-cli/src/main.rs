@@ -365,18 +365,28 @@ enum PeersCommand {
 }
 #[derive(Subcommand)]
 enum PairCommand {
+    /// This computer's card, with the pairing code to give another computer.
     Show,
     List,
+    /// Ask another computer to pair. Once its owner approves, this computer
+    /// trusts it too; there is nothing to approve here.
     Request {
+        /// The other computer's pairing code (`hmesh pair show` there).
+        #[arg(long, conflicts_with_all = ["peer", "expect_fingerprint"], required_unless_present = "peer")]
+        code: Option<String>,
+        #[arg(long, requires = "expect_fingerprint")]
+        peer: Option<String>,
         #[arg(long)]
-        peer: String,
-        #[arg(long)]
-        expect_fingerprint: String,
+        expect_fingerprint: Option<String>,
     },
     Approve {
         request_id: Uuid,
         #[arg(long)]
         expect_fingerprint: String,
+    },
+    /// Decline a request from another computer, or cancel one sent from here.
+    Decline {
+        request_id: Uuid,
     },
     Revoke {
         peer_id: Uuid,
@@ -933,7 +943,16 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             .ok()
             .and_then(|bytes| serde_json::from_slice::<NodeCard>(&bytes).ok())
             .unwrap_or(instance.card.clone());
-        return Ok(Some(serde_json::to_value(card)?));
+        let mut value = serde_json::to_value(&card)?;
+        if matches!(
+            cli.command,
+            Commands::Pair {
+                command: PairCommand::Show
+            }
+        ) {
+            value["pair_code"] = json!(hmesh_security::pair_code(&card));
+        }
+        return Ok(Some(value));
     }
     let client = local_client(&instance)?;
     let value: Value = match cli.command {
@@ -1065,13 +1084,21 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         Commands::Pair { command } => match command {
             PairCommand::List => client.get("/local/pairs").await?,
             PairCommand::Request {
+                code,
                 peer,
                 expect_fingerprint,
             } => {
-                let endpoint = if peer.starts_with("https://") {
-                    peer
-                } else {
-                    format!("https://{peer}")
+                let (endpoint, expect_fingerprint) = match (code, peer, expect_fingerprint) {
+                    (Some(code), _, _) => hmesh_security::parse_pair_code(&code)?,
+                    (None, Some(peer), Some(fingerprint)) => (
+                        if peer.starts_with("https://") {
+                            peer
+                        } else {
+                            format!("https://{peer}")
+                        },
+                        fingerprint,
+                    ),
+                    _ => anyhow::bail!("pass --code, or --peer with --expect-fingerprint"),
                 };
                 client
                     .post(
@@ -1095,6 +1122,11 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                             expected_fingerprint: expect_fingerprint,
                         },
                     )
+                    .await?
+            }
+            PairCommand::Decline { request_id } => {
+                client
+                    .post("/local/pairs/decline", &json!({"request_id": request_id}))
                     .await?
             }
             PairCommand::Revoke { peer_id } => {
