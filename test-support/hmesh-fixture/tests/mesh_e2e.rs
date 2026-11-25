@@ -861,8 +861,9 @@ async fn set_service(owner: &Owner, agent: Uuid, body: Value) -> service::AgentS
 
 /// A model service on loopback that records every request it receives:
 /// `/listed` lists two models, `/unlisted` has no model list but answers
-/// chat requests, `/locked` rejects the key (quoting it back), and
-/// `/anthropic` lists models the Anthropic way.
+/// chat requests, `/locked` rejects the key (quoting it back),
+/// `/anthropic` lists models the Anthropic way, and `/gateway` streams
+/// replies like a gateway whose last chunk has an empty `delta.role`.
 #[derive(Debug, Clone)]
 struct Seen {
     method: String,
@@ -952,7 +953,22 @@ async fn fake_model_service() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Se
                         ("200 OK", r#"{"data":[]}"#.to_owned())
                     }
                     // Points at a model list that would succeed, if followed.
-                    ("GET", "/redirect/v1/models") => ("302 Found", String::new()),
+                    ("GET", "/redirect/v1/models" | "/gateway/v1/moved") => {
+                        ("302 Found", String::new())
+                    }
+                    ("POST", "/gateway/v1/chat/completions") => (
+                        "200 OK",
+                        [
+                            r#"{"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":"你好"}}]}"#,
+                            r#"{"id":"c1","choices":[{"index":0,"delta":{"role":"","content":"","reasoning_content":""},"finish_reason":"stop"}]}"#,
+                            "[DONE]",
+                        ]
+                        .map(|data| format!("data: {data}\n\n"))
+                        .concat(),
+                    ),
+                    ("GET", p) if p.starts_with("/gateway/v1/models") => {
+                        ("200 OK", r#"{"data":[{"id":"m-one"}]}"#.to_owned())
+                    }
                     _ => ("404 Not Found", "not here".to_owned()),
                 };
                 let location = if status.starts_with("302") {
@@ -960,10 +976,15 @@ async fn fake_model_service() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Se
                 } else {
                     ""
                 };
+                let kind = if path == "/gateway/v1/chat/completions" {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                };
                 let _ = stream
                     .write_all(
                         format!(
-                            "HTTP/1.1 {status}\r\n{location}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                            "HTTP/1.1 {status}\r\n{location}Content-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                             reply.len()
                         )
                         .as_bytes(),
@@ -973,6 +994,151 @@ async fn fake_model_service() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Se
         }
     });
     (base, seen)
+}
+
+/// OpenCode on a custom endpoint reaches it through the daemon's relay: the
+/// agent receives only a local address and token, the endpoint receives the
+/// real key, and a gateway's empty `delta.role` never reaches the agent.
+#[tokio::test(flavor = "multi_thread")]
+async fn opencode_reaches_a_custom_endpoint_through_the_local_relay() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "node-a");
+    let opencode = register_as(
+        &a,
+        &root.path().join("opencode"),
+        "opencode",
+        "opencode",
+        &[],
+    );
+    let (base, seen) = fake_model_service().await;
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    let key = "sk-fake-gateway-0123456789";
+    set_service(
+        &owner,
+        opencode,
+        json!({"mode":"custom","base_url":format!("{base}/gateway/v1"),"api_key":key,"models":["m-one"]}),
+    )
+    .await;
+    let value = |text: Option<String>| {
+        let text = text.unwrap_or_default();
+        match text.split_once("value=") {
+            Some((_, value)) => value.to_owned(),
+            None => panic!("{text}"),
+        }
+    };
+    let session = open(
+        &owner,
+        json!({"agent_id":opencode,"message":"fixture:env OPENCODE_CONFIG_CONTENT"}),
+    )
+    .await;
+    let (done, _) = turn_done(&owner, session.session_id, 1).await;
+    let config: Value = serde_json::from_str(&value(done.last_final_text)).unwrap();
+    let relay = config["provider"]["hmesh"]["options"]["baseURL"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        relay.starts_with("http://127.0.0.1:") && !relay.contains(&base),
+        "{relay}"
+    );
+    prompt(
+        &owner,
+        session.session_id,
+        "fixture:env HMESH_OPENCODE_API_KEY",
+    )
+    .await;
+    let (done, _) = turn_done(&owner, session.session_id, 2).await;
+    let token = value(done.last_final_text);
+    assert!(token.starts_with("hmr-") && !token.contains(key), "{token}");
+    let take = || std::mem::take(&mut *seen.lock().unwrap());
+    take();
+
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let chat = format!("{relay}/chat/completions");
+    let request =
+        json!({"model":"m-one","stream":true,"messages":[{"role":"user","content":"hi"}]});
+    // Without the relay's token nothing is sent on, and the key is not one.
+    let anonymous = http.post(&chat).json(&request).send().await.unwrap();
+    assert_eq!(anonymous.status(), 401);
+    let with_key = http
+        .post(&chat)
+        .bearer_auth(key)
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(with_key.status(), 401);
+    assert!(take().is_empty());
+
+    let reply = http
+        .post(&chat)
+        .bearer_auth(&token)
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reply.status(), 200);
+    assert!(
+        reply.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream")
+    );
+    let body = reply.text().await.unwrap();
+    assert!(!body.contains(r#""role":"""#), "{body}");
+    assert!(
+        body.contains(r#""role":"assistant","content":"你好""#)
+            && body.contains(r#""finish_reason":"stop""#)
+            && body.trim_end().ends_with("data: [DONE]"),
+        "{body}"
+    );
+    let requests = take();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(
+        (requests[0].method.as_str(), requests[0].path.as_str()),
+        ("POST", "/gateway/v1/chat/completions")
+    );
+    assert_eq!(requests[0].authorization, format!("Bearer {key}"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&requests[0].body).unwrap(),
+        request
+    );
+    // Other paths and queries of the endpoint pass too; redirects come back
+    // to the agent instead of being followed with the key.
+    let listed = http
+        .get(format!("{relay}/models?limit=5"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), 200);
+    let moved = http
+        .get(format!("{relay}/moved"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(moved.status(), 302);
+    assert_eq!(
+        take().iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
+        ["/gateway/v1/models?limit=5", "/gateway/v1/moved"]
+    );
+    // Another session of the agent gets the same token, so agents already
+    // running keep working.
+    let second = open(
+        &owner,
+        json!({"agent_id":opencode,"message":"fixture:env HMESH_OPENCODE_API_KEY"}),
+    )
+    .await;
+    let (done, _) = turn_done(&owner, second.session_id, 1).await;
+    assert_eq!(value(done.last_final_text), token);
+    daemon.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

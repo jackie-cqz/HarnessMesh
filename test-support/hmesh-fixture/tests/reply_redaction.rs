@@ -43,6 +43,7 @@ async fn final_reply_excludes_narration_while_redaction_holds_text_back() {
         instance.dir.clone(),
         RuntimeOptions::default(),
         Arc::new(|_| Ok(())),
+        None,
         receiver,
     ));
     let mut terminal = None;

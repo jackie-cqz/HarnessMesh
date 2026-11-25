@@ -111,7 +111,8 @@ pub fn classify(frame: &Value) -> Option<Incoming> {
                     .and_then(Value::as_str)
                     .unwrap_or("agent returned an error")
                     .chars()
-                    .take(500)
+                    // Long enough for a provider validation error to name the field.
+                    .take(2000)
                     .collect()),
                 None => Ok(frame.get("result").cloned().unwrap_or(Value::Null)),
             };
