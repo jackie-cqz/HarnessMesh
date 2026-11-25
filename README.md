@@ -94,13 +94,13 @@ cargo build --release --locked -p hmesh-cli
 
 **Without Tailscale.** Computers on a network they already share can connect directly: `hmesh setup --full --network direct` asks which of the computer's addresses the others use (or pass `--listen 192.168.1.20`), and accepts connections from private networks only unless you name others with `--allow-from`. An only-MCP computer needs no Tailscale at all; when setup does not find it, it uses the computer's own network. On a direct network a computer answers pairing requests only for 10 minutes after you open 配对新电脑 on it (or run `hmesh pair show`).
 
-HarnessMesh never installs agents. `hmesh agent detect` shows what it found and how to install the rest:
+`hmesh agent detect` lists available ACP executables. The panel can install recommended Codex and Claude Code adapters on the execution computer, or use an existing command.
 
 | Agent | Command HarnessMesh looks for | Install |
 |---|---|---|
 | OpenCode | `opencode` (runs `opencode acp`) | [opencode.ai](https://opencode.ai) |
 | Claude Code | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
-| Codex | `codex-acp` | `npm install -g @zed-industries/codex-acp` |
+| Codex | `codex-acp` | `npm install -g @agentclientprotocol/codex-acp` |
 | Pi | `pi-acp` | `npm install -g pi-acp` |
 | DeepSeek Harness | `dsh --profile acp` | `npm install -g @deepseek-ai/dsh@0.2.2-rc.5` (Node.js 24.9+) |
 | Any other ACP agent | the command and arguments you give it | — |

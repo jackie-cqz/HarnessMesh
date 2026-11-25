@@ -64,9 +64,11 @@ function renderProjectTargets() {
       status.append(el('span', `badge ${agent.task_ready ? 'good' : 'warn'}`, agent.task_ready ? '可执行' : '暂不可派发'));
       status.append(el('span', 'muted', `${agent.verified ? '已验证' : '未验证'} · ${agent.requires_approval ? '需执行端批准' : '按执行端策略启动'}`));
       const select = button('选用', 'button secondary', async () => {
-        if (pendingDraft || composerDraft.source_session_id) return;
+        if (composerBusy || pendingDraft || composerDraft.source_session_id) return;
         $('#compose-peer').value = node.node_id;
         await loadComposerAgents(node.node_id, agent.agent_id, selected);
+        $('#compose-discovery').open = false;
+        $('#compose-goal').focus();
       });
       select.disabled = !agent.task_ready || !!pendingDraft || !!composerDraft?.source_session_id;
       row.append(name, status, select);
@@ -114,6 +116,7 @@ function renderGitComparison() {
   const origin = projectWork.origin;
   const executor = projectWork.executor;
   const mismatch = origin?.commit && executor?.commit && origin.commit !== executor.commit;
+  if (mismatch && !$('#git-mode').value) $('#compose-git').open = true;
   const box = $('#git-comparison');
   box.replaceChildren(
     meta([['发起端', describeGit(origin)], ['执行端', describeGit(executor)]]),

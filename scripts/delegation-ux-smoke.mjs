@@ -149,8 +149,9 @@ try {
   await page.locator('#compose-peer').selectOption(worker.card.node_id);
   await page.waitForFunction(id => document.querySelector('#compose-agent').value === id && !document.querySelector('#compose-agent').disabled, agent.agent_id);
   await page.locator('#compose-goal').fill('fixture:create');
+  await page.locator('#compose-artifact-settings > summary').click();
   await page.locator('#compose-artifacts').fill('out/not-declared.json');
-  const id = (await page.locator('#compose-binding').innerText()).match(/[0-9a-f]{8}-[0-9a-f-]{27}/g)?.at(-1);
+  const id = (await page.locator('#compose-binding').textContent()).match(/[0-9a-f]{8}-[0-9a-f-]{27}/g)?.at(-1);
   assert(id, 'Composer did not expose its stable request ID');
   await preflight(page, false);
   sameCounts(counts(origin, worker), before, 'Read-only preflight persisted or submitted a task');
@@ -178,9 +179,11 @@ try {
   pass(stage);
 
   stage = 'confirmation-rechecks-current-artifact-grant';
-  assert((await page.locator('#compose-binding').innerText()).includes(id), 'Read-only preflight changed the original request ID');
+  assert((await page.locator('#compose-binding').textContent()).includes(id), 'Read-only preflight changed the original request ID');
   await page.locator('#compose-submit').click();
   await page.locator('#confirm-dialog').waitFor();
+  await page.locator('.delegation-review-status').filter({hasText:'等待执行端审批'}).waitFor();
+  await page.locator('.delegation-review-text').filter({hasText:'fixture:create'}).waitFor();
   worker.mesh.call(['agent', 'artifacts', agent.agent_id, '--path', 'out/other.json']);
   await confirm(page);
   await page.locator('#compose-preflight[data-ready="false"]').waitFor();

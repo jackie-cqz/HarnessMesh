@@ -468,6 +468,11 @@ enum PairCommand {
 enum AgentCommand {
     /// List the ACP agent commands installed on this computer (nothing is run).
     Detect,
+    /// Install and check a recommended local ACP adapter.
+    Install {
+        #[arg(value_parser = ["codex", "claude-code"])]
+        harness: String,
+    },
     Retired,
     Retire {
         agent_id: Uuid,
@@ -800,15 +805,26 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         command: AgentCommand::Detect,
     } = &cli.command
     {
-        let found = hmesh_core::detect_installed_agents();
+        let found = hmesh_runtime::agent_install::detect(&dir);
         let missing: Vec<Value> = HarnessKind::KNOWN_ACP_AGENTS
         .into_iter()
         .filter(|h| !found.iter().any(|f| f.harness == *h))
         .map(|h| json!({"harness":h,"command":h.acp_command(),"install":h.acp_package().map(|p| format!("npm install -g {p}"))}))
         .collect();
         return Ok(Some(
-            json!({"installed":found,"not_found":missing,"note":"HarnessMesh only looks for these commands; install missing agents yourself."}),
+            json!({"installed":found,"not_found":missing,"note":"Use hmesh agent install for Codex or Claude Code, or install the command yourself."}),
         ));
+    }
+    if let Commands::Agent {
+        command: AgentCommand::Install { harness },
+    } = &cli.command
+    {
+        let kind: HarnessKind = serde_json::from_value(json!(harness))?;
+        let instance = Instance::load(&dir).context(
+            "initialize this HarnessMesh node with hmesh init before installing an adapter",
+        )?;
+        let installed = hmesh_runtime::agent_install::install(&instance.dir, kind).await?;
+        return Ok(Some(serde_json::to_value(installed)?));
     }
     if let Commands::Mcp { session } = &cli.command {
         // stdout carries only MCP frames from here on.

@@ -94,13 +94,13 @@ cargo build --release --locked -p hmesh-cli
 
 **不用 Tailscale。** 在同一个网络里的电脑可以直连：`hmesh setup --full --network direct` 会问别的电脑用本机哪个地址来连（也可以直接写 `--listen 192.168.1.20`），默认只接受私有网段的连接，要放行别的网段就用 `--allow-from`。只装 MCP 的电脑完全不需要 Tailscale：setup 找不到它时，就用本机自己的网络。直连网络里，只有在你打开这台电脑的「配对新电脑」（或者运行 `hmesh pair show`）之后的 10 分钟内，它才接受配对申请。
 
-HarnessMesh 不会替你安装 Agent。`hmesh agent detect` 会列出找到了哪些，没找到的该怎么装：
+`hmesh agent detect` 会列出可用的 ACP 命令。可直接使用已装好的命令，也可以在执行端的面板中安装推荐版本的 Codex 或 Claude Code 适配器。
 
 | Agent | HarnessMesh 找的命令 | 安装 |
 |---|---|---|
 | OpenCode | `opencode`（以 `opencode acp` 启动） | [opencode.ai](https://opencode.ai) |
 | Claude Code | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
-| Codex | `codex-acp` | `npm install -g @zed-industries/codex-acp` |
+| Codex | `codex-acp` | `npm install -g @agentclientprotocol/codex-acp` |
 | Pi | `pi-acp` | `npm install -g pi-acp` |
 | DeepSeek Harness | `dsh --profile acp` | `npm install -g @deepseek-ai/dsh@0.2.2-rc.5` (Node.js 24.9+) |
 | 其他 ACP Agent | 你填写的命令和参数 | — |

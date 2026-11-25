@@ -45,6 +45,81 @@ async fn stop_panel(http: &reqwest::Client, ready: &Value) {
         200
     );
 }
+
+#[tokio::test]
+async fn adapter_install_requires_owner_origin_and_an_allowlisted_package() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut panel, ready) = start_panel(root.path()).await;
+    let (origin, token) = ready["url"]
+        .as_str()
+        .unwrap()
+        .split_once("/#access=")
+        .unwrap();
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let path = format!("{origin}/api/agents/install");
+    let offers: Value = http
+        .get(&path)
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let kinds: Vec<_> = offers["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["harness"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["codex", "claude-code"]);
+    let install = |body: Value| http.post(&path).json(&body);
+    assert_eq!(
+        install(json!({"harness":"codex"}))
+            .header("origin", origin)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        install(json!({"harness":"codex"}))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        install(json!({"harness":"codex","package":"unreviewed"}))
+            .bearer_auth(token)
+            .header("origin", origin)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        422
+    );
+    assert_eq!(
+        install(json!({"harness":"pi"}))
+            .bearer_auth(token)
+            .header("origin", origin)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        502
+    );
+    assert!(!root.path().join("agent-runtimes").exists());
+    stop_panel(&http, &ready).await;
+    assert!(panel.wait().await.unwrap().success());
+}
 #[tokio::test]
 async fn panel_launch_and_stop_own_only_the_daemon_started_here() {
     let root = tempfile::tempdir().unwrap();

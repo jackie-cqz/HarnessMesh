@@ -68,8 +68,8 @@ try {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(nodeName)) throw new Error('--name may use letters, digits, dot, dash and underscore');
   const project = flags.has('--project') ? flags.get('--project') : join(root, 'project');
   if (!isAbsolute(project)) throw new Error('--project must be an absolute directory');
-  // Only agents already installed here; HarnessMesh never installs one.
-  const detected = JSON.parse(run(binary, ['--json', 'agent', 'detect']));
+  // Discover available agents without installing anything.
+  const detected = JSON.parse(run(binary, [...hargs, 'agent', 'detect']));
   const agents = selectAgents(detected.installed, flags.get('--agents'));
   if (!agents.length) console.log(`No ACP agent found on PATH. Install one yourself, e.g. ${detected.not_found.map(a => a.install).filter(Boolean).join(' | ')}`);
   const init = ['init', '--name', nodeName, '--port', port, '--network', 'tailscale'];

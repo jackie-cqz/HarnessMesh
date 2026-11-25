@@ -10,7 +10,7 @@
 //! item for the daemon and HarnessMesh's entry in each MCP client. Nothing is
 //! downloaded or installed, and no model is called.
 use anyhow::{Context, Result, bail};
-use hmesh_core::{AgentCard, AgentConfig, HarnessKind, NodeConfig, detect_installed_agents};
+use hmesh_core::{AgentCard, AgentConfig, HarnessKind, NodeConfig};
 use hmesh_security::{Instance, atomic_write};
 use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
 use serde_json::{Value, json};
@@ -661,11 +661,13 @@ async fn register_agents(
         .unwrap_or_else(|| dir.join("project"));
     std::fs::create_dir_all(&project)?;
     let project = std::fs::canonicalize(project)?;
-    let installed = detect_installed_agents();
+    let installed = hmesh_runtime::agent_install::detect(&instance.dir);
     let wanted = options.agents.as_deref();
     for name in wanted.unwrap_or_default() {
         if !installed.iter().any(|a| a.harness.to_string() == *name) {
-            bail!("not installed on this computer: {name} (HarnessMesh does not install agents)");
+            bail!(
+                "not installed on this computer: {name}; see hmesh agent detect for available ACP adapters"
+            );
         }
     }
     let existing: Vec<AgentCard> = client.get("/hmesh/v1/agents").await?;

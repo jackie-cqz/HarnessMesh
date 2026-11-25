@@ -57,7 +57,14 @@
         <section id="inbox-view" class="view" hidden></section>
         <section id="tasks-view" class="view" hidden><div class="toolbar"><div class="segmented" id="task-filters" aria-label="任务状态"><button data-filter="all" class="selected">全部</button><button data-filter="pending">本机待审批</button><button data-filter="active">进行中</button><button data-filter="acceptance">待验收</button><button data-filter="attention">需关注</button></div><label class="search"><span aria-hidden="true">⌕</span><input id="task-search" type="search" placeholder="搜索任务、项目或 UUID" aria-label="搜索任务"></label></div><p class="list-note">执行成功与工件验收分别记录。发出任务的列表为最近观察缓存，打开详情可实时查询执行端。</p><div class="surface" id="task-list"></div></section>
         <section id="agents-view" class="view" hidden><div class="toolbar"><div class="segmented" id="agent-filters"><button class="selected" data-agent-filter="active">本机 Agent</button><button data-agent-filter="retired">已退役</button></div><button class="button secondary" id="new-agent">接入项目与 Agent</button></div><p id="outbound-note" class="mode-note" hidden></p><div id="agent-list" class="card-grid entity-list"></div></section>
-        <section id="nodes-view" class="view" hidden><div id="pairing" class="pairing"></div><div id="node-list" class="card-grid entity-list"></div><section id="remote-agents" class="surface remote-agents" hidden></section></section>
+        <section id="nodes-view" class="view" hidden>
+          <div id="pairing"></div>
+          <section class="paired-computers" aria-labelledby="paired-computers-title">
+            <h2 id="paired-computers-title">已配对的电脑</h2>
+            <div id="node-list" class="card-grid entity-list"></div>
+          </section>
+          <section id="remote-agents" class="surface remote-agents" hidden></section>
+        </section>
         <section id="development-view" class="view" hidden><div class="section-heading"><div><span class="eyebrow">REUSABLE WORK</span><h2>任务模板</h2></div><button id="create-template" class="button secondary">从任务表单保存模板</button></div><p class="list-note">模板保留固定目标、执行限额与验收条件。每个新任务仍需执行端批准。</p><div id="template-list" class="card-grid"></div><div class="section-heading subheading"><h2>多阶段工作流</h2><button id="create-pipeline" class="button">新建工作流</button></div><div id="pipeline-list" class="pipeline-list"></div></section>
         <section id="operations-view" class="view" hidden><div class="section-heading"><div><span class="eyebrow">LOCAL OPERATIONS</span><h2>运行诊断</h2></div><button id="export-diagnostics" class="button secondary">导出脱敏报告</button></div><div id="diagnostic-list" class="card-grid"></div><div class="section-heading subheading"><h2>任务用量与项目预算</h2><button id="configure-budget" class="button secondary">设置项目预算</button></div><p class="list-note">未报告的用量显示未知。已报告 token 上限在收到报告后生效，不是供应商费用硬上限；费用按 owner 提供的当前价格估算。</p><div id="usage-list" class="surface"></div><div id="budget-list" class="card-grid subheading"></div><div class="section-heading subheading"><h2>会话用量</h2></div><p class="list-note">只统计在这台电脑上运行的 Agent 的会话。数字都是 Agent 自己报的：累计费用和上下文占用取它最近一次报告，token 是最近一次报了数的那一轮；不同 Agent 报的项目不一样，没报的显示「—」。</p><div id="session-usage-list" class="surface"></div><div class="section-heading subheading"><h2>磁盘与保留</h2></div><div id="storage-summary" class="surface"></div><div class="section-heading subheading"><h2>Harness 协议兼容矩阵</h2></div><div id="compatibility-list" class="card-grid"></div><p class="list-note">矩阵运行固定协议 fixture，不调用模型。真实模型和各平台进程行为使用独立验收记录。</p></section>
         <section id="services-view" class="view" hidden><div class="section-heading"><h2>本机发布的服务</h2><label class="checkbox"><input id="show-inactive" type="checkbox">显示已停止 / 过期</label></div><div id="service-list" class="card-grid"></div><div class="section-heading subheading"><h2>转发连接与隧道</h2><span class="muted">仅展示当前 Daemon 的记录</span></div><div id="connection-list" class="surface"></div></section>
@@ -66,58 +73,134 @@
     </div>
   </main>
   <dialog id="task-dialog" class="task-dialog" aria-labelledby="task-dialog-title"><div class="dialog-heading"><div><span class="eyebrow">TASK INSPECTOR</span><h2 id="task-dialog-title">任务详情</h2></div><div class="detail-toolbar"><button id="refresh-task" class="text-button">刷新任务与验收</button><button class="icon-button" data-close="task-dialog" aria-label="关闭任务详情">×</button></div></div><div id="detail-updates" class="alert" hidden><span>检测到新的任务或核验结果，输入内容已保留。</span><button id="apply-detail-updates" class="text-button">更新结果并保留输入</button></div><p id="task-read-error" class="alert" role="status" hidden></p><div id="task-detail"></div><div class="events-heading"><h3>事件流</h3><span id="event-count" class="mono muted">0 events</span></div><div id="event-list" class="event-list"></div><button id="load-events" class="button secondary">加载后续事件</button></dialog>
-  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title"><span class="eyebrow">CONFIRM ACTION</span><h2 id="confirm-title"></h2><p id="confirm-description"></p><div class="confirm-actions"><button id="confirm-cancel" class="button secondary">返回</button><button id="confirm-accept" class="button">确认</button></div></dialog>
-  <dialog id="compose-dialog" class="compose-dialog" aria-labelledby="compose-title">
-    <div class="dialog-heading"><div><span class="eyebrow">NEW DELEGATION</span><h2 id="compose-title">新建委派任务</h2></div><button class="icon-button" id="close-compose" aria-label="关闭任务表单">×</button></div>
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title"><h2 id="confirm-title"></h2><div id="confirm-description"></div><div class="confirm-actions"><button id="confirm-cancel" class="button secondary">返回</button><button id="confirm-accept" class="button">确认</button></div></dialog>
+  <dialog id="compose-dialog" class="compose-dialog delegation-dialog" aria-labelledby="compose-title">
+    <header class="dialog-heading">
+      <div><h2 id="compose-title">新建委派任务</h2><p id="compose-session" class="muted" hidden></p></div>
+      <button class="icon-button" id="close-compose" type="button" aria-label="关闭任务表单">×</button>
+    </header>
     <form id="compose-form">
-      <section id="compose-discovery" class="project-discovery" hidden>
-        <label>先选项目<select id="discover-project" aria-label="查找执行端的项目"></select></label>
-        <div id="discover-targets" class="discover-targets" aria-label="项目可用执行端"></div>
-        <p id="discover-note" class="form-note" role="status"></p>
-      </section>
-      <p id="compose-session" class="form-note" hidden></p>
-      <div class="form-grid"><label>执行节点<select id="compose-peer" required></select></label><label>Agent<select id="compose-agent" required></select></label><label>项目<select id="compose-project" required></select></label><label>执行上限（秒）<input id="compose-timeout" type="number" min="1" max="1800" value="600" required></label><label>输出额度<select id="compose-output"><option value="1048576">1 MiB</option><option value="4194304">4 MiB</option><option value="8388608">8 MiB</option><option value="16777216" selected>16 MiB</option></select></label></div>
-      <label class="form-label">任务目标<textarea id="compose-goal" rows="7" required placeholder="描述需要完成的工作和可检查的结果。"></textarea></label>
-      <section id="compose-git" class="project-discovery" hidden>
-        <div id="git-comparison" class="git-comparison" aria-live="polite"></div>
-        <div class="form-grid">
-          <label>执行版本<select id="git-mode"><option value="">沿用项目运行方式</option><option value="current">使用执行端当前检出</option><option value="pinned">在独立目录检出指定提交</option></select></label>
-          <label id="git-commit-label" hidden>完整提交 ID<input id="git-commit" maxlength="64" autocomplete="off"></label>
+      <div class="delegation-scroll">
+        <div class="delegation-main">
+          <section aria-labelledby="compose-target-title">
+            <h3 id="compose-target-title">交给谁来做</h3>
+            <div class="form-grid delegation-target">
+              <label>执行电脑<select id="compose-peer" required></select></label>
+              <label>Agent<select id="compose-agent" required></select></label>
+              <label>项目<select id="compose-project" required></select></label>
+            </div>
+            <details id="compose-discovery" class="panel-disclosure" hidden>
+              <summary>按项目查找 Agent</summary>
+              <div class="form-grid"><label class="full-field">项目<select id="discover-project" aria-label="查找执行端的项目"></select></label></div>
+              <div id="discover-targets" class="discover-targets" aria-label="项目可用执行端"></div>
+              <p id="discover-note" class="form-note" role="status"></p>
+            </details>
+          </section>
+          <label class="form-label delegation-goal">任务目标<textarea id="compose-goal" rows="5" required placeholder="描述要完成的工作，以及怎样判断结果符合预期。"></textarea></label>
+          <details id="compose-artifact-settings" class="panel-disclosure">
+            <summary>工件验收 <span id="compose-artifact-summary" class="muted">可选</span></summary>
+            <label class="form-label">预期工件（逗号分隔）<input id="compose-artifacts" placeholder="out/health.json" autocomplete="off"></label>
+            <p class="muted form-note">填写执行端已声明的工件相对路径。</p>
+            <details id="compose-contract" hidden><summary>设置 JSON 验收条件</summary>
+              <label class="form-label">要核验的工件<input id="contract-artifact" maxlength="1024" placeholder="out/health.json"></label>
+              <label class="form-label">需要匹配的 JSON 字段<textarea id="contract-expected" rows="3" placeholder='{"status":"ok"}'></textarea></label>
+            </details>
+          </details>
         </div>
-      </section>
-      <label class="form-label">预期工件（可选，逗号分隔）<input id="compose-artifacts" placeholder="out/health.json" autocomplete="off"></label>
-      <p class="muted form-note">只检查执行端已声明的相对路径，不增加授权。留空表示本任务没有指定工件验收契约。</p>
-      <details id="compose-contract" hidden><summary>设置 JSON 验收条件</summary>
-        <label class="form-label">要核验的工件<input id="contract-artifact" maxlength="1024" placeholder="out/health.json"></label>
-        <label class="form-label">需要匹配的 JSON 字段<textarea id="contract-expected" rows="3" placeholder='{"status":"ok"}'></textarea></label>
-      </details>
-      <section id="compose-preflight" class="preflight" data-ready="unchecked" aria-live="polite"><p class="form-note">提交前将检查 Agent、项目、审批要求与工件声明；不调用模型。</p></section>
-      <p id="compose-binding" class="mono muted"></p><p class="muted form-note">提交后的审批要求以执行端预检为准。开始执行后可能调用模型并产生费用。</p>
-      <p id="compose-error" class="alert" hidden></p><div class="confirm-actions"><button id="discard-pending" class="button secondary" type="button" hidden>放弃本地草稿</button><button id="compose-check" class="button secondary" type="button">检查执行条件</button><button id="compose-submit" class="button" type="submit">预检并审阅</button></div>
+        <aside class="delegation-inspector" aria-label="执行条件与设置">
+          <h3>执行条件</h3>
+          <div id="compose-preflight" class="preflight" data-ready="unchecked" aria-live="polite"></div>
+          <details id="compose-limits" class="panel-disclosure">
+            <summary>执行限额 <span id="compose-limit-summary" class="muted">600 秒 · 16 MiB</span></summary>
+            <div class="form-grid">
+              <label>执行上限（秒）<input id="compose-timeout" type="number" min="1" max="1800" value="600" required></label>
+              <label>输出额度<select id="compose-output"><option value="1048576">1 MiB</option><option value="4194304">4 MiB</option><option value="8388608">8 MiB</option><option value="16777216" selected>16 MiB</option></select></label>
+            </div>
+          </details>
+          <details id="compose-git" class="panel-disclosure" hidden>
+            <summary>Git 执行版本 <span id="compose-git-summary" class="muted"></span></summary>
+            <div id="git-comparison" class="git-comparison" aria-live="polite"></div>
+            <div class="form-grid">
+              <label class="full-field">执行版本<select id="git-mode"><option value="">沿用项目运行方式</option><option value="current">使用执行端当前检出</option><option value="pinned">在独立目录检出指定提交</option></select></label>
+              <label class="full-field" id="git-commit-label" hidden>完整提交 ID<input id="git-commit" maxlength="64" autocomplete="off"></label>
+            </div>
+          </details>
+          <details class="delegation-request"><summary>请求标识</summary><p id="compose-binding" class="mono muted"></p></details>
+        </aside>
+      </div>
+      <div class="delegation-footer">
+        <p id="compose-error" role="status" hidden></p>
+        <div class="confirm-actions"><button id="discard-pending" class="button secondary" type="button" hidden>放弃本地草稿</button><button id="compose-check" class="button secondary" type="button">检查执行条件</button><button id="compose-submit" class="button" type="submit">预检并审阅</button></div>
+      </div>
     </form>
   </dialog>
-  <dialog id="onboard-dialog" class="compose-dialog" aria-labelledby="onboard-title">
-    <div class="dialog-heading"><div><span class="eyebrow">LOCAL SETUP</span><h2 id="onboard-title">接入项目与 Agent</h2></div><button class="icon-button" id="close-onboard" aria-label="关闭接入向导">×</button></div>
-    <form id="onboard-form"><fieldset id="onboard-fields" class="onboard-fields"><div class="form-grid">
-      <label>Agent 名称<input id="onboard-name" required maxlength="64" placeholder="mac-opencode"></label>
-      <label>项目 ID<input id="onboard-project" required maxlength="64" placeholder="my-project"></label>
-      <label class="full-field">项目绝对路径<input id="onboard-root" required placeholder="/absolute/project"></label>
-      <label>Agent 类型<select id="onboard-harness"><option value="opencode">OpenCode</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="pi">Pi</option><option value="dsh">DeepSeek Harness (DSH)</option><option value="acp">其他 ACP Agent</option></select></label>
-      <label>ACP 启动命令<input id="onboard-executable" required placeholder="/absolute/executable"></label>
-      <label id="onboard-args-label" hidden>启动参数（空格分隔）<input id="onboard-args" placeholder="--acp"></label>
-      <label>环境变量引用（逗号分隔，可选）<input id="onboard-env" placeholder="ANTHROPIC_API_KEY"></label>
-      <p id="onboard-detected" class="muted form-note full-field"></p>
-      <label>允许工具（逗号分隔）<input id="onboard-tools" required value="read,write,edit"></label>
-      <label>工作目录<select id="onboard-workspace"><option value="shared">共享目录 · 同目录互斥执行</option><option value="git-worktree">独立 Git worktree</option></select></label>
-      <label id="onboard-git-label" hidden>Git 可执行文件绝对路径<input id="onboard-git" placeholder="/usr/bin/git"></label>
-      <label>工件相对路径（逗号分隔）<input id="onboard-artifacts" placeholder="out/health.json"></label>
-      <label>授权预览节点<select id="onboard-peer"></select></label>
-    </div></fieldset><p class="form-note muted">凭据仅通过本机文件或环境变量引用。登记后仍需显式模型验证；授权预览不会自动修改现有策略。</p>
-    <section id="onboard-review" hidden><h3>检查与授权预览</h3><div id="onboard-summary"></div><pre id="onboard-policy" class="goal"></pre></section>
-    <p id="onboard-message" class="form-note" role="status"></p><div class="confirm-actions"><button id="onboard-back" type="button" class="button secondary" hidden>修改配置</button><button id="onboard-submit" type="submit" class="button">检查并预览</button></div></form>
+  <dialog id="onboard-dialog" class="compose-dialog onboard-dialog" aria-labelledby="onboard-title">
+    <header class="dialog-heading">
+      <div><h2 id="onboard-title">接入项目与 Agent</h2><p id="onboard-local" class="muted"></p></div>
+      <button class="icon-button" id="close-onboard" type="button" aria-label="关闭接入向导">×</button>
+    </header>
+    <ol id="onboard-steps" class="onboard-steps" aria-label="接入进度">
+      <li aria-current="step">选择 Agent</li><li>绑定项目</li><li>确认登记</li>
+    </ol>
+    <form id="onboard-form" autocomplete="off">
+      <div class="onboard-scroll">
+        <fieldset id="onboard-agent" class="onboard-fields">
+          <legend class="visually-hidden">Agent 类型</legend>
+          <div id="onboard-harness" class="onboard-choices"></div>
+          <div id="onboard-launch" hidden>
+            <div class="onboard-adapter">
+              <div><strong id="onboard-detected" role="status"></strong><p id="onboard-install-details" class="muted" hidden></p></div>
+              <button id="onboard-install" class="button secondary" type="button" hidden>安装推荐版本</button>
+              <button id="onboard-retry" class="button secondary" type="button" hidden>重新检测</button>
+            </div>
+            <div class="form-grid">
+              <label class="full-field">启动命令绝对路径<input id="onboard-executable" class="mono" required spellcheck="false"></label>
+              <label id="onboard-args-label" class="full-field" hidden>ACP 启动参数（以空格分隔）<input id="onboard-args" class="mono" placeholder="--acp" spellcheck="false"></label>
+            </div>
+          </div>
+        </fieldset>
+        <fieldset id="onboard-project-fields" class="onboard-fields" hidden disabled>
+          <legend class="visually-hidden">项目配置</legend>
+          <p id="onboard-project-agent" class="onboard-selection"></p>
+          <div class="form-grid">
+            <label>Agent 名称<input id="onboard-name" required maxlength="64" placeholder="例如 mac-codex"></label>
+            <label>项目 ID<input id="onboard-project" required maxlength="64" placeholder="例如 my-project"></label>
+            <label class="full-field">项目目录的绝对路径<input id="onboard-root" class="mono" required spellcheck="false"></label>
+          </div>
+          <details id="onboard-advanced" class="onboard-details">
+            <summary>高级设置 <span class="muted">工作目录、工具、工件与远端授权</span></summary>
+            <div class="form-grid">
+              <label>工作目录<select id="onboard-workspace"><option value="shared">共享目录 · 同目录互斥执行</option><option value="git-worktree">独立 Git worktree</option></select></label>
+              <label>允许工具（逗号分隔）<input id="onboard-tools" required value="read,write,edit"></label>
+              <label id="onboard-git-label" class="full-field" hidden>Git 可执行文件绝对路径<input id="onboard-git" class="mono" placeholder="/usr/bin/git"></label>
+              <label>工件相对路径（逗号分隔）<input id="onboard-artifacts" class="mono" placeholder="out/health.json"></label>
+              <label>环境变量名（逗号分隔）<input id="onboard-env" class="mono" placeholder="例如 ANTHROPIC_API_KEY"><span class="muted">只填写变量名。Key 可在登记后配置。</span></label>
+              <label class="full-field">远端授权预览<select id="onboard-peer"></select><span class="muted">选择配对电脑可预览任务委派授权。预览内容需手动合并到执行端策略。</span></label>
+            </div>
+          </details>
+        </fieldset>
+        <section id="onboard-review" hidden aria-labelledby="onboard-review-title">
+          <h3 id="onboard-review-title" tabindex="-1"></h3>
+          <p id="onboard-review-note" class="muted"></p>
+          <div id="onboard-summary"></div>
+          <details id="onboard-grant" class="onboard-details" hidden>
+            <summary>远端授权预览</summary><pre id="onboard-policy" class="goal"></pre>
+          </details>
+        </section>
+      </div>
+      <footer class="onboard-footer">
+        <p id="onboard-message" role="status"></p>
+        <div class="confirm-actions">
+          <button id="onboard-back" type="button" class="button secondary" hidden>上一步</button>
+          <button id="onboard-done" type="button" class="button secondary" hidden>完成</button>
+          <button id="onboard-service" type="button" class="button" hidden>配置模型服务</button>
+          <button id="onboard-submit" type="submit" class="button">继续绑定项目</button>
+        </div>
+      </footer>
+    </form>
   </dialog>
   <dialog id="pair-dialog" class="compose-dialog service-dialog pair-dialog" aria-labelledby="pair-title">
-    <div class="dialog-heading"><div><h2 id="pair-title">配对新电脑</h2><p class="muted">对方批准一次，两边就都配好了。</p></div><button class="icon-button" data-close="pair-dialog" type="button" aria-label="关闭配对窗口">×</button></div>
+    <div class="dialog-heading"><div><h2 id="pair-title">配对新电脑</h2><p id="pair-local" class="muted"></p></div><button class="icon-button" data-close="pair-dialog" type="button" aria-label="关闭配对窗口">×</button></div>
     <div id="pair-body"></div>
   </dialog>
   <dialog id="name-dialog" class="confirm-dialog name-dialog" aria-labelledby="name-title"><form id="name-form"><h2 id="name-title"></h2><p id="name-description"></p><input id="name-input" maxlength="120" autocomplete="off" spellcheck="false" aria-labelledby="name-title"><p id="name-message" class="form-note" role="status" hidden></p><div class="confirm-actions"><button id="name-cancel" type="button" class="button secondary">取消</button><button id="name-save" type="submit" class="button">保存</button></div></form></dialog>

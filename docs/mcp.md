@@ -9,7 +9,7 @@
 
 - 最省事的是每台电脑跑一次 `hmesh setup`：只想让本机 agent 调用别的电脑，用 `--mcp-only`；还要把本机 agent 共享出去，用 `--full`（见下面「用 hmesh setup 安装」）。手动装就是 `hmesh init` + `hmesh daemon start`。
 - 完成一次配对：面板「配对节点」→「配对新电脑」粘贴对方的配对码，对方批准一次即可（CLI 是 `hmesh pair request --code` 和对方的 `hmesh pair approve`）。**配对就是信任边界**：配对后对方能看到你登记的 agent，并能和它们开会话。只装 MCP 的电脑不接受连入，配对必须从它发起。
-- 完整安装的电脑用 `hmesh agent detect` 看本机装了哪些 ACP agent（`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh`），再 `hmesh agent register` 登记（`hmesh setup --full` 会替你登记）。登记只做一次 ACP `initialize` 握手，不调用模型。HarnessMesh 不会替你安装 agent。
+- 完整安装的电脑用 `hmesh agent detect` 看本机装了哪些 ACP agent（`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh`），再 `hmesh agent register` 登记（`hmesh setup --full` 会替你登记）。登记只做一次 ACP `initialize` 握手，不调用模型。Codex 与 Claude Code 缺少 ACP 适配器时，可在面板的「接入项目与 Agent」中安装推荐版本。
 
 ## 用 hmesh setup 安装
 

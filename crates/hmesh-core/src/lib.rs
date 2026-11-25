@@ -169,12 +169,12 @@ impl HarnessKind {
             Self::Acp => None,
         }
     }
-    /// What to install for this agent's ACP command (HarnessMesh never installs it).
+    /// The package that provides this agent's ACP command.
     pub fn acp_package(self) -> Option<&'static str> {
         match self {
             Self::Opencode => Some("opencode-ai"),
             Self::ClaudeCode => Some("@agentclientprotocol/claude-agent-acp"),
-            Self::Codex => Some("@zed-industries/codex-acp"),
+            Self::Codex => Some("@agentclientprotocol/codex-acp"),
             Self::Pi => Some("pi-acp"),
             Self::Dsh => Some("@deepseek-ai/dsh"),
             Self::Acp => None,

@@ -1016,7 +1016,6 @@ select,textarea,.form-grid input { width:100%; padding:10px 12px; border:1px sol
 textarea { resize:vertical; }
 select:focus-visible,textarea:focus-visible { outline:2px solid var(--green); outline-offset:2px; }
 .form-note { font-size:11px; margin:12px 0; }
-#compose-binding { font-size:10px; overflow-wrap:anywhere; margin-top:15px; }
 .workflow-detail { margin-top:18px; }
 .verification-result { padding:16px; border:1px solid var(--line); background:var(--card); margin:14px 0; border-radius:5px; }
 .verification-result>strong { margin-left:10px; font-size:12px; }
@@ -1026,7 +1025,7 @@ select:focus-visible,textarea:focus-visible { outline:2px solid var(--green); ou
 #pending-submission .text-button { margin-right:20px; }
 #stop-panel { margin:0; }
 @media(max-width:700px) { .form-grid {grid-template-columns:1fr;} .compose-dialog {max-height:92vh;} }
-.onboard-fields{border:0;padding:0;margin:0;min-width:0}.onboard-fields input,.onboard-fields select{width:100%;min-width:0}.full-field{grid-column:1/-1}#onboard-dialog{max-height:90dvh;overflow-y:auto}#onboard-policy{max-height:240px;overflow:auto}.workspace-diff{max-height:400px;overflow:auto;white-space:pre;font-size:12px}.queue-note{margin-top:6px;color:var(--muted)}
+.full-field{grid-column:1/-1}.workspace-diff{max-height:400px;overflow:auto;white-space:pre;font-size:12px}.queue-note{margin-top:6px;color:var(--muted)}
 .pipeline-list{display:grid;gap:18px}.pipeline-card{padding:24px}.pipeline-stages{list-style:decimal-leading-zero;padding-left:26px;margin:24px 0}.pipeline-stages li{padding:0 0 18px 12px;border-left:2px solid var(--line)}.pipeline-stages li.current{border-color:var(--green)}.pipeline-stages li.complete{opacity:.7}.pipeline-stages strong,.pipeline-stages .muted{display:block;margin-bottom:5px}.pipeline-stages .text-button{display:block;margin-top:6px}.development-form>.button{margin:18px 10px 0 0}.development-form input{padding:10px 12px;border:1px solid var(--line);font:12px/1.6 var(--body);border-radius:5px;min-width:0}.pipeline-editor-stage{border:1px solid var(--line);padding:16px;margin-top:18px;min-width:0}.pipeline-editor-stage legend{font:11px var(--mono);padding:0 8px}#development-dialog{max-height:90dvh;overflow:auto}#usage-list,#session-usage-list,#storage-summary{padding:20px;overflow:auto}#usage-list td{overflow-wrap:anywhere}#template-list .goal{max-height:120px;overflow:auto}.development-form .goal{max-height:200px;overflow:auto}
 
 .runtime-summary{margin:0 0 18px;padding:16px 20px;border:1px solid var(--line);border-radius:6px;background:var(--sidebar);font-size:12px}
@@ -1396,16 +1395,26 @@ table.usage-table td:first-child{white-space:normal}
 /* Keep the footer line clear of the last card on every page. */
 footer{margin-top:28px}
 
-/* Pairing: the toolbar on 配对节点, open requests, and the pair dialog. */
-.pair-toolbar{display:flex;justify-content:flex-end;margin:-10px 0 20px}
+/* Pairing companions and requests use the same identity and status layout. */
+.pair-toolbar {
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:14px 16px;border:1px solid var(--border);border-radius:10px;background:var(--sidebar);
+}
+.pair-identity,.paired-identity{display:flex;align-items:center;gap:10px;min-width:0}
+.pair-identity>.icon,.paired-identity>.icon{box-sizing:content-box;padding:8px;border:1px solid var(--border);border-radius:8px;flex:none;background:var(--card)}
+.pair-identity>div,.paired-identity>div{min-width:0;overflow-wrap:anywhere}
+.pair-identity>div>*{display:block}
+.pair-identity>div>span{font-size:11px}
+.pair-identity strong{font-size:14px}
 #pair-new{flex:none}
-.pair-requests{margin:0 0 16px}
+.pair-requests,.paired-computers{margin-top:24px}
+.pair-requests h2,.paired-computers h2{font-size:15px;margin:0 0 10px}
 .entity-list .pair-card{display:block}
 .entity-list .pair-card .entity-top{margin-bottom:8px}
-.entity-list .pair-card .entity-actions{margin-top:14px}
+.entity-list .pair-card .entity-actions{margin-top:10px}
 .pair-card[data-direction="incoming"]{border-color:var(--amber-border)}
 .pair-facts{margin:0;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
-.pair-ask{margin:0 0 6px;font-size:13px}
+.pair-ask{margin:8px 0 0;font-size:13px;overflow-wrap:anywhere}
 .pair-digits-inline{font:600 13px var(--mono);letter-spacing:.12em;padding:1px 6px;border-radius:5px;background:var(--secondary)}
 .pair-approve{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0 0}
 .pair-check-label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
@@ -1413,29 +1422,51 @@ footer{margin-top:28px}
 .pair-check:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
 .pair-card .form-note{margin:10px 0 0}
 .pair-message{color:var(--destructive)}
-.pair-message[hidden]{display:none}
-/* The pairing dialog shares the service dialog frame (no outer padding):
-   its body scrolls inside with the same inset. */
-.pair-dialog #pair-body{min-height:0;overflow:auto;overscroll-behavior:contain;padding:14px var(--service-padding) 18px}
-.pair-dialog .pair-message{color:var(--muted)}
-.pair-dialog .pair-message.error{color:var(--destructive)}
+.paired-computers .paired-card{display:block;padding:16px}
+.paired-card .entity-top{gap:8px;align-items:flex-start}
+.paired-flags{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+.paired-endpoint{font-size:11px;color:var(--muted);margin:3px 0 0;overflow-wrap:anywhere}
+.paired-inventory{margin:12px 0}
+.paired-inventory .entity-meta{display:flex;flex-wrap:wrap;gap:4px 8px;margin:0;align-items:baseline}
+.paired-inventory .entity-meta dd{font:600 14px var(--mono);margin:0 14px 0 0}
+.paired-inventory>p{margin:4px 0 0;font-size:12px}
+.paired-actions{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;border-top:1px solid var(--border);padding-top:10px}
+.paired-record{min-width:0;font-size:11px;color:var(--muted)}
+.paired-record p{margin:4px 0 0;overflow-wrap:anywhere}
+.paired-record summary,.panel-disclosure summary,.delegation-request summary{cursor:pointer}
+.paired-actions .button{flex:none}
+.remote-agent-heading{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.remote-agent-heading h2{font-size:16px;min-width:0;overflow-wrap:anywhere}
+#pair-body,.pair-form{display:flex;flex-direction:column;min-height:0}
+.pair-scroll{padding:14px var(--service-padding) 16px;min-height:0;overflow:auto;overscroll-behavior:contain}
+.pair-methods{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));margin-bottom:14px}
+.pair-methods button{white-space:normal;text-align:center}
+.pair-entry .form-label{margin-top:0}
+.pair-entry .form-note{font-size:12px;margin:7px 0}
+.pair-entry .form-note:empty{display:none}
+.pair-footer{flex:none;border-top:1px solid var(--border);padding:10px var(--service-padding);margin:0}
+.pair-footer .confirm-actions{margin:0}
+.pair-footer .pair-message{color:var(--muted);margin:0 0 8px;max-height:4.5em;overflow:auto;overflow-wrap:anywhere}
+.pair-footer .pair-message.error{color:var(--destructive)}
 .pair-dialog textarea{font:12px/1.6 var(--mono);word-break:break-all}
-.pair-own{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:6px 0 4px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;font-size:12px;line-height:1.55}
-.pair-own>div{display:flex;flex-direction:column;gap:4px;min-width:0}
-.pair-own b{font-size:13px}
-.pair-own span{color:var(--muted)}
-.pair-own-code{font:12px/1.5 var(--mono);color:var(--foreground);word-break:break-all;user-select:all}
-.pair-own .button{flex:none}
+.pair-own-code {
+  display:block;padding:10px 12px;margin:10px 0;border-radius:8px;background:var(--secondary);
+  font:12px/1.5 var(--mono);color:var(--foreground);overflow-wrap:anywhere;user-select:all;
+}
 .pair-sent{font-size:13px;line-height:1.7}
 .pair-sent p{margin:0 0 8px}
-.pair-sent-title{font-size:15px;font-weight:600}
-.pair-digits{display:inline-block;margin:6px 0 14px;padding:10px 18px;border:1px solid var(--border);border-radius:12px;font:600 26px/1.2 var(--mono);letter-spacing:.22em}
-@media(max-width:700px){.pair-own{flex-direction:column}}
+.pair-sent-title{font-size:17px;font-weight:600;overflow-wrap:anywhere;margin:7px 0}
+.pair-check-tile{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:10px 12px;margin:10px 0;border-radius:8px;background:var(--secondary)}
+.pair-digits{font:600 24px/1.2 var(--mono);letter-spacing:.18em;user-select:all}
 @media(max-width:540px){
   .service-dialog{--service-padding:14px}
   .service-dialog .form-grid{grid-template-columns:minmax(0,1fr)}
   .service-modes{grid-template-columns:minmax(0,1fr);gap:4px}
   .service-mode{padding:8px 10px}
+  .pair-toolbar{padding:10px}
+  .pair-identity{gap:6px;flex-wrap:wrap}
+  .pair-identity>.icon,.paired-identity>.icon{padding:5px}
+  .pair-identity>.badge{display:none}
 }
 
 /* Session-specific slash commands stay attached to the active composer. */
@@ -1457,7 +1488,6 @@ footer{margin-top:28px}
 .mode-note[hidden]{display:none}
 .pair-window-line{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:8px;font-size:12.5px;line-height:1.6;color:var(--muted)}
 .pair-window-line .button{flex:none}
-.pair-outbound{font-size:12.5px;color:var(--muted);line-height:1.6}
 
 /* Projects in the sidebar: this computer → project → sessions, with the
    sessions the agents already keep in each folder listed underneath. */
@@ -1564,3 +1594,164 @@ footer{margin-top:28px}
   .composer-bar:has(.composer-project:not([hidden])) .composer-settings{flex:1 1 calc(100% - 48px)}
 }
 @media(hover:none){.project-actions{visibility:visible}.row-menu{visibility:visible}.session-item .session-row-time{visibility:hidden}}
+
+/* Keep the progress and actions visible while the current step scrolls. */
+.onboard-dialog {
+  --onboard-pad:24px;
+  width:min(650px,calc(100vw - 24px));
+  max-height:calc(100dvh - 24px);
+  overflow:hidden;
+  padding:0;
+}
+.onboard-dialog[open],#onboard-form{display:flex;flex-direction:column}
+.onboard-dialog [hidden]{display:none}
+.onboard-dialog .dialog-heading{margin:0;padding:14px var(--onboard-pad);gap:12px;flex:none}
+.onboard-dialog .dialog-heading>div{min-width:0;overflow-wrap:anywhere}
+.onboard-dialog .dialog-heading .icon-button{flex:none}
+.onboard-dialog .dialog-heading h2{margin:0;font-size:19px}
+.onboard-dialog .dialog-heading p{margin:2px 0 0;font-size:12px}
+.onboard-steps {
+  flex:none;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px;
+  list-style:none;
+  margin:0;
+  padding:12px var(--onboard-pad) 0;
+}
+.onboard-steps li{padding:5px 0;border-bottom:2px solid var(--border);color:var(--muted);font-size:12px}
+.onboard-steps li.complete{border-color:var(--ring)}
+.onboard-steps li[aria-current="step"]{border-color:var(--primary);color:var(--foreground);font-weight:600}
+#onboard-form,.onboard-scroll{min-height:0}
+.onboard-scroll{padding:16px var(--onboard-pad) 18px;overflow:auto;overscroll-behavior:contain}
+.onboard-fields{border:0;padding:0;margin:0;min-width:0}
+.onboard-fields .form-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.onboard-fields .form-grid input,.onboard-fields select{min-width:0}
+.onboard-dialog .visually-hidden,.onboard-choice input{
+  position:absolute;width:1px;height:1px;margin:0;clip-path:inset(50%);overflow:hidden
+}
+.onboard-choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.onboard-choice {
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  gap:1px;
+  min-height:56px;
+  padding:7px 11px;
+  border:1px solid var(--border);
+  border-radius:8px;
+  cursor:pointer;
+  overflow-wrap:anywhere;
+}
+.onboard-choice:hover{background:var(--secondary)}
+.onboard-choice:has(:checked){border-color:var(--primary);background:var(--selected)}
+.onboard-choice:has(:focus-visible){outline:2px solid var(--ring);outline-offset:2px}
+.onboard-choice:has(:disabled){cursor:default}
+.onboard-choice-status{font-size:11px;color:var(--muted)}
+.onboard-choice-status[data-found="true"]::before{content:"";display:inline-block;width:5px;height:5px;margin-right:6px;border-radius:50%;background:var(--emerald);vertical-align:2px}
+.onboard-adapter {
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;
+  margin:14px 0 12px;padding:9px 12px;background:var(--secondary);border-radius:8px;font-size:12px;
+}
+.onboard-adapter>div{min-width:0;flex:1 1 200px;overflow-wrap:anywhere}
+.onboard-adapter p{margin:2px 0 0;font:11px/1.5 var(--mono)}
+.onboard-selection{margin:0 0 12px;font-size:12px;color:var(--muted)}
+.onboard-details{margin:14px 0 0;border:1px solid var(--border);border-radius:8px;padding:9px 12px}
+.onboard-details summary{cursor:pointer}
+.onboard-details summary span{font-size:11px;margin-inline-start:4px}
+.onboard-details[open] .form-grid{margin-top:12px}
+#onboard-review-title{margin:0;font-size:17px;overflow-wrap:anywhere}
+#onboard-review-note{margin:3px 0 12px;font-size:12px}
+#onboard-summary .entity-meta{grid-template-columns:75px minmax(0,1fr);gap:6px 12px;margin:0}
+#onboard-summary dd{overflow-wrap:anywhere}
+#onboard-policy{max-height:180px;overflow:auto;margin:10px 0 0}
+.onboard-footer{display:block;flex:none;margin:0;border-top:1px solid var(--border);padding:10px var(--onboard-pad)}
+.onboard-footer .confirm-actions{margin:0}
+#onboard-back{margin-inline-end:auto}
+#onboard-message{margin:0 0 8px;max-height:4.5em;overflow:auto;overflow-wrap:anywhere;color:var(--muted);font-size:12px}
+#onboard-message:empty{display:none}
+#onboard-message.error{color:var(--destructive)}
+@media(max-width:540px){
+  .onboard-dialog{--onboard-pad:14px}
+  .onboard-choices{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .onboard-fields .form-grid{grid-template-columns:minmax(0,1fr)}
+}
+
+/* The task sheet keeps the prompt and target together, with checks alongside. */
+.delegation-dialog {
+  --delegation-pad:22px;
+  width:min(868px,calc(100vw - 24px));
+  max-height:calc(100dvh - 24px);
+  overflow:hidden;
+  padding:0;
+}
+.delegation-dialog[open],#compose-form{display:flex;flex-direction:column}
+.delegation-dialog [hidden]{display:none}
+.delegation-dialog .dialog-heading{margin:0;padding:14px var(--delegation-pad);gap:12px;flex:none}
+.delegation-dialog .dialog-heading h2{margin:0;font-size:19px}
+.delegation-dialog .dialog-heading p{margin:3px 0 0;font-size:12px;overflow-wrap:anywhere}
+.delegation-dialog .dialog-heading .icon-button{flex:none}
+#compose-form,.delegation-scroll{min-height:0}
+.delegation-scroll {
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(232px,.55fr);
+  overflow:auto;overscroll-behavior:contain;
+}
+.delegation-main,.delegation-inspector{min-width:0;padding:16px var(--delegation-pad)}
+.delegation-inspector{background:var(--sidebar);border-left:1px solid var(--border)}
+.delegation-scroll h3{margin:0 0 9px;font-size:13px}
+.delegation-target.form-grid{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,.9fr);gap:8px}
+.delegation-scroll label,.delegation-scroll input,.delegation-scroll select{min-width:0}
+.delegation-goal{font-weight:600;margin:16px 0}
+.delegation-goal textarea{font-size:13px;min-height:96px}
+.panel-disclosure{margin:10px 0 0;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--card)}
+.panel-disclosure summary span{font-size:11px;margin-inline-start:5px}
+.panel-disclosure .form-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}
+.panel-disclosure .form-label{margin-top:8px}
+.panel-disclosure .form-note{margin:6px 0}
+.panel-disclosure .form-note:empty{display:none}
+.panel-disclosure .discover-target strong,.panel-disclosure .discover-target .muted{overflow-wrap:anywhere}
+.panel-disclosure #compose-artifacts,.panel-disclosure #contract-artifact {
+  width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:5px;
+  background:var(--card);color:var(--foreground);font:12px/1.6 var(--mono);
+}
+.panel-disclosure #compose-contract{margin-top:8px}
+.delegation-inspector .preflight{margin:0;padding:9px 10px;border-radius:8px}
+.delegation-inspector .preflight .form-note{margin:3px 0 0}
+.delegation-inspector .preflight[data-ready=true]{border-color:var(--emerald);background:var(--emerald-tint)}
+.delegation-inspector .preflight[data-ready=error]{border-color:var(--amber-border);background:var(--amber-tint)}
+.delegation-inspector .git-comparison .entity-meta{grid-template-columns:48px minmax(0,1fr);gap:5px;margin:8px 0}
+.delegation-request{margin-top:10px;color:var(--muted);font-size:11px}
+#compose-binding{font-size:10px;overflow-wrap:anywhere;margin:4px 0 0}
+.delegation-footer{flex:none;border-top:1px solid var(--border);padding:10px var(--delegation-pad)}
+.delegation-footer .confirm-actions{margin:0}
+#compose-error{margin:0 0 8px;color:var(--destructive);font-size:12px;max-height:4.5em;overflow:auto;overflow-wrap:anywhere}
+
+.structured-confirm[open]{display:flex;flex-direction:column;width:min(570px,calc(100vw - 24px));max-height:calc(100dvh - 24px);overflow:hidden;padding:0}
+.structured-confirm h2{margin:0;padding:12px 20px;border-bottom:1px solid var(--border);font-size:18px}
+.structured-confirm #confirm-description{min-height:0;padding:14px 20px;overflow:auto}
+.structured-confirm .confirm-actions{flex:none;border-top:1px solid var(--border);padding:10px 20px;margin:0}
+.delegation-review-status{padding:8px 10px;background:var(--emerald-tint);border-radius:8px}
+.delegation-review-status.approval{background:var(--amber-tint)}
+.delegation-review-status p{margin:2px 0 0}
+.delegation-review .entity-meta{grid-template-columns:72px minmax(0,1fr);gap:6px 10px;margin:12px 0}
+.delegation-review .entity-meta dd{overflow-wrap:anywhere}
+.delegation-review h3{font-size:12px;margin:12px 0 4px}
+.delegation-review-text {
+  margin:0;padding:10px;background:var(--secondary);border-radius:8px;
+  font:13px/1.6 var(--body);white-space:pre-wrap;overflow-wrap:anywhere;
+}
+@media(max-width:700px){
+  .delegation-dialog{--delegation-pad:14px}
+  .delegation-scroll{display:block}
+  .delegation-inspector{border-left:0;border-top:1px solid var(--border)}
+}
+@media(max-width:460px){
+  .delegation-target.form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .delegation-target>label:first-child{grid-column:1/-1}
+  .discover-target{grid-template-columns:minmax(0,1fr) auto}
+  .discover-target .discover-status{grid-column:1;grid-row:2}
+  .discover-target .button{grid-column:2;grid-row:1}
+  .paired-card .entity-top,.paired-actions{align-items:flex-start;flex-wrap:wrap}
+  .paired-flags{justify-content:flex-start}
+}
