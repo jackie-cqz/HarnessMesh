@@ -143,8 +143,9 @@ enum Commands {
         #[arg(long)]
         tailnet_address: Option<std::net::IpAddr>,
         /// How other computers reach this one: tailscale, or direct (a LAN,
-        /// ZeroTier, WireGuard: any network it is on). Default: Tailscale
-        /// when it is installed here.
+        /// ZeroTier, WireGuard: any network it is on). Default: the network
+        /// a node set up before already uses; for a new one, Tailscale when
+        /// it is signed in here.
         #[arg(long, value_parser = ["tailscale", "direct"])]
         network: Option<String>,
         /// Direct, full: this computer's address that others connect to;

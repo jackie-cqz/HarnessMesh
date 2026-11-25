@@ -2323,18 +2323,44 @@ pub fn local_client(instance: &Instance) -> anyhow::Result<Client> {
     if card.node_id != instance.card.node_id || card.fingerprint != instance.card.fingerprint {
         anyhow::bail!("daemon endpoint identity does not match instance");
     }
-    let endpoint = if instance.config.listens_for_peers() {
-        let url = hmesh_security::validate_endpoint(&card.endpoint)?;
+    // A daemon listening for other computers also listens on loopback, on
+    // the same port, for its owner. Judged by the running daemon's card, not
+    // this configuration: setup may have just switched it to only MCP.
+    let url = hmesh_security::validate_endpoint(&card.endpoint)?;
+    let endpoint = if hmesh_security::endpoint_is_loopback(&card.endpoint) {
+        card.endpoint
+    } else {
         format!(
             "https://127.0.0.1:{}",
             url.port_or_known_default().context("missing daemon port")?
         )
-    } else {
-        card.endpoint
     };
     Client::new(instance, &endpoint, &card.fingerprint, false, true)
 }
 
+#[cfg(test)]
+mod local_client_tests {
+    use super::*;
+    /// Setup switched this node to only MCP while its daemon still listens
+    /// for other computers: the owner reaches that daemon on loopback, the
+    /// same port, to stop it.
+    #[test]
+    fn the_owner_reaches_a_daemon_on_loopback_whatever_the_configuration_says() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = NodeConfig::default();
+        config.node.network = "direct".into();
+        let instance = Instance::init(&root.path().join("node"), config).unwrap();
+        assert!(instance.config.outbound_only());
+        let mut card = instance.card.clone();
+        card.endpoint = "https://192.168.1.20:39880".into();
+        fs::write(
+            instance.dir.join("daemon.json"),
+            serde_json::to_vec(&card).unwrap(),
+        )
+        .unwrap();
+        local_client(&instance).expect("owner client on loopback");
+    }
+}
 #[cfg(test)]
 mod verification_limits_tests {
     use super::*;

@@ -108,9 +108,9 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
         .allow_from
         .clone()
         .or_else(|| match (&existing, place) {
-            (Some(config), Place::Direct(Some(address)))
-                if config.node.network == "direct" && config.node.listen_address == address =>
-            {
+            // Kept across a new address too (the fix for a DHCP change): a
+            // narrowed range is never widened without being asked.
+            (Some(config), Place::Direct(Some(_))) if config.node.network == "direct" => {
                 config.node.allowed_sources.clone()
             }
             _ => None,
@@ -352,12 +352,12 @@ async fn find_place(
                 (None, Mode::McpOnly) => "direct".into(),
                 (None, Mode::Full) if interactive => {
                     eprintln!(
-                        "Tailscale was not found here, so other computers connect over this computer's own network."
+                        "Tailscale is not installed or not signed in here, so other computers connect over this computer's own network."
                     );
                     "direct".into()
                 }
                 (None, Mode::Full) => bail!(
-                    "Tailscale was not found: install it and sign in, or set this computer up for its own network with --network direct --listen <one of its addresses>"
+                    "Tailscale is not installed or not signed in here: sign in to it, or set this computer up for its own network with --network direct --listen <one of its addresses>"
                 ),
             }
         }
@@ -366,22 +366,33 @@ async fn find_place(
         if wants_direct {
             bail!("--listen and --allow-from are for --network direct");
         }
+        if let Some(address) = options.tailnet_address {
+            return Ok((Place::Tailnet(address), None));
+        }
+        // Tailscale's current IP; an only-MCP node set up before may keep
+        // the one it has (it only goes into the certificate) when Tailscale
+        // is not running now.
+        let status = match CliTailscale::discover(options.tailscale_executable.as_deref()) {
+            Ok(provider) => provider.status().await,
+            Err(error) => Err(error),
+        };
         let known = existing
             .filter(|config| config.node.network == "tailscale")
             .and_then(|config| config.node.tailnet_address);
-        return Ok(match options.tailnet_address.or(known) {
-            Some(address) => (Place::Tailnet(address), None),
-            None => {
-                let status = CliTailscale::discover(options.tailscale_executable.as_deref())
-                    .context("Tailscale is needed for --network tailscale; install it and sign in, or pass --tailscale-executable")?
-                    .status()
-                    .await?;
-                (
-                    Place::Tailnet(status.preferred_local_ip()?),
-                    Some(status.self_node.hostname),
-                )
-            }
-        });
+        return Ok(
+            match (
+                status.and_then(|s| Ok((s.preferred_local_ip()?, s.self_node.hostname))),
+                known,
+            ) {
+                (Ok((address, hostname)), _) => (Place::Tailnet(address), Some(hostname)),
+                (Err(_), Some(address)) if mode == Mode::McpOnly => (Place::Tailnet(address), None),
+                (Err(error), _) => {
+                    return Err(error.context(
+                    "Tailscale is needed for --network tailscale: install it, sign in and keep it running, or pass --tailscale-executable",
+                ));
+                }
+            },
+        );
     }
     if options.tailnet_address.is_some() {
         bail!("--tailnet-address is for --network tailscale");

@@ -550,3 +550,43 @@ fn only_mcp_with_tailscale_signed_out_connects_out_directly() {
     assert_eq!(summary["network"], "direct", "{summary}");
     assert_eq!(summary["outbound_only"], true);
 }
+
+/// A new address (the fix for a DHCP change) keeps a narrowed source range:
+/// it is never widened to every private network without being asked.
+#[test]
+fn a_new_address_keeps_the_narrowed_sources() {
+    let home = Home::new();
+    // Set up for an address this computer does not have (192.0.2.0/24 is
+    // for documentation), as after its lease changed.
+    let output = home.hmesh(
+        &[
+            "--json",
+            "init",
+            "--name",
+            "probe",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--listen-address",
+            "192.0.2.10",
+            "--allow-from",
+            "192.0.2.0/24",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    home.setup_with(&["--full", "--listen", "127.0.0.1"]);
+    let config = home.config();
+    assert_eq!(config["node"]["listen_address"].as_str(), Some("127.0.0.1"));
+    assert_eq!(
+        config["node"]["allowed_sources"]
+            .as_array()
+            .map(|a| a.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>()),
+        Some(vec!["192.0.2.0/24"])
+    );
+}
