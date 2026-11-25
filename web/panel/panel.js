@@ -166,12 +166,18 @@ function renderNodes() {
     view.disabled=peer.status!=='trusted'||calls;
     const actions=el('div','paired-actions');actions.append(details);
     if(!calls)actions.append(view);
-    card.append(top,inventory,actions);
+    card.append(top,inventory);
+    if(!calls&&peer.status==='trusted'&&typeof peerAddressRow==='function'&&addressesReady())card.append(peerAddressRow(peer));
+    card.append(actions);
     return card;
   });
+  // Keep an address being typed, and where, across the periodic redraw.
+  const typing=document.activeElement?.classList?.contains('paired-address-input')?document.activeElement:null,caret=typing?.selectionStart;
   $('#node-list').replaceChildren(...(cards.length?cards:[
     pairing?empty('还没有配对的电脑','点击「配对新电脑」开始。'):empty('还没有配对节点','通过 CLI 核对指纹并完成双端配对。')
   ]));
+  const input=typing&&$('#node-list .paired-address-input');
+  if(input){input.focus();if(caret!=null)input.setSelectionRange(caret,caret);}
 }
 let remoteAgentView=0;
 async function loadRemote(peer) {

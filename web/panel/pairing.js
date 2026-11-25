@@ -347,3 +347,48 @@ async function declinePair(p){
 // While a request sent from here waits, check more often than the usual ten
 // seconds so the finished pairing shows up soon after the other side approves.
 setInterval(()=>{if(!document.hidden&&state.snapshot&&data('pairs').some(p=>p.direction==='outgoing'&&p.status==='pending'))refresh();},3000);
+
+// Where a paired computer is reached: the addresses it told this one, and
+// ones typed here by hand (kept only on this computer), edited on its card.
+const addressState={editing:null,draft:'',message:'',busy:false};
+function addressesReady(){return state.runtime?.capabilities?.peer_addresses===true;}
+function originHost(origin){try{return new URL(origin).host;}catch{return String(origin||'');}}
+function peerAddressRow(peer){
+ const id=peer.card.node_id,routes=peer.routes||{},row=el('div','paired-addresses');row.dataset.peer=id;
+ const told=[...new Set([peer.card.endpoint,...(routes.advertised||[])].map(originHost).filter(Boolean))];
+ const manual=(routes.manual||[]).map(originHost).filter(Boolean);
+ if(addressState.editing!==id){
+  const list=el('span','paired-address-list mono',[...manual.map(h=>`${h}（手动）`),...told].join(' · '));
+  const edit=button('改地址','text-button paired-address-edit',()=>{Object.assign(addressState,{editing:id,draft:manual.join(' '),message:''});renderNodes();$('#node-list .paired-address-input')?.focus();});
+  edit.type='button';edit.disabled=!canWrite();
+  row.append(el('span','paired-address-label','地址'),list,edit);
+  return row;
+ }
+ const form=el('form','paired-address-form'),input=el('input','paired-address-input');
+ input.value=addressState.draft;input.placeholder='如 studio.local:38880，多个用空格隔开';input.spellcheck=false;input.autocomplete='off';input.maxLength=2000;
+ input.setAttribute('aria-label',`${peer.card.display_name} 的手动地址`);
+ input.addEventListener('input',()=>{addressState.draft=input.value;});
+ const save=el('button','button small','保存');save.type='submit';save.disabled=addressState.busy||!canWrite();
+ const close=()=>{Object.assign(addressState,{editing:null,draft:'',message:''});renderNodes();};
+ const cancel=button('取消','button secondary small',close);cancel.type='button';
+ input.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();close();}});
+ form.append(input,save,cancel);
+ form.addEventListener('submit',event=>{event.preventDefault();savePeerAddresses(peer,input.value);});
+ const message=el('p','form-note pair-message',addressState.message);message.setAttribute('role','status');message.hidden=!addressState.message;
+ row.classList.add('editing');
+ row.append(el('span','paired-address-label','手动地址'),form,el('p','form-note muted paired-address-note','只存在这台电脑上，连不上时会试。留空保存就清除。'),message);
+ return row;
+}
+async function savePeerAddresses(peer,value){
+ if(addressState.busy)return;
+ const addresses=String(value||'').split(/[\s,，]+/).filter(Boolean),name=peer.card.display_name;
+ addressState.busy=true;addressState.message='';
+ try{
+  unwrap(await api(`/peers/${peer.card.node_id}/addresses`,{method:'POST',body:JSON.stringify({addresses})}));
+  Object.assign(addressState,{editing:null,draft:'',message:''});
+  toast(addresses.length?`已保存 ${name} 的地址。`:`已清除 ${name} 的手动地址。`);
+  await refresh();
+ }catch(error){
+  addressState.message=error?.code==='INVALID_INPUT'?'地址写成「主机名:端口」或「IP:端口」，比如 studio.local:38880。':pairProblem(error);
+ }finally{addressState.busy=false;renderNodes();}
+}

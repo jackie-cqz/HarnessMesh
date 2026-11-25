@@ -40,8 +40,9 @@ try{
  async function open(url,options={}){
   const page=await browser.newPage({viewport:{width:1280,height:900},...options});
   page.on('pageerror',e=>errors.push(String(e)));
-  // The two deliberate mistakes below are answered with 400; nothing else may fail.
-  page.on('console',m=>{if(m.type()==='error'&&!/status of 400/.test(m.text()))errors.push(m.text());});
+  // The deliberate mistakes below are answered with 400 (a pairing code or
+  // check code) or 502 (an address the daemon refuses); nothing else may fail.
+  page.on('console',m=>{if(m.type()==='error'&&!/status of 400|status of 502/.test(m.text()))errors.push(m.text());});
   await page.goto(url);await page.locator('#local-name').filter({hasText:/pair-/}).waitFor({state:'attached'});
   await page.locator('[data-view="nodes"]').click();await page.locator('#pair-new').waitFor();return page;
  }
@@ -102,7 +103,7 @@ try{
  stage='direct-network-and-mcp-only';
  const direct=await node('pair-direct','direct-agent',['--network','direct','--listen-address','127.0.0.1']);
  const caller=await node('pair-mcp',null,['--network','direct','--outbound-only']);
- const directPage=await open(await panel(direct)),callerPage=await open(await panel(caller));
+ const callerUrl=await panel(caller),directPage=await open(await panel(direct)),callerPage=await open(callerUrl);
  assert(direct.mesh.call(['daemon','status']).pairing_window.closes_at===null,'Direct pairing opened before the user opened the dialog');
  await directPage.locator('#pair-new').click();
  await directPage.locator('.pair-window').filter({hasText:'配对窗口还剩'}).waitFor();
@@ -119,6 +120,39 @@ try{
  await directRequest.locator('.pair-check').fill(directCheck);
  await directRequest.getByRole('button',{name:'批准',exact:true}).click();
  await callerPage.locator('.pair-sent-title').filter({hasText:'已和 pair-direct 配对'}).waitFor({timeout:20000});
+ stage='peer-addresses';
+ // The card shows where pair-direct is reached; 改地址 sets addresses by hand, kept only here.
+ await callerPage.locator('#pair-body .confirm-actions .button').click();
+ const directCard=callerPage.locator('.paired-card').filter({hasText:'pair-direct'});
+ await directCard.locator('.paired-address-list').filter({hasText:new URL(direct.card.endpoint).host}).waitFor();
+ const manualOf=()=>caller.mesh.call(['peers','list']).find(p=>(p.card??p.peer?.card).node_id===direct.card.node_id).routes.manual;
+ await directCard.getByRole('button',{name:'改地址',exact:true}).click();
+ await directCard.getByRole('button',{name:'取消',exact:true}).click();
+ assert(!await directCard.locator('.paired-address-input').count(),'Cancel left the address editor open');
+ await directCard.getByRole('button',{name:'改地址',exact:true}).click();
+ const addressInput=directCard.locator('.paired-address-input');
+ await addressInput.fill('https://user@studio.local:39999');await directCard.getByRole('button',{name:'保存',exact:true}).click();
+ await directCard.locator('.pair-message').filter({hasText:'主机名:端口'}).waitFor();
+ assert(!manualOf().length,'A refused address was kept');
+ await addressInput.fill('studio-backup.local:39999  10.0.0.7:39999');await directCard.getByRole('button',{name:'保存',exact:true}).click();
+ await directCard.locator('.paired-address-list').filter({hasText:'studio-backup.local:39999（手动）'}).waitFor();
+ assert(JSON.stringify(manualOf())===JSON.stringify(['https://studio-backup.local:39999','https://10.0.0.7:39999']),'Panel addresses differ from the daemon: '+JSON.stringify(manualOf()));
+ for(const options of [{colorScheme:'dark'},{viewport:{width:360,height:740}}]){
+  const page=await open(callerUrl,options),card=page.locator('.paired-card').filter({hasText:'pair-direct'});
+  await card.locator('.paired-address-list').filter({hasText:'（手动）'}).waitFor();
+  assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Paired card overflows with its addresses');
+  await card.getByRole('button',{name:'改地址',exact:true}).click();await card.locator('.paired-address-input').waitFor();
+  assert(await page.evaluate(()=>{
+   const row=document.querySelector('.paired-addresses.editing'),box=row.getBoundingClientRect();
+   return document.documentElement.scrollWidth<=innerWidth&&[...row.querySelectorAll('input,button')].every(n=>{const r=n.getBoundingClientRect();return r.left>=box.left-1&&r.right<=box.right+1;});
+  }),'Address editor overflows its card');
+  await page.close();
+ }
+ await directCard.getByRole('button',{name:'改地址',exact:true}).click();
+ assert(await addressInput.inputValue()==='studio-backup.local:39999 10.0.0.7:39999','Editor does not start from the saved addresses');
+ await addressInput.fill('');await directCard.getByRole('button',{name:'保存',exact:true}).click();
+ await directCard.locator('.paired-address-list').filter({hasText:'（手动）'}).waitFor({state:'detached'});
+ assert(!manualOf().length,'Clearing left manual addresses behind');
  // Both fixtures bind loopback. Model the connectivity value a LAN listener
  // reports for an outbound-only peer, without exposing this test over the LAN.
  await directPage.route('**/api/overview',async route=>{
@@ -131,6 +165,6 @@ try{
  await callerCard.getByText('只调用',{exact:true}).waitFor();
  assert(await callerCard.getByRole('button',{name:'查看远端 Agent',exact:true}).count()===0,'MCP-only peer offered an inbound Agent action');
  assert(!errors.length,'Browser errors: '+errors.join(' | '));
- console.log(JSON.stringify({passed:true,model_calls:0,scope:'isolated mTLS nodes and headless browser',checks:['pairing-code-matches-cli','bad-code-explained','check-code-is-fingerprint-tail','no-trust-before-approval','request-counted-in-inbox','no-overflow','wrong-check-rejected','asking-side-finishes-itself','trusted-both-ways','agents-visible-both-ways','no-internal-fields','direct-pairing-window','mcp-only-pairs-outbound']}));
+ console.log(JSON.stringify({passed:true,model_calls:0,scope:'isolated mTLS nodes and headless browser',checks:['pairing-code-matches-cli','bad-code-explained','check-code-is-fingerprint-tail','no-trust-before-approval','request-counted-in-inbox','no-overflow','wrong-check-rejected','asking-side-finishes-itself','trusted-both-ways','agents-visible-both-ways','no-internal-fields','direct-pairing-window','mcp-only-pairs-outbound','peer-address-shown','peer-address-refused-explained','peer-address-saved-to-daemon','peer-address-no-overflow','peer-address-cleared']}));
 }catch(e){console.error(stage+': '+e.message+' diagnostics='+root);process.exitCode=1;}
 finally{await browser?.close();for(const p of owned.reverse()){if(p.exitCode===null){p.kill();await Promise.race([once(p,'exit'),new Promise(r=>setTimeout(r,3000))]);}}}
