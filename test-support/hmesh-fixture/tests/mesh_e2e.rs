@@ -1705,13 +1705,15 @@ async fn model_service_settings_reach_the_agent_redacted_and_stay_on_its_compute
                 .filter_map(|e| e.payload["text"].as_str())
                 .collect()
         };
+        let terminal = |s: &SessionRecord, events: &[SessionEvent]| {
+            let kind = if ending == "error" {
+                "error"
+            } else {
+                "turn_end"
+            };
+            !s.status.is_busy() && events.iter().any(|e| e.kind == kind)
+        };
         let (_, events) = match ending {
-            "error" => {
-                until(&owner, split.session_id, |s, events| {
-                    !s.status.is_busy() && events.iter().any(|e| e.kind == "error")
-                })
-                .await
-            }
             "cancel" => {
                 let (_, running) = until(&owner, split.session_id, |s, ev| {
                     s.status.is_busy() && gather(ev, "agent_thought_chunk").contains("done")
@@ -1730,9 +1732,9 @@ async fn model_service_settings_reach_the_agent_redacted_and_stay_on_its_compute
                     &format!("/local/sessions/{}/cancel", split.session_id),
                 )
                 .await;
-                turn_done(&owner, split.session_id, 1).await
+                until(&owner, split.session_id, terminal).await
             }
-            _ => turn_done(&owner, split.session_id, 1).await,
+            _ => until(&owner, split.session_id, terminal).await,
         };
         assert_eq!(
             gather(&events, "agent_message_chunk"),
