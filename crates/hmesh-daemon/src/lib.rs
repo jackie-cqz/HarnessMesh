@@ -611,7 +611,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.outbound_only() {"not_checked"} else if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","agent-projects-v1"],"schema_version":9,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","agent-projects-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
     ))
 }
 async fn stop(

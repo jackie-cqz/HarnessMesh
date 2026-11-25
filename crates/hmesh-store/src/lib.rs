@@ -20,6 +20,9 @@ pub use reliability::{ArtifactSet, SnapshotEntry};
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
 }
+/// The database schema this build creates and reads (`PRAGMA user_version`).
+pub const SCHEMA_VERSION: i64 = 10;
+
 fn internal(e: impl std::fmt::Display) -> MeshError {
     MeshError::new(ErrorCode::Internal, format!("persistence: {e}"))
 }
@@ -61,7 +64,7 @@ impl Store {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(internal)?;
-        if !(0..=10).contains(&version) {
+        if !(0..=SCHEMA_VERSION).contains(&version) {
             return Err(MeshError::new(
                 ErrorCode::UnsupportedVersion,
                 "unsupported database schema; refusing to alter it",
@@ -71,7 +74,7 @@ impl Store {
             "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
         )
         .map_err(internal)?;
-        if version < 10 {
+        if version < SCHEMA_VERSION {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(internal)?;

@@ -27,7 +27,7 @@ use subtle::ConstantTimeEq;
 use tokio::{net::TcpListener, sync::Semaphore};
 use uuid::Uuid;
 
-const CLI_SCHEMA_VERSION: u64 = 9;
+const CLI_SCHEMA_VERSION: i64 = hmesh_store::SCHEMA_VERSION;
 const KNOWN_FEATURES: &[&str] = &[
     "panel-task-workflow-v1",
     "task-preflight-v1",
@@ -399,7 +399,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
     } else {
         "compatible"
     };
-    let schema = status.and_then(|s| s["schema_version"].as_u64());
+    let schema = status.and_then(|s| s["schema_version"].as_i64());
     // Losing contact with the owner API does not establish that an upgrade is needed.
     let upgrade_required =
         running && (mode != "full" || schema.is_some_and(|version| version < CLI_SCHEMA_VERSION));
