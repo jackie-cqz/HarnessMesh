@@ -235,19 +235,23 @@ async fn receive(
     Ok(Json(json!({"updated": updated})))
 }
 /// This computer's address list, for a paired computer (one that only
-/// connects out learns it only by asking).
+/// connects out learns it only by asking). Read before the asking computer
+/// is checked: a list with a find key changed by a revocation is read only
+/// after the computer revoked stopped being trusted (`revoke_pairing`), so
+/// that computer, asking just then, is refused rather than told the new key.
 async fn addresses(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
 ) -> ApiResult<PeerAddresses> {
+    let list = s.addresses();
     if s.actor(&headers, &c)?.owner {
         return Err(ApiError(MeshError::new(
             ErrorCode::PermissionDenied,
             "paired computers ask for this; its owner reads it in /local/status",
         )));
     }
-    Ok(Json(s.addresses()))
+    Ok(Json(list))
 }
 fn checked(addresses: &[String]) -> std::result::Result<Vec<String>, ApiError> {
     hmesh_security::validate_peer_addresses(addresses)
@@ -307,13 +311,14 @@ pub async fn pull(s: &AppState, peer: &Peer, client: &Client) -> bool {
     }
     true
 }
-/// Tell a paired computer this computer's address list. True once it has
-/// it, or when it answered without taking it (an older version): telling it
-/// again would not change that.
-pub async fn push(s: &AppState, client: &Client) -> bool {
+/// Tell a paired computer `list` (this computer's address list, as it was
+/// when the caller chose to tell that computer). True once it has it, or
+/// when it answered without taking it (an older version): telling it again
+/// would not change that.
+pub async fn push(client: &Client, list: &PeerAddresses) -> bool {
     match tokio::time::timeout(
         EXCHANGE,
-        client.post::<_, Value>("/hmesh/v1/peers/addresses", &s.addresses()),
+        client.post::<_, Value>("/hmesh/v1/peers/addresses", list),
     )
     .await
     {
@@ -456,7 +461,10 @@ mod tests {
             pull(&state, &peer, &client).await,
             "an answer, if not a list"
         );
-        assert!(push(&state, &client).await, "told: not asked again");
+        assert!(
+            push(&client, &state.addresses()).await,
+            "told: not asked again"
+        );
         assert!(
             state
                 .store

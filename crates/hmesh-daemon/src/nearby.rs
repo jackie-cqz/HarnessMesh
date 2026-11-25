@@ -40,6 +40,11 @@ pub struct Nearby {
     marked: Mutex<Option<(String, Mark)>>,
     /// One look for paired computers at a time.
     finding: tokio::sync::Mutex<()>,
+    /// The mDNS daemon looks for paired computers go through, and the
+    /// addresses whose interfaces it is limited to: it neither asks nor
+    /// hears anywhere else (the daemon above serves every interface, for
+    /// the computers nearby a pairing dialog lists).
+    seeker: Mutex<Option<(ServiceDaemon, Vec<IpAddr>)>>,
     /// The last look for each paired computer, by fingerprint: when it
     /// began, and where it was heard once it ended.
     looks: Mutex<HashMap<String, Look>>,
@@ -152,6 +157,30 @@ impl Nearby {
         *slot = Some(daemon.clone());
         Ok(daemon)
     }
+    /// The mDNS daemon to look for paired computers with, on the interfaces
+    /// of `on` only (each address's own IP version there): every other
+    /// interface is disabled before anything is asked. A new one when `on`
+    /// changed.
+    fn seeker(&self, on: &[IpAddr]) -> anyhow::Result<ServiceDaemon> {
+        let mut slot = self
+            .seeker
+            .lock()
+            .map_err(|_| anyhow::anyhow!("nearby state poisoned"))?;
+        if let Some((daemon, at)) = slot.as_ref()
+            && at == on
+        {
+            return Ok(daemon.clone());
+        }
+        if let Some((old, _)) = slot.take() {
+            let _ = old.shutdown();
+        }
+        let daemon = ServiceDaemon::new()?;
+        // Commands run in order: these two before any browse.
+        daemon.disable_interface(IfKind::All)?;
+        daemon.enable_interface(on.iter().map(|ip| IfKind::Addr(*ip)).collect::<Vec<_>>())?;
+        *slot = Some((daemon.clone(), on.to_vec()));
+        Ok(daemon)
+    }
     /// The addresses announced on now (none when nothing is).
     fn announced(&self) -> Option<Vec<IpAddr>> {
         self.announced
@@ -247,11 +276,17 @@ impl Nearby {
         Ok(())
     }
     /// Where the paired computer with `fingerprint`, whose find key is `key`,
-    /// is heard on the local network now. Looked for at most once every
-    /// `LOOK_EVERY`: until then, what that look heard (nothing while it is
-    /// still listening). The look finishes even when its caller gives up
+    /// is heard on the local network now, listening only on the interfaces
+    /// of the addresses `on` gives (see `find_on`). Looked for at most once
+    /// every `LOOK_EVERY`: until then, what that look heard (nothing while it
+    /// is still listening). The look finishes even when its caller gives up
     /// waiting, so the next call has its answer.
-    pub async fn find_peer(self: Arc<Self>, fingerprint: String, key: Vec<u8>) -> Vec<SocketAddr> {
+    pub async fn find_peer(
+        self: Arc<Self>,
+        fingerprint: String,
+        key: Vec<u8>,
+        on: impl Future<Output = Vec<IpAddr>> + Send + 'static,
+    ) -> Vec<SocketAddr> {
         {
             let Ok(mut looks) = self.looks.lock() else {
                 return vec![];
@@ -264,7 +299,9 @@ impl Nearby {
         }
         let nearby = self.clone();
         let look = tokio::spawn(async move {
-            let heard: Vec<SocketAddr> = match nearby.find(&[(fingerprint.clone(), key)]).await {
+            let on = on.await;
+            let heard: Vec<SocketAddr> = match nearby.find(&[(fingerprint.clone(), key)], &on).await
+            {
                 Ok(found) => found.into_iter().map(|(_, address)| address).collect(),
                 Err(error) => {
                     tracing::warn!(%error, "could not look for a paired computer on the local network");
@@ -283,12 +320,18 @@ impl Nearby {
     /// Listen for a moment for paired computers' marks: where each of
     /// `wanted` (a fingerprint, and the find key it told) is heard, by its
     /// mark for this or the previous ten minutes. Stops early once all are.
+    /// Only on the interfaces of the addresses in `on`: with none, nothing
+    /// is asked or heard at all.
     pub async fn find(
         &self,
         wanted: &[(String, Vec<u8>)],
+        on: &[IpAddr],
     ) -> anyhow::Result<Vec<(String, SocketAddr)>> {
+        if on.is_empty() {
+            return Ok(vec![]);
+        }
         let _one = self.finding.lock().await;
-        let daemon = self.daemon()?;
+        let daemon = self.seeker(on)?;
         let events = daemon.browse(finding::SERVICE)?;
         let deadline = Instant::now() + LISTEN_FOR;
         let at = now();
@@ -368,6 +411,9 @@ impl Nearby {
         if let Some(daemon) = self.daemon.lock().ok().and_then(|mut d| d.take()) {
             let _ = daemon.shutdown();
         }
+        if let Some((daemon, _)) = self.seeker.lock().ok().and_then(|mut d| d.take()) {
+            let _ = daemon.shutdown();
+        }
     }
 }
 
@@ -435,6 +481,34 @@ fn announce_on(state: &AppState) -> (Vec<IpAddr>, u16) {
         .map(|(ip, _)| ip)
         .collect();
     (lans, own.port())
+}
+
+/// Where this computer listens for paired computers' marks: where it would
+/// announce its own (`announce_on`: the address it listens on, or on every
+/// interface its addresses on trusted LANs, none while it trusts none). A
+/// computer that only connects out trusts no network and listens on the
+/// interface its default route goes through (`default_route`). Nowhere
+/// else: not on networks this computer has not trusted, not on Tailscale
+/// (mDNS does not cross a Tailnet), not on other interfaces (VPNs, virtual
+/// machines' bridges).
+pub(crate) async fn find_on(state: &AppState) -> Vec<IpAddr> {
+    if state.instance.config.outbound_only() {
+        return default_route(&hmesh_transport::netinfo::observe(state.tailscale()).await);
+    }
+    announce_on(state).0
+}
+/// The addresses of the interface the default route goes through (as
+/// `observe` sees it: the network that has the default gateway), not
+/// Tailscale ones; none without a default route.
+fn default_route(observed: &[LocalNetwork]) -> Vec<IpAddr> {
+    let Some(routed) = observed.iter().find(|n| n.gateway.is_some() && !n.tailnet) else {
+        return vec![];
+    };
+    observed
+        .iter()
+        .filter(|n| n.interface == routed.interface && !n.tailnet)
+        .map(|n| n.address)
+        .collect()
 }
 
 /// The mark to announce for paired computers, and where: where
@@ -599,9 +673,15 @@ mod tests {
     async fn a_paired_computer_is_looked_for_at_most_once_every_thirty_seconds() {
         let nearby = Arc::new(Nearby::default());
         let began = |fingerprint: &str| nearby.looks.lock().unwrap().get(fingerprint).map(|l| l.0);
-        let first = nearby.clone().find_peer("aa".into(), vec![1; 32]).await;
+        let first = nearby
+            .clone()
+            .find_peer("aa".into(), vec![1; 32], loopback())
+            .await;
         let looked = began("aa").expect("looked");
-        let again = nearby.clone().find_peer("aa".into(), vec![1; 32]).await;
+        let again = nearby
+            .clone()
+            .find_peer("aa".into(), vec![1; 32], loopback())
+            .await;
         assert_eq!(again, first);
         assert_eq!(
             began("aa"),
@@ -609,14 +689,157 @@ mod tests {
             "looked again within thirty seconds"
         );
         // Another computer has a look of its own.
-        nearby.clone().find_peer("bb".into(), vec![2; 32]).await;
+        nearby
+            .clone()
+            .find_peer("bb".into(), vec![2; 32], loopback())
+            .await;
         assert!(began("bb").is_some_and(|b| b >= looked));
         // Thirty seconds on: looked for again.
         if let Some(look) = nearby.looks.lock().unwrap().get_mut("aa") {
             look.0 = Instant::now() - LOOK_EVERY;
         }
-        nearby.clone().find_peer("aa".into(), vec![1; 32]).await;
+        nearby
+            .clone()
+            .find_peer("aa".into(), vec![1; 32], loopback())
+            .await;
         assert!(began("aa").is_some_and(|b| b > looked));
+        nearby.shutdown().await;
+    }
+    fn loopback() -> std::future::Ready<Vec<IpAddr>> {
+        std::future::ready(vec![std::net::Ipv4Addr::LOCALHOST.into()])
+    }
+
+    /// Paired computers are looked for where the mark is announced: on the
+    /// one address a computer listens on, or on its trusted LANs (nowhere
+    /// while it trusts none, never on a network it has not trusted or on
+    /// Tailscale). One that only connects out trusts no network: it looks on
+    /// the interface its default route goes through, every address there,
+    /// and on no other interface.
+    #[tokio::test]
+    async fn paired_computers_are_looked_for_only_where_this_computer_may_look() {
+        let root = tempfile::tempdir().unwrap();
+        let one = state(root.path(), "one", |c| {
+            c.node.expose_to_tailnet = true;
+            c.node.listen_address = "127.0.0.1".parse().unwrap();
+        });
+        assert_eq!(
+            find_on(&one).await,
+            ["127.0.0.1".parse::<IpAddr>().unwrap()]
+        );
+
+        let every = state(root.path(), "every", |c| {
+            c.node.expose_to_tailnet = true;
+            c.node.listen_address = "::".parse().unwrap();
+            c.node.trusted_networks = Some(vec![]);
+        });
+        every.networks.set_port(39880);
+        let home = lan("192.168.1.20", "192.168.1.0/24");
+        let cafe = LocalNetwork {
+            interface: "en1".into(),
+            ..lan("10.0.0.5", "10.0.0.0/24")
+        };
+        let tailnet = LocalNetwork {
+            interface: "tailscale0".into(),
+            tailnet: true,
+            ..lan("100.101.102.103", "100.64.0.0/10")
+        };
+        let observed = vec![home.clone(), cafe.clone(), tailnet.clone()];
+        every.apply_networks(observed.clone(), None, true);
+        assert!(
+            find_on(&every).await.is_empty(),
+            "looked on untrusted networks"
+        );
+        every.apply_networks(
+            observed,
+            Some(vec![
+                TrustedNetwork {
+                    subnet: home.subnet,
+                    gateway: None,
+                    name: None,
+                    tailnet: false,
+                },
+                TrustedNetwork {
+                    subnet: "100.64.0.0/10".parse().unwrap(),
+                    gateway: None,
+                    name: Some("Tailscale".into()),
+                    tailnet: true,
+                },
+            ]),
+            false,
+        );
+        assert_eq!(find_on(&every).await, [home.address]);
+
+        // Only connects out: the interface of the default route.
+        let routed = LocalNetwork {
+            gateway: Some("192.168.1.1".parse().unwrap()),
+            ..home.clone()
+        };
+        let routed_v6 = lan("fd12::5", "fd12::/64");
+        let cafe_routed = LocalNetwork {
+            gateway: Some("10.0.0.1".parse().unwrap()),
+            ..cafe.clone()
+        };
+        assert_eq!(
+            default_route(&[
+                routed.clone(),
+                cafe.clone(),
+                routed_v6.clone(),
+                tailnet.clone()
+            ]),
+            [routed.address, routed_v6.address]
+        );
+        assert_eq!(
+            default_route(&[cafe_routed.clone(), routed_v6]),
+            [cafe_routed.address]
+        );
+        assert!(default_route(&[home, cafe, tailnet]).is_empty());
+    }
+
+    /// Looking for paired computers goes through an mDNS daemon of its own,
+    /// enabled only on the interfaces of the addresses given (each address's
+    /// IP version there); with none, nothing is asked and no daemon starts.
+    #[tokio::test]
+    async fn paired_computers_are_listened_for_only_on_the_interfaces_given() {
+        let nearby = Nearby::default();
+        let wanted = [("aa".to_owned(), vec![1; 32])];
+        assert!(nearby.find(&wanted, &[]).await.unwrap().is_empty());
+        assert!(nearby.seeker.lock().unwrap().is_none(), "a daemon started");
+        let enabled = |on: &[IpAddr]| {
+            let daemon = nearby.seeker(on).unwrap();
+            match daemon
+                .status()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+            {
+                mdns_sd::DaemonStatus::Running(running) => running.enabled_intfs().to_vec(),
+                other => panic!("{other:?}"),
+            }
+        };
+        for interface in enabled(&[std::net::Ipv4Addr::LOCALHOST.into()]) {
+            assert!(interface.ipv6().is_none(), "{interface:?}");
+            assert!(
+                interface
+                    .ipv4()
+                    .is_some_and(|v4| v4.addrs().iter().all(|ip| ip.is_loopback())),
+                "{interface:?}"
+            );
+        }
+        // A LAN address of this computer: on its interface, IPv4 only.
+        let lan = hmesh_transport::netinfo::observe(None)
+            .await
+            .into_iter()
+            .find(|n| !n.tailnet && n.address.is_ipv4());
+        if let Some(lan) = lan {
+            let shown = enabled(&[lan.address]);
+            assert!(!shown.is_empty(), "enabled nowhere for {lan:?}");
+            for interface in shown {
+                assert_eq!(interface.name(), lan.interface, "{interface:?}");
+                assert!(interface.ipv6().is_none(), "{interface:?}");
+            }
+        } else {
+            eprintln!("no LAN address here: only loopback was checked");
+        }
         nearby.shutdown().await;
     }
 }

@@ -836,3 +836,98 @@ async fn first_contact_works_at_a_host_name_and_says_where_it_stopped() {
         ErrorCode::InvalidInput
     );
 }
+
+/// A loopback address where `instance` is the computer (TLS completes with
+/// its certificate), which reads a request and hangs up without answering:
+/// the request was sent, and may have run there. Counts the requests read.
+async fn hangs_up(instance: Arc<Instance>, trusted: Peer) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+    let address = listener.local_addr().expect("address");
+    let config = instance
+        .server_config(std::slice::from_ref(&trusted))
+        .expect("TLS");
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let count = requests.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (acceptor, count) = (acceptor.clone(), count.clone());
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut read = Vec::new();
+                let mut buffer = [0u8; 4096];
+                while !read.windows(4).any(|end| end == b"\r\n\r\n") {
+                    match tls.read(&mut buffer).await {
+                        Ok(n @ 1..) => read.extend_from_slice(&buffer[..n]),
+                        _ => return,
+                    }
+                }
+                count.fetch_add(1, Ordering::SeqCst);
+                // Dropped without a word back.
+            });
+        }
+    });
+    (format!("https://{address}"), requests)
+}
+
+/// None of its known addresses answering, a computer is reached where it was
+/// heard, takes the request, and the call fails there: it hangs up before
+/// answering, or answers too late for the call. The request may have run,
+/// so it is not sent to the next address heard: it ran once, and the other
+/// address got nothing. An answer that is an error is the computer's answer
+/// too, and nothing else is tried.
+#[tokio::test]
+async fn a_call_that_failed_where_the_computer_was_heard_is_not_sent_again() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let a = instance(root.path(), "asks");
+    let b = instance(root.path(), "studio");
+    let (next, next_calls, _next) = computer(b.clone(), trusting(&a)).await;
+    let dead = refused();
+    let memory = Arc::new(RouteMemory::new());
+    let call = |heard: &Arc<Heard>| {
+        Client::routed(&a, vec![dead.clone()], &b.card.fingerprint, memory.clone())
+            .expect("client")
+            .finding(heard.clone())
+    };
+
+    let (hanging, read) = hangs_up(b.clone(), trusting(&a)).await;
+    let heard = Heard::at(&[&hanging, &next]);
+    let failed = call(&heard)
+        .post::<_, usize>("/count", &())
+        .await
+        .unwrap_err();
+    assert_eq!(failed.code, ErrorCode::PeerUnreachable);
+    assert_eq!(failed.message, "RPC transport failed");
+    assert_eq!(read.load(Ordering::SeqCst), 1, "the request was not read");
+    assert_eq!(
+        next_calls.load(Ordering::SeqCst),
+        0,
+        "sent again to the next address heard"
+    );
+    assert_eq!(heard.asked.load(Ordering::SeqCst), 1);
+    assert!(heard.answered.lock().unwrap().is_empty());
+    assert_eq!(memory.last_good(&b.card.fingerprint), None);
+
+    let (late, late_calls, _late) = computer(b.clone(), trusting(&a)).await;
+    let heard = Heard::at(&[&late, &next]);
+    let failed = call(&heard)
+        .post_with_timeout::<_, usize>("/slow", &(), 1)
+        .await
+        .unwrap_err();
+    assert_eq!(failed.message, "RPC deadline exceeded");
+    assert_eq!(late_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(next_calls.load(Ordering::SeqCst), 0);
+    assert!(heard.answered.lock().unwrap().is_empty());
+
+    let heard = Heard::at(&[&late, &next]);
+    let failed = call(&heard)
+        .post::<_, usize>("/fail", &())
+        .await
+        .unwrap_err();
+    assert_eq!(failed.code, ErrorCode::ServiceUnhealthy);
+    assert_eq!(late_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(next_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(*heard.answered.lock().unwrap(), std::slice::from_ref(&late));
+}

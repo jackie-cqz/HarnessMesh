@@ -81,33 +81,55 @@ pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
     let mut told = Told::default();
     let mut told_addresses = Told::default();
     loop {
-        if let Ok(peers) = state.store.peers() {
-            let revision = state.addresses().revision;
-            let endpoint = state.card().endpoint;
-            for peer in peers.into_iter().filter(|p| p.status == "trusted") {
-                // No address this computer can call: a computer that only
-                // connects out, seen from one that takes connections.
-                let Ok(client) = state.peer_client(&peer) else {
-                    continue;
-                };
-                if !addresses::pull(&state, &peer, &client).await {
-                    continue;
-                }
-                let id = peer.card.node_id;
-                if told.needs(id, &endpoint) && peer_told(&state, &client).await {
-                    told.record(id, endpoint.clone());
-                }
-                if told_addresses.needs(id, &revision) && addresses::push(&state, &client).await {
-                    told_addresses.record(id, revision);
-                }
-            }
-        }
+        announce_round(&state, &mut told, &mut told_addresses).await;
         tokio::select! {
             changed = stop.changed() => if changed.is_err() || *stop.borrow() { return },
             _ = tokio::time::sleep(ANNOUNCE_EVERY) => {}
             _ = state.announce_now.notified() => {}
         }
     }
+}
+/// One round of `announce`. The address list told is the one this computer
+/// had when the round began, read before the computers to tell are: a
+/// revocation changes the find key only once the computer revoked is no
+/// longer trusted (`revoke_pairing`), so a list read with the new key
+/// never goes to a computer read as trusted before it was revoked. Each
+/// computer is also checked again just before it is told: one revoked while
+/// the round was under way is told nothing more. The others get the new
+/// list in the next round, which the revocation starts (`peers_changed`).
+async fn announce_round(state: &AppState, told: &mut Told<String>, told_addresses: &mut Told<i64>) {
+    let list = state.addresses();
+    let Ok(peers) = state.store.peers() else {
+        return;
+    };
+    let endpoint = state.card().endpoint;
+    for peer in peers.into_iter().filter(|p| p.status == "trusted") {
+        // No address this computer can call: a computer that only
+        // connects out, seen from one that takes connections.
+        let Ok(client) = state.peer_client(&peer) else {
+            continue;
+        };
+        if !addresses::pull(state, &peer, &client).await {
+            continue;
+        }
+        let id = peer.card.node_id;
+        if told.needs(id, &endpoint) && peer_told(state, &client).await {
+            told.record(id, endpoint.clone());
+        }
+        if told_addresses.needs(id, &list.revision)
+            && still_trusted(state, id)
+            && addresses::push(&client, &list).await
+        {
+            told_addresses.record(id, list.revision);
+        }
+    }
+}
+/// Whether `peer` is still trusted now (not revoked since it was read).
+fn still_trusted(state: &AppState, peer: Uuid) -> bool {
+    state
+        .store
+        .peer(peer)
+        .is_ok_and(|peer| peer.status == "trusted")
 }
 /// What each paired computer was last told (a card's address, an address
 /// list's revision): told again whenever this computer's is something else,
@@ -443,5 +465,123 @@ mod tests {
             let _ = stop.send(true);
             let _ = task.await;
         }
+    }
+
+    /// A computer on a new loopback port, to stand for a paired one.
+    async fn standing_in(root: &std::path::Path, name: &str) -> (Arc<Instance>, TcpListener) {
+        let mut b = Instance::init(&root.join(name), NodeConfig::default()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        b.card.endpoint = format!("https://{}", listener.local_addr().unwrap());
+        (Arc::new(b), listener)
+    }
+    /// The find key of each address list a computer was told, in order.
+    type KeysTold = Arc<Mutex<Vec<Option<String>>>>;
+    /// Serve `b` to `asks` at `listener`: it gives an empty address list of
+    /// its own (running `asked` first), takes the card, and keeps the find
+    /// key of every address list it is told.
+    fn telling(
+        b: Arc<Instance>,
+        listener: TcpListener,
+        asks: &Instance,
+        asked: Arc<dyn Fn() + Send + Sync>,
+    ) -> (KeysTold, watch::Sender<bool>) {
+        let trusted = vec![Peer {
+            card: asks.card.clone(),
+            status: "trusted".into(),
+            approved_at: Some(now()),
+        }];
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let kept = told.clone();
+        let own = PeerAddresses {
+            node_id: b.card.node_id,
+            revision: 1,
+            addresses: vec![],
+            find_key: None,
+        };
+        let app = Router::new()
+            .route(
+                "/hmesh/v1/peers/addresses",
+                get(move || {
+                    asked();
+                    let own = own.clone();
+                    async move { Json(own) }
+                })
+                .post(move |Json(list): Json<PeerAddresses>| {
+                    kept.lock().unwrap().push(list.find_key);
+                    async { Json(json!({"updated": true})) }
+                }),
+            )
+            .route(
+                "/hmesh/v1/peers/card",
+                post(|| async { Json(json!({"updated": true})) }),
+            );
+        let (stop, receiver) = watch::channel(false);
+        tokio::spawn(serve(
+            listener,
+            app,
+            Arc::new(move || b.server_config(&trusted)),
+            receiver,
+        ));
+        (told, stop)
+    }
+
+    /// A paired computer revoked while a round of telling is under way, and
+    /// before that round's address list was told to it, is told nothing
+    /// more: not the new find key the revocation made. The revocation is
+    /// made at a fixed point (as it is asked for its own list). The computer
+    /// still paired is told the list the round began with, then the new key
+    /// in the next round; the one revoked never.
+    #[tokio::test]
+    async fn a_computer_revoked_during_a_round_is_never_told_the_new_find_key() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = tempfile::tempdir().unwrap();
+        let mut config = NodeConfig::default();
+        config.node.network = "direct".into();
+        config.node.expose_to_tailnet = true;
+        config.node.listen_address = "127.0.0.1".parse().unwrap();
+        config.node.host_names = Some(vec![]);
+        let a = Arc::new(Instance::init(&root.path().join("harbor"), config).unwrap());
+        let store = Store::open(&a.dir.join("state.sqlite3")).unwrap();
+        let state = AppState::load(a.clone(), store, watch::channel(false).0).unwrap();
+        let first = state.find_key_told().expect("a find key told");
+
+        let (kept, kept_at) = standing_in(root.path(), "quay").await;
+        let (revoked, revoked_at) = standing_in(root.path(), "skiff").await;
+        let (kept_told, _kept) = telling(kept.clone(), kept_at, &a, Arc::new(|| {}));
+        let revoking = state.clone();
+        let revoked_id = revoked.card.node_id;
+        let once = AtomicBool::new(false);
+        let (revoked_told, _revoked) = telling(
+            revoked.clone(),
+            revoked_at,
+            &a,
+            Arc::new(move || {
+                if !once.swap(true, Ordering::SeqCst) {
+                    revoke_pairing(&revoking, revoked_id).unwrap();
+                }
+            }),
+        );
+        state.store.trust_peer(&kept.card).unwrap();
+        state.store.trust_peer(&revoked.card).unwrap();
+
+        let (mut told, mut told_addresses) = (Told::default(), Told::default());
+        announce_round(&state, &mut told, &mut told_addresses).await;
+        let second = state.find_key_told().expect("a find key told");
+        assert_ne!(second, first, "the revocation did not change the key");
+        assert_eq!(
+            state.store.peer(revoked_id).unwrap().status,
+            "revoked",
+            "not revoked during the round"
+        );
+        assert_eq!(
+            *revoked_told.lock().unwrap(),
+            Vec::<Option<String>>::new(),
+            "told after it was revoked"
+        );
+        assert_eq!(*kept_told.lock().unwrap(), [Some(first.clone())]);
+
+        announce_round(&state, &mut told, &mut told_addresses).await;
+        assert_eq!(*kept_told.lock().unwrap(), [Some(first), Some(second)]);
+        assert!(revoked_told.lock().unwrap().is_empty());
     }
 }

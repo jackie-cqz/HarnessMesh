@@ -6,9 +6,14 @@
 //! digits of HMAC-SHA256(key, the current ten minutes), a new one every ten
 //! minutes, with no name and no fingerprint. A paired computer none of whose
 //! addresses answers works out the marks for this and the previous ten
-//! minutes, listens for a moment, and dials what it heard, where the pinned
+//! minutes, listens for a moment where it may look (see `nearby::find_on`:
+//! its own trusted LANs, or the interface of its default route when it only
+//! connects out), and dials what it heard, where the pinned
 //! certificate still decides who answered. Anyone else hears random-looking
-//! names that change every ten minutes. Revoking a pairing gives this
+//! names that change every ten minutes, but at an address and port that
+//! stay the same, where this computer's named `_hmesh._tcp` announcement
+//! also is while its pairing window is open: the mark keeps the key from
+//! others, not which computer this is. Revoking a pairing gives this
 //! computer a new key, so the computer revoked cannot tell its mark again.
 use super::*;
 use hmesh_transport::Finder;
@@ -138,10 +143,13 @@ impl Finder for Finding {
         let fingerprint = self.fingerprint.clone();
         let key = self.key.clone();
         Box::pin(async move {
+            // Listened for only where this computer may look (`find_on`).
+            let looking = state.clone();
+            let on = async move { crate::nearby::find_on(&looking).await };
             state
                 .nearby
                 .clone()
-                .find_peer(fingerprint, key)
+                .find_peer(fingerprint, key, on)
                 .await
                 .into_iter()
                 .map(|address| format!("https://{address}"))

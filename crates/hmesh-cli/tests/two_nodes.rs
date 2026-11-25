@@ -2010,13 +2010,94 @@ fn table_text(dir: &Path, table: &str) -> String {
     text
 }
 
+/// Revoking one paired computer tells the others the new find key at once,
+/// not at the next five-minute round. The harbor and the quay are on every
+/// interface (`HMESH_TEST_NETWORKS` makes ::1 their LAN), so the harbor can
+/// call the quay; the skiff only connects out. The harbor revokes the
+/// skiff: within seconds the quay keeps the harbor's new key, and the skiff
+/// still has only the old one. No mDNS: the key is read where it is kept.
+#[tokio::test]
+async fn revoking_a_computer_tells_the_others_the_new_find_key_within_seconds() {
+    if !has_ipv6_loopback() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut daemons = Vec::new();
+    for name in ["harbor", "quay"] {
+        let dir = root.path().join(name);
+        cli(
+            &dir,
+            &[
+                "init",
+                "--name",
+                name,
+                "--port",
+                "0",
+                "--network",
+                "direct",
+                "--trust",
+                "::1/128",
+            ],
+        );
+        edit_node(&dir, |node| {
+            node.insert("host_names".into(), toml::Value::Array(vec![]));
+        });
+        let networks = networks_file(
+            &root.path().join(format!("{name}-networks.json")),
+            json!([ipv6_loopback()]),
+        );
+        daemons.push(daemon_seeing(&dir, &networks));
+    }
+    let (harbor, quay) = (root.path().join("harbor"), root.path().join("quay"));
+    let skiff = outbound(root.path(), "skiff");
+    daemons.push(daemon(&skiff));
+    let harbor_card = ready(&harbor).await;
+    ready(&quay).await;
+    let skiff_card = ready(&skiff).await;
+    let address = format!("[::1]:{}", port_of(&harbor_card.endpoint));
+    join(&quay, &harbor, &address);
+    join(&skiff, &harbor, &address);
+    let first = hex(&own_find_key(&harbor));
+    for dir in [&quay, &skiff] {
+        find_key_until(dir, harbor_card.node_id, |k| {
+            k.as_deref() == Some(first.as_str())
+        })
+        .await;
+    }
+    // The rounds pairing started are over: only the revocation starts one.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    cli(
+        &harbor,
+        &["pair", "revoke", &skiff_card.node_id.to_string()],
+    );
+    let revoked = std::time::Instant::now();
+    let second = hex(&own_find_key(&harbor));
+    assert_ne!(second, first);
+    let mut key = find_key_of(&quay, harbor_card.node_id);
+    while key.as_deref() != Some(second.as_str()) && revoked.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        key = find_key_of(&quay, harbor_card.node_id);
+    }
+    assert_eq!(
+        key.as_deref(),
+        Some(second.as_str()),
+        "not told the new key {:?} after the revocation",
+        revoked.elapsed()
+    );
+    assert_eq!(find_key_of(&skiff, harbor_card.node_id), Some(first));
+    drop(daemons);
+}
+
 /// Paired computers find each other again on the local network (mDNS on
 /// loopback, reliable on macOS only). The lantern announces a mark only its
 /// paired computers can work out; when every address the rucksack knows
 /// stops answering (it came back on another port), the rucksack hears the
 /// mark and reaches it there, and keeps that address. The lantern revokes
 /// the satchel: its key changes, the rucksack is told the new one, and the
-/// satchel, left with the old, cannot tell the new mark or find it.
+/// satchel, left with the old, cannot tell the new mark or find it. Both
+/// only connect out, so they listen on the interface of their default
+/// route: here loopback, as `HMESH_TEST_NETWORKS` says.
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn a_paired_computer_found_by_its_mark_and_a_revoked_one_that_cannot() {
@@ -2025,9 +2106,14 @@ async fn a_paired_computer_found_by_its_mark_and_a_revoked_one_that_cannot() {
     let a_dir = root.path().join("rucksack");
     let c_dir = outbound(root.path(), "satchel");
     let b_log = root.path().join("lantern.log");
-    let a = daemon(&a_dir);
+    let routed = networks_file(
+        &root.path().join("routed-networks.json"),
+        json!([{"interface": "lo0", "address": "127.0.0.1", "subnet": "127.0.0.0/8",
+                "gateway": "127.0.0.1"}]),
+    );
+    let a = daemon_seeing(&a_dir, &routed);
     let b = daemon_logged(&b_dir, &b_log);
-    let _c = daemon(&c_dir);
+    let _c = daemon_seeing(&c_dir, &routed);
     ready(&a_dir).await;
     let b_card = ready(&b_dir).await;
     let c_card = ready(&c_dir).await;
@@ -2048,7 +2134,7 @@ async fn a_paired_computer_found_by_its_mark_and_a_revoked_one_that_cannot() {
     let second = own_find_key(&b_dir);
     assert_ne!(second, first);
     stop(a, &a_dir);
-    let a = daemon(&a_dir);
+    let a = daemon_seeing(&a_dir, &routed);
     ready(&a_dir).await;
     find_key_until(&a_dir, b_card.node_id, |k| {
         k.as_deref() == Some(hex(&second).as_str())

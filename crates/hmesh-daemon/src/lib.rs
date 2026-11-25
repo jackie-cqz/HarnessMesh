@@ -1141,10 +1141,18 @@ async fn revoke(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
+    revoke_pairing(&s, id)?;
+    Ok(Json(json!({"revoked":id})))
+}
+/// Stop trusting the paired computer `id`. In this order: it is no longer
+/// trusted first, then this computer's find key changes (the computer
+/// revoked knows the old one, so it cannot tell this computer's mark on the
+/// local network any more). Whoever reads the address list, then checks
+/// whether a computer is trusted (`announce_round`, the list a paired
+/// computer asks for), so never hands the new key to the computer revoked.
+pub(crate) fn revoke_pairing(s: &AppState, id: Uuid) -> hmesh_core::Result<()> {
     s.store.revoke_peer(id)?;
-    sessions::close_for_peer(&s, id);
-    // The computer revoked knows the old key: a new one, so it cannot tell
-    // this computer's mark on the local network any more.
+    sessions::close_for_peer(s, id);
     if let Err(error) = s.rotate_find_key() {
         tracing::warn!(code = ?error.code, "the find key was not changed after a revocation");
     }
@@ -1155,7 +1163,7 @@ async fn revoke(
         "revoked",
         Uuid::new_v4(),
     )?;
-    Ok(Json(json!({"revoked":id})))
+    Ok(())
 }
 async fn register_agent(
     State(s): State<AppState>,
