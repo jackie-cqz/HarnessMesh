@@ -452,22 +452,29 @@ const addressState={editing:null,draft:'',message:'',busy:false};
 function addressesReady(){return state.runtime?.capabilities?.peer_addresses===true;}
 function originHost(origin){try{return new URL(origin).host;}catch{return String(origin||'');}}
 // How the address that answered last reaches that computer: one typed by
-// hand, a host name, loopback, a Tailscale address (100.64/10 or
-// fd7a:115c:a1e0::/48, as Tailscale hands them out), or else the local network.
-function routeVia(routes,origin){
+// hand, a host name, loopback, a Tailscale address, or else the local
+// network. Which network the other computer's address is on is not known
+// here, only guessed from the range Tailscale hands addresses out from
+// (100.64/10, fd7a:115c:a1e0::/48); carrier-grade NAT uses 100.64/10 on
+// LANs too, so the guess is made only when this computer is on Tailscale
+// itself (`tailnet`).
+function routeVia(routes,origin,tailnet){
  if((routes?.manual||[]).includes(origin))return '手动';
  let host;try{host=new URL(origin).hostname.replace(/^\[|\]$/g,'').toLowerCase();}catch{return '';}
  const v4=host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
  if(!v4&&!host.includes(':'))return '主机名';
  if(host==='::1'||v4?.[1]==='127')return '本机回环';
- if((v4&&v4[1]==='100'&&Number(v4[2])>=64&&Number(v4[2])<128)||host.startsWith('fd7a:115c:a1e0:'))return 'Tailscale';
+ if(tailnet&&((v4&&v4[1]==='100'&&Number(v4[2])>=64&&Number(v4[2])<128)||host.startsWith('fd7a:115c:a1e0:')))return 'Tailscale';
  return '局域网';
 }
+// Whether this computer is on Tailscale: it runs in Tailscale mode, or one
+// of the networks it sees now is its Tailscale one.
+function ownTailnet(){const local=data('node',{});return local.network==='tailscale'||(local.networks?.current||[]).some(n=>n.tailnet);}
 // When and how that computer answered last, and why it does not now.
 function peerReachRows(peer){
  const rows=[],routes=peer.routes||{};
  if(routes.last_good&&routes.last_good_at){
-  const when=ago(routes.last_good_at),via=routeVia(routes,routes.last_good);
+  const when=ago(routes.last_good_at),via=routeVia(routes,routes.last_good,ownTailnet());
   const row=el('p','paired-reach muted',`上次连上：${when==='刚刚'?when:`${when}前`}${via?`，经 ${via}`:''}`);row.title=originHost(routes.last_good);
   rows.push(row);
  }

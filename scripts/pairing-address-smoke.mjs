@@ -104,8 +104,9 @@ try{
  await pa.reload();await pa.locator('#local-name').filter({hasText:/address-/}).waitFor({state:'attached'});await pa.locator('[data-view="nodes"]').click();
  const reach=card.locator('.paired-reach');await reach.waitFor({timeout:15000});
  assert(/^上次连上：(刚刚|\d+分钟前)，经 (本机回环|主机名|手动)$/.test(await reach.textContent()),'Last reached is not said: '+await reach.textContent());
- const via=await pa.evaluate(()=>[routeVia({manual:['https://x.local:1']},'https://x.local:1'),routeVia({},'https://studio.local:39880'),routeVia({},'https://100.101.1.2:39880'),routeVia({},'https://[fd7a:115c:a1e0::5]:39880'),routeVia({},'https://192.168.1.20:39880'),routeVia({},'https://[fd12::5]:39880'),routeVia({},'https://127.0.0.1:39880'),routeVia({},'https://100.12.0.1:39880')]);
- assert(JSON.stringify(via)===JSON.stringify(['手动','主机名','Tailscale','Tailscale','局域网','局域网','本机回环','局域网']),'Routes are named wrongly: '+JSON.stringify(via));
+ // A 100.64/10 address is called Tailscale only when this computer is on Tailscale (here it is not).
+ const via=await pa.evaluate(()=>[routeVia({manual:['https://x.local:1']},'https://x.local:1'),routeVia({},'https://studio.local:39880'),routeVia({},'https://100.101.1.2:39880',true),routeVia({},'https://[fd7a:115c:a1e0::5]:39880',true),routeVia({},'https://100.101.1.2:39880',false),routeVia({},'https://100.101.1.2:39880',ownTailnet()),routeVia({},'https://192.168.1.20:39880'),routeVia({},'https://[fd12::5]:39880'),routeVia({},'https://127.0.0.1:39880'),routeVia({},'https://100.12.0.1:39880')]);
+ assert(JSON.stringify(via)===JSON.stringify(['手动','主机名','Tailscale','Tailscale','局域网','局域网','局域网','局域网','本机回环','局域网']),'Routes are named wrongly: '+JSON.stringify(via));
  checks.push('last-reached-said','route-kinds');
  stage='unreachable-card';
  b.mesh.call(['daemon','stop']);await until(()=>{try{b.mesh.call(['daemon','status']);return null;}catch{return true;}});
