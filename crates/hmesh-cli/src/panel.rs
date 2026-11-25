@@ -47,6 +47,7 @@ const KNOWN_FEATURES: &[&str] = &[
 #[derive(Clone)]
 struct Panel {
     client: Client,
+    data_dir: PathBuf,
     host: String,
     origin: String,
     token: String,
@@ -115,6 +116,7 @@ pub async fn run(
     let (stop, mut stopping) = tokio::sync::watch::channel(false);
     let state = Panel {
         client,
+        data_dir: instance.dir.clone(),
         host,
         origin,
         token,
@@ -275,6 +277,10 @@ pub async fn run(
             }),
         )
         .route("/api/agents/detect", get(detect_agents))
+        .route(
+            "/api/agents/install",
+            get(installable_agents).post(install_agent),
+        )
         .route(
             "/api/agents/{id}/service",
             get(agent_service).post(set_agent_service),
@@ -870,9 +876,31 @@ async fn events(
     ))
     .into_response()
 }
-/// ACP agent commands on this computer's PATH; nothing is run or installed.
-async fn detect_agents() -> Json<Value> {
-    Json(json!({"data":hmesh_core::detect_installed_agents()}))
+/// Show ACP executables available on the panel's computer.
+async fn detect_agents(State(s): State<Panel>) -> Json<Value> {
+    Json(json!({"data":hmesh_runtime::agent_install::detect(&s.data_dir)}))
+}
+
+async fn installable_agents() -> Json<Value> {
+    let entries: Vec<_> = hmesh_runtime::agent_install::RECOMMENDED
+        .iter()
+        .map(|entry| json!({"harness":entry.harness,"package":entry.package(),"version":entry.version,"node":entry.node}))
+        .collect();
+    Json(json!({"data":entries}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallAgent {
+    harness: hmesh_core::HarnessKind,
+}
+
+async fn install_agent(State(s): State<Panel>, Json(body): Json<InstallAgent>) -> Response {
+    let result = hmesh_runtime::agent_install::install(&s.data_dir, body.harness)
+        .await
+        .and_then(|installed| Ok(serde_json::to_value(installed)?))
+        .map_err(|e| MeshError::new(hmesh_core::ErrorCode::AgentUnavailable, e.to_string()));
+    session_reply(result)
 }
 /// Owner sessions plus every node's agents, for the session picker.
 async fn sessions(State(s): State<Panel>) -> Json<Value> {

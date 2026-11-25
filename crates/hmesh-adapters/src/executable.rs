@@ -67,7 +67,18 @@ fn resolve_with_node(
             HarnessKind::ClaudeCode => {
                 "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
             }
-            HarnessKind::Codex => "node_modules/@zed-industries/codex-acp/bin/codex-acp.js",
+            HarnessKind::Codex => {
+                const CURRENT: &str = "node_modules/@agentclientprotocol/codex-acp/dist/index.js";
+                const LEGACY: &str = "node_modules/@zed-industries/codex-acp/bin/codex-acp.js";
+                let shim = std::fs::read_to_string(executable).unwrap_or_default();
+                if shim.contains("@zed-industries")
+                    || (!parent.join(CURRENT).is_file() && !shim.contains("@agentclientprotocol"))
+                {
+                    LEGACY
+                } else {
+                    CURRENT
+                }
+            }
             HarnessKind::Acp => {
                 bail!("configure the agent's real JS entry or native executable, not a shell shim")
             }
@@ -91,6 +102,7 @@ fn resolve_with_node(
             let paths = std::env::var_os("PATH").context("PATH unavailable for Node resolution")?;
             let node_name = if cfg!(windows) { "node.exe" } else { "node" };
             std::env::split_paths(&paths)
+                .filter(|path| path.is_absolute())
                 .map(|path| path.join(node_name))
                 .find(|path| path.is_file())
                 .context("Node.js executable not found")?
@@ -125,7 +137,13 @@ pub async fn probe(config: &AgentConfig, probe_dir: &Path) -> Result<ProbeReport
     let mut command = executable.command();
     command
         .args(config.launch_args())
-        .current_dir(&config.project.root)
+        .current_dir(&config.project.root);
+    probe_command(command).await
+}
+
+/// Run only the ACP initialize exchange on a preconfigured process command.
+pub async fn probe_command(mut command: Command) -> Result<ProbeReport> {
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

@@ -385,4 +385,31 @@ mod tests {
         assert_eq!(Path::new(argv[0]), entry);
         assert_eq!(&argv[1..], ["--profile", "acp"]);
     }
+
+    #[test]
+    fn codex_npm_shim_selects_the_package_it_belongs_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let shim = dir.path().join("codex-acp.cmd");
+        let current = "node_modules/@agentclientprotocol/codex-acp/dist/index.js";
+        let legacy = "node_modules/@zed-industries/codex-acp/bin/codex-acp.js";
+        for entry in [current, legacy] {
+            let path = dir.path().join(entry);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        }
+        for entry in [current, legacy] {
+            fs::write(&shim, entry.replace('/', "\\")).unwrap();
+            let config: AgentConfig = serde_json::from_value(json!({
+                "agent":{"name":"codex","harness":"codex","project_id":"demo"},
+                "project":{"root":dir.path(),"allowed_tools":["read"]},
+                "adapter":{"executable":shim,"node_executable":std::env::current_exe().unwrap()}
+            }))
+            .unwrap();
+            let command = agent_command(&config).unwrap();
+            assert_eq!(
+                Path::new(command.as_std().get_args().next().unwrap()),
+                dir.path().join(entry)
+            );
+        }
+    }
 }

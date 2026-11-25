@@ -22,7 +22,7 @@ setup 从 Tailscale 取本机 IP（Mac App Store 版的 CLI 位置同下文；�
 
 ## 从源码在前台启动（开发时用；Mac、Windows、Linux 相同）
 
-需要 Node.js 20+、通过 rustup 安装的 Rust stable >= 1.90、已登录的 Tailscale，以及你自己装好并登录过的 ACP agent（任选：`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh`）。DSH 0.2.2-rc.5 需要 Node.js 24.9 或更高版本。HarnessMesh 不会安装 agent；`hmesh agent detect` 会列出本机找到了哪些、缺的该怎么装。
+需要 Node.js 20+、通过 rustup 安装的 Rust stable >= 1.90、已登录的 Tailscale，以及你自己装好并登录过的 ACP agent（任选：`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh`）。DSH 0.2.2-rc.5 需要 Node.js 24.9 或更高版本。启动脚本仅登记已经可用的 ACP 命令。需要 Codex 或 Claude Code 时，可以在执行端面板中安装推荐版本并登记。
 
 ```sh
 git clone https://github.com/jackie-cqz/HarnessMesh.git

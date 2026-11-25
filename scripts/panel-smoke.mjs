@@ -35,7 +35,7 @@ async function create(page,agent,goal,peer,lost=false){
  if(peer)await page.locator('#compose-peer').selectOption(peer);
  await page.waitForFunction(id=>document.querySelector('#compose-agent').value===id&&!document.querySelector('#compose-submit').disabled,agent);
  await page.locator('#compose-goal').fill(goal);
- const id=(await page.locator('#compose-binding').innerText()).split(' ').at(-1);
+ const id=(await page.locator('#compose-binding').textContent()).split(' ').at(-1);
  if(lost)await page.route('**/api/tasks',async route=>{const response=await route.fetch();assert(response.ok(),'Submission before lost acknowledgement failed');await route.abort('failed');});
  await page.locator('#compose-submit').click();await confirm(page);
  if(lost){await page.locator('#compose-error').waitFor();await page.unroute('**/api/tasks');}
@@ -113,19 +113,35 @@ try{
  stage='onboarding-preview-register-recover';
  const beforePolicy=readFileSync(join(b.dir,'policy.toml'),'utf8');
  await page.locator('#new-agent').click();
- await page.locator('#onboard-harness').selectOption('acp');
- for(const[id,value]of Object.entries({name:'wizard-fixture',project:'panel-test',root:project,executable:fixture}))await page.locator('#onboard-'+id).fill(value);
+ assert(await page.locator('#onboard-submit').isDisabled(),'Wizard allowed an unselected Agent');
+ await page.locator('.onboard-choice').filter({hasText:'其他 ACP Agent'}).click();
+ await page.locator('#onboard-executable').fill(fixture);
+ await page.locator('.onboard-choice').filter({hasText:'Codex'}).click();
+ assert(await page.locator('#onboard-executable').inputValue()!==fixture,'Manual path leaked to another Agent type');
+ await page.locator('.onboard-choice').filter({hasText:'其他 ACP Agent'}).click();
+ assert(await page.locator('#onboard-executable').inputValue()===fixture,'Returning to a type lost its manual path');
+ await page.locator('#onboard-submit').click();
+ for(const[id,value]of Object.entries({name:'wizard-fixture',project:'panel-test',root:project}))await page.locator('#onboard-'+id).fill(value);
+ await page.locator('#onboard-back').click();
+ await page.locator('#onboard-submit').click();
+ assert(await page.locator('#onboard-name').inputValue()==='wizard-fixture','Back navigation lost the project draft');
+ assert(await page.locator('#onboard-peer').isHidden(),'Advanced options are expanded by default');
+ await page.locator('#onboard-advanced summary').click();
  await page.locator('#onboard-peer').selectOption(a.card.node_id);
  const previewResponse=page.waitForResponse(r=>r.url().endsWith('/onboarding/preview'));
  await page.getByRole('button',{name:'检查并预览',exact:true}).click();const preview=(await(await previewResponse).json()).data;
  assert(preview.model_called===false&&preview.policy_applied===false&&preview.policy_preview.includes(preview.agent_id)&&preview.policy_preview.includes(a.card.node_id),'Exact preview failed');
  await page.route('**/api/onboarding/register',async route=>{const response=await route.fetch();assert(response.ok(),'Onboarding registration failed');await route.abort('failed');});
- await page.getByRole('button',{name:'登记此 Agent',exact:true}).click();await confirm(page);await page.waitForFunction(()=>document.querySelector('#onboard-message').textContent.length>0&&!document.querySelector('#onboard-submit').disabled);await page.unroute('**/api/onboarding/register');
+ await page.locator('#onboard-grant summary').click();
+ assert((await page.locator('#onboard-policy').textContent()).includes(preview.agent_id),'Exact policy is missing from review');
+ await page.getByRole('button',{name:'登记此 Agent',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#onboard-message').textContent.length>0&&!document.querySelector('#onboard-submit').disabled);await page.unroute('**/api/onboarding/register');
  const firstRegistration=b.mesh.call(['agents','list']).filter(a=>a.agent_id===preview.agent_id);assert(firstRegistration.length===1,'First registration missing');
- await page.getByRole('button',{name:'登记此 Agent',exact:true}).click();await confirm(page);await page.getByRole('button',{name:'已登记',exact:true}).waitFor();
+ await page.getByRole('button',{name:'登记此 Agent',exact:true}).click();await page.getByRole('heading',{name:'已登记 wizard-fixture',exact:true}).waitFor();
  const registered=b.mesh.call(['agents','list']).filter(a=>a.agent_id===preview.agent_id);assert(registered.length===1&&registered[0].probe.managed_run!=='passed','Registration duplicated or called a model');
  assert(readFileSync(join(b.dir,'policy.toml'),'utf8')===beforePolicy,'Wizard applied policy');
- await page.locator('#close-onboard').click();await page.locator('#onboard-dialog').waitFor({state:'hidden'});
+ await page.locator('#onboard-service').click();
+ await page.getByRole('heading',{name:'wizard-fixture 的模型服务',exact:true}).waitFor();
+ await page.locator('#close-service').click();
  stage='worktree-diff-review';
  const locate=spawnSync(process.platform==='win32'?'where.exe':'which',['git'],{encoding:'utf8'});assert(locate.status===0,'Git is required for worktree browser regression');const git=locate.stdout.trim().split(/\r?\n/)[0];
  mkdirSync(join(root,'disabled-test-hooks'));const gitCall=args=>assert(spawnSync(git,['-c','core.hooksPath='+join(root,'disabled-test-hooks'),'-c','core.fsmonitor=false','-C',project,...args],{encoding:'utf8',timeout:30000}).status===0,'Git browser fixture setup failed');
@@ -141,7 +157,24 @@ try{
  await page.locator('[data-view="tasks"]').click();assert(await page.locator('#runtime-summary').isHidden(),'Version box shown outside settings');
  await page.locator('[data-view="settings"]').click();assert(await page.locator('#runtime-summary').isVisible(),'Version box missing from settings');
  await page.setViewportSize({width:390,height:844});await page.locator('[data-view="tasks"]').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile overflow');
- await page.locator('[data-view="agents"]').click();await page.locator('#new-agent').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile onboarding overflow');await page.locator('#close-onboard').click();
+ await page.setViewportSize({width:360,height:540});
+  await page.locator('#new-task').click();
+  assert(await page.evaluate(()=>{
+   const scroll=document.querySelector('.delegation-scroll'),footer=document.querySelector('.delegation-footer');
+   return scroll.scrollWidth<=scroll.clientWidth&&scroll.scrollHeight>scroll.clientHeight&&
+    footer.getBoundingClientRect().bottom<=innerHeight;
+  }),'Mobile delegation overflows or hides its actions');
+  await page.locator('#close-compose').click();
+ await page.locator('[data-view="agents"]').click();await page.locator('#new-agent').click();
+ await page.locator('.onboard-choice').filter({hasText:'其他 ACP Agent'}).click();
+ await page.locator('#onboard-executable').fill(fixture);await page.locator('#onboard-submit').click();
+ await page.locator('#onboard-advanced summary').click();
+ assert(await page.evaluate(()=>{
+  const scroll=document.querySelector('.onboard-scroll'),footer=document.querySelector('.onboard-footer');
+  return document.documentElement.scrollWidth<=innerWidth&&scroll.scrollWidth<=scroll.clientWidth&&
+   scroll.scrollHeight>scroll.clientHeight&&footer.getBoundingClientRect().bottom<=innerHeight;
+ }),'Mobile onboarding overflows or hides its actions');
+ await page.locator('#close-onboard').click();
  const privatePage=await browser.newPage();await privatePage.goto(new URL(ready.url).origin);await privatePage.locator('#access-gate').waitFor();
  assert(!await page.evaluate(()=>!!window.panelInjected)&&!errors.length,'Browser error or script execution');
  stage='stop-panel-preserves-existing-daemon';

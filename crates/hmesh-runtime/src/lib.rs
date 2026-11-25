@@ -1,5 +1,6 @@
 //! Persistent queue executor and bounded, individually tracked managed runs.
 pub mod acp_conn;
+pub mod agent_install;
 mod prepare;
 pub use prepare::{RedactedStream, inspect_references, redact_text};
 pub use prepare::{agent_command, agent_launch, apply_env, run_secrets};

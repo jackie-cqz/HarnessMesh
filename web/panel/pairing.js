@@ -36,7 +36,7 @@ function noticePairs(pairs){
   if(!pairingState.waiting.delete(p.request_id))continue;
   // The dialog says it when it is still open; otherwise a short note.
   if(pairingState.sent?.request_id===p.request_id&&$('#pair-dialog').open){pairingState.sent=p;drawPairDialog();continue;}
-  if(p.status==='approved')toast(`已和 ${p.card.display_name} 配对。两台电脑现在可以互相使用对方的 Agent。`);
+  if(p.status==='approved')toast(`已和 ${p.card.display_name} 配对，可以查看对方授权的 Agent。`);
  }
 }
 
@@ -47,22 +47,27 @@ function renderPairing(){
  // Keep what someone is typing, and where, across the periodic redraw.
  for(const input of box.querySelectorAll('.pair-check'))pairingState.typed.set(input.dataset.request,input.value);
  const focused=document.activeElement?.classList?.contains('pair-check')?document.activeElement.dataset.request:null;
- const bar=el('div','pair-toolbar'),add=button('＋ 配对新电脑','button',openPairDialog);add.id='pair-new';add.disabled=!canWrite();
- bar.append(add);
+ const bar=el('div','pair-toolbar'),add=button('配对新电脑','button',openPairDialog);add.id='pair-new';add.disabled=!canWrite();
+ const local=data('node',{}),identity=el('div','pair-identity'),identityName=el('div');
+ identityName.append(el('span','muted','这台电脑'),el('strong','',local.node?.display_name||'节点状态暂不可读取'));
+ identity.append(icon('monitor'),identityName);
+ if(local.network)identity.append(el('span','badge',local.network==='tailscale'?'Tailnet':local.network==='direct'?'局域网直连':'本机回环'));
+ bar.append(identity,add);
  const cards=[];
  for(const p of pairs){
   if(p.direction==='incoming'&&pairOpen(p))cards.push(incomingPairCard(p));
   else if(p.direction==='outgoing'&&p.status==='pending')cards.push(outgoingPairCard(p));
   else if(p.direction==='outgoing'&&['declined','expired','failed'].includes(p.status)&&!pairingState.dismissed.has(p.request_id))cards.push(endedPairCard(p));
  }
- const list=el('div','card-grid entity-list pair-requests');list.append(...cards);
- box.replaceChildren(bar,...(cards.length?[list]:[]));
+ const section=el('section','pair-requests'),heading=el('h2','','配对申请'),list=el('div','card-grid entity-list');
+ list.append(...cards);section.append(heading,list);
+ box.replaceChildren(bar,...(cards.length?[section]:[]));
  for(const input of box.querySelectorAll('.pair-check')){input.value=pairingState.typed.get(input.dataset.request)||'';if(input.dataset.request===focused)input.focus();}
 }
 function pairMessage(p){const m=el('p','form-note pair-message',pairingState.messages.get(p.request_id)||'');m.setAttribute('role','status');m.hidden=!m.textContent;return m;}
 function incomingPairCard(p){
  const card=el('article','entity-card pair-card');card.dataset.request=p.request_id;card.dataset.direction='incoming';
- const top=el('div','entity-top');top.append(el('h3','entity-name',`${p.card.display_name} 想和这台电脑配对`),el('span','badge warn','等你批准'));
+ const top=el('div','entity-top');top.append(el('h3','entity-name',p.card.display_name),el('span','badge warn','待你批准'));
  const facts=el('p','pair-facts',`${pairHost(p)} · ${pairLeft(p)}`);facts.title=`对方证书指纹 ${p.card.fingerprint}`;
  const form=el('form','pair-approve'),label=el('label','pair-check-label','校验码'),input=el('input','pair-check');
  input.dataset.request=p.request_id;input.maxLength=6;input.autocomplete='off';input.spellcheck=false;input.placeholder='6 位';input.setAttribute('aria-label',`${p.card.display_name} 面板上显示的 6 位校验码`);label.append(input);
@@ -71,12 +76,12 @@ function incomingPairCard(p){
  input.addEventListener('input',()=>{if(pairingState.messages.delete(p.request_id)){const m=card.querySelector('.pair-message');m.textContent='';m.hidden=true;}});
  form.append(label,approve,decline);form.addEventListener('submit',event=>{event.preventDefault();approvePair(p,input.value);});
  if(!canWrite())for(const control of form.querySelectorAll('input,button'))control.disabled=true;
- card.append(top,facts,form,el('p','form-note muted',`${p.card.display_name} 发出申请后，它的面板上会显示 6 位校验码。和你要配对的那台电脑对上了再批准。`),pairMessage(p));
+ card.append(top,facts,el('p','pair-ask',`请向 ${p.card.display_name} 确认它面板上的 6 位校验码，再批准。`),form,pairMessage(p));
  return card;
 }
 function outgoingPairCard(p){
  const card=el('article','entity-card pair-card');card.dataset.request=p.request_id;card.dataset.direction='outgoing';
- const top=el('div','entity-top');top.append(el('h3','entity-name',`等 ${p.card.display_name} 批准`),el('span','badge live','等对方批准'));
+ const top=el('div','entity-top');top.append(el('h3','entity-name',p.card.display_name),el('span','badge live','待对方批准'));
  const ask=el('p','pair-ask');ask.append(`在 ${p.card.display_name} 的面板上批准时，输入校验码 `,el('strong','pair-digits-inline',ownPairCheck()));
  const facts=el('p','pair-facts',pairOpen(p)?`${pairHost(p)} · ${pairLeft(p)} · 对方批准后，这里会自动完成`:`${pairHost(p)} · 已过有效期，正在向对方确认它批没批`);
  const actions=el('div','entity-actions'),cancel=button('取消申请','button secondary',()=>declinePair(p));cancel.disabled=!canWrite();actions.append(cancel);
@@ -118,42 +123,95 @@ function tickPairingWindow(note,again){
  };
  tick();pairingState.windowTimer=setInterval(tick,1000);
 }
-function openPairDialog(){pairingState.sent=null;pairingState.windowClosesAt=0;drawPairDialog();$('#pair-dialog').showModal();$('#pair-code')?.focus();}
+function openPairDialog(){
+ if(pairingState.busy)return;
+ pairingState.sent=null;
+ pairingState.windowClosesAt=0;
+ const local=data('node',{}).node?.display_name;
+ $('#pair-local').textContent=local?`本机 · ${local}`:'本机节点';
+ drawPairDialog();
+ $('#pair-dialog').showModal();
+ $('#pair-code')?.focus({preventScroll:true});
+}
+function copyPairText(node,label){
+ const copy=button(label,'button secondary',async()=>{
+  try{await navigator.clipboard.writeText(node.textContent);copy.textContent='已复制';}
+  catch{getSelection().selectAllChildren(node);copy.textContent='已选中，请按复制';}
+ });
+ copy.type='button';copy.disabled=!node.textContent;
+ return copy;
+}
 function drawPairDialog(){
  const body=$('#pair-body'),sent=pairingState.sent;
  if(sent){
-  const name=sent.card.display_name,done=el('div','pair-sent'),actions=el('div','confirm-actions');
-  if(sent.status==='approved')done.append(el('p','pair-sent-title',`已和 ${name} 配对`),el('p','','两台电脑现在可以互相使用对方的 Agent：在会话里选它的 Agent，或者让本机的 Agent 调用它。'));
-  else if(sent.status==='pending')done.append(el('p','pair-sent-title',`已向 ${name} 发出配对申请`),el('p','',`请在 ${name} 的面板上批准，批准时输入这个校验码：`),el('div','pair-digits',ownPairCheck()),el('p','form-note muted','对方批准后，这里会自动完成，不用再操作。申请 5 分钟内有效，关掉这个窗口也没关系。'));
-  else done.append(el('p','pair-sent-title',`和 ${name} 的配对没有完成`),el('p','',{declined:`${name} 拒绝了这个申请。`,expired:'申请已过期。',cancelled:'申请已取消。'}[sent.status]||'可以重新申请。'));
-  actions.append(button('好','button',()=>$('#pair-dialog').close()));
-  body.replaceChildren(done,actions);return;
+  const name=sent.card.display_name,done=el('div','pair-sent pair-scroll'),actions=el('div','confirm-actions pair-footer');
+  const status=el('div','pair-sent-state');status.setAttribute('role','status');
+  if(sent.status==='approved'){
+   status.append(el('span','badge good','已配对'),el('h3','pair-sent-title',`已和 ${name} 配对`));
+   done.append(status,el('p','','可在「已配对的电脑」查看对方授权的 Agent。'));
+  }else if(sent.status==='pending'){
+   status.append(el('span','badge warn','待对方批准'),el('h3','pair-sent-title',`已向 ${name} 发出配对申请`));
+   const check=el('code','pair-digits',ownPairCheck()),checkBox=el('div','pair-check-tile');
+   checkBox.append(check,copyPairText(check,'复制校验码'));
+   done.append(status,el('p','',`在 ${name} 的「配对节点」页输入这 6 位校验码并批准。`),checkBox,
+    el('p','form-note muted',`${pairLeft(sent)}。对方批准后，状态会自动更新。`));
+  }else{
+   status.append(el('h3','pair-sent-title',`和 ${name} 的配对没有完成`));
+   done.append(status,el('p','',{declined:`${name} 拒绝了这个申请。`,expired:'申请已过期。',cancelled:'申请已取消。'}[sent.status]||'请在节点列表查看申请状态。'));
+  }
+  const close=button(sent.status==='pending'?'返回列表':'完成','button',()=>$('#pair-dialog').close());
+  actions.append(close);
+  body.replaceChildren(done,actions);
+  close.focus({preventScroll:true});
+  return;
  }
- const form=el('form','pair-form'),label=el('label','form-label','粘贴另一台电脑的配对码'),code=el('textarea');
+ const form=el('form','pair-form'),scroll=el('div','pair-scroll'),label=el('label','form-label','对方的配对码'),code=el('textarea');
  code.id='pair-code';code.rows=3;code.spellcheck=false;code.autocomplete='off';code.placeholder='hmesh://…';code.maxLength=600;label.append(code);
- const own=data('node',{}).pair_code||'',ownBox=el('div','pair-own'),ownText=el('div'),ownCode=el('code','pair-own-code',own);ownCode.id='own-pair-code';
- ownText.append(el('b','','这台电脑的配对码'),ownCode,el('span','','也可以把它发给对方，让对方来申请；对方的申请会出现在「配对节点」里，由你批准。'));
- const copy=button('复制','button secondary small',async()=>{try{await navigator.clipboard.writeText(own);copy.textContent='已复制';}catch{getSelection().selectAllChildren(ownCode);copy.textContent='已选中，请按复制';}});copy.type='button';copy.disabled=!own;
- ownBox.append(ownText,copy);
- // A direct network answers pairing only while this window is open.
- if(data('node',{}).pairing_window?.required&&own)ownText.append(pairingWindowNote());
- // A computer that only connects out cannot be reached: pairing starts here.
- if(typeof outboundOnly==='function'&&outboundOnly())ownBox.replaceChildren(el('span','pair-outbound','这台电脑只用 MCP，不接受别的电脑连进来，所以配对要从这里发起：粘贴对方的配对码。'));
+ const node=data('node',{}),canReceive=!outboundOnly(),remoteBox=el('div','pair-entry');
+ if(!canReceive)remoteBox.append(el('p','form-note muted','本机以仅 MCP 模式运行，配对需要从这台电脑发起。'));
+ remoteBox.append(label,el('p','form-note muted','让对方在「配对新电脑」里切到「本机配对码」，把复制的内容发给你。'));
+ const ownBox=el('div','pair-entry'),ownCode=el('code','pair-own-code',canReceive?node.pair_code||'':'');ownCode.id='own-pair-code';
+ ownBox.append(el('p','form-note','把本机配对码发给对方。收到申请后，在「配对节点」核对对方显示的 6 位校验码。'),
+  ownCode,el('p','form-note muted',node.network==='loopback'?'本机当前使用回环地址，供同一台电脑上的节点配对。':''));
  const message=el('p','form-note pair-message');message.id='pair-message';message.setAttribute('role','status');message.hidden=true;
  const send=el('button','button','发出配对申请');send.type='submit';send.id='pair-send';send.disabled=!canWrite();
+ const copy=copyPairText(ownCode,'复制配对码');
  const cancel=button('取消','button secondary',()=>$('#pair-dialog').close());cancel.type='button';
- const actions=el('div','confirm-actions');actions.append(cancel,send);
- form.append(label,el('p','form-note muted','在另一台电脑的面板里点「配对新电脑」，复制那里的配对码。'),ownBox,message,actions);
- code.addEventListener('input',()=>{message.hidden=true;message.classList.remove('error');});
+ const actions=el('div','confirm-actions');actions.append(cancel,copy,send);
+ const footer=el('div','pair-footer');footer.append(message,actions);
+ const methods=el('div','segmented pair-methods');methods.setAttribute('role','group');methods.setAttribute('aria-label','配对码来源');
+ const useMode=own=>{
+  if(pairingState.busy)return;
+  remote.setAttribute('aria-pressed',String(!own));local.setAttribute('aria-pressed',String(own));
+  remote.classList.toggle('selected',!own);local.classList.toggle('selected',own);
+  remoteBox.hidden=own;ownBox.hidden=!own;message.hidden=own||!message.textContent;
+  copy.hidden=!own;send.hidden=own;
+  scroll.scrollTop=0;
+ };
+ const remote=button('粘贴对方的码','',()=>useMode(false)),local=button('本机配对码','',()=>useMode(true));
+ remote.type=local.type='button';methods.append(remote,local);
+ if(canReceive)scroll.append(methods);
+ scroll.append(remoteBox);
+ if(canReceive)scroll.append(ownBox);
+ if(node.pairing_window?.required&&ownCode.textContent)scroll.append(pairingWindowNote());
+ form.append(scroll,footer);
+ code.addEventListener('input',()=>{message.hidden=true;message.textContent='';message.classList.remove('error');});
  form.addEventListener('submit',event=>{event.preventDefault();sendPair(code.value,message,send);});
  body.replaceChildren(form);
+ useMode(false);
 }
 async function sendPair(code,message=null,send=null){
  if(pairingState.busy)return;
  // Already waiting on this computer: show that request instead of sending another.
  const fingerprint=String(code||'').replace(/\s+/g,'').split('/').pop().toLowerCase();
  const waiting=data('pairs').find(p=>p.direction==='outgoing'&&pairOpen(p)&&String(p.card.fingerprint).toLowerCase()===fingerprint);
- if(waiting){pairingState.sent=waiting;if(!$('#pair-dialog').open)$('#pair-dialog').showModal();drawPairDialog();return;}pairingState.busy=true;if(send)send.disabled=true;
+ if(waiting){pairingState.sent=waiting;if(!$('#pair-dialog').open)$('#pair-dialog').showModal();drawPairDialog();return;}
+ pairingState.busy=true;
+ const controls=send?.form.querySelectorAll('button:enabled,textarea:enabled')||[];
+ if(send){
+  for(const control of controls)control.disabled=true;
+  $('#pair-dialog [data-close]').disabled=true;
+ }
  if(message){message.hidden=false;message.classList.remove('error');message.textContent='正在联系对方…';}
  try{
   const p=unwrap(await api('/pairs/request',{method:'POST',body:JSON.stringify({code:String(code||'').trim()})}));
@@ -162,8 +220,14 @@ async function sendPair(code,message=null,send=null){
   drawPairDialog();refresh();
  }catch(error){
   if(message){message.textContent=pairProblem(error);message.classList.add('error');}else toast(pairProblem(error));
- }finally{pairingState.busy=false;if(send)send.disabled=!canWrite();}
+ }finally{
+  pairingState.busy=false;
+  $('#pair-dialog [data-close]').disabled=false;
+  for(const control of controls)control.disabled=false;
+  if(send)send.disabled=!canWrite();
+ }
 }
+$('#pair-dialog').addEventListener('cancel',event=>{if(pairingState.busy)event.preventDefault();});
 async function approvePair(p,check){
  const value=String(check||'').trim();
  if(!/^[0-9a-fA-F]{6}$/.test(value)){pairingState.messages.set(p.request_id,'请输入 6 位校验码（数字和字母 A–F）。');renderPairing();return;}

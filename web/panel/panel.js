@@ -144,12 +144,49 @@ function renderServices() {
 function renderNodes() {
   if(typeof renderPairing==='function')renderPairing();
   const pairing=typeof pairingReady==='function'&&pairingReady();
-  const peers=data('peers');$('#node-list').replaceChildren(...(peers.length?peers.map(p=>{const calls=p.node_connectivity==='outbound_only',card=el('article','entity-card'),top=el('div','entity-top');top.append(el('h3','entity-name',p.card.display_name),badge(p.node_connectivity));card.append(top,meta(calls?[['信任状态',labels[p.status]||p.status],['地址','不接受连入'],['Agent','没有（它只调用别人）']]:[['信任状态',labels[p.status]||p.status],['地址',p.card.endpoint],['可见 / 可运行',`${p.visible_agent_count??'—'} / ${p.runnable_agent_count??'—'}`],['Agent 注册表',p.registry_readable?'可读取':'未授权或不可达']]),el('div','entity-id',p.card.node_id));const actions=el('div','entity-actions'),b=button(calls?'它只调用别人，没有 Agent':'查看远端 Agent','button secondary',()=>loadRemote(p));b.disabled=p.status!=='trusted'||calls;actions.append(b);card.append(actions);return card;}):[pairing?empty('还没有配对的电脑',outboundOnly()?'点「配对新电脑」，粘贴另一台电脑的配对码。':'点「配对新电脑」，粘贴另一台电脑的配对码；或者把这台电脑的配对码发给对方。'):empty('还没有配对节点','通过 CLI 核对指纹并完成双端配对。')]));
+  const peers=data('peers');
+  const cards=peers.map(peer=>{
+    const calls=peer.node_connectivity==='outbound_only';
+    const card=el('article','entity-card paired-card'),top=el('div','entity-top');
+    const identity=el('div','paired-identity'),name=el('div');
+    name.append(el('h3','entity-name',peer.card.display_name),el('p','paired-endpoint mono',calls?'仅发起连接':peer.card.endpoint));
+    identity.append(icon('monitor'),name);
+    const flags=el('div','paired-flags');
+    flags.append(badge(peer.status),badge(peer.node_connectivity));
+    top.append(identity,flags);
+    const inventory=el('div','paired-inventory');
+    if(calls)inventory.append(el('p','muted','这台电脑通过 MCP 调用已配对的 Agent。'));
+    else{
+      inventory.append(meta([['可见 Agent',peer.visible_agent_count],['可运行 Agent',peer.runnable_agent_count]]));
+      if(!peer.registry_readable)inventory.append(el('p','muted','暂未读取到 Agent 列表'));
+    }
+    const details=el('details','paired-record');
+    details.append(el('summary','','节点标识'),el('p','mono',peer.card.node_id));
+    const view=button('查看远端 Agent','button secondary',()=>loadRemote(peer));
+    view.disabled=peer.status!=='trusted'||calls;
+    const actions=el('div','paired-actions');actions.append(details);
+    if(!calls)actions.append(view);
+    card.append(top,inventory,actions);
+    return card;
+  });
+  $('#node-list').replaceChildren(...(cards.length?cards:[
+    pairing?empty('还没有配对的电脑','点击「配对新电脑」开始。'):empty('还没有配对节点','通过 CLI 核对指纹并完成双端配对。')
+  ]));
 }
+let remoteAgentView=0;
 async function loadRemote(peer) {
-  const box=$('#remote-agents');box.hidden=false;box.replaceChildren(el('h2','',`${peer.card.display_name} / Agents`),empty('正在读取授权的 Agent…'));
-  try { const rows=unwrap(await api(`/peers/${peer.card.node_id}/agents`));const grid=el('div','card-grid entity-list');grid.append(...(rows.length?rows.map(a=>agentCard(a,true)):[empty('该节点没有对本机可见的 Agent')]));box.replaceChildren(el('h2','',`${peer.card.display_name} / Agents`),grid); }
-  catch(e){box.replaceChildren(el('h2','',`${peer.card.display_name} / Agents`),empty('远端 Agent 暂不可读取',e.message));}
+  const box=$('#remote-agents'),generation=++remoteAgentView;
+  const header=el('div','remote-agent-heading'),title=el('h2','',`${peer.card.display_name} 的 Agent`);
+  const close=button('关闭列表','button secondary',()=>{remoteAgentView++;box.hidden=true;box.replaceChildren();});
+  const contents=el('div','card-grid entity-list');contents.setAttribute('aria-live','polite');
+  header.append(title,close);
+  contents.append(empty('正在读取远端 Agent…'));
+  box.hidden=false;box.replaceChildren(header,contents);
+  title.tabIndex=-1;title.focus();box.scrollIntoView({block:'nearest'});
+  try{
+    const rows=unwrap(await api(`/peers/${peer.card.node_id}/agents`));
+    if(generation===remoteAgentView)contents.replaceChildren(...(rows.length?rows.map(a=>agentCard(a,true)):[empty('该节点没有对本机可见的 Agent')]));
+  }catch(e){if(generation===remoteAgentView)contents.replaceChildren(empty('远端 Agent 暂不可读取',e.message));}
 }
 function render() {
   if(!state.snapshot)return;
@@ -174,7 +211,26 @@ async function refresh() {
   finally{state.refreshing=false;$('#refresh').disabled=false;if(typeof renderInbox==='function')renderInbox();if(state.view==='inbox'&&typeof refreshInbox==='function')refreshInbox();}
 }
 function confirmAction(title,description) {
-  return new Promise(resolve=>{const dialog=$('#confirm-dialog');$('#confirm-title').textContent=title;$('#confirm-description').textContent=description;let accepted=false;const yes=()=>{accepted=true;dialog.close();};const no=()=>dialog.close();const done=()=>{$('#confirm-accept').removeEventListener('click',yes);$('#confirm-cancel').removeEventListener('click',no);resolve(accepted);};$('#confirm-accept').addEventListener('click',yes);$('#confirm-cancel').addEventListener('click',no);dialog.addEventListener('close',done,{once:true});dialog.showModal();$('#confirm-cancel').focus();});
+  return new Promise(resolve=>{
+    const dialog=$('#confirm-dialog'),structured=description instanceof HTMLElement;
+    dialog.classList.toggle('structured-confirm',structured);
+    $('#confirm-title').textContent=title;
+    const body=$('#confirm-description');
+    body.replaceChildren(structured?description:el('p','',description));
+    let accepted=false;
+    const yes=()=>{accepted=true;dialog.close();},no=()=>dialog.close();
+    const done=()=>{
+      $('#confirm-accept').removeEventListener('click',yes);
+      $('#confirm-cancel').removeEventListener('click',no);
+      resolve(accepted);
+    };
+    $('#confirm-accept').addEventListener('click',yes);
+    $('#confirm-cancel').addEventListener('click',no);
+    dialog.addEventListener('close',done,{once:true});
+    dialog.showModal();
+    body.scrollTop=0;
+    $('#confirm-cancel').focus();
+  });
 }
 async function act(kind,id,name,title,description) {
   if(!canWrite())return toast('当前面板只读，请查看运行能力与升级步骤。');

@@ -100,10 +100,12 @@ try {
   stage = 'project-first discovery and mismatch';
   await page.locator('[data-view="tasks"]').click();
   await page.locator('#new-task').click();
+  await page.locator('#compose-discovery summary').click();
   await page.locator('#discover-project').selectOption('project-review');
   const target = page.locator('.discover-target').filter({hasText: 'executor-agent'});
   await target.getByRole('button', {name: '选用'}).click();
   await page.waitForFunction(id=>document.querySelector('#compose-agent').value===id, agent.agent_id);
+  await page.locator('#compose-git summary').click();
   await page.locator('#git-comparison').filter({hasText:pinned}).waitFor();
   await page.locator('#compose-goal').fill('fixture:create');
   await page.locator('#compose-check').click();
@@ -126,9 +128,11 @@ try {
   assert(await page.locator('#compose-peer').isDisabled(), 'Session did not lock the execution target');
   await page.locator('#compose-goal').fill('fixture:create');
   await page.waitForFunction(id=>document.querySelector('#compose-agent').value===id, agent.agent_id);
+  await page.locator('#compose-git summary').click();
   await page.locator('#git-comparison').filter({hasText:pinned}).waitFor();
   await page.locator('#git-mode').selectOption('pinned');
   await page.locator('#git-commit').fill(pinned);
+  await page.locator('#compose-artifact-settings > summary').click();
   await page.locator('#compose-contract summary').click();
   await page.locator('#contract-artifact').fill('out/health.json');
   await page.locator('#contract-expected').fill('{"status":"ok"}');
