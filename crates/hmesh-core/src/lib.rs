@@ -5,6 +5,7 @@ pub use network::{default_allowed_sources, is_private_address, is_tailnet_ip};
 pub mod development;
 mod git_version;
 pub mod managed;
+pub mod projects;
 pub mod service;
 pub mod sessions;
 pub use git_version::{GitVersionRequirement, GitVersionState};
@@ -123,7 +124,7 @@ impl TaskStatus {
 /// Which agent an Agent registration launches. Every kind is driven over the
 /// Agent Client Protocol (ACP); the kind only selects default launch arguments
 /// and how the agent is labelled. `acp` is any other ACP agent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HarnessKind {
     /// Pi through the `pi-acp` adapter.
@@ -1159,6 +1160,10 @@ pub struct MeshNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub agents: Vec<AgentCard>,
+    /// Projects its agents can work in when asked (`OpenSession.project_id`):
+    /// every visible project here, the shared ones on a paired computer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<projects::SharedProject>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

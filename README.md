@@ -10,7 +10,7 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 
 ## What you get
 
-- **One panel for every agent.** Start a session with any agent on this computer or a paired one, keep a multi-turn conversation, and follow its thinking, plan and tool calls as they happen. You can stop or close it at any time. Each session can switch model, mode and reasoning level between turns.
+- **One panel for every agent.** Start a session with any agent on this computer or a paired one, keep a multi-turn conversation, and follow its thinking, plan and tool calls as they happen. You can stop or close it at any time. Each session can switch model, mode and reasoning level between turns. Sessions are grouped by project, and the sessions your agents already have (Claude Code, Codex, OpenCode, Pi) are listed there too: open one to see its earlier conversation and keep going.
 - **Agents call each other.** Every session gets the HarnessMesh MCP server, so an agent can open a session with another agent (`mesh_send`), follow up, and read its reply (`mesh_wait`), even on another computer. Calls go at most three levels deep and never loop back to an agent already in the chain.
 - **You stay in charge.** When an agent wants to edit a file or run a command, the question comes back to whoever opened the session: 允许一次 (allow once) or 拒绝 (reject). In sessions an agent opened, they are answered automatically; set the calling computer to `confirm` and they wait for you instead.
 - **Pair a computer in two steps.** Paste the other computer's pairing code; it approves once with a six-character check code. Then both sides can use each other's agents. Revoking a pairing closes the sessions that computer opened.

@@ -128,8 +128,23 @@ pub struct SessionRecord {
     pub config_values: BTreeMap<String, Value>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The folder the agent works in when it is not the agent's registered
+    /// project directory (a project chosen on this computer). Stays on this
+    /// computer: [`SessionRecord::for_peer`] removes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<std::path::PathBuf>,
+    /// The session continues one the agent already had; its first reload
+    /// keeps the replayed conversation as this session's history.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_pending: bool,
 }
 impl SessionRecord {
+    /// This record as the paired computer that opened it may see it: without
+    /// the local folder.
+    pub fn for_peer(mut self) -> Self {
+        self.cwd = None;
+        self
+    }
     /// This session as the newest link of a chain.
     pub fn link(&self) -> ChainLink {
         ChainLink {
@@ -191,6 +206,17 @@ pub struct OpenSession {
     /// Settings to use from the first turn on, by setting ID.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, Value>,
+    /// Work in this project instead of the agent's registered directory: any
+    /// project added on this computer, or one a paired computer shares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Continue this session the agent already has (its own session ID, from
+    /// the project's history). Only for this computer's owner and agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
+    /// Title shown for a continued session until its history says otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 /// What a paired node sends to open a session here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +233,10 @@ pub struct PeerOpenSession {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, Value>,
+    /// A project this node shares, by ID. Sent only to nodes that list shared
+    /// projects; older nodes refuse unknown fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 /// A command the running agent advertised for this particular ACP session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

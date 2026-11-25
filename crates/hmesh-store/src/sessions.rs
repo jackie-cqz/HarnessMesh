@@ -1,5 +1,5 @@
 //! Interactive sessions and their ordered events.
-use super::{Store, decode, encode, internal};
+use super::{QUEUED_MESSAGE, Store, decode, encode, internal};
 use hmesh_core::sessions::{SessionEvent, SessionRecord};
 use hmesh_core::*;
 use rusqlite::{OptionalExtension, params};
@@ -169,6 +169,98 @@ impl Store {
                 kind: kind.to_owned(),
                 payload: payload.clone(),
             })
+        })
+    }
+    /// Append several events at once: all are stored, or none.
+    pub fn append_session_events(
+        &self,
+        session_id: Uuid,
+        events: &[(String, Value)],
+    ) -> Result<Option<u64>> {
+        if events.is_empty() {
+            return Ok(None);
+        }
+        self.transaction(|tx| {
+            let mut seq: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(seq),0) FROM session_events WHERE session_id=?1",
+                    [session_id.to_string()],
+                    |r| r.get(0),
+                )
+                .map_err(internal)?;
+            let created_at = now();
+            for (kind, payload) in events {
+                seq += 1;
+                tx.execute(
+                    "INSERT INTO session_events VALUES(?1,?2,?3,?4,?5)",
+                    params![
+                        session_id.to_string(),
+                        seq,
+                        created_at,
+                        kind,
+                        encode(payload)?
+                    ],
+                )
+                .map_err(internal)?;
+            }
+            Ok(Some(seq as u64))
+        })
+    }
+    /// Turn a session's queued messages (kind `queued_message`, see
+    /// `QUEUED_MESSAGE`) into `user_message` events after every event so
+    /// far, in one transaction. Returns the last new sequence number.
+    pub fn release_queued_messages(&self, session_id: Uuid) -> Result<Option<u64>> {
+        self.transaction(|tx| {
+            let id = session_id.to_string();
+            let queued: Vec<String> = {
+                let mut q = tx
+                    .prepare(
+                        "SELECT payload_json FROM session_events WHERE session_id=?1 AND kind=?2 ORDER BY seq",
+                    )
+                    .map_err(internal)?;
+                q.query_map(params![id, QUEUED_MESSAGE], |r| r.get::<_, String>(0))
+                    .map_err(internal)?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(internal)?
+            };
+            if queued.is_empty() {
+                return Ok(None);
+            }
+            // Numbered after every event so far, including the queued ones:
+            // a reader already past them still sees the new events.
+            let mut seq: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(seq),0) FROM session_events WHERE session_id=?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .map_err(internal)?;
+            tx.execute(
+                "DELETE FROM session_events WHERE session_id=?1 AND kind=?2",
+                params![id, QUEUED_MESSAGE],
+            )
+            .map_err(internal)?;
+            let created_at = now();
+            for payload in queued {
+                seq += 1;
+                tx.execute(
+                    "INSERT INTO session_events VALUES(?1,?2,?3,?4,?5)",
+                    params![id, seq, created_at, "user_message", payload],
+                )
+                .map_err(internal)?;
+            }
+            Ok(Some(seq as u64))
+        })
+    }
+    /// Whether any of a session's events is marked `"replayed": true`.
+    pub fn has_replayed_events(&self, id: Uuid) -> Result<bool> {
+        self.read(|c| {
+            c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id=?1 AND json_extract(payload_json,'$.replayed')=1)",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .map_err(internal)
         })
     }
     /// The payload of a session's most recent event of one kind.

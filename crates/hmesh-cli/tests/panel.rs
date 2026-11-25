@@ -343,7 +343,7 @@ async fn runtime_capabilities_refresh_and_preflight_blocks_submission_without_le
     assert_eq!(legacy["data"]["daemon"]["schema_version"], 6);
     assert_eq!(legacy["data"]["capabilities"]["task_workflow"], true);
     assert_eq!(legacy["data"]["capabilities"]["task_preflight"], false);
-    assert_eq!(legacy["data"]["cli_schema_version"], 9);
+    assert_eq!(legacy["data"]["cli_schema_version"], 10);
     assert!(!legacy.to_string().contains("private-"));
     assert!(!legacy.to_string().contains(instance.owner_token()));
     assert_eq!(get("/api/overview").send().await.unwrap().status(), 200);
@@ -503,7 +503,7 @@ async fn runtime_capabilities_refresh_and_preflight_blocks_submission_without_le
         200
     );
     assert_eq!(owner.approvals.load(Ordering::SeqCst), 1);
-    *owner.status.write().unwrap() = json!({"running":true,"pid":std::process::id(),"schema_version":9,"network":"loopback","api_features":["panel-task-workflow-v1","task-preflight-v1","development-workflows-v1","acp-sessions-v1"]});
+    *owner.status.write().unwrap() = json!({"running":true,"pid":std::process::id(),"schema_version":10,"network":"loopback","api_features":["panel-task-workflow-v1","task-preflight-v1","development-workflows-v1","acp-sessions-v1"]});
     let full: Value = get("/api/runtime")
         .send()
         .await

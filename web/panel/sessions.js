@@ -4,7 +4,7 @@
 // screen with an agent picker. Agent and peer text is always set as text.
 const sessionLabels={pending_approval:'等待批准',idle:'空闲',running:'进行中',waiting_permission:'等待授权',closed:'已关闭'};
 const sessionTone={pending_approval:'warn',idle:'good',running:'live',waiting_permission:'warn',closed:''};
-const conv={list:null,nodes:[],selected:null,cursor:0,events:[],record:null,remote:false,generation:0,busy:false,listLoading:false,target:null,openTools:new Set(),openThoughts:new Set(),heroConfig:{},settingBusy:false};
+const conv={list:null,nodes:[],selected:null,cursor:0,events:[],record:null,remote:false,generation:0,busy:false,listLoading:false,target:null,openTools:new Set(),openThoughts:new Set(),heroConfig:{},heroProject:null,settingBusy:false};
 
 // Daemon notes are English; show them in the panel's language (null hides them).
 const sessionNotes=[
@@ -19,6 +19,10 @@ const sessionNotes=[
   [/^the agent could not reload/,'Agent 没能载入之前的对话，接着对话但不带之前的上下文'],
   [/^this agent cannot reload/,'这个 Agent 不支持载入之前的对话，接着对话但不带之前的上下文'],
   [/^cancel requested/,'已请求停止'],
+  [/^continued a session the agent already had; this agent does not show/,'已接上 Agent 里已有的会话；这个 Agent 不回放之前的记录。'],
+  [/^continued a session the agent already had/,'已接上 Agent 里已有的会话，上面是之前的记录。如果终端里还开着这个会话，先关掉它，避免两边同时写。'],
+  [/^this agent cannot continue its earlier sessions/,'这个 Agent 不能接着它之前的会话'],
+  [/^this project is no longer shared/,'这个项目已经不再共享给配对的电脑'],
   [/^the turn was interrupted because HarnessMesh restarted/,'HarnessMesh 重启，这一轮被中断'],
 ];
 function noteText(message){
@@ -29,6 +33,14 @@ function noteText(message){
 function icon(name,size=''){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('class',`icon ${size}`.trim());svg.setAttribute('aria-hidden','true');const use=document.createElementNS('http://www.w3.org/2000/svg','use');use.setAttribute('href',`#i-${name}`);svg.append(use);return svg;}
 function sessionBadge(status){return el('span',`badge ${sessionTone[status]||''}`,sessionLabels[status]||status||'未知');}
 function localNodeId(){return data('node',{}).node?.node_id;}
+// This computer's own marks on sessions: a new name, pinned, hidden.
+let markIndex={list:null,map:new Map()};
+function markOf(id){
+  const list=conv.list?.marks||[];
+  if(markIndex.list!==list)markIndex={list,map:new Map(list.map(m=>[m.session_id,m]))};
+  return markIndex.map.get(id);
+}
+function sessionTitle(s){return markOf(s.session_id)?.title||s.title||`${s.agent_name} · 新会话`;}
 function nodeLabel(id){const n=conv.nodes.find(n=>n.node_id===id);if(n)return n.local?`${n.name}（本机）`:n.name;return nodeName(id);}
 function shortNode(id){const n=conv.nodes.find(n=>n.node_id===id);return n?n.name:short(id);}
 function ago(seconds){const d=Math.max(0,Date.now()/1000-(seconds||0));if(d<60)return '刚刚';if(d<3600)return `${Math.floor(d/60)}分钟`;if(d<86400)return `${Math.floor(d/3600)}小时`;return `${Math.floor(d/86400)}天`;}
@@ -58,7 +70,8 @@ function needsOwner(s){return (s.status==='pending_approval'&&!s._remote)||(s.st
 async function loadSessions(){
   if(conv.listLoading||!access)return;conv.listLoading=true;
   try{
-    const reply=await api('/sessions');
+    // Projects come with the list so sessions are grouped under them at once.
+    const [reply]=await Promise.all([api('/sessions'),typeof readProjects==='function'?readProjects():null]);
     if(reply.sessions?.error)throw Object.assign(Error(reply.sessions.error.code),reply.sessions.error);
     conv.list=reply.sessions.data;conv.nodes=reply.nodes?.data||conv.nodes;
     // The open conversation may know a newer state than this list snapshot.
@@ -88,7 +101,9 @@ function sessionRow(s,child){
   const row=el('button',`session-row${child?' child':''}${s.session_id===conv.selected?' selected':''}${s.status==='closed'?' closed':''}`);row.type='button';
   const dot=el('span',`state-dot ${stateClass(s.status)}`);dot.title=sessionLabels[s.status]||s.status;
   row.append(dot);if(child)row.prepend(icon('corner-down-right','xs'));
-  row.append(el('span','session-row-title',s.title||`${s.agent_name} · 新会话`),el('span','session-row-time',ago(s.updated_at)));
+  row.append(el('span','session-row-title',sessionTitle(s)));
+  if(markOf(s.session_id)?.pinned){const pin=icon('pin','xs');pin.classList.add('row-pin');row.append(pin);}
+  row.append(el('span','session-row-time',ago(s.updated_at)));
   row.title=`${s.agent_name} · ${sessionLabels[s.status]||s.status} · ${originText(s)}`;
   row.addEventListener('click',()=>{if(state.view!=='sessions')showView('sessions');selectSession(s);});
   return row;
@@ -97,6 +112,9 @@ function renderSessionList(){
   renderAgentDirectory();
   const rows=allSessions(),waiting=rows.filter(needsOwner).length;
   $('#nav-sessions').hidden=!waiting;$('#nav-sessions').textContent=waiting;
+  const grouped=typeof projectsSupported==='function'&&projectsSupported();
+  for(const id of ['session-tools','session-footer'])if(!grouped)$('#'+id).hidden=true;
+  if(grouped){renderProjectSessions(rows);return;}
   if(!rows.length){$('#session-list').replaceChildren(el('div','side-empty','还没有会话'));return;}
   const ids=new Set(rows.map(r=>r.session_id)),groups=new Map();
   for(const s of rows){if(!groups.has(s.node_id))groups.set(s.node_id,[]);groups.get(s.node_id).push(s);}
@@ -137,12 +155,14 @@ sidebarToggle.addEventListener('click',()=>{
 
 // ---- New session ----
 function readyAgents(){return conv.nodes.flatMap(n=>(n.agents||[]).filter(a=>a.availability!=='disabled'&&a.probe?.version_supported&&n.reachable).map(a=>({node:n,agent:a})));}
-function startNew(nodeId,agentId){
+// projectId: a project to start in (null forgets an earlier choice).
+function startNew(nodeId,agentId,projectId){
   resetSessionCommands();
   if($('#hero-input').value.trimStart().startsWith('/'))$('#hero-input').value='';
   $('#hero-command-status').hidden=true;
   conv.selected=null;conv.record=null;conv.generation++;
   if(nodeId&&agentId&&(conv.target?.node!==nodeId||conv.target?.agent!==agentId)){conv.target={node:nodeId,agent:agentId};conv.heroConfig={};}
+  if(projectId!==undefined)conv.heroProject=projectId&&nodeId?{node:nodeId,value:projectId}:null;
   if(state.view!=='sessions')showView('sessions');else renderConversation();
   renderSessionList();$('#hero-input').focus();
 }
@@ -167,6 +187,7 @@ function renderHero(){
   }):[el('div','side-empty','没有可用的 Agent。先在 Agents 页接入一个已安装的 ACP agent。')]));
   const target=ready.find(r=>r.node.node_id===conv.target?.node&&r.agent.agent_id===conv.target?.agent);
   $('#hero-target').replaceChildren(...(target?[icon('bot','xs'),el('span','',`${target.agent.name} · ${target.node.local?'本机':target.node.name}`)]:[]));
+  if(typeof renderHeroProject==='function')renderHeroProject(target);
   const values={...heroDefaults(target?.agent),...conv.heroConfig},box=$('#hero-settings');
   box.hidden=!settingsSupported()||!target;
   renderSettings(box,target?.agent.config_options,values,!canWrite(),(id,value)=>{conv.heroConfig[id]=value;renderHero();},JSON.stringify([conv.target,target?.agent.config_options,values]));
@@ -189,10 +210,11 @@ async function submitNew(event,discover=false){
   const opening={generation,target};openingHero=opening;
   const agent=(node.agents||[]).find(a=>a.agent_id===target.agent),defaults=heroDefaults(agent);
   const config=Object.fromEntries(Object.entries(conv.heroConfig).filter(([id,value])=>defaults[id]!==value));
+  const project=typeof heroProject==='function'?heroProject({node,agent})?.chosen:null;
   $('#hero-send').disabled=true;$('#hero-error').hidden=true;
   const status=$('#hero-command-status');status.hidden=!slash;status.textContent='正在打开会话以读取 Agent 命令…';
   try{
-    const record=unwrap(await api('/sessions',{method:'POST',body:JSON.stringify({agent_id:target.agent,peer_id:node.local?null:node.node_id,...(!slash?{message}:{}),...(Object.keys(config).length?{config}:{})})}));
+    const record=unwrap(await api('/sessions',{method:'POST',body:JSON.stringify({agent_id:target.agent,peer_id:node.local?null:node.node_id,...(!slash?{message}:{}),...(Object.keys(config).length?{config}:{}),...(project?{project_id:project}:{})})}));
     loadSessions();
     if(!isCurrent()||(slash&&!input.value.trimStart().startsWith('/')))return;
     const nextDraft=slash?input.value:(input.value===draft?'':input.value);
@@ -286,7 +308,8 @@ const toolStates={pending:'等待',in_progress:'进行中',completed:'完成',fa
 function renderHeader(s){
   if(!s){const crumb=el('div','crumb');crumb.append(icon('square-pen','sm'),el('strong','','新会话'));$('#conversation-header').replaceChildren(crumb);return;}
   const crumb=el('div','crumb');crumb.append(el('span','',shortNode(s.node_id)),icon('chevron-right','sm'),el('strong','',s.agent_name));
-  if(s.title){crumb.append(icon('chevron-right','sm'),el('span','',s.title));}
+  const title=markOf(s.session_id)?.title||s.title;
+  if(title){crumb.append(icon('chevron-right','sm'),el('span','',title));}
   const actions=el('div','chat-actions');actions.append(sessionBadge(s.status));
   if(hasProjectWork()&&canWrite()&&s.origin?.node_id===localNodeId()&&s.status!=='pending_approval'){
     actions.append(button('作为任务执行','button secondary',()=>startTaskFromSession(s)));
@@ -308,6 +331,8 @@ function renderConversation(){
   const stream=$('#conversation-stream'),atBottom=stream.scrollHeight-stream.scrollTop-stream.clientHeight<80;
   const col=el('div','chat-col'),meta=el('div','chat-meta');meta.id='conversation-meta';
   meta.append(el('span','',originText({...s,_remote:conv.remote})),el('span','',approverText({...s,_remote:conv.remote})),el('span','',`第 ${s.turns||0} 轮`));
+  const projectName=typeof sessionProjectName==='function'?sessionProjectName({...s,_remote:conv.remote}):null;
+  if(projectName)meta.append(el('span','',`项目：${projectName}`));
   if(s.origin?.chain?.length)meta.append(el('span','conversation-chain',`调用链：${s.origin.chain.map(l=>shortNode(l.node_id)).join(' → ')} → ${shortNode(s.node_id)}`));
   col.append(meta);
   const requests=new Map();let text=null,thought=null;
@@ -341,7 +366,8 @@ function renderConversation(){
       const reason={cancelled:'本轮已停止',max_tokens:'达到输出上限',max_turn_requests:'达到步数上限',refusal:'Agent 拒绝了这一轮'}[p.stop_reason];
       if(reason||!['end_turn'].includes(p.stop_reason))col.append(el('div','event-note center',reason||`本轮结束（${p.stop_reason}）`));
     }else if(e.kind==='error'){const n=el('div','event-note bad');n.append(icon('x-circle','sm'),el('span','',noteText(p.message)||'出错了'));col.append(n);}
-    else if(e.kind==='status'){const t=noteText(p.message);if(t!==null)col.append(el('div','event-note center',t||sessionLabels[p.status]||p.status));}
+    // A status without a message only moves the session along.
+    else if(e.kind==='status'){if(!p.message)continue;const t=noteText(p.message);if(t!==null)col.append(el('div','event-note center',t||sessionLabels[p.status]||p.status));}
     else if(e.kind==='config_changed'){
       const option=(s.config_options||[]).find(o=>o.id===p.config_id);
       col.append(el('div','event-note center',`已切换${settingNames[option?.category]||p.name||p.config_id}：${p.value_name??p.value}`));
@@ -680,7 +706,7 @@ $('#service-fill').addEventListener('click',()=>{
 });
 $('#service-env-add').addEventListener('click',()=>{$('#service-env').append(serviceEnvRow());$('#service-env').lastChild.querySelector('input').focus();});
 
-$('#new-session').addEventListener('click',()=>startNew());
+$('#new-session').addEventListener('click',()=>startNew(undefined,undefined,null));
 $('#hero-composer').addEventListener('submit',submitNew);
 $('#hero-input').addEventListener('input',e=>{
   if(e.isComposing)return;

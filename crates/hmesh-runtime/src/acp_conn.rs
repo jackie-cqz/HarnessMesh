@@ -186,20 +186,24 @@ impl AcpConnection {
     /// Responses overtake the notifications queued before them, so call this
     /// after a request returns and before reading state its updates build.
     pub async fn barrier(&self) {
-        self.drain_updates(false).await;
+        self.drain_updates(false, Duration::from_secs(10)).await;
+    }
+    /// Like `barrier`, waiting up to `limit`.
+    pub async fn barrier_within(&self, limit: Duration) {
+        self.drain_updates(false, limit).await;
     }
     /// Finish recording the turn, including any partial text held for redaction.
     pub async fn finish_turn(&self) {
-        self.drain_updates(true).await;
+        self.drain_updates(true, Duration::from_secs(10)).await;
     }
-    async fn drain_updates(&self, end_turn: bool) {
+    async fn drain_updates(&self, end_turn: bool, limit: Duration) {
         let (done, wait) = oneshot::channel();
         if self
             .events
             .send(AgentMessage::Barrier { end_turn, done })
             .is_ok()
         {
-            let _ = tokio::time::timeout(Duration::from_secs(10), wait).await;
+            let _ = tokio::time::timeout(limit, wait).await;
         }
     }
     pub fn alive(&self) -> bool {
@@ -265,6 +269,21 @@ impl AcpConnection {
             .map(str::to_owned)
             .ok_or_else(|| failure("the agent created a session without an ID"))?;
         Ok((session, result))
+    }
+    /// One page of the agent's own sessions (`session/list`): the result
+    /// holds `sessions` and, when more follow, `nextCursor`.
+    pub async fn list_sessions(
+        &self,
+        cwd: Option<&std::path::Path>,
+        cursor: Option<&str>,
+    ) -> Result<Value> {
+        let id = self.id();
+        self.call(
+            id,
+            acp::list_sessions_request(id, cwd, cursor),
+            SETUP_TIMEOUT,
+        )
+        .await
     }
     /// Restore the same session using the method advertised during initialization.
     pub async fn restore_session(

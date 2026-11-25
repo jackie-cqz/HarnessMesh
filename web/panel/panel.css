@@ -1458,3 +1458,109 @@ footer{margin-top:28px}
 .pair-window-line{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:8px;font-size:12.5px;line-height:1.6;color:var(--muted)}
 .pair-window-line .button{flex:none}
 .pair-outbound{font-size:12.5px;color:var(--muted);line-height:1.6}
+
+/* Projects in the sidebar: this computer → project → sessions, with the
+   sessions the agents already keep in each folder listed underneath. */
+#session-pane{display:flex;flex-direction:column}
+.session-tools{padding:0 0 6px}
+.session-search{display:flex;align-items:center;gap:6px;height:30px;margin:0 2px;padding:0 10px;border:1px solid var(--border);border-radius:999px;background:var(--background);color:var(--muted);cursor:text}
+.session-search:focus-within{border-color:var(--ring);box-shadow:0 0 0 2px color-mix(in srgb,var(--ring) 30%,transparent)}
+.session-search input{flex:1;min-width:0;height:100%;border:0;outline:0;background:transparent;color:var(--foreground);font-size:13px;padding:0}
+.session-search input:focus-visible{outline:0}
+.session-search input::placeholder{color:var(--muted)}
+.project{display:flex;flex-direction:column}
+.project-head{position:relative;display:flex;align-items:center;border-radius:8px}
+.project-head:hover,.project-head:focus-within{background:var(--sidebar-accent)}
+.project-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:var(--foreground);font-size:13.5px;text-align:left}
+.project-toggle>svg:first-child{color:var(--faint);transition:transform .15s}
+.project-toggle[aria-expanded="true"]>svg:first-child{transform:rotate(90deg)}
+.project-name{flex:none;max-width:62%;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.project-path{flex:1;min-width:0;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.project-flag{flex:none;color:var(--muted)}
+.project-count{flex:none;min-width:14px;font-size:11px;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.project-actions{position:absolute;top:0;right:3px;bottom:0;display:flex;align-items:center;gap:1px;padding-left:10px;border-radius:0 8px 8px 0;background:linear-gradient(90deg,transparent,var(--sidebar-accent) 10px);visibility:hidden}
+.project-head:hover .project-actions,.project-head:focus-within .project-actions,.project-actions:has([aria-expanded="true"]){visibility:visible}
+.side-icon{flex:none;width:24px;height:24px;display:inline-grid;place-items:center;padding:0;border:0;border-radius:6px;background:transparent;color:var(--muted)}
+.side-icon:hover:not(:disabled),.side-icon[aria-expanded="true"]{background:color-mix(in srgb,var(--foreground) 9%,transparent);color:var(--foreground)}
+.project-body{display:flex;flex-direction:column;gap:1px;padding:1px 0 4px}
+.project-body .session-row{padding-left:24px}
+.project-body .session-row.child{padding-left:38px}
+.project+.add-project{margin-top:2px}
+.session-item{position:relative}
+.session-item .session-row{padding-right:34px}
+.row-pin{flex:none;color:var(--muted)}
+.row-menu{position:absolute;top:50%;right:4px;transform:translateY(-50%);visibility:hidden}
+.session-item:hover .row-menu,.session-item:focus-within .row-menu,.row-menu[aria-expanded="true"]{visibility:visible}
+.session-item:hover .session-row-time,.session-item:focus-within .session-row-time,.session-item:has(.row-menu[aria-expanded="true"]) .session-row-time{visibility:hidden}
+.session-item .session-row-time{margin-right:-26px;min-width:22px;text-align:right}
+.session-item.is-hidden .session-row,.project.is-hidden>.project-head{opacity:.5}
+.session-row.earlier .session-row-title{color:var(--foreground-soft)}
+.session-row.earlier:disabled{cursor:progress;opacity:.6}
+.state-dot.earlier{width:7px;height:7px;border:1.5px solid var(--muted);background:transparent;opacity:.8}
+.session-row-agent{flex:none;max-width:34%;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.earlier-head{display:flex;align-items:center;justify-content:space-between;gap:8px;height:24px;margin-top:4px;padding:0 8px 0 24px;font-size:11.5px;color:var(--muted)}
+.side-link{flex:none;padding:0 2px;border:0;background:transparent;color:var(--muted);font-size:11.5px;text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--muted) 45%,transparent);text-underline-offset:2px}
+.side-link:hover:not(:disabled){color:var(--foreground)}
+.side-link.more{align-self:flex-start;height:24px;margin-left:22px}
+.side-note{padding:3px 8px 3px 24px;font-size:11.5px;line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
+.session-group>.side-note{padding-left:8px}
+.side-note.loading,.folder-empty.loading{color:transparent;background:linear-gradient(90deg,var(--muted) 30%,var(--foreground) 50%,var(--muted) 70%) 0/200% 100%;-webkit-background-clip:text;background-clip:text;animation:sweep 1.6s linear infinite}
+@media(prefers-reduced-motion:reduce){.side-note.loading,.folder-empty.loading{animation:none;color:var(--muted)}}
+.project.other .project-name{flex:1 1 auto;max-width:none;font-weight:400;color:var(--muted)}
+.add-project{display:flex;align-items:center;gap:6px;width:100%;height:30px;margin-top:2px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:13px;text-align:left}
+.add-project:hover:not(:disabled){background:var(--sidebar-accent);color:var(--foreground)}
+.session-footer{padding:10px 8px 0}
+.side-toggle{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer}
+.side-toggle input{margin:0}
+/* Menus for projects and sessions */
+.side-menu{position:fixed;z-index:40;min-width:176px;max-width:248px;padding:4px;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--foreground);box-shadow:var(--overlay);font-size:13px}
+.side-menu-item{display:flex;align-items:center;gap:8px;width:100%;min-height:30px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:inherit;text-align:left}
+.side-menu-item>span{flex:1}
+.side-menu-item:hover:not(:disabled),.side-menu-item:focus-visible{background:var(--secondary);outline:0}
+.side-menu-item.danger{color:var(--destructive)}
+.side-menu-check{color:var(--foreground);visibility:hidden}
+.side-menu-item[aria-checked="true"] .side-menu-check{visibility:visible}
+.side-menu-note{padding:0 10px 6px;font-size:11.5px;line-height:1.5;color:var(--muted)}
+.side-menu-sep{height:1px;margin:4px 6px;background:var(--border)}
+/* New name for a project or session */
+.name-dialog form{display:flex;flex-direction:column}
+.name-dialog h2{font-size:18px;margin:0 0 6px}
+.name-dialog #name-description{margin:0 0 12px;overflow-wrap:anywhere}
+.name-dialog input{width:100%;padding:9px 12px;border:1px solid var(--input);border-radius:10px;background:var(--background);color:var(--foreground);font-size:14px}
+.name-dialog input:focus-visible{outline:2px solid var(--ring);outline-offset:1px}
+.name-dialog #name-message{margin:8px 0 0;color:var(--destructive)}
+.name-dialog .confirm-actions{margin-top:18px}
+/* Adding projects */
+.project-dialog{width:min(600px,calc(100vw - 24px))}
+.folder-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}
+.folder-heading b{font-weight:600}
+.project-dialog .folder-heading+.form-note{margin:4px 0 10px}
+.folder-list{display:flex;flex-direction:column;max-height:min(44vh,360px);overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);border-radius:12px}
+.folder-row{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer}
+.folder-row:last-child{border-bottom:0}
+.folder-row:hover:not(.added){background:var(--secondary)}
+.folder-row.added{cursor:default}
+.folder-row.added .folder-text{opacity:.6}
+.folder-row input{flex:none;margin:3px 0 0}
+.folder-row .badge{flex:none}
+.folder-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.5}
+.folder-text b{font-size:13px;font-weight:500}
+.folder-path{font:11.5px/1.5 var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.folder-meta{font-size:12px;color:var(--muted)}
+.folder-empty{padding:12px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)}
+.folder-empty:last-child{border-bottom:0}
+.project-dialog .form-label{margin-top:18px}
+#project-message{white-space:pre-wrap;overflow-wrap:anywhere;max-height:6em;overflow:auto;margin:0 0 8px}
+#project-message:empty{display:none}
+#project-message.error{color:var(--destructive)}
+/* The project a new session starts in */
+.composer-project{flex:none;display:flex;min-width:0;max-width:40%}
+.project-pill select{max-width:150px}
+@media(max-width:700px){
+  .sidebar-scroll{max-height:min(62vh,560px)}
+  /* Agent and project on the first line; settings and send on the second. */
+  .composer-bar:has(.composer-project:not([hidden])){flex-wrap:wrap;row-gap:2px}
+  .composer-bar:has(.composer-project:not([hidden])) .composer-project{flex:1 1 auto;max-width:none}
+  .composer-bar:has(.composer-project:not([hidden])) .composer-settings{flex:1 1 calc(100% - 48px)}
+}
+@media(hover:none){.project-actions{visibility:visible}.row-menu{visibility:visible}.session-item .session-row-time{visibility:hidden}}

@@ -149,8 +149,103 @@ fn fnv(text: &str) -> u64 {
         (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
     })
 }
+/// `--state-dir DIR` keeps this agent's sessions apart from other tests'.
 fn state_dir() -> PathBuf {
-    std::env::temp_dir().join("hmesh-fixture-sessions")
+    flag("--state-dir")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("hmesh-fixture-sessions"))
+}
+/// RFC 3339 UTC time of a file's last change.
+fn modified(path: &std::path::Path) -> (u64, String) {
+    let secs = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (
+        secs,
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            rest / 3600,
+            rest % 3600 / 60,
+            rest % 60
+        ),
+    )
+}
+/// ACP `session/list` over the saved sessions: newest first, optionally one
+/// folder only, `--list-page-size` per page (default 50).
+fn list_sessions(params: &Value) -> Value {
+    let only = params["cwd"].as_str().map(PathBuf::from);
+    let mut all: Vec<(u64, String, Value)> = vec![];
+    for entry in std::fs::read_dir(state_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        let Some(id) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".json"))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let Some(saved) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        else {
+            continue;
+        };
+        let cwd = PathBuf::from(saved["cwd"].as_str().unwrap_or(""));
+        if only.as_ref().is_some_and(|only| only != &cwd) {
+            continue;
+        }
+        let title = saved["history"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|e| e[0] == "user")
+            .and_then(|e| e[1].as_str())
+            .map(str::to_owned);
+        let (secs, at) = modified(&path);
+        all.push((
+            secs,
+            id.clone(),
+            json!({"sessionId":id,"cwd":cwd,"title":title,"updatedAt":at}),
+        ));
+    }
+    all.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let size = flag("--list-page-size")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .max(1);
+    let start = params["cursor"]
+        .as_str()
+        .and_then(|c| c.parse::<usize>().ok())
+        .unwrap_or(0);
+    let page: Vec<Value> = all
+        .iter()
+        .skip(start)
+        .take(size)
+        .map(|(_, _, s)| s.clone())
+        .collect();
+    let mut result = json!({"sessions":page});
+    if start + size < all.len() {
+        result["nextCursor"] = json!((start + size).to_string());
+    }
+    result
 }
 fn save(id: &str, session: &Session) {
     let _ = std::fs::create_dir_all(state_dir());
@@ -389,6 +484,10 @@ fn run_acp() -> anyhow::Result<()> {
                     capabilities["loadSession"] = json!(false);
                     capabilities["sessionCapabilities"] = json!({"resume":{}});
                 }
+                // `--no-list` is an agent that cannot list its sessions.
+                if !std::env::args().any(|a| a == "--no-list") {
+                    capabilities["sessionCapabilities"]["list"] = json!({});
+                }
                 if auth_status().is_some() {
                     capabilities["auth"] = json!({"status":{}});
                 }
@@ -491,6 +590,13 @@ fn run_acp() -> anyhow::Result<()> {
                     continue;
                 }
                 let session_id = params["sessionId"].as_str().unwrap_or("").to_owned();
+                // `<id>.hold-load` in the state directory: the reload waits
+                // (up to 30 s) until that file is gone.
+                let hold = state_dir().join(format!("{session_id}.hold-load"));
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while hold.exists() && std::time::Instant::now() < until {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
                 match restore(&session_id) {
                     Some(history) => {
                         if method == "session/load" {
@@ -505,6 +611,15 @@ fn run_acp() -> anyhow::Result<()> {
                                     json!({"sessionUpdate":kind,"content":{"type":"text","text":text}}),
                                 );
                             }
+                        }
+                        // `<id>.fail-after-replay` in the state directory: the
+                        // reload fails once it has replayed the history.
+                        if state_dir()
+                            .join(format!("{session_id}.fail-after-replay"))
+                            .exists()
+                        {
+                            fail(&id, -32603, "the reload stopped part way");
+                            continue;
                         }
                         announce_commands(&session_id);
                         sessions.insert(
@@ -522,6 +637,13 @@ fn run_acp() -> anyhow::Result<()> {
                         respond(&id, json!({"configOptions":Settings::default().options()}));
                     }
                     None => fail(&id, -32002, "unknown session"),
+                }
+            }
+            "session/list" => {
+                if std::env::args().any(|a| a == "--no-list") {
+                    fail(&id, -32601, "Method not found");
+                } else {
+                    respond(&id, list_sessions(params));
                 }
             }
             "session/cancel" => {
@@ -562,6 +684,13 @@ fn run_acp() -> anyhow::Result<()> {
                     session.history.push(("agent".into(), text.into()));
                 };
                 match prompt.as_str() {
+                    "fixture:cwd" => {
+                        let process = std::env::current_dir().unwrap_or_default();
+                        let text = format!("cwd={} process={}", cwd.display(), process.display());
+                        reply(session, &text);
+                        save(&session_id, session);
+                        end_turn(&id);
+                    }
                     "fixture:create" => {
                         std::fs::create_dir_all(cwd.join("out"))?;
                         std::fs::write(

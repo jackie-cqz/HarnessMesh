@@ -745,7 +745,7 @@ async fn status(
         "tailscale":match (s.instance.config.node.network.as_str(), s.instance.config.outbound_only()) {("tailscale", true) => "not_checked", ("tailscale", false) => "verified_at_startup", _ => "not_required"},
         "allowed_sources":(s.instance.config.node.network == "direct" && !s.instance.config.outbound_only()).then(|| s.instance.config.allowed_sources()),
         "pairing_window":{"required":s.instance.config.node.network == "direct" && !s.instance.config.outbound_only(),"closes_at":s.pairing_closes_at()},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1"],"schema_version":9,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
     ))
 }
 async fn stop(
@@ -1223,6 +1223,7 @@ async fn mesh_agents(
         access: None,
         error: None,
         agents: s.store.agents()?,
+        projects: sessions::usable_projects(&s)?,
     }];
     let mut lookups = tokio::task::JoinSet::new();
     for (index, peer) in s
@@ -1236,13 +1237,15 @@ async fn mesh_agents(
         let instance = s.instance.clone();
         let access = policy.peer_access(peer.card.node_id);
         lookups.spawn(async move {
-            let fetched = match Client::new(
+            let client = Client::new(
                 &instance,
                 &peer.card.endpoint,
                 &peer.card.fingerprint,
                 false,
                 false,
-            ) {
+            );
+            let client_for_projects = client.as_ref().ok().cloned();
+            let fetched = match client {
                 Ok(client) => match tokio::time::timeout(
                     std::time::Duration::from_secs(3),
                     client.get::<Vec<AgentCard>>("/hmesh/v1/agents"),
@@ -1259,6 +1262,18 @@ async fn mesh_agents(
                 Ok(agents) => (true, None, agents),
                 Err(error) => (false, Some(error), vec![]),
             };
+            // Older computers do not share projects (404): none to offer.
+            let projects = match (reachable, &client_for_projects) {
+                (true, Some(client)) => tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    client.get::<Vec<hmesh_core::projects::SharedProject>>("/hmesh/v1/projects"),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default(),
+                _ => vec![],
+            };
             (
                 index,
                 MeshNode {
@@ -1269,6 +1284,7 @@ async fn mesh_agents(
                     access: Some(access),
                     error,
                     agents,
+                    projects,
                 },
             )
         });

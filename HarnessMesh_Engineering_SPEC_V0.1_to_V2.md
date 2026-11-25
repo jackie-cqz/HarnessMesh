@@ -521,7 +521,7 @@ pub trait HarnessAdapter: Send + Sync {
 - 本机核查基线为 `@earendil-works/pi-coding-agent@0.84.2`；使用 `PI_CODING_AGENT_DIR` 和 `--session-dir` 将运行配置/会话分配到所属 Node/Managed Run，禁止误用其他 Node 的目录。
 - 严格以 LF 分割 JSONL；不能以 Unicode 行分隔符作为协议分隔符。
 - 每个 Managed Run 启动**独立 Pi 受控子进程**或一个具备明确独占 session 的实例，配置指定 cwd、模型配置和隔离的 session-dir。
-- 不触碰其他用户 Pi 会话；不从 `~/.pi` 擅自收集历史聊天。
+- 不触碰其他用户 Pi 会话；不读取、不复制 agent 的历史聊天文件。agent 自己经 ACP `session/list` 报出的会话只在本机 owner 的面板上现读列出，owner 选择接上时由 agent 用 `session/load` 回放（2026-11-25 决定，见 `docs/proposals/agent-projects-sessions-plan.html`）。
 - 事件字段映射 `RunEvent::Started | TextDelta | ToolEvent | ApprovalRequested | Finished | Failed`。
 - 密钥由本机原生 Harness 配置读取；**绝不写入任务消息、Hub 数据库或审计日志**。
 

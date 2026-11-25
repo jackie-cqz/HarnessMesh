@@ -49,6 +49,22 @@ impl SessionRestore {
         json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"sessionId":session_id,"cwd":cwd,"mcpServers":mcp_servers}})
     }
 }
+/// Whether the agent advertised `session/list` (`sessionCapabilities.list`).
+pub fn lists_sessions(initialize: &Value) -> bool {
+    initialize["agentCapabilities"]["sessionCapabilities"]["list"].is_object()
+}
+/// `session/list`, optionally only the sessions of one working directory, and
+/// the page after `cursor`.
+pub fn list_sessions_request(id: u64, cwd: Option<&Path>, cursor: Option<&str>) -> Value {
+    let mut params = json!({});
+    if let Some(cwd) = cwd {
+        params["cwd"] = json!(cwd);
+    }
+    if let Some(cursor) = cursor {
+        params["cursor"] = json!(cursor);
+    }
+    json!({"jsonrpc":"2.0","id":id,"method":"session/list","params":params})
+}
 pub fn prompt_request(id: u64, session_id: &str, text: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"session/prompt","params":{"sessionId":session_id,"prompt":[{"type":"text","text":text}]}})
 }
