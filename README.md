@@ -13,7 +13,7 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 - **One panel for every agent.** Start a session with any agent on this computer or a paired one, keep a multi-turn conversation, and follow its thinking, plan and tool calls as they happen. You can stop or close it at any time. Each session can switch model, mode and reasoning level between turns. Sessions are grouped by project, and the sessions your agents already have (Claude Code, Codex, OpenCode, Pi) are listed there too: open one to see its earlier conversation and keep going.
 - **Agents call each other.** Every session gets the HarnessMesh MCP server, so an agent can open a session with another agent (`mesh_send`), follow up, and read its reply (`mesh_wait`), even on another computer. Calls go at most three levels deep and never loop back to an agent already in the chain.
 - **You stay in charge.** When an agent wants to edit a file or run a command, the question comes back to whoever opened the session: 允许一次 (allow once) or 拒绝 (reject). In sessions an agent opened, they are answered automatically; set the calling computer to `confirm` and they wait for you instead.
-- **Pair a computer in two steps.** Paste the other computer's pairing code; it approves once with a six-character check code. Then both sides can use each other's agents. Revoking a pairing closes the sessions that computer opened.
+- **Pair a computer in two steps.** Paste the other computer's pairing code; it approves once with a six-character check code. On a LAN or VPN of your own it is quicker: choose the computer under 附近的电脑 (computers nearby) and type the 6-digit passcode on its screen. Then both sides can use each other's agents. Revoking a pairing closes the sessions that computer opened.
 - **Model service per agent.** Each agent can use its own login, an API key, or a custom endpoint (31 provider presets). Keys stay on the execution computer. Pi, OpenCode and DSH can select Chat Completions, Responses or Anthropic Messages for a custom endpoint. See the [model service options](docs/local-panel.md#各-agent-可选的协议).
 - **Work beyond chat.** The 工作待办 (inbox) collects whatever waits for you. One-shot tasks come with artifact checks, templates and multi-stage workflows, and you can see usage per session and per project.
 
@@ -33,6 +33,12 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 |---|---|
 | ![The pairing dialog showing the check code](docs/images/pair-sent.png) | ![The incoming request with the check code typed in](docs/images/pair-approve.png) |
 
+**Pairing nearby.** On a direct network, laptop shows a 6-digit passcode while its 配对新电脑 dialog is open. On studio, the same dialog lists laptop under 附近的电脑 (computers nearby); type the passcode and the two are paired, with nothing to approve.
+
+| 1. laptop shows its passcode | 2. studio chooses laptop and types it |
+|---|---|
+| ![laptop's pairing dialog showing its 6-digit passcode](docs/images/nearby-passcode.png) | ![studio's pairing dialog listing laptop nearby, with the passcode typed in](docs/images/nearby-join.png) |
+
 **Start from any agent.** The start page lists every ready agent, with the computer it runs on.
 
 ![The start page with agents from both computers](docs/images/start.png)
@@ -49,13 +55,13 @@ flowchart LR
   subgraph B["A paired computer"]
     d2["hmesh daemon"] <-->|ACP| a2["its agents"]
   end
-  d1 <==>|"mTLS over Tailscale"| d2
+  d1 <==>|"mTLS over Tailscale<br/>or your own LAN / VPN"| d2
 ```
 
 - Each computer runs one **daemon** (`hmesh daemon start`). It starts the agents you registered and keeps sessions, tasks and their events in a local SQLite database.
 - A computer set up with **only MCP** runs the daemon too, but on 127.0.0.1 only: its agents call out, and nothing calls in.
 - The **panel** (`hmesh panel`) listens on 127.0.0.1 only and opens with a private link printed in the terminal. Owner credentials stay in the CLI process.
-- Computers talk over Tailscale with TLS 1.3 and mutual authentication. Each side pins the other's certificate fingerprint. No SSH or cloud relay is needed.
+- Computers talk over Tailscale, or directly on a LAN or VPN of your own, with TLS 1.3 and mutual authentication. Each side pins the other's certificate fingerprint. No SSH or cloud relay is needed. On a direct network, a computer with pairing open announces itself to computers nearby over mDNS (`_hmesh._tcp`).
 
 ## Get started
 
@@ -73,7 +79,7 @@ Every computer runs the same `hmesh` program, set up one of two ways:
 |---|---|---|
 | Your agents here (Claude Code, Codex, …) call agents on other computers | ✓ | ✓ |
 | Shares this computer's agents with paired computers | — | ✓ |
-| Other computers can connect to it | No | Yes, over Tailscale |
+| Other computers can connect to it | No | Yes, over Tailscale or a direct network |
 | Needs an ACP agent installed here | No | Yes |
 
 Use only MCP on a laptop that just hands work to a stronger machine; use full on the machines that do the work.
@@ -163,7 +169,7 @@ On a computer set up with `hmesh setup`, the MCP server starts the daemon when i
 - **Per-computer access mode.** Each paired computer is either `auto` (its sessions start right away) or `confirm` (you approve first): `hmesh peers access <peer> confirm`.
 - **Keys stay put.** Model keys never leave the agent's computer and are not shown again after saving. HarnessMesh does not read agents' own credential files.
 
-**Limits.** Agents run as your user. If you allow an agent to run shell commands, it can do anything you can on that computer, including using HarnessMesh as the owner. The six-character check code guards against approving the wrong request, not against a determined attacker on your tailnet: when it matters, compare the full fingerprint with `hmesh pair approve --expect-fingerprint`. Details are in [security](docs/security.md).
+**Limits.** Agents run as your user. If you allow an agent to run shell commands, it can do anything you can on that computer, including using HarnessMesh as the owner. The six-character check code guards against approving the wrong request, not against a determined attacker on the same network (your tailnet or LAN): when it matters, compare the full fingerprint with `hmesh pair approve --expect-fingerprint`. Details are in [security](docs/security.md).
 
 ## Documentation
 
@@ -171,7 +177,7 @@ On a computer set up with `hmesh setup`, the MCP server starts the daemon when i
 |---|---|
 | The panel, page by page | [docs/local-panel.md](docs/local-panel.md) |
 | Agents calling agents (MCP tools, limits, manual setup) | [docs/mcp.md](docs/mcp.md) |
-| Two computers over Tailscale | [docs/quickstart-tailnet.md](docs/quickstart-tailnet.md) |
+| Two computers over Tailscale, or directly on a LAN or VPN | [docs/quickstart-tailnet.md](docs/quickstart-tailnet.md) |
 | Command-line walkthrough on one computer | [docs/quickstart-v0.md](docs/quickstart-v0.md) |
 | Security model | [docs/security.md](docs/security.md) |
 | Tasks, templates, workflows, usage and budgets | [docs/development-workflows.md](docs/development-workflows.md) |
