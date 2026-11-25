@@ -95,9 +95,10 @@ try {
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   await page.goto(panelInfo.url);
-  await page.locator('#local-name').filter({hasText: 'source'}).waitFor();
+  await page.locator('#local-name').filter({hasText: 'source'}).waitFor({state:'attached'});
 
   stage = 'project-first discovery and mismatch';
+  await page.locator('[data-view="tasks"]').click();
   await page.locator('#new-task').click();
   await page.locator('#discover-project').selectOption('project-review');
   const target = page.locator('.discover-target').filter({hasText: 'executor-agent'});

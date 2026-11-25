@@ -45,6 +45,10 @@ struct Live {
     last_active: Mutex<Instant>,
     /// The model service settings the process was started with.
     service_digest: String,
+    /// The agent's latest context and cost report (ACP `usage_update`),
+    /// and whether one arrived since the last turn ended.
+    usage: Mutex<Option<Value>>,
+    usage_fresh: std::sync::atomic::AtomicBool,
 }
 #[derive(Default)]
 struct Reply {
@@ -203,6 +207,76 @@ fn mcp_server(s: &AppState, session: Uuid) -> Vec<Value> {
     vec![acp::stdio_mcp_server("harnessmesh", &command, &args, &[])]
 }
 
+/// A count the agent reported, when it is a plain non-negative integer.
+fn count(value: Option<&Value>) -> Option<u64> {
+    value.and_then(Value::as_u64)
+}
+/// The context window and cumulative cost from an ACP `usage_update`
+/// (`used` and `size` in tokens, optional `cost` with an amount and unit).
+fn context_usage(update: &Value) -> Option<Value> {
+    let used = count(update.get("used"))?;
+    let size = count(update.get("size"))?;
+    let cost = update.get("cost").and_then(|cost| {
+        let amount = cost
+            .get("amount")
+            .and_then(Value::as_f64)
+            .filter(|a| a.is_finite() && *a >= 0.0)?;
+        let currency = cost
+            .get("currency")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|c| {
+                !c.is_empty() && c.len() <= 16 && c.chars().all(|ch| ch.is_ascii_alphanumeric())
+            })?;
+        Some(json!({"amount":amount,"currency":currency}))
+    });
+    Some(json!({"context":{"used":used,"size":size},"cost":cost}))
+}
+/// The context and cost a session last recorded, if any.
+fn earlier_usage(s: &AppState, session: Uuid) -> Option<Value> {
+    let last = s
+        .store
+        .latest_session_event(session, "usage")
+        .ok()
+        .flatten()?;
+    let (context, cost) = (last.get("context")?, last.get("cost")?);
+    (!context.is_null() || !cost.is_null()).then(|| json!({"context":context,"cost":cost}))
+}
+/// What a finished turn records about model use: the latest context and
+/// cost report, and the token counts the prompt response carried (ACP
+/// `usage`, still unstable). Only what the agent reported; nothing is added
+/// up. A turn that reported nothing new records nothing.
+fn turn_usage(latest: Option<&Value>, fresh: bool, reported: Option<&Value>) -> Option<Value> {
+    let tokens = reported.and_then(|u| {
+        let field = |name: &str| count(u.get(name));
+        let (total, input, output) = (
+            field("totalTokens"),
+            field("inputTokens"),
+            field("outputTokens"),
+        );
+        (total.is_some() || input.is_some() || output.is_some()).then(|| {
+            json!({
+                "total_tokens":total,
+                "input_tokens":input,
+                "output_tokens":output,
+                "thought_tokens":field("thoughtTokens"),
+                "cached_read_tokens":field("cachedReadTokens"),
+                "cached_write_tokens":field("cachedWriteTokens"),
+            })
+        })
+    });
+    if !fresh && tokens.is_none() {
+        return None;
+    }
+    let part = |name: &str| {
+        latest
+            .and_then(|l| l.get(name))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    Some(json!({"context":part("context"),"cost":part("cost"),"turn":tokens}))
+}
+
 /// Normalize one `session/update` into a bounded recorded event.
 fn normalize(update: &Value, secrets: &[String]) -> Option<(&'static str, Value)> {
     fn text(v: &Value) -> Option<&str> {
@@ -274,6 +348,18 @@ async fn pump(
                     continue;
                 }
                 let update = &params["update"];
+                // Context and cost reports can come many times a turn; the
+                // latest is recorded once, when the turn ends.
+                if update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update") {
+                    if let Some(reported) = context_usage(update)
+                        && let Ok(mut usage) = live.usage.lock()
+                    {
+                        *usage = Some(reported);
+                        live.usage_fresh
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    continue;
+                }
                 // The agent changed a setting itself (or reports new ones).
                 if update.get("sessionUpdate").and_then(Value::as_str)
                     == Some("config_option_update")
@@ -416,6 +502,10 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         replaying: std::sync::atomic::AtomicBool::new(reload.is_some()),
         last_active: Mutex::new(Instant::now()),
         service_digest: digest,
+        // A restarted agent may report only tokens at first: its last known
+        // context and cost carry over until it reports new ones.
+        usage: Mutex::new(earlier_usage(s, record.session_id)),
+        usage_fresh: std::sync::atomic::AtomicBool::new(false),
     });
     s.sessions
         .live
@@ -733,6 +823,13 @@ async fn run_turn(s: AppState, id: Uuid, text: String) {
                 .and_then(Value::as_str)
                 .unwrap_or("end_turn")
                 .to_owned();
+            let latest = live.usage.lock().ok().and_then(|u| u.clone());
+            let fresh = live
+                .usage_fresh
+                .swap(false, std::sync::atomic::Ordering::SeqCst);
+            if let Some(payload) = turn_usage(latest.as_ref(), fresh, response.get("usage")) {
+                let _ = record_event(&s, id, "usage", payload);
+            }
             finish(&s, Some(&stop), final_text, None)
         }
         Err(error) => finish(&s, None, None, Some(redact(&live.secrets, &error.message))),

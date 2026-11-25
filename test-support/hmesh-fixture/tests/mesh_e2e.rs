@@ -996,6 +996,88 @@ async fn fake_model_service() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Se
     (base, seen)
 }
 
+/// A session's model use is what its agent reported: the latest context and
+/// cost report (`usage_update`) and the turn's token counts, recorded once
+/// per turn and summed per currency only across sessions.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_usage_is_what_the_agent_reported() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "node-a");
+    let agent = register_fixture(&a, &root.path().join("project"));
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    let quiet = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:echo hi"}),
+    )
+    .await;
+    turn_done(&owner, quiet.session_id, 1).await;
+    let session = open(&owner, json!({"agent_id":agent,"message":"fixture:usage"})).await;
+    let (_, events) = turn_done(&owner, session.session_id, 1).await;
+    let usage: Vec<&SessionEvent> = events.iter().filter(|e| e.kind == "usage").collect();
+    assert_eq!(usage.len(), 1, "{:?}", kinds(&events));
+    assert_eq!(
+        usage[0].payload,
+        json!({
+            "context":{"used":1200,"size":128000},
+            "cost":{"amount":0.0125,"currency":"USD"},
+            "turn":{"total_tokens":40,"input_tokens":30,"output_tokens":10,"thought_tokens":null,"cached_read_tokens":0,"cached_write_tokens":0},
+        })
+    );
+    // The usage event comes before the turn ends, so waiting for the turn's
+    // end sees it.
+    let order: Vec<&str> = kinds(&events)
+        .into_iter()
+        .filter(|k| ["usage", "turn_end"].contains(k))
+        .collect();
+    assert_eq!(order, ["usage", "turn_end"]);
+    // A later turn reports more; the summary keeps the latest report (the
+    // cost is already cumulative), not a sum.
+    prompt(&owner, session.session_id, "fixture:usage-more").await;
+    turn_done(&owner, session.session_id, 2).await;
+    // A turn that reports nothing records nothing, so old numbers are not
+    // repeated as if they were new.
+    prompt(&owner, session.session_id, "fixture:echo again").await;
+    let (_, events) = turn_done(&owner, session.session_id, 3).await;
+    assert_eq!(events.iter().filter(|e| e.kind == "usage").count(), 2);
+    let report: Value = owner.get("/local/usage").await.unwrap();
+    let sessions = &report["sessions"];
+    assert_eq!(sessions["sessions_total"], 2, "{sessions}");
+    assert_eq!(sessions["sessions_reported"], 1, "{sessions}");
+    let row = &sessions["rows"][0];
+    assert_eq!(row["session_id"], json!(session.session_id));
+    assert_eq!(row["turns"], 3);
+    assert_eq!(row["usage"]["context"], json!({"used":2400,"size":128000}));
+    assert_eq!(row["usage"]["turn"]["total_tokens"], 80);
+    assert_eq!(
+        sessions["cost_totals"],
+        json!([{"currency":"USD","amount":0.03}])
+    );
+    // Delegated tasks keep their own report.
+    assert!(
+        report["rows"].is_array() && report["total_tasks"] == 0,
+        "{report}"
+    );
+    // After a restart the agent reports only tokens at first: the session's
+    // cost and context are not lost from the summary.
+    daemon.stop().await;
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    prompt(&owner, session.session_id, "fixture:usage-tokens").await;
+    turn_done(&owner, session.session_id, 4).await;
+    let report: Value = owner.get("/local/usage").await.unwrap();
+    let row = &report["sessions"]["rows"][0];
+    assert_eq!(row["usage"]["turn"]["total_tokens"], 7, "{row}");
+    assert_eq!(row["usage"]["context"], json!({"used":2400,"size":128000}));
+    assert_eq!(
+        report["sessions"]["cost_totals"],
+        json!([{"currency":"USD","amount":0.03}])
+    );
+    daemon.stop().await;
+}
+
 /// OpenCode on a custom endpoint reaches it through the daemon's relay: the
 /// agent receives only a local address and token, the endpoint receives the
 /// real key, and a gateway's empty `delta.role` never reaches the agent.

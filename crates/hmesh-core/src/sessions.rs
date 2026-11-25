@@ -404,7 +404,8 @@ pub fn validate_prompt(message: &str) -> Result<()> {
 /// One recorded session event. `kind` is one of: `user_message`,
 /// `agent_message_chunk`, `agent_thought_chunk`, `tool_call`,
 /// `tool_call_update`, `plan`, `permission_request`, `permission_resolved`,
-/// `config_changed`, `turn_end`, `status`, `error`.
+/// `config_changed`, `usage` (what the agent reported about model use in a
+/// turn), `turn_end`, `status`, `error`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionEvent {

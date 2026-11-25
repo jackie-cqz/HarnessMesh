@@ -82,6 +82,60 @@ impl Store {
             rows.map(|row| decode(&row.map_err(internal)?)).collect()
         })
     }
+    /// The latest model use each session of this computer's agents reported
+    /// (its `usage` events), newest first, with cost totals per currency.
+    /// Sessions whose agent reported nothing are only counted.
+    pub fn session_usage_report(&self, limit: usize) -> Result<Value> {
+        self.read(|c| {
+            let total: i64 = c
+                .query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))
+                .map_err(internal)?;
+            let mut q = c
+                .prepare("SELECT s.record_json,e.payload_json,e.created_at FROM session_events e JOIN sessions s ON s.session_id=e.session_id WHERE e.kind='usage' AND e.seq=(SELECT MAX(l.seq) FROM session_events l WHERE l.session_id=e.session_id AND l.kind='usage') ORDER BY e.created_at DESC, e.session_id")
+                .map_err(internal)?;
+            let rows = q
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                })
+                .map_err(internal)?;
+            let mut out = Vec::new();
+            let mut totals: std::collections::BTreeMap<String, f64> = Default::default();
+            for row in rows {
+                let (record, usage, at) = row.map_err(internal)?;
+                let record: SessionRecord = decode(&record)?;
+                let usage: Value = decode(&usage)?;
+                if let (Some(amount), Some(currency)) = (
+                    usage.pointer("/cost/amount").and_then(Value::as_f64),
+                    usage.pointer("/cost/currency").and_then(Value::as_str),
+                ) {
+                    *totals.entry(currency.to_owned()).or_default() += amount;
+                }
+                out.push(serde_json::json!({
+                    "session_id":record.session_id,
+                    "title":record.title,
+                    "agent_id":record.agent_id,
+                    "agent_name":record.agent_name,
+                    "turns":record.turns,
+                    "status":record.status,
+                    "usage":usage,
+                    "reported_at":at,
+                }));
+            }
+            let reported = out.len();
+            out.truncate(limit);
+            Ok(serde_json::json!({
+                "sessions_total":total,
+                "sessions_reported":reported,
+                "rows":out,
+                "row_limit":limit,
+                "cost_totals":totals.into_iter().map(|(currency, amount)| serde_json::json!({"currency":currency,"amount":amount})).collect::<Vec<_>>(),
+            }))
+        })
+    }
     pub fn append_session_event(
         &self,
         session_id: Uuid,
@@ -115,6 +169,20 @@ impl Store {
                 kind: kind.to_owned(),
                 payload: payload.clone(),
             })
+        })
+    }
+    /// The payload of a session's most recent event of one kind.
+    pub fn latest_session_event(&self, id: Uuid, kind: &str) -> Result<Option<Value>> {
+        self.read(|c| {
+            c.query_row(
+                "SELECT payload_json FROM session_events WHERE session_id=?1 AND kind=?2 ORDER BY seq DESC LIMIT 1",
+                params![id.to_string(), kind],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(internal)?
+            .map(|payload| decode(&payload))
+            .transpose()
         })
     }
     pub fn session_events(&self, id: Uuid, after: u64, limit: usize) -> Result<Vec<SessionEvent>> {

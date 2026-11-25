@@ -525,7 +525,29 @@ fn run_acp() -> anyhow::Result<()> {
                             .push(("agent".into(), "Working step by step done.".into()));
                         end_turn(&id);
                     }
+                    // Tokens only, as some agents report right after a restart.
+                    "fixture:usage-tokens" => {
+                        respond(
+                            &id,
+                            json!({"stopReason":"end_turn","usage":{"inputTokens":5,"outputTokens":2,"totalTokens":7}}),
+                        );
+                    }
+                    // Later in the conversation: more context and cost.
+                    "fixture:usage-more" => {
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"usage_update","used":2400,"size":128000,"cost":{"amount":0.03,"currency":"USD"}}),
+                        );
+                        respond(
+                            &id,
+                            json!({"stopReason":"end_turn","usage":{"inputTokens":60,"outputTokens":20,"totalTokens":80}}),
+                        );
+                    }
                     "fixture:usage" => {
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"usage_update","used":1200,"size":128000,"cost":{"amount":0.0125,"currency":"USD"}}),
+                        );
                         respond(
                             &id,
                             json!({"stopReason":"end_turn","usage":{"inputTokens":30,"outputTokens":10,"totalTokens":40,"cachedReadTokens":0,"cachedWriteTokens":0}}),

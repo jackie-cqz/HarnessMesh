@@ -66,7 +66,7 @@ try{
  const ready=await panel(a);
  browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1440,height:960}});
  const problems=[];page.on('pageerror',e=>problems.push(e.message));page.on('console',m=>{if(m.type()==='error')problems.push(m.text());});
- await page.goto(ready.url);await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor();
+ await page.goto(ready.url);await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor({state:'attached'});
  stage='sidebar lists both computers\' agents';
  await page.locator('#session-agents .session-group').filter({hasText:'mac-a（本机）'}).getByText('helper').waitFor();
  await page.locator('#session-agents .session-group').filter({hasText:'mac-b'}).getByText('worker').waitFor();
@@ -105,7 +105,7 @@ try{
  await stream(page).getByText('model=fixture-large mode=ask effort=low').waitFor({timeout:30000});
  await settle(page);await page.screenshot({path:join(shots,'settings-composer.png')});
  stage='reload keeps the conversation';
- await page.reload();await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor();
+ await page.reload();await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor({state:'attached'});
  await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();
  await stream(page).getByText('Echo #2: from the panel').waitFor({timeout:30000});
  await stream(page).getByText('Permission granted: notes.txt edited.').waitFor();
@@ -220,6 +220,14 @@ try{
  await openFor('stranger');
  await page.locator('#service-own.not_configured').filter({hasText:'在终端运行 claude 并登录'}).waitFor({timeout:30000});
  await page.locator('#service-cancel').click();
+ stage='session usage on the settings page';
+ await openSession(page,'mac-a（本机）','helper','fixture:usage');
+ await page.locator('[data-view="settings"]').click();
+ const usageBox=page.locator('#session-usage-list');
+ await usageBox.getByText('$0.0125').first().waitFor({timeout:30000});
+ const usageText=await usageBox.innerText();
+ assert(usageText.includes('1.2k / 128.0k')&&usageText.includes('总 40 · 输入 30 / 输出 10')&&usageText.includes('累计费用合计 $0.0125'),'session usage row incomplete: '+usageText);
+ await settle(page);await usageBox.screenshot({path:join(shots,'session-usage.png')});
  stage='dark theme';
  await page.emulateMedia({colorScheme:'dark'});
  await page.locator('.session-row').filter({hasText:'fixture:reply'}).first().click();
@@ -228,7 +236,7 @@ try{
  assert(shade.page<0.1&&shade.sidebar<0.15&&shade.sidebar>=shade.page&&shade.text>0.8,`dark theme not applied: ${JSON.stringify(shade)}`);
  await settle(page);await page.screenshot({path:join(shots,'sessions-dark.png')});
  await page.locator('#new-session').click();await settle(page);await page.screenshot({path:join(shots,'hero-dark.png')});
- await page.locator('[data-view="overview"]').click();await settle(page);await page.screenshot({path:join(shots,'overview-dark.png')});
+ await page.locator('[data-view="inbox"]').click();await settle(page);await page.screenshot({path:join(shots,'inbox-dark.png')});
  await page.locator('[data-view="agents"]').click();await settle(page);await page.screenshot({path:join(shots,'agents-dark.png')});
  await page.locator('#agent-list .entity-card').filter({hasText:'helper'}).getByRole('button',{name:'模型服务'}).click();
  await page.locator('#service-dialog[open]').waitFor();await settle(page);await page.screenshot({path:join(shots,'service-dialog-dark.png')});
@@ -251,6 +259,10 @@ try{
  await openFor('stranger');
  await page.locator('#service-own.not_configured').waitFor({timeout:30000});await settle(page);await page.screenshot({path:join(shots,'service-own-narrow.png')});
  await page.locator('#service-cancel').click();
+ await page.setViewportSize({width:390,height:844});
+ await page.locator('[data-view="settings"]').click();await usageBox.getByText('$0.0125').first().waitFor({timeout:30000});
+ assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),'settings page overflows a phone-sized window');
+ await usageBox.scrollIntoViewIfNeeded();await settle(page);await page.screenshot({path:join(shots,'session-usage-phone.png')});
  assert(problems.length===0,`browser errors: ${problems.join(' | ')}`);
  console.log(JSON.stringify({ok:true,screenshots:shots}));
 }catch(e){console.error(`sessions panel smoke failed at ${stage}: ${e.stack||e}`);process.exitCode=1;}

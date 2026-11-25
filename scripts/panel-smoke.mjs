@@ -31,7 +31,7 @@ async function succeeded(mesh,id){
 }
 async function confirm(page){await page.getByRole('button',{name:'确认',exact:true}).click();}
 async function create(page,agent,goal,peer,lost=false){
- await page.locator('#new-task').click();
+ await page.locator('[data-view="tasks"]').click();await page.locator('#new-task').click();
  if(peer)await page.locator('#compose-peer').selectOption(peer);
  await page.waitForFunction(id=>document.querySelector('#compose-agent').value===id&&!document.querySelector('#compose-submit').disabled,agent);
  await page.locator('#compose-goal').fill(goal);
@@ -63,10 +63,10 @@ try{
  const ready=await panel(b),originReady=await panel(a);
  browser=await chromium.launch({headless:true,...(process.env.HMESH_CHROME?{executablePath:process.env.HMESH_CHROME}:{})});
  const page=await browser.newPage({viewport:{width:1440,height:1000},reducedMotion:'reduce'}),errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto(ready.url);await page.waitForLoadState('networkidle');await page.getByText('panel-worker',{exact:true}).first().waitFor();
+ await page.goto(ready.url);await page.waitForLoadState('networkidle');await page.locator('#local-name').filter({hasText:'panel-worker'}).waitFor({state:'attached'});
  assert(!await page.evaluate(()=>!!window.panelInjected),'Task text executed');
  stage='reject-and-archive';
- await page.locator('#review-pending').click();await page.locator('#task-list .task-title').first().click();await page.locator('#task-detail .detail-id').waitFor();
+ await page.locator('[data-view="tasks"]').click();await page.locator('[data-filter="pending"]').click();await page.locator('#task-list .task-title').first().click();await page.locator('#task-detail .detail-id').waitFor();
  assert(await page.locator('#task-detail > pre.goal').innerText()===goal,'Full request missing');
  await page.getByRole('button',{name:'拒绝任务',exact:true}).click();await confirm(page);
  await until(()=>b.mesh.call(['task','show',pending.task_id]).status==='REJECTED');
@@ -134,8 +134,13 @@ try{
  const gitAgent=b.mesh.call(['agent','register','--config',gitConfig]);const gitTask=b.mesh.call(['agent','verify',gitAgent.agent_id,'--allow-model','--prompt','fixture:create']);await succeeded(b.mesh,gitTask.task_id);
  await page.locator('[data-view="tasks"]').click();await page.locator('[data-filter="all"]').click();await page.locator('#task-list tr').filter({hasText:gitTask.task_id.slice(0,8)}).locator('.task-title').click();await page.getByRole('button',{name:'查看修改 diff',exact:true}).click();await page.locator('.workspace-diff').filter({hasText:'out/health.json'}).waitFor();await page.getByRole('button',{name:'diff 已读完',exact:true}).waitFor();
  assert(JSON.parse(readFileSync(join(project,'out/health.json'),'utf8')).status==='base','Worktree changed original project');await page.locator('[data-close="task-dialog"]').click();
- for(const name of ['overview','tasks','agents','services','nodes']){await page.locator('[data-view="'+name+'"]').click();assert(await page.locator('#'+name+'-view').isVisible(),'Navigation failed');}
- await page.setViewportSize({width:390,height:844});await page.locator('[data-view="overview"]').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile overflow');
+ for(const [name,section] of [['sessions','sessions'],['inbox','inbox'],['tasks','tasks'],['tasks','development'],['agents','agents'],['nodes','nodes'],['settings','operations'],['settings','services']]){await page.locator('[data-view="'+name+'"]').click();assert(await page.locator('#'+section+'-view').isVisible(),'Navigation failed: '+name+' / '+section);}
+ // Gone: the overview duplicated the inbox, tasks and paired computers.
+ assert(await page.locator('[data-view="overview"],[data-view="development"],[data-view="operations"],[data-view="services"]').count()===0,'Old navigation entries are still shown');
+ // The version box lives on the settings page; elsewhere it shows only when something needs attention.
+ await page.locator('[data-view="tasks"]').click();assert(await page.locator('#runtime-summary').isHidden(),'Version box shown outside settings');
+ await page.locator('[data-view="settings"]').click();assert(await page.locator('#runtime-summary').isVisible(),'Version box missing from settings');
+ await page.setViewportSize({width:390,height:844});await page.locator('[data-view="tasks"]').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile overflow');
  await page.locator('[data-view="agents"]').click();await page.locator('#new-agent').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile onboarding overflow');await page.locator('#close-onboard').click();
  const privatePage=await browser.newPage();await privatePage.goto(new URL(ready.url).origin);await privatePage.locator('#access-gate').waitFor();
  assert(!await page.evaluate(()=>!!window.panelInjected)&&!errors.length,'Browser error or script execution');
