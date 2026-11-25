@@ -1200,13 +1200,37 @@ async fn peer_until(dir: &Path, ready: impl Fn(&Value) -> bool) -> Value {
 }
 
 /// A paired computer learns the other's addresses, host names among them,
-/// and finds it by name when the address on its card stops answering.
+/// and finds it by name when the address on its card stops answering. The
+/// studio moves from 127.0.0.1 to ::1 where `localhost` names both (macOS,
+/// Windows); where it names 127.0.0.1 only (some Linux), the other way.
 #[tokio::test]
 async fn a_computer_finds_a_peer_that_moved_by_its_host_name() {
+    use std::net::{Ipv6Addr, ToSocketAddrs};
+    if std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_err() {
+        eprintln!("skipped: this computer has no IPv6 loopback");
+        return;
+    }
+    let names_v6 = ("localhost", 1)
+        .to_socket_addrs()
+        .is_ok_and(|mut found| found.any(|a| a.ip() == Ipv6Addr::LOCALHOST));
+    let (first, then) = if names_v6 {
+        ("127.0.0.1", "::1")
+    } else {
+        ("::1", "127.0.0.1")
+    };
+    let authority = |ip: &str| {
+        if ip.contains(':') {
+            format!("[{ip}]")
+        } else {
+            ip.to_owned()
+        }
+    };
     let root = tempfile::tempdir().expect("tempdir");
     let (a_dir, b_dir, address) = direct_pair(root.path()).await;
     let port = address.rsplit(':').next().expect("port").to_owned();
+    let address = format!("{}:{port}", authority(first));
     edit_node(&b_dir, |node| {
+        node.insert("listen_address".into(), first.into());
         node.insert(
             "host_names".into(),
             toml::Value::Array(vec!["localhost".into()]),
@@ -1216,6 +1240,7 @@ async fn a_computer_finds_a_peer_that_moved_by_its_host_name() {
     let b = daemon(&b_dir);
     ready(&a_dir).await;
     let b_card = ready(&b_dir).await;
+    assert_eq!(b_card.endpoint, format!("https://{address}"));
     join(&a_dir, &b_dir, &address);
     // The laptop only connects out: it asks the studio for its addresses.
     let by_name = format!("https://localhost:{port}");
@@ -1236,15 +1261,18 @@ async fn a_computer_finds_a_peer_that_moved_by_its_host_name() {
     stop(a, &a_dir);
     stop(b, &b_dir);
     edit_node(&b_dir, |node| {
-        node.insert("listen_address".into(), "::1".into());
+        node.insert("listen_address".into(), then.into());
     });
     let _b = daemon(&b_dir);
     let moved = ready(&b_dir).await;
-    assert_eq!(moved.endpoint, format!("https://[::1]:{port}"));
+    assert_eq!(
+        moved.endpoint,
+        format!("https://{}:{port}", authority(then))
+    );
     assert!(std::net::TcpStream::connect(&address).is_err());
     let _a = daemon(&a_dir);
     ready(&a_dir).await;
-    // Called at once: the old address refuses, localhost answers on ::1.
+    // Called at once: the old address refuses, localhost answers at the new.
     let agents = cli(&a_dir, &["agents", "--peer", &b_card.node_id.to_string()]);
     assert!(agents.is_array(), "{agents}");
     let peer = &cli(&a_dir, &["peers", "list"])[0];
