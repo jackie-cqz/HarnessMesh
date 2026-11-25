@@ -67,6 +67,9 @@ jobs:
       - name: Pairing from the panel with one approval, without models
         if: runner.os == 'Linux'
         run: npm run test:pairing-panel
+      - name: Pairing at an address typed by hand, and how a paired computer is reached, without models
+        if: runner.os == 'Linux'
+        run: npm run test:pairing-address
       # Computers nearby are found over mDNS, which reaches loopback on macOS.
       - name: Install pinned browser regression tools (macOS)
         if: runner.os == 'macOS'

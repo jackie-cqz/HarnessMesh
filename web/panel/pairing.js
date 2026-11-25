@@ -6,7 +6,7 @@
 const pairingState={sent:null,waiting:new Set(),dismissed:new Set(),typed:new Map(),messages:new Map(),busy:false,nearby:[],nearbyLooked:false,nearbyError:'',chosen:null,passcodeMessage:'',passcodeError:false};
 const pairProblems={
  INVALID_PAIR_CODE:'这不是配对码。配对码以 hmesh:// 开头，在对方面板的「配对新电脑」里复制。',
- PEER_UNREACHABLE:'连不上这台电脑：确认它开着 HarnessMesh，并且两台电脑在同一个 Tailnet 里。',
+ PEER_UNREACHABLE:'连不上这台电脑：确认它开着 HarnessMesh，并且两台电脑的网络互通。',
  UNAUTHENTICATED:'对方的身份和配对码对不上。请重新复制对方的配对码。',
  RATE_LIMITED:'对方刚收到太多请求，过一分钟再试。',
  INVALID_INPUT:'对方没有接受这个申请。如果粘贴的是这台电脑自己的配对码，请换成对方的。',
@@ -17,7 +17,24 @@ const pairProblems={
  TASK_CONFLICT:'这个申请已经处理过了。',
  PANEL_READ_ONLY:'面板现在是只读的，不能配对。',
 };
-function pairProblem(error){return pairProblems[error?.code]||`没有完成（${error?.code||error?.message||'原因未知'}）。`;}
+function pairProblem(error){
+ if(error?.code==='PEER_UNREACHABLE')return pairProblems.PEER_UNREACHABLE+unreachableSay(error.reasons);
+ return pairProblems[error?.code]||`没有完成（${error?.code||error?.message||'原因未知'}）。`;
+}
+// Where a call to another computer stopped, in the fixed words the daemon
+// reads off its error (see hmesh_transport::unreachable_reasons), said once each.
+const unreachableReasons={
+ refused:'连不到它的端口，多半是防火墙或网络隔离挡住了。',
+ silent:'连不到它的端口，多半是防火墙或网络隔离挡住了。',
+ unreached:'连不到它的端口，多半是防火墙或网络隔离挡住了。',
+ no_route:'到它没有网络路由：两台电脑可能不在同一个网络里（macOS 上还要在「隐私与安全性 → 本地网络」里允许 hmesh）。',
+ tls:'那个地址上应答的不是 HarnessMesh。',
+ unresolved:'主机名解析不出来。',
+ another_computer:'那个地址上是另一台电脑（证书对不上）。',
+ not_heard:'在局域网里也没找到它。',
+ not_accepted:'它开着，但不再接受这台电脑：可能已经在它那边撤销了配对。',
+};
+function unreachableSay(reasons){return [...new Set((Array.isArray(reasons)?reasons:[]).map(r=>unreachableReasons[r]).filter(Boolean))].join('');}
 // The last six hex digits of a certificate fingerprint, as the check code.
 function pairCheck(fingerprint){return String(fingerprint||'').replace(/:/g,'').slice(-6).toUpperCase();}
 function pairingReady(){return state.runtime?.capabilities?.pairing===true;}
@@ -202,9 +219,48 @@ function spacedPasscode(code){return code?`${code.slice(0,3)} ${code.slice(3)}`:
 function nearbySection(){
  const box=el('section','pair-nearby');box.id='pair-nearby';
  box.append(el('div','pair-nearby-head'),el('div','pair-nearby-list'));
+ if(findingReady())box.append(pairByAddress());
  // After the dialog is shown: looking stops once it is closed.
  drawNearby(box);setTimeout(lookNearby,0);
  return box;
+}
+// Not heard nearby (another subnet, or a Wi-Fi that blocks finding): pair
+// with a computer at an address typed here, IP or host name, and the
+// passcode its screen shows. Without a port, the one hmesh setup uses.
+function findingReady(){return state.runtime?.capabilities?.peer_finding===true;}
+function pairByAddress(){
+ const box=el('div','pair-address');box.id='pair-address';
+ const head=el('div','pair-address-head');head.append(el('b','','按地址配对'),el('span','','填对方的 IP 或主机名（不是 39880 端口时带上端口），再填它屏幕上的 6 位口令。'));
+ const form=el('div','pair-address-form'),address=el('input','pair-address-input'),code=el('input','pair-address-passcode');
+ address.id='pair-address-input';address.placeholder='如 192.168.1.20 或 studio.local';address.spellcheck=false;address.autocomplete='off';address.maxLength=300;address.setAttribute('aria-label','对方的 IP 或主机名');
+ code.inputMode='numeric';code.autocomplete='off';code.maxLength=7;code.placeholder='6 位口令';code.setAttribute('aria-label','对方屏幕上的 6 位口令');
+ const go=el('button','button small','配对');go.type='button';go.disabled=!canWrite();
+ const message=el('p','form-note pair-message');message.setAttribute('role','status');message.hidden=true;
+ const pair=()=>pairAtAddress(address.value,code.value,message,go);
+ go.addEventListener('click',pair);
+ // Enter pairs, never submits the pairing-code form around it.
+ for(const input of [address,code]){
+  input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();event.stopPropagation();pair();}});
+  input.addEventListener('input',()=>{message.hidden=true;message.textContent='';message.classList.remove('error');});
+ }
+ form.append(address,code,go);box.append(head,form,message);
+ return box;
+}
+async function pairAtAddress(address,value,message,go){
+ const say=(text,error)=>{message.textContent=text;message.hidden=!text;message.classList.toggle('error',error);};
+ const where=String(address||'').trim(),code=String(value||'').replace(/[\s-]/g,'');
+ if(!where){say('先填对方的 IP 或主机名。',true);return;}
+ if(!/^[0-9]{6}$/.test(code)){say('口令是对方屏幕上的 6 位数字。',true);return;}
+ if(pairingState.busy)return;pairingState.busy=true;go.disabled=true;
+ say('正在连接对方…',false);
+ try{
+  const p=unwrap(await api('/pairs/passcode',{method:'POST',body:JSON.stringify({endpoint:where,passcode:code})}));
+  pairingState.sent={...p,viaPasscode:true};pairingState.chosen=null;
+  if(p.status==='pending')pairingState.waiting.add(p.request_id);
+  drawPairDialog();refresh();
+ }catch(error){
+  say(error?.code==='INVALID_INPUT'?'地址写成 IP 或主机名，可以带端口，比如 192.168.1.20 或 studio.local:39880；填的要是对方的地址，不是这台电脑的。':passcodeProblem(error),true);
+ }finally{pairingState.busy=false;go.disabled=!canWrite();}
 }
 async function lookNearby(){
  clearTimeout(pairingState.nearbyTimer);
@@ -308,7 +364,7 @@ function drawPairDialog(){
  const form=el('form','pair-form'),scroll=el('div','pair-scroll'),label=el('label','form-label','对方的配对码'),code=el('textarea');
  code.id='pair-code';code.rows=3;code.spellcheck=false;code.autocomplete='off';code.placeholder='hmesh://…';code.maxLength=600;label.append(code);
  const node=data('node',{}),canReceive=!outboundOnly(),remoteBox=el('div','pair-entry');
- if(!canReceive)remoteBox.append(el('p','form-note muted',nearbyReady()?'本机以仅 MCP 模式运行，配对需要从这台电脑发起：在上面选中附近的电脑、输入它的口令，或者粘贴对方的配对码。':'本机以仅 MCP 模式运行，配对需要从这台电脑发起。'));
+ if(!canReceive)remoteBox.append(el('p','form-note muted',nearbyReady()?'本机以仅 MCP 模式运行，配对需要从这台电脑发起：在上面选中附近的电脑或按地址配对、输入它的口令，或者粘贴对方的配对码。':'本机以仅 MCP 模式运行，配对需要从这台电脑发起。'));
  remoteBox.append(label,el('p','form-note muted','让对方在「配对新电脑」里切到「本机配对码」，把复制的内容发给你。'));
  const ownBox=el('div','pair-entry'),ownCode=el('code','pair-own-code',canReceive?node.pair_code||'':'');ownCode.id='own-pair-code';
  ownBox.append(el('p','form-note','把本机配对码发给对方。收到申请后，在「配对节点」核对对方显示的 6 位校验码。'),
@@ -395,6 +451,31 @@ setInterval(()=>{if(!document.hidden&&state.snapshot&&data('pairs').some(p=>p.di
 const addressState={editing:null,draft:'',message:'',busy:false};
 function addressesReady(){return state.runtime?.capabilities?.peer_addresses===true;}
 function originHost(origin){try{return new URL(origin).host;}catch{return String(origin||'');}}
+// How the address that answered last reaches that computer: one typed by
+// hand, a host name, loopback, a Tailscale address (100.64/10 or
+// fd7a:115c:a1e0::/48, as Tailscale hands them out), or else the local network.
+function routeVia(routes,origin){
+ if((routes?.manual||[]).includes(origin))return '手动';
+ let host;try{host=new URL(origin).hostname.replace(/^\[|\]$/g,'').toLowerCase();}catch{return '';}
+ const v4=host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+ if(!v4&&!host.includes(':'))return '主机名';
+ if(host==='::1'||v4?.[1]==='127')return '本机回环';
+ if((v4&&v4[1]==='100'&&Number(v4[2])>=64&&Number(v4[2])<128)||host.startsWith('fd7a:115c:a1e0:'))return 'Tailscale';
+ return '局域网';
+}
+// When and how that computer answered last, and why it does not now.
+function peerReachRows(peer){
+ const rows=[],routes=peer.routes||{};
+ if(routes.last_good&&routes.last_good_at){
+  const when=ago(routes.last_good_at),via=routeVia(routes,routes.last_good);
+  const row=el('p','paired-reach muted',`上次连上：${when==='刚刚'?when:`${when}前`}${via?`，经 ${via}`:''}`);row.title=originHost(routes.last_good);
+  rows.push(row);
+ }
+ const said=unreachableSay(peer.unreachable_reasons);
+ if(peer.node_connectivity==='unreachable')rows.push(el('p','paired-problem',said||'连不上：确认它开着 HarnessMesh，并且两台电脑的网络互通。'));
+ else if(said)rows.push(el('p','paired-problem',said));
+ return rows;
+}
 function peerAddressRow(peer){
  const id=peer.card.node_id,routes=peer.routes||{},row=el('div','paired-addresses');row.dataset.peer=id;
  const told=[...new Set([peer.card.endpoint,...(routes.advertised||[])].map(originHost).filter(Boolean))];
