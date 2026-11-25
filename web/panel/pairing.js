@@ -140,7 +140,7 @@ function tickPairingWindow(box){
    passcode.hidden=false;
    const digits=el('span','pair-passcode-digits',spacedPasscode(code));
    passcode.replaceChildren(el('b','','这台电脑的口令'),digits,el('span','',`在另一台电脑的「附近的电脑」里选中这台，输入这 6 位数字。还能试 ${tries} 次。`));
-   note.textContent=`还剩 ${clock}，这段时间里附近的电脑能看到这台，也能用配对码申请。`;again.hidden=true;
+   note.textContent=`配对窗口还剩 ${clock}，这段时间里附近的电脑能看到这台，也能用配对码申请。`;again.hidden=true;
   }else if(nearbyReady()){
    passcode.hidden=false;passcode.replaceChildren(el('span','',used?'口令已经用过了。要再配一台电脑，换一个新口令。':'口令错了 3 次，已经作废，附近的电脑也看不到这台了。配对码照样能用；要用口令，换一个新口令。'));
    note.textContent=`配对窗口还剩 ${clock}，这段时间里别的电脑能用配对码申请。`;again.textContent='换一个口令';again.hidden=false;
