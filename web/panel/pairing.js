@@ -376,7 +376,7 @@ function peerAddressRow(peer){
  form.addEventListener('submit',event=>{event.preventDefault();savePeerAddresses(peer,input.value);});
  const message=el('p','form-note pair-message',addressState.message);message.setAttribute('role','status');message.hidden=!addressState.message;
  row.classList.add('editing');
- row.append(el('span','paired-address-label','手动地址'),form,el('p','form-note muted paired-address-note','只存在这台电脑上，连不上时会试。留空保存就清除。'),message);
+ row.append(el('span','paired-address-label','手动地址'),form,el('p','form-note muted paired-address-note','只保存在这台电脑上，前面的地址连不上时再试。留空保存就清除。'),message);
  return row;
 }
 async function savePeerAddresses(peer,value){

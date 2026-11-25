@@ -5,11 +5,17 @@ use axum::{Json, Router, extract::State, routing::get, routing::post};
 use hmesh_core::*;
 use hmesh_security::Instance;
 use hmesh_transport::{Client, RouteMemory, serve};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
-use tokio::{net::TcpListener, sync::watch};
+use tokio::{
+    net::{TcpListener, TcpSocket, TcpStream},
+    sync::watch,
+};
 
 /// Serve `instance` on a new loopback port: `/who` answers its name, `/count`
 /// counts calls, `/slow` counts and answers after two seconds, `/fail` counts
@@ -77,6 +83,56 @@ fn refused() -> String {
     let port = listener.local_addr().expect("address").port();
     drop(listener);
     format!("https://127.0.0.1:{port}")
+}
+/// A loopback address where nothing comes back, like an address on a
+/// network the computer has left: a listener whose one-place queue is full
+/// and never taken, so a new connection's first packet is dropped.
+async fn silent() -> (String, (TcpListener, Vec<TcpStream>)) {
+    let socket = TcpSocket::new_v4().expect("socket");
+    socket
+        .bind("127.0.0.1:0".parse().expect("address"))
+        .expect("bind");
+    let listener = socket.listen(1).expect("listen");
+    let address = listener.local_addr().expect("address");
+    let mut queued = Vec::new();
+    for _ in 0..64 {
+        match tokio::time::timeout(Duration::from_millis(300), TcpStream::connect(address)).await {
+            Ok(Ok(stream)) => queued.push(stream),
+            _ => return (format!("https://{address}"), (listener, queued)),
+        }
+    }
+    panic!("the queue at {address} never filled");
+}
+/// A loopback address that takes connections and never says a word: TLS
+/// never completes there.
+async fn mute() -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+    let address = listener.local_addr().expect("address");
+    let held = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+    (format!("https://{address}"), held)
+}
+/// A loopback address that reaches `to`, each connection only after
+/// `delay`: a slow but working way to the computer.
+async fn slow(to: &str, delay: Duration) -> String {
+    let to: std::net::SocketAddr = to.trim_start_matches("https://").parse().expect("address");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+    let address = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        while let Ok((mut inbound, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                if let Ok(mut outbound) = TcpStream::connect(to).await {
+                    let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                }
+            });
+        }
+    });
+    format!("https://{address}")
 }
 
 #[tokio::test]
@@ -172,6 +228,69 @@ async fn a_computer_known_by_several_addresses_is_found_at_the_one_that_is_it() 
     ] {
         assert!(lost.message.contains(&part), "{}", lost.message);
     }
+}
+
+/// The address tried first gives no answer at all (nothing comes back, or
+/// the connection opens and TLS never does, or a documentation address
+/// nobody has): the next address is used well within the shortest wait a
+/// caller gives a paired computer (750 ms), and the call runs once.
+#[tokio::test]
+async fn a_computer_is_found_at_its_next_address_when_the_first_does_not_answer() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let a = instance(root.path(), "asks");
+    let b = instance(root.path(), "studio");
+    let (b_endpoint, b_calls, _b) = computer(b.clone(), trusting(&a)).await;
+    let (quiet, _queue) = silent().await;
+    let (mute, held) = mute().await;
+    let firsts = [quiet, mute, "https://192.0.2.1:38880".to_owned()];
+    for first in &firsts {
+        let memory = Arc::new(RouteMemory::new());
+        let client = Client::routed(
+            &a,
+            vec![first.clone(), b_endpoint.clone()],
+            &b.card.fingerprint,
+            memory.clone(),
+        )
+        .expect("client");
+        let started = Instant::now();
+        let counted = tokio::time::timeout(
+            Duration::from_millis(750),
+            client.post::<_, usize>("/count", &()),
+        )
+        .await;
+        assert!(
+            matches!(counted, Ok(Ok(_))),
+            "{first} tried first: {counted:?} after {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            memory.last_good(&b.card.fingerprint),
+            Some(b_endpoint.clone()),
+            "{first}"
+        );
+    }
+    assert_eq!(b_calls.load(Ordering::SeqCst), firsts.len());
+    held.abort();
+
+    // Slower to connect than the first try allows, with nothing else
+    // answering: it is tried again with the usual time, and the call runs once.
+    let slowly = slow(&b_endpoint, Duration::from_millis(700)).await;
+    let memory = Arc::new(RouteMemory::new());
+    let client = Client::routed(
+        &a,
+        vec![slowly.clone(), refused()],
+        &b.card.fingerprint,
+        memory.clone(),
+    )
+    .expect("client");
+    let counted = tokio::time::timeout(
+        Duration::from_secs(3),
+        client.post::<_, usize>("/count", &()),
+    )
+    .await;
+    assert!(matches!(counted, Ok(Ok(_))), "{counted:?}");
+    assert_eq!(memory.last_good(&b.card.fingerprint), Some(slowly));
+    assert_eq!(b_calls.load(Ordering::SeqCst), firsts.len() + 1);
 }
 
 /// A computer on loopback alone dials only loopback addresses, and an

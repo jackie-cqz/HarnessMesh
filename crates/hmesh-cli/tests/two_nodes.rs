@@ -1176,6 +1176,34 @@ fn free_port() -> u16 {
         .expect("port")
         .port()
 }
+/// A loopback address where nothing comes back, like an address on a
+/// network the computer has left: a listener whose one-place queue is full
+/// and never taken, so a new connection's first packet is dropped. Keep the
+/// second value for as long as the address should stay silent.
+async fn silent_address() -> (
+    String,
+    (tokio::net::TcpListener, Vec<tokio::net::TcpStream>),
+) {
+    let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+    socket
+        .bind("127.0.0.1:0".parse().expect("address"))
+        .expect("bind");
+    let listener = socket.listen(1).expect("listen");
+    let address = listener.local_addr().expect("address");
+    let mut queued = Vec::new();
+    for _ in 0..64 {
+        match tokio::time::timeout(
+            Duration::from_millis(300),
+            tokio::net::TcpStream::connect(address),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => queued.push(stream),
+            _ => return (format!("https://{address}"), (listener, queued)),
+        }
+    }
+    panic!("the queue at {address} never filled");
+}
 /// Pair `a_dir` with the computer at `address` using the passcode `b_dir` shows.
 fn join(a_dir: &Path, b_dir: &Path, address: &str) {
     let passcode = cli(b_dir, &["pair", "show"])["pairing_window"]["passcode"]
@@ -1340,12 +1368,28 @@ async fn a_peer_is_reached_at_an_address_set_by_hand_and_never_at_another_comput
             Some(c_card.endpoint.clone())
         );
     }
-    let _a = daemon(&a_dir);
+    let a = daemon(&a_dir);
     ready(&a_dir).await;
     assert!(cli(&a_dir, &["agents", "--peer", &b_id]).is_array());
     let peer = &cli(&a_dir, &["peers", "list"])[0];
     assert_eq!(peer["routes"]["last_good"], moved.endpoint, "{peer}");
     assert_eq!(peer["registry_readable"], true, "{peer}");
+
+    // The address tried first sends nothing back (where the studio was
+    // reached last is a network the laptop left): the next one answers
+    // within the panel's wait, so the studio shows online with its agents.
+    let (quiet, _queue) = silent_address().await;
+    stop(a, &a_dir);
+    hmesh_store::Store::open(&a_dir.join("state.sqlite3"))
+        .expect("store")
+        .remember_route(&b_card.fingerprint, &quiet, now())
+        .expect("route");
+    let _a = daemon(&a_dir);
+    ready(&a_dir).await;
+    let peer = &cli(&a_dir, &["peers", "list"])[0];
+    assert_eq!(peer["node_connectivity"], "online", "{peer}");
+    assert_eq!(peer["registry_readable"], true, "{peer}");
+    assert_eq!(peer["routes"]["last_good"], moved.endpoint, "{peer}");
 
     // Cleared by hand: only what the studio said remains.
     let cleared = cli(&a_dir, &["peers", "address", &b_id, "--clear"]);

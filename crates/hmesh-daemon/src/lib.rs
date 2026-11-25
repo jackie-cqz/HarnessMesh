@@ -855,8 +855,9 @@ async fn peers(
             // Asked with this computer's certificate first: a direct node
             // answers the anonymous hello only while its pairing window is
             // open. One that no longer accepts this computer (it revoked the
-            // pairing there) still answers hello. Long enough for an address
-            // that refuses and a next one that answers.
+            // pairing there) still answers hello. Long enough for a first
+            // address that refuses, or sends nothing back (given up after
+            // half a second when there are others), and a next one that answers.
             let client = s.peer_client(&peer)?;
             let accepted = matches!(
                 tokio::time::timeout(

@@ -5,6 +5,7 @@ use hmesh_core::{ErrorCode, MeshError, NodeCard};
 use hmesh_security::{
     Instance, normalize_fingerprint, peer_address, validate_endpoint, validate_peer_address,
 };
+use rustls::pki_types::ServerName;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     collections::{HashMap, HashSet},
@@ -13,11 +14,19 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::task::JoinSet;
+use tokio::{net::TcpStream, task::JoinSet};
 
-/// How long the other addresses get to accept a TCP connection, once the
-/// first one failed, before they are tried in turn (answering ones first).
-const PROBE: Duration = Duration::from_millis(700);
+/// How long a connection may take: resolving a host name, TCP and TLS.
+const CONNECT: Duration = Duration::from_secs(3);
+/// With other addresses to move on to, the one tried first gets this long
+/// to connect. An address that sends nothing back (a network the computer
+/// left) would otherwise use up a caller's whole wait, the shortest being
+/// 750 ms, before the next address is tried. Nothing has been sent when a
+/// connection is given up, so trying elsewhere never runs a call twice.
+const FIRST_TRY: Duration = Duration::from_millis(500);
+/// How long the first try runs alone before the other addresses are probed
+/// (a TLS handshake, nothing sent), so a call answered at once costs no more.
+const HEAD_START: Duration = Duration::from_millis(200);
 /// A route that keeps answering is written down again at most this often.
 const PERSIST_EVERY_SECONDS: i64 = 60;
 
@@ -70,14 +79,22 @@ impl RouteMemory {
 pub struct Client {
     routes: Arc<[Route]>,
     owner_token: Option<String>,
-    /// For a paired computer known by several addresses: where it answers
-    /// is remembered under its fingerprint.
-    memory: Option<(Arc<RouteMemory>, String)>,
+    /// For a paired computer known by several addresses.
+    routed: Option<Arc<Routed>>,
+}
+/// Where a paired computer answers is remembered under its fingerprint;
+/// `tls` is the TLS the routes use, to see which addresses answer.
+struct Routed {
+    memory: Arc<RouteMemory>,
+    fingerprint: String,
+    tls: Arc<rustls::ClientConfig>,
 }
 struct Route {
     origin: String,
     target: Target,
     http: reqwest::Client,
+    /// The same, with `FIRST_TRY` to connect: there are other addresses.
+    first_try: Option<reqwest::Client>,
 }
 #[derive(Clone)]
 enum Target {
@@ -123,10 +140,11 @@ impl Client {
             routes: Arc::from([Route {
                 origin: url.origin().ascii_serialization(),
                 target,
-                http: http(config, false)?,
+                http: http(config, false, CONNECT)?,
+                first_try: None,
             }]),
             owner_token: owner.then(|| instance.owner_token().to_owned()),
-            memory: None,
+            routed: None,
         })
     }
     /// A paired computer at any of `candidates`, in order (its card's
@@ -134,7 +152,9 @@ impl Client {
     /// to the addresses `peer_address` permits; whoever answers must show
     /// the certificate `fingerprint` names. A call moves on to the next
     /// address only when the request was never sent (no connection, or the
-    /// wrong certificate), so nothing runs twice.
+    /// wrong certificate), so nothing runs twice. With several addresses
+    /// the first one gets `FIRST_TRY` to connect, and the others are probed
+    /// meanwhile, so the next one that answers is used at once.
     pub fn routed(
         instance: &Instance,
         candidates: Vec<String>,
@@ -164,7 +184,7 @@ impl Client {
         let fingerprint = normalize_fingerprint(fingerprint)?;
         let config = instance.client_config(&fingerprint, bootstrap)?;
         let loopback_only = instance.config.node.network == "loopback";
-        let mut routes = Vec::new();
+        let mut targets = Vec::new();
         let mut seen = HashSet::new();
         for candidate in candidates {
             let Ok(url) = validate_peer_address(&candidate) else {
@@ -175,19 +195,33 @@ impl Client {
             if (loopback_only && !target.loopback()) || !seen.insert(origin.clone()) {
                 continue;
             }
-            routes.push(Route {
-                origin,
-                target,
-                http: http(config.clone(), true)?,
-            });
+            targets.push((origin, target));
         }
-        if routes.is_empty() {
+        if targets.is_empty() {
             anyhow::bail!("this computer has no address to reach that computer at");
         }
+        let several = targets.len() > 1;
+        let routes = targets
+            .into_iter()
+            .map(|(origin, target)| {
+                Ok(Route {
+                    origin,
+                    target,
+                    http: http(config.clone(), true, CONNECT)?,
+                    first_try: several
+                        .then(|| http(config.clone(), true, FIRST_TRY))
+                        .transpose()?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Self {
             routes: routes.into(),
             owner_token: None,
-            memory: Some((memory, fingerprint)),
+            routed: Some(Arc::new(Routed {
+                memory,
+                fingerprint,
+                tls: Arc::new(config),
+            })),
         })
     }
     /// The addresses tried, in the order they are tried first.
@@ -222,10 +256,11 @@ impl Client {
             routes: Arc::from([Route {
                 origin: url.origin().ascii_serialization(),
                 target: Target::of(&url).map_err(refused)?,
-                http: http(config, false).map_err(refused)?,
+                http: http(config, false, CONNECT).map_err(refused)?,
+                first_try: None,
             }]),
             owner_token: None,
-            memory: None,
+            routed: None,
         };
         let card: NodeCard = client.get("/hmesh/v1/hello").await?;
         let seen = seen
@@ -274,8 +309,8 @@ impl Client {
     /// last first, then as given.
     fn order(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.routes.len()).collect();
-        if let Some((memory, fingerprint)) = &self.memory
-            && let Some(last) = memory.last_good(fingerprint)
+        if let Some(routed) = &self.routed
+            && let Some(last) = routed.memory.last_good(&routed.fingerprint)
             && let Some(index) = self.routes.iter().position(|r| r.origin == last)
         {
             order.retain(|&i| i != index);
@@ -297,52 +332,124 @@ impl Client {
             .map(serde_json::to_vec)
             .transpose()
             .map_err(|_| MeshError::input("RPC body cannot be encoded"))?;
-        let Some((memory, fingerprint)) = &self.memory else {
+        let Some(routed) = &self.routed else {
+            let route = &self.routes[0];
             let response = self
-                .request(&self.routes[0], method, path, body, timeout)
+                .request(route, &route.http, method, path, body, timeout)
                 .await
                 .map_err(transport_error)?;
             return read(response).await;
         };
-        let mut order = self.order();
-        let mut failures = Vec::new();
-        let mut next = 0;
-        while let Some(&index) = order.get(next) {
+        let order = self.order();
+        let first = order[0];
+        let several = order.len() > 1;
+        let mut failed: Vec<Option<&'static str>> = vec![None; self.routes.len()];
+        // The first address, with less time to connect when there are others;
+        // they are probed if it has not answered after `HEAD_START`.
+        let mut probes = JoinSet::new();
+        let mut probing = false;
+        let route = &self.routes[first];
+        let quick = route.first_try.as_ref().unwrap_or(&route.http);
+        let attempt = self.request(route, quick, method.clone(), path, body.clone(), timeout);
+        tokio::pin!(attempt);
+        let head_start = tokio::time::sleep(HEAD_START);
+        tokio::pin!(head_start);
+        let tried = loop {
+            tokio::select! {
+                tried = &mut attempt => break tried,
+                () = &mut head_start, if several && !probing => {
+                    self.probe(&routed.tls, order.iter().copied(), &mut probes);
+                    probing = true;
+                }
+            }
+        };
+        // Sent, maybe even carried out: never sent again elsewhere. Not sent
+        // (no connection, or not the computer that was meant): move on.
+        let again = match tried {
+            Ok(response) => {
+                routed.memory.remember(&routed.fingerprint, &route.origin);
+                return read(response).await;
+            }
+            Err(error) if error.is_connect() => {
+                let why = failure(&error);
+                failed[first] = Some(why);
+                // Too slow for the first try, but it may still answer.
+                why == SILENT
+            }
+            Err(error) => return Err(transport_error(error)),
+        };
+        if several && !probing {
+            let others = order.iter().copied().filter(|&i| i != first || again);
+            self.probe(&routed.tls, others, &mut probes);
+        }
+        // The others in the order they answer; the first again only if it
+        // was merely slow and answers after all.
+        while let Some(probed) = probes.join_next().await {
+            let Ok((index, answered)) = probed else {
+                continue;
+            };
+            if index == first && !(again && answered.is_ok()) {
+                continue;
+            }
+            if let Err(why) = answered {
+                failed[index] = Some(why);
+                continue;
+            }
             let route = &self.routes[index];
             match self
-                .request(route, method.clone(), path, body.clone(), timeout)
+                .request(
+                    route,
+                    &route.http,
+                    method.clone(),
+                    path,
+                    body.clone(),
+                    timeout,
+                )
                 .await
             {
                 Ok(response) => {
-                    memory.remember(fingerprint, &route.origin);
+                    routed.memory.remember(&routed.fingerprint, &route.origin);
                     return read(response).await;
                 }
-                // Not sent: no connection, or not the computer that was meant.
-                Err(error) if error.is_connect() => {
-                    failures.push((route.origin.clone(), failure(&error)));
-                    if next == 0 && order.len() > 1 {
-                        let rest = order.split_off(1);
-                        order.extend(answering_first(&self.routes, rest).await);
-                    }
-                    next += 1;
-                }
-                // Sent, maybe even carried out: never sent again elsewhere.
+                Err(error) if error.is_connect() => failed[index] = Some(failure(&error)),
                 Err(error) => return Err(transport_error(error)),
             }
         }
+        let failures: Vec<(String, &'static str)> = order
+            .iter()
+            .filter_map(|&i| failed[i].map(|why| (self.routes[i].origin.clone(), why)))
+            .collect();
         Err(unreachable(&failures))
+    }
+    /// Start a TLS handshake with each of these routes (nothing is sent
+    /// over it): which ones answer, as the right computer, and how soon.
+    fn probe(
+        &self,
+        tls: &Arc<rustls::ClientConfig>,
+        routes: impl IntoIterator<Item = usize>,
+        probes: &mut JoinSet<(usize, Result<(), &'static str>)>,
+    ) {
+        for index in routes {
+            let target = self.routes[index].target.clone();
+            let tls = tls.clone();
+            probes.spawn(async move {
+                let answered = tokio::time::timeout(CONNECT, handshake(target, tls))
+                    .await
+                    .unwrap_or(Err(SILENT));
+                (index, answered)
+            });
+        }
     }
     async fn request(
         &self,
         route: &Route,
+        http: &reqwest::Client,
         method: reqwest::Method,
         path: &str,
         body: Option<Vec<u8>>,
         timeout: Option<Duration>,
     ) -> reqwest::Result<reqwest::Response> {
-        let mut request = route
-            .http
-            .request(method, format!("{}{path}", route.origin));
+        let mut request = http.request(method, format!("{}{path}", route.origin));
         if let Some(token) = &self.owner_token {
             request = request.bearer_auth(token);
         }
@@ -389,54 +496,59 @@ async fn read<T: DeserializeOwned>(mut response: reqwest::Response) -> hmesh_cor
     })
 }
 
-/// `rest` reordered: the addresses that accept a TCP connection within
-/// `PROBE` first, so a dead one does not cost each next try its full
-/// connection timeout. Nothing is sent; TLS and the request come after.
-async fn answering_first(routes: &[Route], rest: Vec<usize>) -> Vec<usize> {
-    let mut probes = JoinSet::new();
-    for &index in &rest {
-        let target = routes[index].target.clone();
-        probes.spawn(async move {
-            (
-                index,
-                tokio::time::timeout(PROBE, accepts(target))
-                    .await
-                    .unwrap_or(false),
-            )
-        });
-    }
-    let mut open = HashSet::new();
-    while let Some(probed) = probes.join_next().await {
-        if let Ok((index, true)) = probed {
-            open.insert(index);
-        }
-    }
-    let (answering, silent): (Vec<usize>, Vec<usize>) =
-        rest.into_iter().partition(|index| open.contains(index));
-    answering.into_iter().chain(silent).collect()
-}
-async fn accepts(target: Target) -> bool {
-    let addresses = match target {
-        Target::Ip(address) => vec![address],
-        Target::Name(name, port) => resolve(&name, port).await,
+/// Whether `target` completes a TLS handshake as the computer `tls` pins,
+/// or where it stopped. Nothing is sent over it.
+async fn handshake(target: Target, tls: Arc<rustls::ClientConfig>) -> Result<(), &'static str> {
+    let (name, addresses) = match target {
+        Target::Ip(address) => (ServerName::IpAddress(address.ip().into()), vec![address]),
+        Target::Name(name, port) => (
+            ServerName::try_from(name.as_str())
+                .map_err(|_| UNRESOLVED)?
+                .to_owned(),
+            resolve(&name, port).await,
+        ),
     };
+    if addresses.is_empty() {
+        return Err(UNRESOLVED);
+    }
+    let stream = connect(addresses)
+        .await
+        .map_err(|error| reason(&error).unwrap_or(UNREACHED))?;
+    tokio_rustls::TlsConnector::from(tls)
+        .connect(name, stream)
+        .await
+        .map_err(|error| reason(&error).unwrap_or(UNREACHED))?;
+    Ok(())
+}
+/// A TCP connection to whichever of `addresses` accepts first.
+async fn connect(addresses: Vec<SocketAddr>) -> std::io::Result<TcpStream> {
     let mut connections = JoinSet::new();
     for address in addresses {
-        connections.spawn(tokio::net::TcpStream::connect(address));
+        connections.spawn(TcpStream::connect(address));
     }
+    let mut last = None;
     while let Some(connected) = connections.join_next().await {
-        if matches!(connected, Ok(Ok(_))) {
-            return true;
+        match connected {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(error)) => last = Some(error),
+            Err(_) => {}
         }
     }
-    false
+    Err(last.unwrap_or_else(|| std::io::Error::other("no address to connect to")))
 }
 /// The addresses a host name resolves to that a peer may have.
 async fn resolve(name: &str, port: u16) -> Vec<SocketAddr> {
     tokio::net::lookup_host((name, port))
         .await
-        .map(|found| found.filter(|a| peer_address(a.ip())).collect())
+        .map(permitted)
         .unwrap_or_default()
+}
+/// Of the addresses a name resolved to, the ones a peer may be at
+/// (`peer_address`): never a link-local one such as the cloud metadata
+/// service at 169.254.169.254, whether written as IPv4 or as IPv4 inside
+/// IPv6, nor an unspecified or multicast one.
+fn permitted(found: impl IntoIterator<Item = SocketAddr>) -> Vec<SocketAddr> {
+    found.into_iter().filter(|a| peer_address(a.ip())).collect()
 }
 
 /// Host names in addresses resolve through the system (its DNS, and mDNS
@@ -464,12 +576,16 @@ impl reqwest::dns::Resolve for PeerResolver {
     }
 }
 
-fn http(config: rustls::ClientConfig, names: bool) -> anyhow::Result<reqwest::Client> {
+fn http(
+    config: rustls::ClientConfig,
+    names: bool,
+    connect: Duration,
+) -> anyhow::Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .use_preconfigured_tls(config)
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(3))
+        .connect_timeout(connect)
         .timeout(Duration::from_secs(15))
         .pool_max_idle_per_host(0);
     if names {
@@ -484,26 +600,35 @@ const SILENT: &str = "did not answer";
 const UNRESOLVED: &str = "did not resolve";
 const ANOTHER: &str = "is another computer";
 const NO_ROUTE: &str = "has no route from here";
+const UNREACHED: &str = "could not be reached";
 fn failure(error: &reqwest::Error) -> &'static str {
+    reason(error).unwrap_or(if error.is_timeout() {
+        SILENT
+    } else {
+        UNREACHED
+    })
+}
+/// Where a connection stopped, if `error` or an error behind it says.
+fn reason(error: &(dyn StdError + 'static)) -> Option<&'static str> {
     let tls = |error: &rustls::Error| match error {
         rustls::Error::InvalidCertificate(_) | rustls::Error::General(_) => ANOTHER,
         _ => "failed the TLS handshake",
     };
-    let mut source: Option<&(dyn StdError + 'static)> = Some(error);
+    let mut source = Some(error);
     while let Some(current) = source {
         if current.is::<Unresolved>() {
-            return UNRESOLVED;
+            return Some(UNRESOLVED);
         }
         if let Some(error) = current.downcast_ref::<rustls::Error>() {
-            return tls(error);
+            return Some(tls(error));
         }
         if let Some(io) = current.downcast_ref::<std::io::Error>() {
             match io.kind() {
-                std::io::ErrorKind::ConnectionRefused => return REFUSED,
+                std::io::ErrorKind::ConnectionRefused => return Some(REFUSED),
                 std::io::ErrorKind::HostUnreachable | std::io::ErrorKind::NetworkUnreachable => {
-                    return NO_ROUTE;
+                    return Some(NO_ROUTE);
                 }
-                std::io::ErrorKind::TimedOut => return SILENT,
+                std::io::ErrorKind::TimedOut => return Some(SILENT),
                 _ => {}
             }
             // An I/O error's source is its inner error's source: look at
@@ -515,11 +640,7 @@ fn failure(error: &reqwest::Error) -> &'static str {
         }
         source = current.source();
     }
-    if error.is_timeout() {
-        SILENT
-    } else {
-        "could not be reached"
-    }
+    None
 }
 /// Every address failed before anything was sent: say where each one stopped.
 fn unreachable(failures: &[(String, &'static str)]) -> MeshError {
@@ -571,4 +692,46 @@ fn transport_error(error: reqwest::Error) -> MeshError {
         "RPC transport failed"
     };
     MeshError::new(ErrorCode::PeerUnreachable, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addresses(written: &[&str]) -> Vec<SocketAddr> {
+        written
+            .iter()
+            .map(|a| a.parse().expect("socket address"))
+            .collect()
+    }
+
+    /// A host name that resolves to the cloud metadata service, as IPv4 or
+    /// as IPv4 inside IPv6, is never dialed there; ordinary addresses stay.
+    #[test]
+    fn a_name_never_leads_to_a_link_local_address() {
+        let found = addresses(&[
+            "169.254.169.254:38880",
+            "[::ffff:169.254.169.254]:38880",
+            "192.168.1.20:38880",
+            "[fe80::1]:38880",
+            "10.0.0.5:38880",
+            "0.0.0.0:38880",
+            "[::ffff:0.0.0.0]:38880",
+            "[fd7a:115c:a1e0::5]:38880",
+            "100.101.102.103:38880",
+            "224.0.0.251:38880",
+            "127.0.0.1:38880",
+        ]);
+        assert_eq!(
+            permitted(found),
+            addresses(&[
+                "192.168.1.20:38880",
+                "10.0.0.5:38880",
+                "[fd7a:115c:a1e0::5]:38880",
+                "100.101.102.103:38880",
+                "127.0.0.1:38880",
+            ])
+        );
+        assert!(permitted(addresses(&["[::ffff:169.254.169.254]:0"])).is_empty());
+    }
 }
