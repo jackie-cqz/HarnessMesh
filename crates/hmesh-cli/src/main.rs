@@ -434,6 +434,19 @@ enum PeersCommand {
         #[arg(value_parser = ["auto", "confirm"])]
         mode: String,
     },
+    /// Where else to reach a paired computer, kept only here: tried after
+    /// the address on its card, before the ones it told this computer.
+    Address {
+        /// Peer node ID or display name.
+        peer: String,
+        /// Addresses as host:port or https://host:port (an IP address or a
+        /// host name). They replace the ones set before.
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        addresses: Vec<String>,
+        /// Remove the addresses set here.
+        #[arg(long)]
+        clear: bool,
+    },
 }
 #[derive(Subcommand)]
 enum PairCommand {
@@ -1276,21 +1289,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             command: PeersCommand::Access { peer, mode },
         } => {
             let peers: Vec<PeerView> = client.get("/local/peers").await?;
-            let matches: Vec<&PeerView> = peers
-                .iter()
-                .filter(|view| {
-                    view.peer.card.node_id.to_string() == peer.to_ascii_lowercase()
-                        || view.peer.card.display_name.eq_ignore_ascii_case(&peer)
-                })
-                .collect();
-            let [view] = matches.as_slice() else {
-                return Err(MeshError::input(if matches.is_empty() {
-                    "no paired peer has that node ID or name"
-                } else {
-                    "several peers share that name; use the node ID"
-                })
-                .into());
-            };
+            let view = one_peer(&peers, &peer)?;
             let access = if mode == "confirm" {
                 PeerAccess::Confirm
             } else {
@@ -1300,6 +1299,33 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 .post(
                     &format!("/local/peers/{}/access", view.peer.card.node_id),
                     &PeerAccessRequest { access },
+                )
+                .await?
+        }
+        Commands::Peers {
+            command:
+                PeersCommand::Address {
+                    peer,
+                    addresses,
+                    clear: _,
+                },
+        } => {
+            let peers: Vec<PeerView> = client.get("/local/peers").await?;
+            let view = one_peer(&peers, &peer)?;
+            let addresses = addresses
+                .into_iter()
+                .map(|address| {
+                    if address.starts_with("https://") {
+                        address
+                    } else {
+                        format!("https://{address}")
+                    }
+                })
+                .collect();
+            client
+                .post(
+                    &format!("/local/peers/{}/addresses", view.peer.card.node_id),
+                    &hmesh_daemon::ManualAddresses { addresses },
                 )
                 .await?
         }
@@ -2006,6 +2032,25 @@ fn setting_value(value: &str) -> Value {
         "true" => Value::Bool(true),
         "false" => Value::Bool(false),
         other => Value::String(other.to_owned()),
+    }
+}
+/// The one paired computer with this node ID or display name.
+fn one_peer<'a>(peers: &'a [PeerView], peer: &str) -> Result<&'a PeerView> {
+    let matches: Vec<&PeerView> = peers
+        .iter()
+        .filter(|view| {
+            view.peer.card.node_id.to_string() == peer.to_ascii_lowercase()
+                || view.peer.card.display_name.eq_ignore_ascii_case(peer)
+        })
+        .collect();
+    match matches.as_slice() {
+        [view] => Ok(view),
+        _ => Err(MeshError::input(if matches.is_empty() {
+            "no paired peer has that node ID or name"
+        } else {
+            "several peers share that name; use the node ID"
+        })
+        .into()),
     }
 }
 fn read_spec<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T> {

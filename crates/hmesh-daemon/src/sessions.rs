@@ -1,7 +1,7 @@
 //! Interactive ACP sessions: one agent process per open session, events stored
 //! in order and streamed by long-polling. Sessions on a paired node's agent are
 //! opened and driven through that node's peer API.
-use crate::{Actor, ApiError, ApiResult, AppState, internal};
+use crate::{Actor, ApiError, ApiResult, AppState};
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query, State},
@@ -1652,14 +1652,7 @@ fn peer_client(s: &AppState, peer: Uuid) -> std::result::Result<Client, ApiError
             "that computer is not paired",
         ));
     }
-    Client::new(
-        &s.instance,
-        &peer.card.endpoint,
-        &peer.card.fingerprint,
-        false,
-        false,
-    )
-    .map_err(internal)
+    Ok(s.peer_client(&peer)?)
 }
 
 /// Open a session for this node's owner (a person, or an agent through

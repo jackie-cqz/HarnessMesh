@@ -2,6 +2,128 @@ use hmesh_core::*;
 use hmesh_security::*;
 use uuid::Uuid;
 
+/// Addresses in an address list may name hosts; cards and pairing codes
+/// still may not. Either way the dialed IP passes the usual rules.
+#[test]
+fn peer_addresses_take_host_names_but_cards_keep_literal_ips() {
+    for good in [
+        "https://studio.local:38880",
+        "https://localhost:38880",
+        "https://build-01.corp.example.com:443",
+        "https://STUDIO.local:38880",
+        "https://192.168.1.20:38880",
+        "https://[fd7a:115c:a1e0::1]:38880",
+        "https://100.99.145.22:38880/",
+    ] {
+        validate_peer_address(good).unwrap_or_else(|e| panic!("{good}: {e}"));
+    }
+    let long = format!("https://{}.local:1", "a".repeat(300));
+    let long_label = format!("https://{}.local:1", "a".repeat(64));
+    for bad in [
+        "https://169.254.169.254:38880",
+        "https://[fe80::1]:38880",
+        "https://0.0.0.0:38880",
+        "https://user@studio.local:38880",
+        "https://user:secret@studio.local:38880",
+        "https://studio.local:38880/path",
+        "https://studio.local:38880/?q=1",
+        "https://studio.local:38880/#f",
+        "https://studio.local:0",
+        "http://studio.local:38880",
+        "https://-studio.local:38880",
+        "https://studio-.local:38880",
+        "https://stu_dio.local:38880",
+        "https://studio..local:38880",
+        long.as_str(),
+        long_label.as_str(),
+        "studio.local:38880",
+    ] {
+        assert!(validate_peer_address(bad).is_err(), "{bad} accepted");
+    }
+    assert_eq!(
+        validate_peer_addresses(&[
+            "https://Studio.local:38880".into(),
+            "https://studio.local:38880/".into(),
+            "https://[::1]:7".into(),
+        ])
+        .unwrap(),
+        ["https://studio.local:38880", "https://[::1]:7"]
+    );
+    let many: Vec<String> = (0..=MAX_PEER_ADDRESSES)
+        .map(|n| format!("https://10.0.0.{n}:1"))
+        .collect();
+    assert!(validate_peer_addresses(&many).is_err());
+    // The card and the pairing code: literal IPs (or localhost) only.
+    assert!(validate_endpoint("https://studio.local:38880").is_err());
+    assert!(parse_pair_code(&format!("hmesh://studio.local:38880/{}", "a".repeat(64))).is_err());
+}
+
+/// Later versions add fields to an address list; this one ignores them.
+#[test]
+fn an_address_list_with_fields_this_version_does_not_know_still_reads() {
+    let id = Uuid::new_v4();
+    let read: PeerAddresses = serde_json::from_value(serde_json::json!({
+        "node_id": id,
+        "revision": 7,
+        "addresses": ["https://studio.local:38880"],
+        "find_key": "00ff",
+        "relay": {"later": true},
+    }))
+    .unwrap();
+    assert_eq!(
+        read,
+        PeerAddresses {
+            node_id: id,
+            revision: 7,
+            addresses: vec!["https://studio.local:38880".into()],
+        }
+    );
+    // The card is still read strictly: one unknown field rejects it.
+    let mut card = serde_json::to_value(NodeCard {
+        version: PROTOCOL.into(),
+        node_id: id,
+        display_name: "studio".into(),
+        fingerprint: "a".repeat(64),
+        certificate_pem: String::new(),
+        endpoint: "https://192.168.1.20:38880".into(),
+    })
+    .unwrap();
+    card["addresses"] = serde_json::json!([]);
+    assert!(serde_json::from_value::<NodeCard>(card).is_err());
+}
+
+/// `host_names` in node.toml: DNS names only, and not too many.
+#[test]
+fn host_names_in_the_configuration_are_dns_names() {
+    let mut config = NodeConfig::default();
+    config.node.host_names = Some(vec!["studio.local".into(), "localhost".into()]);
+    config.validate().unwrap();
+    for bad in [
+        "studio.local:38880",
+        "Studio.local",
+        "192.168.1.20",
+        "-x.local",
+        "",
+    ] {
+        config.node.host_names = Some(vec![bad.into()]);
+        assert!(config.validate().is_err(), "{bad} accepted");
+    }
+    config.node.host_names = Some(
+        (0..MAX_PEER_ADDRESSES)
+            .map(|n| format!("h{n}.local"))
+            .collect(),
+    );
+    assert!(config.validate().is_err());
+    config.node.host_names = Some(vec![]);
+    config.validate().unwrap();
+    // Not written unless set, so older versions still read node.toml.
+    assert!(
+        !toml::to_string(&NodeConfig::default())
+            .unwrap()
+            .contains("host_names")
+    );
+}
+
 #[test]
 fn tailnet_identity_has_exact_ip_san_without_rekeying_existing_instances() {
     let root = tempfile::tempdir().unwrap();

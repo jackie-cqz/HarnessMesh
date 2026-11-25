@@ -70,41 +70,45 @@ async fn peer_card(
     Ok(Json(json!({"updated": updated})))
 }
 
-/// Tell every paired computer this one's current card, now and every few
-/// minutes until each has it. Computers that are off, or too old to take it,
-/// are tried again later; nothing waits on this.
+/// Tell every paired computer this one's current card and address list,
+/// and ask each for its own list, now and every few minutes: a computer that
+/// only connects out learns where the others are only by asking. Computers
+/// that are off are tried again later, as are ones too old to take the card;
+/// one too old to know address lists is not told again. Nothing waits on this.
 pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
     let mut told = std::collections::HashSet::new();
+    let mut told_addresses = std::collections::HashSet::new();
     loop {
         if let Ok(peers) = state.store.peers() {
-            for peer in peers {
-                if peer.status != "trusted"
-                    || told.contains(&peer.card.node_id)
-                    || !state.reaches(&peer)
-                {
+            let revision = state.addresses().revision;
+            for peer in peers.into_iter().filter(|p| p.status == "trusted") {
+                // No address this computer can call: a computer that only
+                // connects out, seen from one that takes connections.
+                let Ok(client) = state.peer_client(&peer) else {
+                    continue;
+                };
+                if !addresses::pull(&state, &peer, &client).await {
                     continue;
                 }
-                if peer_told(&state, &peer).await {
-                    told.insert(peer.card.node_id);
+                let id = peer.card.node_id;
+                if !told.contains(&id) && peer_told(&state, &client).await {
+                    told.insert(id);
+                }
+                if !told_addresses.contains(&(id, revision))
+                    && addresses::push(&state, &client).await
+                {
+                    told_addresses.insert((id, revision));
                 }
             }
         }
         tokio::select! {
             changed = stop.changed() => if changed.is_err() || *stop.borrow() { return },
             _ = tokio::time::sleep(ANNOUNCE_EVERY) => {}
+            _ = state.announce_now.notified() => {}
         }
     }
 }
-async fn peer_told(state: &AppState, peer: &Peer) -> bool {
-    let Ok(client) = Client::new(
-        &state.instance,
-        &peer.card.endpoint,
-        &peer.card.fingerprint,
-        false,
-        false,
-    ) else {
-        return false;
-    };
+pub(crate) async fn peer_told(state: &AppState, client: &Client) -> bool {
     tokio::time::timeout(
         Duration::from_secs(5),
         client.post::<_, Value>("/hmesh/v1/peers/card", &state.instance.card),
@@ -255,6 +259,7 @@ pub(crate) async fn check(s: &AppState, record: &PairRecord) -> bool {
                 .complete_outgoing_pair(record.request_id, fingerprint)
             {
                 Ok(peer) => {
+                    s.peers_changed();
                     let _ = s.store.audit(
                         Some(s.instance.card.node_id),
                         "pair.complete",

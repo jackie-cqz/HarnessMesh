@@ -395,6 +395,55 @@ pub fn validate_endpoint(endpoint: &str) -> Result<url::Url> {
     }
     Ok(url)
 }
+/// One address in a paired computer's address list, or one its owner set:
+/// the rules of `validate_endpoint`, and DNS host names too (`studio.local`,
+/// a name on a company network, `localhost`). A name is resolved when it is
+/// dialed, and only the addresses `peer_address` permits are used; who
+/// answers is still settled by the pinned certificate. Cards and pairing
+/// codes keep literal IP addresses (`validate_endpoint`).
+pub fn validate_peer_address(address: &str) -> Result<url::Url> {
+    if address.len() > MAX_PEER_ADDRESS_BYTES {
+        bail!("a peer address is at most {MAX_PEER_ADDRESS_BYTES} bytes");
+    }
+    let url = url::Url::parse(address)?;
+    let permitted = match url.host() {
+        Some(url::Host::Ipv4(ip)) => peer_address(ip.into()),
+        Some(url::Host::Ipv6(ip)) => peer_address(ip.into()),
+        Some(url::Host::Domain(name)) => valid_host_name(name),
+        None => false,
+    };
+    if url.scheme() != "https"
+        || !permitted
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port_or_known_default().is_none_or(|p| p == 0)
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        bail!(
+            "peer addresses must be HTTPS origins on a unicast IP address or a DNS host name, without credentials, paths or queries"
+        );
+    }
+    Ok(url)
+}
+/// A computer's address list, checked: its count and each address, written
+/// as the origin it names (`https://studio.local:38880`), without repeats.
+pub fn validate_peer_addresses(addresses: &[String]) -> Result<Vec<String>> {
+    if addresses.len() > MAX_PEER_ADDRESSES {
+        bail!("an address list has at most {MAX_PEER_ADDRESSES} addresses");
+    }
+    let mut origins: Vec<String> = Vec::new();
+    for address in addresses {
+        let origin = validate_peer_address(address)?
+            .origin()
+            .ascii_serialization();
+        if !origins.contains(&origin) {
+            origins.push(origin);
+        }
+    }
+    Ok(origins)
+}
 pub fn validate_card(card: &NodeCard) -> Result<()> {
     if card.version != PROTOCOL || card.node_id.is_nil() {
         bail!("invalid node identity/protocol");

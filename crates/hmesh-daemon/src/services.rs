@@ -47,14 +47,7 @@ fn peer_client(s: &AppState, id: Uuid) -> std::result::Result<Client, ApiError> 
     if peer.status != "trusted" {
         return Err(fault(ErrorCode::PermissionDenied, "peer revoked"));
     }
-    Client::new(
-        &s.instance,
-        &peer.card.endpoint,
-        &peer.card.fingerprint,
-        false,
-        false,
-    )
-    .map_err(internal)
+    Ok(s.peer_client(&peer)?)
 }
 fn service(
     s: &AppState,

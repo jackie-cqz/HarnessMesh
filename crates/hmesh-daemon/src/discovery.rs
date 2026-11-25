@@ -354,13 +354,7 @@ async fn owner_directory(
             ),
         )));
     }
-    let client = match Client::new(
-        &s.instance,
-        &peer.card.endpoint,
-        &peer.card.fingerprint,
-        false,
-        false,
-    ) {
+    let client = match s.peer_client(&peer) {
         Ok(client) => client,
         Err(_) => {
             return Ok(Json(unavailable(

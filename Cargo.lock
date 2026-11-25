@@ -703,6 +703,7 @@ dependencies = [
  "hmesh-security",
  "hmesh-store",
  "hmesh-transport",
+ "libc",
  "mdns-sd",
  "reqwest",
  "ring",
