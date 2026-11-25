@@ -1418,7 +1418,7 @@ footer{margin-top:28px}
 .pair-digits-inline{font:600 13px var(--mono);letter-spacing:.12em;padding:1px 6px;border-radius:5px;background:var(--secondary)}
 .pair-approve{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0 0}
 .pair-check-label{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
-.pair-check{width:9ch;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--background);color:var(--foreground);font:600 13px var(--mono);letter-spacing:.14em;text-transform:uppercase}
+.pair-check{width:12ch;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--background);color:var(--foreground);font:600 13px var(--mono);letter-spacing:.14em;text-transform:uppercase}
 .pair-check:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
 .pair-card .form-note{margin:10px 0 0}
 .pair-message{color:var(--destructive)}
@@ -1766,7 +1766,7 @@ footer{margin-top:28px}
 .pair-nearby-who{display:flex;flex-direction:column;min-width:0;font-size:13px}
 .pair-nearby-who span{font:12px/1.5 var(--mono);color:var(--muted);overflow-wrap:anywhere}
 .pair-passcode-form{display:flex;align-items:center;gap:8px}
-.pair-passcode{width:11ch;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--background);color:var(--foreground);font:600 14px var(--mono);letter-spacing:.16em}
+.pair-passcode{width:14ch;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--background);color:var(--foreground);font:600 14px var(--mono);letter-spacing:.16em}
 .pair-passcode:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
 .pair-nearby-row .pair-message{flex-basis:100%;margin:0}
 .pair-nearby-empty{margin:0}
