@@ -309,6 +309,43 @@ mod tests {
         (root, state, task)
     }
 
+    #[tokio::test]
+    async fn originating_peer_can_read_summary_but_not_a_flagged_workspace_patch() {
+        let (root, state, mut request) = fixture();
+        let peer = Instance::init(&root.path().join("peer"), NodeConfig::default()).unwrap();
+        state.store.trust_peer(&peer.card).unwrap();
+        request.source_session_id = Some(Uuid::new_v4());
+        let id = request.task_id;
+        let envelope = Envelope::new(peer.card.node_id, "task.submit", request);
+        state
+            .store
+            .admit(state.instance.card.node_id, &envelope, false, 20)
+            .unwrap();
+        let workspace =
+            json!({"state":"review","patch":"synthetic patch","patch_contains_credential":true});
+        state.store.workspace_put(id, &workspace).unwrap();
+        let connection = ConnectionIdentity {
+            address: "127.0.0.1:1234".parse().unwrap(),
+            fingerprint: Some(peer.card.fingerprint.clone()),
+        };
+        let read = |diff| {
+            peer_task_workspace(
+                State(state.clone()),
+                Extension(connection.clone()),
+                HeaderMap::new(),
+                Path(id),
+                Query(WorkspaceQuery { diff, offset: 0 }),
+            )
+        };
+        let summary = read(false).await.unwrap().0;
+        assert_eq!(summary["state"], "review");
+        assert!(summary.get("patch").is_none());
+        assert_eq!(
+            read(true).await.unwrap_err().0.code,
+            ErrorCode::PermissionDenied
+        );
+    }
+
     #[test]
     fn missing_artifact_is_blocked_without_reserving_a_task_or_changing_configuration() {
         let (_root, state, task) = fixture();

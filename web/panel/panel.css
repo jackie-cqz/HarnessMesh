@@ -1474,3 +1474,48 @@ main:has(#app[data-page="sessions"]) footer{display:none}
 .session-work h3 { margin-block: .15rem .45rem; font-size: .88rem; }
 .session-work-row { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem .7rem; padding: .25rem 0; }
 .session-work-row button { min-width: 0; text-align: left; overflow-wrap: anywhere; }
+
+/* Session settings in the composer: model, mode and reasoning as pills. */
+.composer-bar .composer-target{flex:none;max-width:40%}
+.composer-settings{flex:1;display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0}
+.composer-settings[hidden]{display:none}
+.setting-pill{position:relative;display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 8px 0 10px;border-radius:999px;color:var(--muted);font-size:12px;max-width:240px}
+.setting-pill:hover:not(:has(select:disabled)){background:var(--secondary);color:var(--foreground)}
+.setting-pill:focus-within{box-shadow:0 0 0 2px var(--ring,rgba(23,23,23,.15))}
+.setting-label{color:var(--faint);white-space:nowrap}
+.setting-pill select{appearance:none;-webkit-appearance:none;field-sizing:content;border:0;background:transparent;color:inherit;font:inherit;padding:0;width:auto;max-width:200px;text-overflow:ellipsis;cursor:pointer;outline:0}
+.setting-pill select:disabled{cursor:default}
+.setting-pill svg{flex:none;pointer-events:none}
+.setting-pill:has(select:disabled){opacity:.55}
+.setting-pill.toggle{border:0;background:transparent}
+.setting-pill.toggle[aria-pressed="true"]{color:var(--foreground);background:var(--secondary)}
+
+/* Model service dialog */
+.service-dialog{width:min(600px,94vw)}
+.service-dialog .dialog-heading p{margin:2px 0 0;font-size:12px}
+.service-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:4px 0 18px}
+.service-mode{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--background);color:var(--foreground);text-align:left}
+.service-mode span{color:var(--muted);font-size:12px;line-height:1.5}
+.service-mode:hover{background:var(--secondary)}
+.service-mode[aria-checked="true"]{border-color:var(--foreground);box-shadow:var(--shadow)}
+.service-dialog .form-grid{grid-template-columns:1fr}
+.service-dialog [hidden]{display:none}
+.service-env{margin:14px 0 4px;font-size:13px}
+.service-env summary{cursor:pointer;color:var(--muted)}
+.service-env-row{display:grid;grid-template-columns:1fr 1.4fr auto;align-items:center;gap:8px;margin:8px 0}
+.service-env-row input{width:100%;padding:8px 12px;border:1px solid var(--input,var(--border));border-radius:10px;background:var(--background);color:var(--foreground);font-size:13px}
+.service-dialog .service-key-source{display:flex;flex-direction:row;align-items:center;gap:8px;font-size:13px;color:var(--foreground);cursor:pointer}
+.service-dialog .service-key-source input{width:auto;margin:0}
+.service-own{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 14px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;font-size:13px;line-height:1.55}
+.service-own>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.service-own span{color:var(--muted);overflow-wrap:anywhere}
+.service-own.configured{border-color:color-mix(in srgb,var(--emerald) 45%,var(--border))}
+.service-own.not_configured{border-color:color-mix(in srgb,var(--amber) 45%,var(--border))}
+.service-own .button{flex:none}
+.service-test{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:12px 0 2px;font-size:12px;line-height:1.5}
+.service-test #service-test-result{flex:1 1 220px;min-width:0;overflow-wrap:anywhere}
+.service-test #service-test-result.ok{color:var(--emerald)}
+.service-test #service-test-result.failed{color:var(--destructive)}
+.button.small{height:28px;padding:0 12px;font-size:12px}
+.ghost.small{height:28px}
+@media(max-width:700px){.composer-bar .composer-target{max-width:none}.service-env-row{grid-template-columns:1fr}}

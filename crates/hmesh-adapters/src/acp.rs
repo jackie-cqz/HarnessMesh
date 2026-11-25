@@ -29,6 +29,19 @@ pub fn load_session_request(id: u64, session_id: &str, cwd: &Path, mcp_servers: 
 pub fn prompt_request(id: u64, session_id: &str, text: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"session/prompt","params":{"sessionId":session_id,"prompt":[{"type":"text","text":text}]}})
 }
+/// `session/set_config_option`; a boolean value carries `type: boolean`.
+pub fn set_config_option_request(
+    id: u64,
+    session_id: &str,
+    config_id: &str,
+    value: &Value,
+) -> Value {
+    let mut params = json!({"sessionId":session_id,"configId":config_id,"value":value});
+    if value.is_boolean() {
+        params["type"] = json!("boolean");
+    }
+    json!({"jsonrpc":"2.0","id":id,"method":"session/set_config_option","params":params})
+}
 pub fn cancel_notification(session_id: &str) -> Value {
     json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":session_id}})
 }

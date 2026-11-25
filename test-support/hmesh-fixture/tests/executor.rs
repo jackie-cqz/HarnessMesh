@@ -74,6 +74,10 @@ impl Fixture {
                 session_resume: "not_checked".into(),
                 unavailable_reason: None,
             },
+            config_options: vec![],
+            service_configured: false,
+            default_model: None,
+            own_login: None,
         };
         let store = Store::open(&instance.dir.join("state.sqlite3")).expect("store");
         store.register_agent(&agent, &config).expect("register");
@@ -591,6 +595,14 @@ async fn pinned_git_task_runs_fixture_in_detached_workspace_and_captures_its_pat
     let original_head = git(&["rev-parse", "HEAD"]);
     f.config.project.git_executable = Some(executable.clone());
     f.store.replace_agent(&f.agent, &f.config).unwrap();
+    // The fixture writes this literal in the patch. Treat it as a synthetic
+    // private service value to exercise the same path as a stored credential.
+    let service = hmesh_runtime::service::AgentService {
+        mode: service::MODE_AGENT_LOGIN.into(),
+        env: [("FIXTURE_PRIVATE".into(), r#""harness":"fixture""#.into())].into(),
+        ..Default::default()
+    };
+    hmesh_runtime::service::save(&f.instance.dir, f.agent.agent_id, Some(&service)).unwrap();
     let mut request = TaskSubmit::new(f.agent.agent_id, "fixture", "fixture:create");
     request.git_version = Some(GitVersionRequirement::Pinned {
         commit: pinned.clone(),
@@ -622,6 +634,7 @@ async fn pinned_git_task_runs_fixture_in_detached_workspace_and_captures_its_pat
     let workspace = f.store.workspace(task.task_id).unwrap().unwrap();
     assert_eq!(workspace["actual_git"]["commit"], pinned);
     assert_eq!(workspace["state"], "review");
+    assert_eq!(workspace["patch_contains_credential"], true);
     assert!(
         workspace["patch"]
             .as_str()

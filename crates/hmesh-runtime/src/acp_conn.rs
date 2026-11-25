@@ -240,23 +240,31 @@ impl AcpConnection {
     fn id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::SeqCst)
     }
-    pub async fn new_session(&self, cwd: &std::path::Path, mcp: &[Value]) -> Result<String> {
+    /// Create a session; returns its ID and the `session/new` result (which
+    /// may list `configOptions`).
+    pub async fn new_session(
+        &self,
+        cwd: &std::path::Path,
+        mcp: &[Value],
+    ) -> Result<(String, Value)> {
         let id = self.id();
         let result = self
             .call(id, acp::new_session_request(id, cwd, mcp), SETUP_TIMEOUT)
             .await?;
-        result
+        let session = result
             .get("sessionId")
             .and_then(Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| failure("the agent created a session without an ID"))
+            .ok_or_else(|| failure("the agent created a session without an ID"))?;
+        Ok((session, result))
     }
+    /// Reload a session; returns the `session/load` result.
     pub async fn load_session(
         &self,
         session: &str,
         cwd: &std::path::Path,
         mcp: &[Value],
-    ) -> Result<()> {
+    ) -> Result<Value> {
         let id = self.id();
         self.call(
             id,
@@ -264,7 +272,23 @@ impl AcpConnection {
             SETUP_TIMEOUT,
         )
         .await
-        .map(|_| ())
+    }
+    /// Change one session setting; returns the agent's full `configOptions`.
+    pub async fn set_config_option(
+        &self,
+        session: &str,
+        config_id: &str,
+        value: &Value,
+    ) -> Result<Value> {
+        let id = self.id();
+        let result = self
+            .call(
+                id,
+                acp::set_config_option_request(id, session, config_id, value),
+                SETUP_TIMEOUT,
+            )
+            .await?;
+        Ok(result.get("configOptions").cloned().unwrap_or(Value::Null))
     }
     /// Send one prompt and wait for the turn to end (no time limit: turns can
     /// be long; cancel with `cancel`).

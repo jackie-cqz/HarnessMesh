@@ -35,7 +35,7 @@ tool_timeout_sec = 660
 | `mesh_list_agents` | 可选 `node` | 列出本机和所有已配对电脑的 agent，带 `ref`（`电脑名/agent名`）、是否 `ready` 及原因；被注入的服务器会把调用者自己标 `self:true` |
 | `mesh_send` | `message`，加 `agent`（开新会话）或 `session_id`（在已有会话里追问）二选一；可选 `wait_seconds` | 返回 `session_id`；给了 `wait_seconds` 就顺便等这一轮结束 |
 | `mesh_wait` | `session_id`；可选 `wait_seconds`（默认 45，最多 600） | 等当前这一轮结束，返回 `final_text`、`stop_reason`、`turns`；还没结束就 `done:false`，再调一次 |
-| `mesh_get_session` | `session_id`；可选 `after` | 看过程：会话状态加一页事件（消息、工具调用、权限请求），用 `next_after` 翻页 |
+| `mesh_get_session` | `session_id`；可选 `after` | 看过程：会话状态（含当前 `model`、`mode`）加一页事件（消息、工具调用、权限请求），用 `next_after` 翻页 |
 | `mesh_cancel` | `session_id` | 让 agent 停下当前这一轮，会话保留 |
 | `mesh_close` | `session_id` | 关闭会话并停掉它的 agent 进程 |
 

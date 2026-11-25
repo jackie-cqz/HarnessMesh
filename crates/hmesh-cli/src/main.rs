@@ -427,6 +427,63 @@ enum AgentCommand {
         #[arg(long = "path", required = true)]
         paths: Vec<PathBuf>,
     },
+    /// Show or change how an agent reaches its model service. Keys stay on
+    /// this computer and are never shown again.
+    Service {
+        agent_id: Uuid,
+        /// agent_login, api_key or custom; with no options the current
+        /// settings are shown.
+        #[arg(long)]
+        mode: Option<String>,
+        /// Endpoint address for the custom mode.
+        #[arg(long, conflicts_with = "preset")]
+        base_url: Option<String>,
+        /// Use a known provider's address for the custom mode (the presets
+        /// listed for this agent type).
+        #[arg(long)]
+        preset: Option<String>,
+        /// First find out what the agent is set up with on its own: its own
+        /// report or status command; no credential files are read.
+        #[arg(long)]
+        check: bool,
+        /// Model new sessions start with; an empty value removes it.
+        #[arg(long)]
+        default_model: Option<String>,
+        /// OpenCode with a custom endpoint: offer this model (repeatable;
+        /// the complete list). Without --model the stored list is kept.
+        #[arg(long = "model")]
+        models: Vec<String>,
+        /// Remove the model list, keeping only the default model.
+        #[arg(long, conflicts_with = "models")]
+        clear_models: bool,
+        /// After any change, check that the settings reach the model service:
+        /// its model list is asked for first, and only if it cannot list them
+        /// is one minimal request sent with the default model.
+        #[arg(long)]
+        test: bool,
+        /// Read a new API key from standard input (one line).
+        #[arg(long)]
+        api_key_stdin: bool,
+        /// Read the key from this variable of the daemon's environment when
+        /// the agent starts, instead of storing it.
+        #[arg(long, conflicts_with_all = ["api_key_stdin", "clear_api_key"])]
+        api_key_env: Option<String>,
+        /// Remove the stored API key.
+        #[arg(long, conflicts_with = "api_key_stdin")]
+        clear_api_key: bool,
+        /// Give the agent this extra variable, taking its value from the
+        /// variable of the same name in this command's environment so the value
+        /// never appears on the command line (repeatable). With --keep-env it
+        /// is the complete list.
+        #[arg(long = "env")]
+        env: Vec<String>,
+        /// Keep the stored value of this extra variable (repeatable).
+        #[arg(long = "keep-env")]
+        keep_env: Vec<String>,
+        /// Remove every extra variable.
+        #[arg(long, conflicts_with_all = ["env", "keep_env"])]
+        clear_env: bool,
+    },
 }
 #[derive(Subcommand)]
 enum SessionCommand {
@@ -443,6 +500,16 @@ enum SessionCommand {
         peer: Option<Uuid>,
         #[arg(long)]
         message: Option<String>,
+        /// Session setting SETTING=VALUE to start with, e.g. model=... (repeatable).
+        #[arg(long = "set")]
+        settings: Vec<String>,
+    },
+    /// Change a session setting (model, mode, ...) between turns.
+    Config {
+        session_id: Uuid,
+        setting: String,
+        /// A choice's value, or true/false for a switch.
+        value: String,
     },
     /// Send the next message in a session.
     Send {
@@ -1116,6 +1183,139 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 )
                 .await?
         }
+        Commands::Agent {
+            command:
+                AgentCommand::Service {
+                    agent_id,
+                    mode,
+                    base_url,
+                    preset,
+                    check,
+                    default_model,
+                    models,
+                    clear_models,
+                    test,
+                    api_key_stdin,
+                    api_key_env,
+                    clear_api_key,
+                    env,
+                    keep_env,
+                    clear_env,
+                },
+        } => {
+            let path = format!("/local/agents/{agent_id}/service");
+            let current: hmesh_core::service::AgentServiceView = if check {
+                client.post(&format!("{path}/check"), &json!({})).await?
+            } else {
+                client.get(&path).await?
+            };
+            let base_url = match preset {
+                Some(id) => Some(
+                    current
+                        .presets
+                        .iter()
+                        .find(|p| p.id == id)
+                        .map(|p| p.base_url.clone())
+                        .with_context(|| {
+                            format!(
+                                "preset {id:?} has no address this agent type can use; the usable presets are listed by `hmesh agent service {agent_id}`"
+                            )
+                        })?,
+                ),
+                None => base_url,
+            };
+            let changing = mode.is_some()
+                || base_url.is_some()
+                || api_key_env.is_some()
+                || default_model.is_some()
+                || !models.is_empty()
+                || clear_models
+                || api_key_stdin
+                || clear_api_key
+                || !env.is_empty()
+                || !keep_env.is_empty()
+                || clear_env;
+            let service = if !changing {
+                current
+            } else {
+                let api_key = if clear_api_key {
+                    Some(String::new())
+                } else if api_key_stdin {
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    Some(line.trim().to_owned())
+                } else {
+                    None
+                };
+                // Without --env/--keep-env the stored variables stay as they are.
+                let env: serde_json::Map<String, Value> = if clear_env {
+                    serde_json::Map::new()
+                } else if env.is_empty() && keep_env.is_empty() {
+                    current
+                        .env
+                        .iter()
+                        .map(|e| (e.name.clone(), Value::Null))
+                        .collect()
+                } else {
+                    let mut map: serde_json::Map<String, Value> = keep_env
+                        .into_iter()
+                        .map(|name| (name, Value::Null))
+                        .collect();
+                    for name in env {
+                        anyhow::ensure!(
+                            !name.contains('='),
+                            "pass the value through the environment instead: NAME=value hmesh agent service ... --env NAME"
+                        );
+                        let value = std::env::var(&name).with_context(|| {
+                            format!("{name} is not set in this command's environment")
+                        })?;
+                        map.insert(name, json!(value));
+                    }
+                    map
+                };
+                let mode = mode.unwrap_or(current.mode);
+                // A stored model list only carries over while the endpoint stays custom.
+                let models = if clear_models {
+                    vec![]
+                } else if !models.is_empty() {
+                    models
+                } else if mode == hmesh_core::service::MODE_CUSTOM {
+                    current.models
+                } else {
+                    vec![]
+                };
+                let mut body = json!({
+                    "mode":mode,
+                    "base_url":base_url.or(current.base_url),
+                    "default_model":default_model.or(current.default_model),
+                    "models":models,
+                    "api_key":api_key,
+                    "env":env,
+                });
+                // Sent only when given, so daemons without it accept the request.
+                if let Some(name) = api_key_env {
+                    body["api_key_env"] = json!(name);
+                }
+                client
+                    .post::<_, hmesh_core::service::AgentServiceView>(&path, &body)
+                    .await?
+            };
+            if test {
+                let result: Value = client
+                    .post(
+                        &format!("{path}/test"),
+                        &json!({
+                            "mode":service.mode,
+                            "base_url":service.base_url,
+                            "model":service.default_model,
+                        }),
+                    )
+                    .await?;
+                json!({"service":service,"test":result})
+            } else {
+                serde_json::to_value(service)?
+            }
+        }
         Commands::Agents { all: true, .. } => client.get("/local/mesh/agents").await?,
         Commands::Agents { peer, .. } => {
             client
@@ -1139,11 +1339,31 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 agent,
                 peer,
                 message,
+                settings,
             } => {
+                let mut config = serde_json::Map::new();
+                for setting in settings {
+                    let (name, value) = setting
+                        .split_once('=')
+                        .context("--set takes SETTING=VALUE")?;
+                    config.insert(name.to_owned(), setting_value(value));
+                }
                 client
                     .post(
                         "/local/sessions",
-                        &json!({"agent_id":agent,"peer_id":peer,"message":message}),
+                        &json!({"agent_id":agent,"peer_id":peer,"message":message,"config":config}),
+                    )
+                    .await?
+            }
+            SessionCommand::Config {
+                session_id,
+                setting,
+                value,
+            } => {
+                client
+                    .post(
+                        &format!("/local/sessions/{session_id}/config"),
+                        &json!({"config_id":setting,"value":setting_value(&value)}),
                     )
                     .await?
             }
@@ -1452,6 +1672,15 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         _ => anyhow::bail!("command not valid in this context"),
     };
     Ok(Some(value))
+}
+/// A session setting value from the command line: true/false switch a
+/// boolean setting, anything else names a choice.
+fn setting_value(value: &str) -> Value {
+    match value {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        other => Value::String(other.to_owned()),
+    }
 }
 fn read_spec<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Result<T> {
     if fs::metadata(path)?.len() > 1_048_576 {

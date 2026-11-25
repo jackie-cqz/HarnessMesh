@@ -5,6 +5,7 @@ mod discovery;
 mod integration;
 mod onboarding;
 mod preflight;
+mod service_test;
 mod services;
 mod sessions;
 use anyhow::Context;
@@ -545,7 +546,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1"],"schema_version":9}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1"],"schema_version":9}),
     ))
 }
 async fn stop(
@@ -774,6 +775,10 @@ async fn register_config(
         availability: "unverified".into(),
         capabilities: config.agent.display_capabilities.clone(),
         probe,
+        config_options: vec![],
+        service_configured: false,
+        default_model: config.adapter.model.clone(),
+        own_login: None,
     };
     s.store.register_agent(&card, &config)?;
     Ok(card)
@@ -851,6 +856,11 @@ async fn update_agent(
     card.probe = probe;
     card.name = config.agent.name.clone();
     card.harness = config.agent.harness;
+    card.default_model = hmesh_runtime::service::load(&s.instance.dir, id)
+        .ok()
+        .flatten()
+        .and_then(|v| v.default_model_value(config.agent.harness))
+        .or_else(|| config.adapter.model.clone());
     card.availability = "unverified".into();
     card.probe.authentication = "not_checked".into();
     card.probe.managed_run = "not_checked".into();
@@ -1711,10 +1721,12 @@ async fn peer_task_workspace(
     }
     let workspace = s.store.workspace(id)?;
     if query.diff
-        && let Some(patch) = workspace.as_ref().and_then(|w| w["patch"].as_str())
+        && let Some(record) = &workspace
+        && let Some(patch) = record["patch"].as_str()
     {
         let (_, config) = s.store.agent(task.agent_id)?;
-        if patch.contains(s.instance.owner_token())
+        if record["patch_contains_credential"] == true
+            || patch.contains(s.instance.owner_token())
             || hmesh_runtime::run_secrets(&config)
                 .iter()
                 .any(|secret| patch.contains(secret))

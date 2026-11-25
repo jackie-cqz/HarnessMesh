@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessMesh：会话里切模型和模式，按 agent 配 API key</title>
+<style>
+  :root{--bg:#fff;--ink:#0a0a0a;--muted:#737373;--line:#e5e5e5;--card:#fff;--accent:#171717;--ok:#047857;--warn:#b45309;--bad:#b42318;--chip:#fafafa}
+  @media (prefers-color-scheme: dark){:root{--bg:#0a0a0a;--ink:#ededed;--muted:#a3a3a3;--line:#2a2a2a;--card:#171717;--accent:#e5e5e5;--ok:#34d399;--warn:#fbbf24;--bad:#f2877c;--chip:#1f1f1f}}
+  *{box-sizing:border-box}
+  html,body{background:var(--bg)}
+  body{margin:0;color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif}
+  main{max-width:1000px;margin:0 auto;padding:44px 28px 80px}
+  h1{font-size:27px;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
+  h2{font-size:19px;margin:48px 0 14px}
+  h3{font-size:15px;margin:0 0 6px}
+  p{margin:0 0 10px}
+  .sub{color:var(--muted)}
+  code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 5px;border:1px solid var(--line);border-radius:6px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0 8px}
+  .stat{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--card)}
+  .stat b{display:block;font-size:15px;margin-bottom:4px}
+  .stat span{color:var(--muted);font-size:13px}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  figure{margin:0;border:1px solid var(--line);border-radius:12px;padding:18px;background:var(--card)}
+  figcaption{color:var(--muted);font-size:13px;margin-top:10px}
+  svg text{fill:var(--ink);font:13px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+  svg .muted{fill:var(--muted);font-size:12px}
+  svg .box{fill:var(--card);stroke:var(--line)}
+  svg .strong{fill:var(--card);stroke:var(--accent);stroke-width:1.4}
+  svg .arrow{stroke:var(--muted);stroke-width:1.3;fill:none;marker-end:url(#arr)}
+  svg .wall{stroke:var(--bad);stroke-width:1.4;stroke-dasharray:5 4}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:13px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .mock{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--card)}
+  .mock .label{color:var(--muted);font-size:12px;margin-bottom:10px}
+  .composer{border:1px solid var(--line);border-radius:18px;padding:12px 12px 10px}
+  .composer .text{color:var(--muted);font-size:14px;margin:2px 4px 14px}
+  .bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .pill{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12.5px}
+  .pill i{font-style:normal;color:var(--muted)}
+  .send{margin-left:auto;width:30px;height:30px;border-radius:50%;background:var(--accent);display:inline-block}
+  .field{display:grid;grid-template-columns:96px 1fr;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+  .field:last-child{border-bottom:0}
+  .field span:first-child{color:var(--muted)}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .seg em{font-style:normal;padding:2px 10px;font-size:12.5px}
+  .seg em.on{background:var(--accent);color:var(--bg)}
+  .decide li{margin-bottom:10px}
+  .decide b{display:inline-block;min-width:0}
+  ol,ul{padding-left:20px;margin:0}
+  .ev li{margin-bottom:6px;font-size:13.5px}
+  @media (max-width:760px){.stats{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}}
+  @media (max-width:520px){.stats{grid-template-columns:1fr}main{padding:28px 16px 60px}table{font-size:13px}th,td{padding:8px 6px}}
+  code{overflow-wrap:anywhere}
+  .stat,.mock,td{min-width:0}
+</style>
+</head>
+<body>
+<main>
+  <h1>会话里切模型和模式走 ACP 标准接口；API key 按 agent 存在本机，启动时注入</h1>
+  <p class="sub">两件事都先在真实 opencode 1.18.33 上试过（只握手、建会话、切选项，没发过消息，没调模型）。建议分两步做：先做切模型，再做配 key。</p>
+
+  <div class="stats">
+    <div class="stat"><b class="ok">切模型 / 模式：可行</b><span>ACP 正式接口 <code>session/set_config_option</code>，opencode 实测生效</span></div>
+    <div class="stat"><b class="warn">重启后选择会丢</b><span>opencode 用 <code>session/load</code> 恢复后回到默认，HarnessMesh 要自己记住再设一次（实测）</span></div>
+    <div class="stat"><b class="ok">配 key：注入环境变量</b><span>opencode 用 <code>OPENCODE_CONFIG_CONTENT</code> 注入自定义服务商，模型列表里出现并被选中（实测）</span></div>
+    <div class="stat"><b>key 不出本机</b><span>只能在跑 agent 的电脑上设；配对电脑只看到「已配置」</span></div>
+  </div>
+
+  <h2>怎么走</h2>
+  <figure>
+    <svg viewBox="0 0 940 330" width="100%" role="img" aria-label="切模型和配 key 的数据流">
+      <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor" style="fill:var(--muted)"/></marker></defs>
+      <text x="0" y="16" style="font-weight:600">① 切模型 / 模式（每个会话）</text>
+      <rect class="box" x="0" y="34" width="170" height="64" rx="10"/><text x="14" y="60">面板输入框下拉</text><text class="muted" x="14" y="80">或 CLI / 对端面板</text>
+      <rect class="strong" x="220" y="34" width="190" height="64" rx="10"/><text x="234" y="60">执行端 daemon</text><text class="muted" x="234" y="80">只许打开者改，只在两轮之间</text>
+      <rect class="box" x="460" y="34" width="210" height="64" rx="10"/><text x="474" y="60">agent 进程</text><text class="muted" x="474" y="80">session/set_config_option</text>
+      <rect class="box" x="720" y="34" width="220" height="64" rx="10"/><text x="734" y="60">会话记录</text><text class="muted" x="734" y="80">存用户选择 + 当前选项列表</text>
+      <path class="arrow" d="M170 66H216"/><path class="arrow" d="M410 66H456"/><path class="arrow" d="M670 66H716"/>
+      <path class="arrow" d="M830 98V124H565V102"/><text class="muted" x="590" y="142">daemon 重启、进程被回收后：session/load 完再按记录设一次</text>
+
+      <text x="0" y="196" style="font-weight:600">② 配 key / 地址 / 默认模型（每个 agent，只在本机）</text>
+      <rect class="box" x="0" y="214" width="170" height="64" rx="10"/><text x="14" y="240">Agents 页「模型服务」</text><text class="muted" x="14" y="260">本机 owner 才能写</text>
+      <rect class="strong" x="220" y="214" width="190" height="64" rx="10"/><text x="234" y="240">数据目录 0600 文件</text><text class="muted" x="234" y="260">只写不回显，界面显示末 4 位</text>
+      <rect class="box" x="460" y="214" width="210" height="64" rx="10"/><text x="474" y="240">启动 agent 进程时</text><text class="muted" x="474" y="260">按 agent 类型换成环境变量</text>
+      <rect class="box" x="720" y="214" width="220" height="64" rx="10"/><text x="734" y="240">agent → 模型服务商</text><text class="muted" x="734" y="260">不改用户自己的配置文件</text>
+      <path class="arrow" d="M170 246H216"/><path class="arrow" d="M410 246H456"/><path class="arrow" d="M670 246H716"/>
+      <line class="wall" x1="195" y1="296" x2="940" y2="296"/><text class="muted" x="220" y="318" style="fill:var(--bad)">配对通道不传 key：对端只能看到「已配置 / 未配置」</text>
+    </svg>
+    <figcaption>① 是 ACP 正式规范里的接口，各家 agent 都能用；② 不走 ACP（ACP 里能改 key 的 <code>providers/set</code> 还是 unstable，只有 Claude 的适配器支持），做法和 codeg 一样：启动时注入环境变量。</figcaption>
+  </figure>
+
+  <h2>界面长什么样（示意，未实现）</h2>
+  <div class="two">
+    <div class="mock">
+      <div class="label">会话页输入框：下面一排是 agent 报上来的选项，没有的就不显示</div>
+      <div class="composer">
+        <div class="text">描述你想让它做的事…</div>
+        <div class="bar"><span class="pill">claude-haiku-4-5 <i>▾</i></span><span class="pill">build <i>▾</i></span><span class="pill">思考 high <i>▾</i></span><span class="send"></span></div>
+      </div>
+      <p class="sub" style="font-size:13px;margin:10px 0 0">新会话页也有这一排：第一条消息发出前就能选，发出时先设好再发。运行中这排变灰。</p>
+    </div>
+    <div class="mock">
+      <div class="label">Agents 页 · opencode · 模型服务</div>
+      <div class="field"><span>方式</span><span class="seg"><em class="on">用它自己的登录</em><em>API key</em><em>自定义地址</em></span></div>
+      <div class="field"><span>API key</span><span>已设置 · 末 4 位 a1b2　<span class="pill">替换</span> <span class="pill">清除</span></span></div>
+      <div class="field"><span>地址</span><span class="sub">https://api.example.com/v1</span></div>
+      <div class="field"><span>默认模型</span><span class="pill">opencode/big-pickle <i>▾</i></span></div>
+      <p class="sub" style="font-size:13px;margin:8px 0 0">改完对新起的 agent 进程生效；正在跑的会话下一轮重启进程。</p>
+    </div>
+  </div>
+
+  <h2>各家 agent 怎么配</h2>
+  <table>
+    <tr><th style="width:15%">Agent</th><th style="width:30%">会话里能切什么</th><th>key / 地址 / 默认模型注入方式</th><th style="width:16%">核实程度</th></tr>
+    <tr><td>OpenCode</td><td>模型（85 个）、模式 build / plan；切到某些模型后多出「思考强度」</td><td><code>OPENCODE_CONFIG_CONTENT</code> 注入一个 <code>hmesh</code> 服务商（地址 + key + 默认模型）；用 OpenCode 官方服务时是 <code>OPENCODE_API_KEY</code></td><td><span class="ok">切换、注入服务商：实测</span><br><span class="warn">key 真被带到请求里：没证实</span></td></tr>
+    <tr><td>Claude Code</td><td>模型、模式、思考强度、模型参数、快速模式</td><td><code>ANTHROPIC_API_KEY</code>（或配了地址时用 <code>ANTHROPIC_AUTH_TOKEN</code>）、<code>ANTHROPIC_BASE_URL</code>、<code>ANTHROPIC_MODEL</code></td><td><span class="warn">读适配器源码 + codeg 同样用法；本机没装，没实测</span></td></tr>
+    <tr><td>Codex</td><td>没核实</td><td><code>OPENAI_API_KEY</code> / <code>CODEX_API_KEY</code>，地址 <code>OPENAI_BASE_URL</code></td><td><span class="warn">README + codeg 用法，没实测</span></td></tr>
+    <tr><td>Pi</td><td>没核实</td><td>没核实</td><td><span class="bad">没查</span></td></tr>
+    <tr><td>任何 agent</td><td>按选项的 category（model / mode / thought_level）识别，不认 id</td><td>兜底：自定义环境变量（名字 + 值，值按 key 一样保管）</td><td>—</td></tr>
+  </table>
+
+  <h2>分两步做</h2>
+  <table>
+    <tr><th style="width:17%">步骤</th><th>做什么</th><th style="width:30%">怎么验（都不调真模型）</th></tr>
+    <tr><td><b>1. 会话里切模型 / 模式</b></td><td>
+      <ul>
+        <li>daemon 读 <code>session/new</code>、<code>session/load</code>、<code>set_config_option</code> 返回的选项和 <code>config_option_update</code> 通知，存在会话上；用户的选择单独记一份，重启后 load 完再设一次。</li>
+        <li>新接口 <code>POST /local/sessions/{id}/config</code> 和对端同名路由：只有会话打开者能改，只在两轮之间改，值由 agent 校验（opencode 对不存在的模型直接报错）。</li>
+        <li>agent 卡片缓存最近一次见到的选项列表，新会话页第一条消息前就能选。</li>
+        <li>面板输入框下加下拉；CLI 加 <code>hmesh session config</code>；<code>mesh_get_session</code> 返回当前模型。</li>
+      </ul></td><td>测试 agent 加上选项；端到端：选模型 → 重启 daemon → 恢复后仍是这个模型；对端打开者能改、别人不能；面板冒烟截图；真实 opencode 只切不发消息</td></tr>
+    <tr><td><b>2. 按 agent 配 key / 地址 / 默认模型</b></td><td>
+      <ul>
+        <li>存在 <code>&lt;数据目录&gt;/agent-secrets/&lt;agent_id&gt;.json</code>，权限 0600；接口只写不读，界面显示「已设置 · 末 4 位」。</li>
+        <li>启动 agent 进程时按上表换成环境变量；不碰用户自己的 opencode / claude 配置文件。</li>
+        <li>默认模型：现有的 <code>adapter.model</code> 字段从「仅记录」改成真生效（建会话后按 category=model 设置），所有 ACP agent 通用。</li>
+        <li>注入的值加进脱敏名单，事件和日志里不会出现原文。</li>
+        <li>key 的接口只挂在本机 owner API；配对电脑的 agent 列表只多一个「已配置 / 未配置」。</li>
+      </ul></td><td>本机起一个假的模型服务商，看它收到的请求头里是不是配置的 key；全量事件和日志里搜不到 key 原文；用对端身份调接口拿不到 key</td></tr>
+  </table>
+
+  <h2>要你定的事</h2>
+  <ol class="decide">
+    <li><b>key 存哪</b>：数据目录里权限 0600 的文件（<b>推荐</b>：和节点私钥同一级保护，Mac / Windows 一套代码）；或系统钥匙串（更安全，但每个系统写一套，可以以后加）。</li>
+    <li><b>配对电脑能不能改它打开的会话的模型</b>：能（<b>推荐</b>，打开者本来就管自己的会话）；key 一律不能从对端改。</li>
+    <li><b>agent 委派时能不能指定子会话的模型</b>（<code>mesh_send</code> 加 model 参数）：先不做（<b>推荐</b>），子会话用对方 agent 的默认模型。</li>
+    <li><b>运行中能不能切</b>：只在两轮之间（<b>推荐</b>）；运行中切的行为各家不一样。</li>
+    <li><b>opencode 的 key 怎么给</b>：环境变量注入自定义服务商（<b>推荐</b>，只影响 HarnessMesh 起的进程）；或像 codeg 那样改 <code>~/.local/share/opencode/auth.json</code>（会连带改掉你在终端里用的 opencode）。</li>
+    <li><b>顺序</b>：先做第 1 步（<b>推荐</b>：标准接口、改动小、opencode 已验证），第 2 步接着做。</li>
+  </ol>
+
+  <h2>没证实 / 风险</h2>
+  <ul>
+    <li><b>key 真的被带到请求里</b>：注入后模型出现在列表里已证实，但请求头里的 key 要发一次消息才能看到。做法是本机起假服务商，第 2 步一开始就验。</li>
+    <li><b>Claude Code、Codex、Pi 没装</b>：变量名来自适配器源码、README 和 codeg 的用法，装上后要各跑一次。</li>
+    <li><b>选项 id 各家不同</b>：按 category 识别，没有 category 的选项照样显示但不参与「默认模型」。</li>
+    <li><b>选项会变</b>：opencode 切到 haiku 后多出「思考强度」；每次以 agent 返回的完整列表为准重画。</li>
+  </ul>
+
+  <h2>证据</h2>
+  <ul class="ev">
+    <li>ACP schema 1.22.0 <code>src/v1/agent.rs</code>：方法表 6897–6951；<code>SessionConfigOptionCategory</code> 3855；<code>SetSessionConfigOptionRequest</code> 4121；<code>providers/*</code> 标 unstable 5019–5340。<code>src/v1/client.rs:127</code> <code>ConfigOptionUpdate</code>。</li>
+    <li>真实 opencode 1.18.33，<code>/tmp/hm-acp-setopt.mjs</code>：建会话 <code>{model: opencode/big-pickle, mode: build}</code> → 切模型 <code>{model: opencode/claude-haiku-4-5, effort: high, mode: build}</code> → 切模式 plan 生效 → 不存在的模型被拒「model not found」→ 新进程 <code>session/load</code> 后回到 <code>{big-pickle, build}</code>。</li>
+    <li><code>/tmp/hm-acp-caps.mjs</code> 带 <code>OPENCODE_CONFIG_CONTENT</code>（自定义服务商 + <code>{env:…}</code> 引用 key）：模型选项 85 → 86，当前模型变成 <code>hmtest/demo-model</code>。opencode 二进制里有 <code>OPENCODE_CONFIG_CONTENT</code>、<code>OPENCODE_AUTH_CONTENT</code>、<code>OPENCODE_API_KEY</code>。</li>
+    <li><code>@agentclientprotocol/claude-agent-acp</code> 0.110.1：<code>dist/providers.js</code>（providers/set 只支持 anthropic / bedrock / vertex）、<code>dist/auth-methods.js:43–61</code>（登录都是终端方式）、<code>dist/session-model.js:283</code>。<code>@zed-industries/codex-acp</code> 0.15.0 README 22–25。</li>
+    <li>codeg：<code>src-tauri/src/commands/acp.rs:10266</code>（各 agent 的变量名）、<code>:10497</code>（启动时注入 key）、<code>:10649</code>（改 opencode / codex 自己的配置文件）；<code>acp/registry.rs:753</code>（不用 providers/set）。</li>
+    <li>HarnessMesh 现状：<code>crates/hmesh-core/src/lib.rs:757</code> <code>adapter.model</code> 只记录不生效；<code>crates/hmesh-runtime/src/prepare.rs:114</code> agent 直接继承 daemon 环境；<code>:86</code> 脱敏名单；<code>crates/hmesh-daemon/src/sessions.rs:308</code> 第一次发消息时才起进程、建会话。</li>
+  </ul>
+</main>
+</body>
+</html>

@@ -9,14 +9,18 @@ use axum::{
     routing::{get, post},
 };
 use hmesh_adapters::acp;
+use hmesh_core::service::{
+    AgentServiceView, MODE_AGENT_LOGIN, ServiceTestResult, SetAgentService, TestAgentService,
+};
 use hmesh_core::sessions::*;
 use hmesh_core::*;
 use hmesh_runtime::acp_conn::{AcpConnection, AgentMessage};
+use hmesh_runtime::service;
 use hmesh_transport::{Client, ConnectionIdentity};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -39,6 +43,8 @@ struct Live {
     reply: Mutex<Reply>,
     replaying: std::sync::atomic::AtomicBool,
     last_active: Mutex<Instant>,
+    /// The model service settings the process was started with.
+    service_digest: String,
 }
 #[derive(Default)]
 struct Reply {
@@ -72,7 +78,21 @@ pub struct Sessions {
     live: Mutex<HashMap<Uuid, Arc<Live>>>,
     watchers: Mutex<HashMap<Uuid, watch::Sender<u64>>>,
     starting: Mutex<std::collections::HashSet<Uuid>>,
+    /// Sessions whose settings are being changed; no turn starts meanwhile.
+    configuring: Mutex<std::collections::HashSet<Uuid>>,
     refreshing: std::sync::atomic::AtomicBool,
+}
+/// Marks a session's setting change as finished when dropped.
+struct Configuring<'a> {
+    sessions: &'a Sessions,
+    id: Uuid,
+}
+impl Drop for Configuring<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut changing) = self.sessions.configuring.lock() {
+            changing.remove(&self.id);
+        }
+    }
 }
 impl Sessions {
     fn live(&self, id: Uuid) -> Option<Arc<Live>> {
@@ -126,6 +146,23 @@ fn save(s: &AppState, record: &mut SessionRecord) -> hmesh_core::Result<()> {
     s.sessions.notify(record.session_id, u64::MAX);
     Ok(())
 }
+/// Read, change and store a session record under the turn lock, so changes to
+/// its settings made at the same time do not overwrite each other.
+fn update_record(
+    s: &AppState,
+    id: Uuid,
+    change: impl FnOnce(&mut SessionRecord),
+) -> hmesh_core::Result<SessionRecord> {
+    let _guard = s
+        .sessions
+        .starting
+        .lock()
+        .map_err(|_| MeshError::new(ErrorCode::Internal, "session lock poisoned"))?;
+    let mut record = s.store.session(id)?;
+    change(&mut record);
+    save(s, &mut record)?;
+    Ok(record)
+}
 fn set_status(s: &AppState, id: Uuid, status: SessionStatus) -> hmesh_core::Result<SessionRecord> {
     let mut record = s.store.session(id)?;
     if record.status != SessionStatus::Closed {
@@ -133,6 +170,19 @@ fn set_status(s: &AppState, id: Uuid, status: SessionStatus) -> hmesh_core::Resu
         save(s, &mut record)?;
     }
     Ok(record)
+}
+
+/// Values to keep out of everything recorded for an agent's sessions: its
+/// configured references and its owner's model service secrets.
+fn agent_secrets(s: &AppState, agent: Uuid) -> Vec<String> {
+    let Ok((_, config)) = s.store.agent(agent) else {
+        return vec![];
+    };
+    let mut secrets = hmesh_runtime::run_secrets(&config);
+    if let Ok(Some(service)) = service::load(&s.instance.dir, agent) {
+        secrets.extend(service.secrets());
+    }
+    secrets
 }
 
 /// The `hmesh mcp` server every session receives, bound to that session.
@@ -224,6 +274,16 @@ async fn pump(
                     continue;
                 }
                 let update = &params["update"];
+                // The agent changed a setting itself (or reports new ones).
+                if update.get("sessionUpdate").and_then(Value::as_str)
+                    == Some("config_option_update")
+                {
+                    let options = ConfigOption::parse_all(&update["configOptions"]);
+                    if !options.is_empty() {
+                        let _ = update_record(&s, id, |record| record.config_options = options);
+                    }
+                    continue;
+                }
                 if let Some(text) = acp::message_text(update)
                     && let Ok(mut reply) = live.reply.lock()
                 {
@@ -304,16 +364,40 @@ async fn discard(s: &AppState, id: Uuid, live: &Arc<Live>) {
 }
 
 /// Start (or reuse) the agent process for a session and open or reload the
-/// agent-side session.
+/// agent-side session, then apply the session's settings.
 async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result<Arc<Live>> {
+    let (card, config) = s.store.agent(record.agent_id)?;
+    let service = service::load(&s.instance.dir, record.agent_id)
+        .map_err(|e| MeshError::new(ErrorCode::Internal, e.to_string()))?;
+    let digest = service.as_ref().map(|v| v.digest()).unwrap_or_default();
     if let Some(live) = s.sessions.live(record.session_id)
         && live.conn.alive()
     {
-        return Ok(live);
+        if live.service_digest == digest {
+            return Ok(live);
+        }
+        // The owner changed how this agent reaches its model service: start
+        // it again so it sees the new settings (the conversation reloads).
+        discard(s, record.session_id, &live).await;
     }
-    let (_, config) = s.store.agent(record.agent_id)?;
-    let command = hmesh_runtime::agent_command(&config)
+    let mut command = hmesh_runtime::agent_command(&config)
         .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
+    let mut secrets = hmesh_runtime::run_secrets(&config);
+    if let Some(service) = &service {
+        let env = service
+            .launch_env(card.harness)
+            .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
+        hmesh_runtime::apply_env(&mut command, &env);
+        secrets.extend(service.secrets());
+        secrets.sort();
+        secrets.dedup();
+    }
+    // The owner's explicit default is reported when the agent refuses it; the
+    // older informational `adapter.model` applies only when the agent offers it.
+    let default_model = match service.as_ref().and_then(|v| v.model_setting(card.harness)) {
+        Some(model) => Some((model, true)),
+        None => config.adapter.model.clone().map(|model| (model, false)),
+    };
     let (conn, messages) = AcpConnection::start(command).await?;
     let cwd = config.project.root.clone();
     let mcp = mcp_server(s, record.session_id);
@@ -324,12 +408,13 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
     let live = Arc::new(Live {
         conn: conn.clone(),
         agent_session: Mutex::new(String::new()),
-        secrets: hmesh_runtime::run_secrets(&config),
+        secrets,
         permissions: Mutex::new(HashMap::new()),
         reply: Mutex::new(Reply::default()),
         // Updates the agent replays while reloading are not new events.
         replaying: std::sync::atomic::AtomicBool::new(reload.is_some()),
         last_active: Mutex::new(Instant::now()),
+        service_digest: digest,
     });
     s.sessions
         .live
@@ -346,30 +431,37 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
             "the session was closed while its agent was starting",
         ));
     }
+    const RELOADED: &str = "the agent reloaded this conversation";
+    const LOST: &str =
+        "the agent could not reload the earlier conversation; it continues without that context";
+    const NO_RELOAD: &str =
+        "this agent cannot reload conversations; it continues without the earlier context";
     let started = async {
         match reload {
             Some(previous) => {
                 let loaded = conn.load_session(&previous, &cwd, &mcp).await;
                 // The replayed history is queued ahead of the barrier.
                 conn.barrier().await;
-                live.replaying.store(false, std::sync::atomic::Ordering::SeqCst);
+                live.replaying
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 match loaded {
-                    Ok(()) => Ok((previous, Some("the agent reloaded this conversation"))),
-                    Err(_) => conn.new_session(&cwd, &mcp).await.map(|id| {
-                        (id, Some("the agent could not reload the earlier conversation; it continues without that context"))
-                    }),
+                    Ok(result) => Ok((previous, result, false, Some(RELOADED))),
+                    Err(_) => conn
+                        .new_session(&cwd, &mcp)
+                        .await
+                        .map(|(id, result)| (id, result, true, Some(LOST))),
                 }
             }
             None => {
-                let note = record.agent_session_id.as_ref().map(|_| {
-                    "this agent cannot reload conversations; it continues without the earlier context"
-                });
-                conn.new_session(&cwd, &mcp).await.map(|id| (id, note))
+                let note = record.agent_session_id.as_ref().map(|_| NO_RELOAD);
+                conn.new_session(&cwd, &mcp)
+                    .await
+                    .map(|(id, result)| (id, result, true, note))
             }
         }
     }
     .await;
-    let (agent_session, note) = match started {
+    let (agent_session, result, fresh, note) = match started {
         Ok(started) => started,
         Err(error) => {
             discard(s, record.session_id, &live).await;
@@ -379,11 +471,30 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
     if let Ok(mut current) = live.agent_session.lock() {
         *current = agent_session.clone();
     }
-    let mut current = s.store.session(record.session_id)?;
-    if current.agent_session_id.as_deref() != Some(agent_session.as_str()) {
-        current.agent_session_id = Some(agent_session);
-        save(s, &mut current)?;
+    let reported = ConfigOption::parse_all(&result["configOptions"]);
+    if fresh && !reported.is_empty() {
+        // The agent's own defaults, offered before a session starts.
+        let defaults = reported.clone();
+        let _ = s
+            .store
+            .update_agent_card(record.agent_id, |card| card.config_options = defaults);
     }
+    let (options, rejected) = apply_settings(
+        s,
+        &live,
+        &agent_session,
+        record.session_id,
+        reported,
+        default_model,
+    )
+    .await;
+    let current = update_record(s, record.session_id, |current| {
+        current.agent_session_id = Some(agent_session);
+        if !options.is_empty() {
+            current.config_options = options;
+        }
+        current.config_values.retain(|id, _| !rejected.contains(id));
+    })?;
     if let Some(note) = note {
         record_event(
             s,
@@ -393,6 +504,66 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         )?;
     }
     Ok(live)
+}
+
+/// Apply this session's chosen settings (and the agent's default model when
+/// none was chosen) on top of what the agent reported. Returns the settings as
+/// the agent now reports them and the chosen setting IDs it refused.
+async fn apply_settings(
+    s: &AppState,
+    live: &Live,
+    agent_session: &str,
+    id: Uuid,
+    mut options: Vec<ConfigOption>,
+    default_model: Option<(String, bool)>,
+) -> (Vec<ConfigOption>, Vec<String>) {
+    let Ok(record) = s.store.session(id) else {
+        return (options, vec![]);
+    };
+    let mut wanted = record.config_values.clone();
+    if let Some((model, explicit)) = default_model
+        && let Some(option) = options.iter().find(|o| o.is_category("model"))
+        && !wanted.contains_key(&option.id)
+        && (explicit || option.accepts(&Value::String(model.clone())))
+    {
+        wanted.insert(option.id.clone(), Value::String(model));
+    }
+    let mut rejected = vec![];
+    for (config_id, value) in config_apply_order(&wanted, &options) {
+        let why = match options.iter().find(|o| o.id == config_id) {
+            None if options.is_empty() => continue,
+            None => "the agent does not offer this setting".to_owned(),
+            Some(option) if option.current == value => continue,
+            Some(_) => match live
+                .conn
+                .set_config_option(agent_session, &config_id, &value)
+                .await
+            {
+                Ok(reported) => {
+                    let parsed = ConfigOption::parse_all(&reported);
+                    if parsed.is_empty() {
+                        if let Some(option) = options.iter_mut().find(|o| o.id == config_id) {
+                            option.current = value.clone();
+                        }
+                    } else {
+                        options = parsed;
+                    }
+                    continue;
+                }
+                Err(error) => redact(&live.secrets, &error.message),
+            },
+        };
+        let _ = record_event(
+            s,
+            id,
+            "status",
+            json!({"status":record.status,"message":format!("the agent did not accept the setting {config_id} = {value}: {why}")}),
+        );
+        if record.config_values.contains_key(&config_id) {
+            rejected.push(config_id);
+        }
+    }
+    (options, rejected)
 }
 
 fn begin_turn(
@@ -429,6 +600,17 @@ fn begin_turn(
                 ));
             }
             SessionStatus::Idle => {}
+        }
+        if s.sessions
+            .configuring
+            .lock()
+            .map_err(|_| MeshError::new(ErrorCode::Internal, "session lock poisoned"))?
+            .contains(&id)
+        {
+            return Err(MeshError::new(
+                ErrorCode::TaskConflict,
+                "a session setting is being changed; send again in a moment",
+            ));
         }
         // A delegation a paired computer started stays usable only while
         // that computer is still paired.
@@ -504,7 +686,11 @@ async fn run_turn(s: AppState, id: Uuid, text: String) {
         Ok(live) => live,
         // Closed while starting: the close already explains itself.
         Err(_) if !s.store.session(id).is_ok_and(|r| r.status.is_open()) => return,
-        Err(error) => return finish(&s, None, None, Some(error.message)),
+        // An agent's error text can quote its environment; keep secrets out.
+        Err(error) => {
+            let secrets = agent_secrets(&s, record.agent_id);
+            return finish(&s, None, None, Some(redact(&secrets, &error.message)));
+        }
     };
     // Closed (or revoked) while the agent was starting: never send the prompt.
     if !matches!(
@@ -548,7 +734,7 @@ async fn run_turn(s: AppState, id: Uuid, text: String) {
                 .to_owned();
             finish(&s, Some(&stop), final_text, None)
         }
-        Err(error) => finish(&s, None, None, Some(error.message)),
+        Err(error) => finish(&s, None, None, Some(redact(&live.secrets, &error.message))),
     }
 }
 
@@ -685,6 +871,126 @@ fn approve(s: &AppState, id: Uuid) -> hmesh_core::Result<SessionRecord> {
     }
 }
 
+/// Change one setting of a session on this computer between turns. A running
+/// agent applies it at once; otherwise it is applied when the agent starts.
+async fn set_config(
+    s: &AppState,
+    id: Uuid,
+    body: SetSessionConfig,
+) -> hmesh_core::Result<SessionRecord> {
+    validate_config_value(&body.config_id, &body.value)?;
+    let record = {
+        let _guard = s
+            .sessions
+            .starting
+            .lock()
+            .map_err(|_| MeshError::new(ErrorCode::Internal, "session lock poisoned"))?;
+        let record = s.store.session(id)?;
+        match record.status {
+            SessionStatus::Closed => {
+                return Err(MeshError::new(
+                    ErrorCode::TaskConflict,
+                    "the session is closed",
+                ));
+            }
+            SessionStatus::Running | SessionStatus::WaitingPermission => {
+                return Err(MeshError::new(
+                    ErrorCode::TaskConflict,
+                    "settings change between turns; wait for this turn to end or stop it",
+                ));
+            }
+            SessionStatus::Idle | SessionStatus::PendingApproval => {}
+        }
+        // No turn starts while a setting is being changed (begin_turn checks
+        // this under the same lock).
+        if !s
+            .sessions
+            .configuring
+            .lock()
+            .map_err(|_| MeshError::new(ErrorCode::Internal, "session lock poisoned"))?
+            .insert(id)
+        {
+            return Err(MeshError::new(
+                ErrorCode::TaskConflict,
+                "another setting is being changed in this session",
+            ));
+        }
+        record
+    };
+    let _changing = Configuring {
+        sessions: &s.sessions,
+        id,
+    };
+    let known = if record.config_options.is_empty() {
+        s.store.agent(record.agent_id)?.0.config_options
+    } else {
+        record.config_options.clone()
+    };
+    let name = match known.iter().find(|o| o.id == body.config_id) {
+        Some(option) if !option.accepts(&body.value) => {
+            return Err(MeshError::input(format!(
+                "{} is not one of the choices for {}",
+                body.value, option.name
+            )));
+        }
+        Some(option) => option.name.clone(),
+        None if known.is_empty() => body.config_id.clone(),
+        None => {
+            return Err(MeshError::input(format!(
+                "this agent has no setting {:?}",
+                body.config_id
+            )));
+        }
+    };
+    let live = s.sessions.live(id).filter(|live| live.conn.alive());
+    let mut options = known;
+    if let Some(live) = live {
+        let agent_session = live
+            .agent_session
+            .lock()
+            .map(|a| a.clone())
+            .unwrap_or_default();
+        let reported = live
+            .conn
+            .set_config_option(&agent_session, &body.config_id, &body.value)
+            .await
+            .map_err(|e| {
+                MeshError::input(format!(
+                    "the agent did not accept this setting: {}",
+                    redact(&live.secrets, &e.message)
+                ))
+            })?;
+        let parsed = ConfigOption::parse_all(&reported);
+        if !parsed.is_empty() {
+            options = parsed;
+        }
+    }
+    if let Some(option) = options.iter_mut().find(|o| o.id == body.config_id)
+        && option.current != body.value
+        && option.accepts(&body.value)
+    {
+        option.current = body.value.clone();
+    }
+    let record = update_record(s, id, |record| {
+        record.config_options = options;
+        record
+            .config_values
+            .insert(body.config_id.clone(), body.value.clone());
+    })?;
+    let shown = record
+        .config_options
+        .iter()
+        .find(|o| o.id == body.config_id)
+        .map_or_else(|| body.value.to_string(), ConfigOption::current_name);
+    record_event(
+        s,
+        id,
+        "config_changed",
+        json!({"config_id":body.config_id,"name":name,"value":body.value,"value_name":shown}),
+    )?;
+    Ok(record)
+}
+
 fn running_children(s: &AppState, parent: Uuid) -> usize {
     let child_of = |record: &SessionRecord| {
         record.status.is_busy()
@@ -701,6 +1007,7 @@ fn running_children(s: &AppState, parent: Uuid) -> usize {
 }
 
 /// Create a session on one of this node's agents.
+#[allow(clippy::too_many_arguments)]
 fn open_here(
     s: &AppState,
     session_id: Uuid,
@@ -709,8 +1016,9 @@ fn open_here(
     approver: Approver,
     needs_approval: bool,
     message: Option<String>,
+    config: BTreeMap<String, Value>,
 ) -> hmesh_core::Result<SessionRecord> {
-    let (card, config) = s.store.agent(agent_id)?;
+    let (card, config_file) = s.store.agent(agent_id)?;
     if s.store.agent_retired(agent_id)? || card.availability == "disabled" {
         return Err(MeshError::new(
             ErrorCode::AgentUnavailable,
@@ -727,13 +1035,44 @@ fn open_here(
     if let Some(message) = &message {
         validate_prompt(message)?;
     }
+    validate_config(&config)?;
+    // Until the agent starts, show the settings it offered last time with
+    // this session's choices (or the default model) as current values.
+    let mut options = card.config_options.clone();
+    let known = !options.is_empty();
+    for (id, value) in &config {
+        match options.iter_mut().find(|o| &o.id == id) {
+            Some(option) if option.accepts(value) => option.current = value.clone(),
+            Some(option) => {
+                return Err(MeshError::input(format!(
+                    "{value} is not one of the choices for {}",
+                    option.name
+                )));
+            }
+            None if known => {
+                return Err(MeshError::input(format!(
+                    "this agent has no setting {id:?}"
+                )));
+            }
+            None => {}
+        }
+    }
+    if let Some(model) = &card.default_model
+        && let Some(option) = options.iter_mut().find(|o| o.is_category("model"))
+        && !config.contains_key(&option.id)
+    {
+        let value = Value::String(model.clone());
+        if option.accepts(&value) {
+            option.current = value;
+        }
+    }
     let at = now();
     let mut record = SessionRecord {
         session_id,
         node_id: s.instance.card.node_id,
         agent_id,
         agent_name: card.name,
-        project_id: config.agent.project_id,
+        project_id: config_file.agent.project_id,
         origin,
         approver,
         status: if needs_approval {
@@ -748,6 +1087,8 @@ fn open_here(
         last_final_text: None,
         last_error: None,
         pending_message: None,
+        config_options: options,
+        config_values: config,
         created_at: at,
         updated_at: at,
     };
@@ -887,10 +1228,12 @@ pub async fn open(s: &AppState, body: OpenSession) -> std::result::Result<Sessio
                 approver,
                 needs_approval,
                 body.message,
+                body.config,
             )?)
         }
         Some(peer) => {
             check_chain(&chain, peer, body.agent_id)?;
+            validate_config(&body.config)?;
             let client = peer_client(s, peer)?;
             let request = PeerOpenSession {
                 session_id,
@@ -899,6 +1242,7 @@ pub async fn open(s: &AppState, body: OpenSession) -> std::result::Result<Sessio
                 label,
                 chain,
                 message: body.message,
+                config: body.config,
             };
             let record: SessionRecord = client.post("/hmesh/v1/sessions", &request).await?;
             if record.session_id != session_id || record.node_id != peer {
@@ -982,7 +1326,8 @@ pub async fn run(s: AppState, mut shutdown: watch::Receiver<bool>) {
                     // keeps this process or starts a fresh one.
                     let taken = {
                         let Ok(_guard) = s.sessions.starting.lock() else { continue };
-                        let busy = s.store.session(id).map(|r| r.status.is_busy()).unwrap_or(false);
+                        let busy = s.store.session(id).map(|r| r.status.is_busy()).unwrap_or(false)
+                            || s.sessions.configuring.lock().map(|c| c.contains(&id)).unwrap_or(true);
                         !busy && s.sessions.live.lock().map(|mut map| {
                             map.get(&id).is_some_and(|l| Arc::ptr_eq(l, &live)) && map.remove(&id).is_some()
                         }).unwrap_or(false)
@@ -1278,6 +1623,138 @@ async fn owner_reject(
     }
     Ok(Json(close_session(&s, id, "rejected on this computer")?))
 }
+async fn owner_config(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetSessionConfig>,
+) -> ApiResult<SessionRecord> {
+    s.owner(&headers, &c)?;
+    if let Some(peer) = s.store.remote_session_peer(id)? {
+        return Ok(Json(remote_post(&s, peer, id, "config", &body).await?));
+    }
+    // The person who opened a session chooses its settings; a session a
+    // paired computer opened here is changed from that computer.
+    if s.store.session(id)?.origin.node_id != s.instance.card.node_id {
+        return Err(err(
+            ErrorCode::PermissionDenied,
+            "only the computer that opened this session may change its settings",
+        ));
+    }
+    Ok(Json(set_config(&s, id, body).await?))
+}
+
+// ---- HTTP: this computer's owner, per agent ----
+
+fn service_view(s: &AppState, agent: Uuid) -> std::result::Result<AgentServiceView, ApiError> {
+    let (card, _) = s.store.agent(agent)?;
+    let stored = service::load(&s.instance.dir, agent).map_err(crate::internal)?;
+    let mut view = match stored {
+        Some(stored) => stored.view(agent, card.harness),
+        None => service::default_view(agent, card.harness),
+    };
+    view.own_login = service::load_own_login(&s.instance.dir, agent).map_err(crate::internal)?;
+    Ok(view)
+}
+/// Find out what the agent is set up with on its own: the agent's own ACP
+/// report or its read-only status command, never its credential files. Only
+/// this computer's owner may ask; the details stay here and paired computers
+/// see only whether it is configured.
+async fn owner_check_service(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(agent): Path<Uuid>,
+) -> ApiResult<AgentServiceView> {
+    s.owner(&headers, &c)?;
+    let (_, config) = s.store.agent(agent)?;
+    let login = hmesh_adapters::own_login::detect(&config, hmesh_core::now())
+        .await
+        .map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+    service::save_own_login(&s.instance.dir, agent, &login).map_err(crate::internal)?;
+    let state = login.state.clone();
+    s.store
+        .update_agent_card(agent, |card| card.own_login = Some(state.clone()))?;
+    let _ = s.store.audit(
+        Some(s.instance.card.node_id),
+        "agent.service.check",
+        &agent.to_string(),
+        &login.state,
+        Uuid::new_v4(),
+    );
+    Ok(Json(service_view(&s, agent)?))
+}
+async fn owner_get_service(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(agent): Path<Uuid>,
+) -> ApiResult<AgentServiceView> {
+    s.owner(&headers, &c)?;
+    Ok(Json(service_view(&s, agent)?))
+}
+/// Replace how an agent reaches its model service. Only this computer's owner
+/// may do this; keys are stored here and never returned.
+async fn owner_set_service(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(agent): Path<Uuid>,
+    Json(body): Json<SetAgentService>,
+) -> ApiResult<AgentServiceView> {
+    s.owner(&headers, &c)?;
+    let (card, config) = s.store.agent(agent)?;
+    let existing = service::load(&s.instance.dir, agent).map_err(crate::internal)?;
+    let next = service::update(card.harness, existing.as_ref(), body)
+        .map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+    service::save(&s.instance.dir, agent, next.as_ref()).map_err(crate::internal)?;
+    let configured = next
+        .as_ref()
+        .is_some_and(|n| n.mode != MODE_AGENT_LOGIN || !n.env.is_empty());
+    let default_model = next
+        .as_ref()
+        .and_then(|n| n.default_model_value(card.harness))
+        .or(config.adapter.model);
+    s.store.update_agent_card(agent, |card| {
+        card.service_configured = configured;
+        card.default_model = default_model;
+    })?;
+    let mode = next.as_ref().map_or(MODE_AGENT_LOGIN, |n| n.mode.as_str());
+    let _ = s.store.audit(
+        Some(s.instance.card.node_id),
+        "agent.service",
+        &agent.to_string(),
+        mode,
+        Uuid::new_v4(),
+    );
+    Ok(Json(service_view(&s, agent)?))
+}
+/// Check whether (possibly unsaved) settings reach the model service. Only
+/// this computer's owner may do this: it sends the key to the address given.
+async fn owner_test_service(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(agent): Path<Uuid>,
+    Json(body): Json<TestAgentService>,
+) -> ApiResult<ServiceTestResult> {
+    s.owner(&headers, &c)?;
+    let (card, _) = s.store.agent(agent)?;
+    let existing = service::load(&s.instance.dir, agent).map_err(crate::internal)?;
+    let mode = body.mode.clone();
+    let target = service::test_target(card.harness, existing.as_ref(), body)
+        .map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+    let result = crate::service_test::run(target).await;
+    let _ = s.store.audit(
+        Some(s.instance.card.node_id),
+        "agent.service.test",
+        &agent.to_string(),
+        &format!("{mode} {}", if result.ok { "ok" } else { "failed" }),
+        Uuid::new_v4(),
+    );
+    Ok(Json(result))
+}
 
 // ---- HTTP: paired peers ----
 
@@ -1332,6 +1809,7 @@ async fn peer_open(
         approver,
         needs_approval,
         body.message,
+        body.config,
     )?))
 }
 async fn peer_get(
@@ -1409,6 +1887,24 @@ async fn peer_close(
         "closed by the computer that opened it",
     )?))
 }
+async fn peer_config(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetSessionConfig>,
+) -> ApiResult<SessionRecord> {
+    let actor = s.actor(&headers, &c)?;
+    let record = peer_session(&s, actor, id)?;
+    // The owner here follows the same rule as on the owner API.
+    if actor.owner && record.origin.node_id != s.instance.card.node_id {
+        return Err(err(
+            ErrorCode::PermissionDenied,
+            "only the computer that opened this session may change its settings",
+        ));
+    }
+    Ok(Json(set_config(&s, id, body).await?))
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -1424,6 +1920,16 @@ pub fn routes() -> Router<AppState> {
         .route("/local/sessions/{id}/close", post(owner_close))
         .route("/local/sessions/{id}/approve", post(owner_approve))
         .route("/local/sessions/{id}/reject", post(owner_reject))
+        .route("/local/sessions/{id}/config", post(owner_config))
+        .route(
+            "/local/agents/{id}/service",
+            get(owner_get_service).post(owner_set_service),
+        )
+        .route("/local/agents/{id}/service/test", post(owner_test_service))
+        .route(
+            "/local/agents/{id}/service/check",
+            post(owner_check_service),
+        )
         .route("/hmesh/v1/sessions", post(peer_open))
         .route("/hmesh/v1/sessions/{id}", get(peer_get))
         .route("/hmesh/v1/sessions/{id}/events", get(peer_events))
@@ -1434,4 +1940,5 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/hmesh/v1/sessions/{id}/cancel", post(peer_cancel))
         .route("/hmesh/v1/sessions/{id}/close", post(peer_close))
+        .route("/hmesh/v1/sessions/{id}/config", post(peer_config))
 }

@@ -65,6 +65,14 @@ pub fn prepare(
     Ok(isolated)
 }
 pub fn finish(store: &Store, task: &TaskRecord, run: &Path) -> Result<()> {
+    finish_with_secrets(store, task, run, &[])
+}
+pub(crate) fn finish_with_secrets(
+    store: &Store,
+    task: &TaskRecord,
+    run: &Path,
+    run_secrets: &[String],
+) -> Result<()> {
     let Some(mut record) = store.workspace(task.task_id)? else {
         return Ok(());
     };
@@ -89,7 +97,13 @@ pub fn finish(store: &Store, task: &TaskRecord, run: &Path) -> Result<()> {
         run,
     )?;
     record["patch_sha256"] = json!(hmesh_security::sha256_hex(&patch));
-    record["patch"] = json!(String::from_utf8(patch)?);
+    let patch = String::from_utf8(patch)?;
+    // Keep the owner's patch intact. A peer must still be denied access if
+    // the service key used by this process is rotated after the run.
+    if run_secrets.iter().any(|secret| patch.contains(secret)) {
+        record["patch_contains_credential"] = json!(true);
+    }
+    record["patch"] = Value::String(patch);
     record["state"] = json!("review");
     store.workspace_put(task.task_id, &record)?;
     Ok(())
