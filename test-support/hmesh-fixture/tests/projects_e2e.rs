@@ -670,20 +670,34 @@ async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
         "{mirrored}"
     );
 
-    // Not shared, earlier sessions, unknown projects: refused.
-    for body in [
-        json!({"agent_id":agent_b,"peer_id":b.card.node_id,"project_id":kept.project_id,"message":"fixture:cwd"}),
-        json!({"agent_id":agent_b,"peer_id":b.card.node_id,"resume":"native-secret"}),
-        json!({"agent_id":agent_b,"peer_id":b.card.node_id,"project_id":"no-such","message":"hi"}),
+    // Not shared, earlier sessions, unknown projects: refused when the
+    // session would open, before any record or agent process exists there.
+    let sessions_on_b = || async {
+        let list: Value = owner_b.get("/local/sessions").await.unwrap();
+        list["sessions"].as_array().unwrap().len()
+    };
+    let before = sessions_on_b().await;
+    for (body, reason) in [
+        (
+            json!({"agent_id":agent_b,"peer_id":b.card.node_id,"project_id":kept.project_id}),
+            "not shared",
+        ),
+        (
+            json!({"agent_id":agent_b,"peer_id":b.card.node_id,"resume":"native-secret"}),
+            "owner can continue",
+        ),
+        (
+            json!({"agent_id":agent_b,"peer_id":b.card.node_id,"project_id":"no-such","message":"hi"}),
+            "no such project",
+        ),
     ] {
-        assert!(
-            owner_a
-                .post::<_, SessionRecord>("/local/sessions", &body)
-                .await
-                .is_err(),
-            "{body}"
-        );
+        let refused = owner_a
+            .post::<_, SessionRecord>("/local/sessions", &body)
+            .await
+            .unwrap_err();
+        assert!(refused.message.contains(reason), "{body}: {refused:?}");
     }
+    assert_eq!(sessions_on_b().await, before);
     // The agent's own folder needs no sharing, and a request without a
     // project (as older computers send it) works as before.
     let own: SessionRecord = owner_a
