@@ -4,7 +4,21 @@
 
 下面的历史记录早于 ACP 迁移：2026-10-30 已完成 [Windows → Mac 的真实 Pi/Flash 任务](tailnet-mac-smoke.md)：本机批准、write/read、五字段 JSON/hash、同请求去重和事件补读通过。[Mac → Windows 的 DSH/Pro 执行端检查](tailnet-reverse-smoke.md) 也已通过 write/read 和独立 JSON/hash；Mac 发起端的反向读取/补读结论、完整工作区测试和前后端受管服务联调仍待独立验收。
 
-## 启动（Mac、Windows、Linux 相同）
+## 用 hmesh setup 安装（推荐）
+
+每台电脑编译一次，再选一种装法：
+
+```sh
+cargo build --release --locked -p hmesh-cli
+./target/release/hmesh setup --full        # 完整安装：共享本机 agent，接受配对的电脑连入
+./target/release/hmesh setup --mcp-only    # 只装 MCP：本机 agent 调用别的电脑，不接受任何连入
+```
+
+setup 从 Tailscale 取本机 IP（Mac App Store 版的 CLI 位置同下文；也可 `--tailnet-address`），在 `~/.harnessmesh` 建节点，在后台启动 daemon（日志在节点目录的 `daemon.log`）。`--full` 还会登记本机已装的每个 ACP agent，选项 `--agents`、`--project` 和下面脚本的同名选项含义相同。开机自启和接入 Claude Code、Codex 都先问你，细节见 [MCP 说明](mcp.md#用-hmesh-setup-安装)。之后用 `hmesh panel` 打开面板。
+
+只装 MCP 的电脑不开 Tailnet 监听，所以不需要防火墙放行，但配对只能从它发起：在它的面板里粘贴完整安装那台电脑的配对码。两台只装 MCP 的电脑之间不能配对。
+
+## 从源码在前台启动（开发时用；Mac、Windows、Linux 相同）
 
 需要 Node.js 20+、通过 rustup 安装的 Rust stable >= 1.90、已登录的 Tailscale，以及你自己装好并登录过的 ACP agent（任选：`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh`）。DSH 0.2.2-rc.5 需要 Node.js 24.9 或更高版本。HarnessMesh 不会安装 agent；`hmesh agent detect` 会列出本机找到了哪些、缺的该怎么装。
 

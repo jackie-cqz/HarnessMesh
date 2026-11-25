@@ -53,6 +53,7 @@ flowchart LR
 ```
 
 - Each computer runs one **daemon** (`hmesh daemon start`). It starts the agents you registered and keeps sessions, tasks and their events in a local SQLite database.
+- A computer set up with **only MCP** runs the daemon too, but on 127.0.0.1 only: its agents call out, and nothing calls in.
 - The **panel** (`hmesh panel`) listens on 127.0.0.1 only and opens with a private link printed in the terminal. Owner credentials stay in the CLI process.
 - Computers talk over Tailscale with TLS 1.3 and mutual authentication. Each side pins the other's certificate fingerprint. No SSH or cloud relay is needed.
 
@@ -61,9 +62,35 @@ flowchart LR
 You need:
 
 - [Rust](https://rustup.rs) 1.90 or newer.
-- Node.js 20 or newer, for the helper scripts.
-- At least one ACP agent you have installed and signed in to yourself.
 - [Tailscale](https://tailscale.com), to connect more than one computer.
+- For a full install: at least one ACP agent you have installed and signed in to yourself.
+
+### Choose how to set up each computer
+
+Every computer runs the same `hmesh` program, set up one of two ways:
+
+| | Only MCP (`--mcp-only`) | Full (`--full`) |
+|---|---|---|
+| Your agents here (Claude Code, Codex, …) call agents on other computers | ✓ | ✓ |
+| Shares this computer's agents with paired computers | — | ✓ |
+| Other computers can connect to it | No | Yes, over Tailscale |
+| Needs an ACP agent installed here | No | Yes |
+
+Use only MCP on a laptop that just hands work to a stronger machine; use full on the machines that do the work.
+
+```sh
+git clone https://github.com/jackie-cqz/HarnessMesh.git
+cd HarnessMesh
+cargo build --release --locked -p hmesh-cli
+./target/release/hmesh setup --mcp-only     # or: --full
+```
+
+`hmesh setup` finds the computer's Tailscale IP, creates the node in `~/.harnessmesh` and starts its daemon. With `--full` it also registers each ACP agent installed there. Before it changes anything outside HarnessMesh, it asks:
+
+- whether to start the daemon at login (macOS and Windows);
+- whether to add the MCP server to Claude Code (`claude mcp add -s user harnessmesh`) and to Codex (`~/.codex/config.toml`).
+
+`--connect claude,codex` or `--connect none` answers the second question in advance, and `--startup` or `--no-startup` the first. With nobody to ask (no terminal, or `--json`), an unanswered question means no. Running setup again leaves what is already set up alone. Switching a computer from `--mcp-only` to `--full` later keeps its identity and its pairings.
 
 HarnessMesh never installs agents. `hmesh agent detect` shows what it found and how to install the rest:
 
@@ -76,12 +103,21 @@ HarnessMesh never installs agents. `hmesh agent detect` shows what it found and 
 | DeepSeek Harness | `dsh --profile acp` | `npm install -g @deepseek-ai/dsh@0.2.2-rc.5` (Node.js 24.9+) |
 | Any other ACP agent | the command and arguments you give it | — |
 
-### On one computer
+### Pair the computers
+
+Open the panel (`hmesh panel`) and go to **配对节点 → 配对新电脑** (paired computers → pair a new computer):
+
+1. On a full computer B, copy **这台电脑的配对码** (this computer's pairing code).
+2. On computer A, paste it in the same dialog and send the request. A shows a check code.
+3. On B, type the check code and approve. A finishes by itself.
+
+A computer set up with only MCP accepts no connections, so pairing always starts there: it is computer A. Two only-MCP computers cannot pair with each other. The [Tailscale guide](docs/quickstart-tailnet.md) has firewall notes and the command-line equivalents (`hmesh pair show`, `hmesh pair request --code`, `hmesh pair approve`).
+
+### Try it on one computer
+
+No Tailscale needed:
 
 ```sh
-git clone https://github.com/jackie-cqz/HarnessMesh.git
-cd HarnessMesh
-cargo build --release --locked -p hmesh-cli
 ./target/release/hmesh agent detect
 ./target/release/hmesh panel --start-daemon
 ```
@@ -92,37 +128,25 @@ cargo build --release --locked -p hmesh-cli
 
 Registering an agent runs only an ACP `initialize` handshake. No model is called until you send a message. Data lives in `~/.harnessmesh`; pass `--data-dir /absolute/path` to use another directory.
 
-### Across computers (Tailscale)
-
-Run this on each computer, from the repository. It builds the CLI, picks the computer's Tailscale IP, creates a node, registers every ACP agent already installed there, and keeps the daemon running:
-
-```sh
-node scripts/start-tailnet.mjs --name studio
-```
-
-Then open the panel on one of them:
-
-```sh
-./target/debug/hmesh --data-dir "$PWD/.hmesh-v0/tailnet-darwin/node" panel
-```
-
-To pair:
-
-1. On computer B, open **配对节点 → 配对新电脑** and copy **这台电脑的配对码** (this computer's pairing code).
-2. On computer A, paste it in the same dialog and send the request. A shows a check code.
-3. On computer B, type the check code and approve.
-
-On Windows the node directory is `.hmesh-v0/tailnet-win32/node`. See the [Tailscale guide](docs/quickstart-tailnet.md) for options, firewall notes and the command-line equivalents (`hmesh pair show`, `hmesh pair request --code`, `hmesh pair approve`).
+Working on HarnessMesh itself? `node scripts/start-tailnet.mjs --name studio` (Node.js 20 or newer) builds the checkout and runs a full node in the foreground; see the [Tailscale guide](docs/quickstart-tailnet.md).
 
 ### Let your own agent use the mesh
 
-Sessions started by HarnessMesh get the MCP tools automatically. To give them to an agent you run yourself, for example Claude Code in a terminal:
+Sessions started by HarnessMesh get the MCP tools automatically. `hmesh setup` adds them to Claude Code and Codex when you agree. To add them by hand:
 
 ```sh
 claude mcp add -s user harnessmesh -- /absolute/path/to/hmesh mcp
 ```
 
-Codex takes the same server in `~/.codex/config.toml`. The six tools and their limits are described in [MCP](docs/mcp.md).
+```toml
+# ~/.codex/config.toml
+[mcp_servers.harnessmesh]
+command = "/absolute/path/to/hmesh"
+args = ["mcp"]
+tool_timeout_sec = 660
+```
+
+On a computer set up with `hmesh setup`, the MCP server starts the daemon when it is not running. The six tools and their limits are described in [MCP](docs/mcp.md).
 
 ## Security in brief
 
@@ -130,6 +154,7 @@ Codex takes the same server in `~/.codex/config.toml`. The six tools and their l
 - **One approval, checked both ways.** The computer that asked trusts the other only after the other computer's owner approves and accepts its certificate.
 - **Pinned certificates.** Every connection uses TLS 1.3 with a pinned certificate. Anonymous routes exist only for the pairing handshake.
 - **Owner controls stay local.** The owner API and the panel listen on loopback only.
+- **Only-MCP computers let nothing in.** They listen on loopback only and refuse every request from another computer, pairing requests included.
 - **Per-computer access mode.** Each paired computer is either `auto` (its sessions start right away) or `confirm` (you approve first): `hmesh peers access <peer> confirm`.
 - **Keys stay put.** Model keys never leave the agent's computer and are not shown again after saving. HarnessMesh does not read agents' own credential files.
 

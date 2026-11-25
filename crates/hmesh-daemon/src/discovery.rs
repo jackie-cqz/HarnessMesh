@@ -345,6 +345,15 @@ async fn owner_directory(
         )
         .into());
     }
+    if !s.reaches(&peer) {
+        return Ok(Json(unavailable(
+            peer_id,
+            MeshError::new(
+                ErrorCode::PeerUnreachable,
+                "this computer only connects out and offers no agents",
+            ),
+        )));
+    }
     let client = match Client::new(
         &s.instance,
         &peer.card.endpoint,

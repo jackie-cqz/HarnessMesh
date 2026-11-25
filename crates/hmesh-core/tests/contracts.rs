@@ -82,6 +82,35 @@ fn tailnet_listeners_require_explicit_opt_in_and_exact_node_ip() {
 }
 
 #[test]
+fn a_computer_that_only_connects_out_listens_on_loopback_and_names_its_tailnet_ip() {
+    let mut config = NodeConfig::default();
+    config.node.network = "tailscale".into();
+    config.node.tailnet_address = Some("100.99.145.22".parse().unwrap());
+    config.validate().unwrap();
+    assert!(config.outbound_only());
+    // It never listens on the Tailnet, and the address must be a Tailnet one.
+    config.node.listen_address = "100.99.145.22".parse().unwrap();
+    assert!(config.validate().is_err());
+    config.node.listen_address = "127.0.0.1".parse().unwrap();
+    config.node.tailnet_address = Some("192.168.1.1".parse().unwrap());
+    assert!(config.validate().is_err());
+    config.node.tailnet_address = None;
+    assert!(config.validate().is_err());
+    // A loopback node has no Tailnet address.
+    config.node.network = "loopback".into();
+    config.node.tailnet_address = Some("100.99.145.22".parse().unwrap());
+    assert!(config.validate().is_err());
+    // A full node may name the address it listens on, and no other.
+    config.node.network = "tailscale".into();
+    config.node.expose_to_tailnet = true;
+    config.node.listen_address = "100.99.145.22".parse().unwrap();
+    config.validate().unwrap();
+    assert!(!config.outbound_only());
+    config.node.tailnet_address = Some("100.99.145.23".parse().unwrap());
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn coding_runs_can_explicitly_request_bounded_wire_output_without_changing_the_default() {
     let mut request = TaskSubmit::new(Uuid::new_v4(), "coding", "write server files");
     assert_eq!(request.limits.max_output_bytes, 1048576);

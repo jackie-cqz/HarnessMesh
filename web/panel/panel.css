@@ -1448,3 +1448,8 @@ footer{margin-top:28px}
 .command-help{margin:0;padding:5px 10px}
 .command-status{margin:0}
 @media(max-width:600px){.command-option{grid-template-columns:minmax(0,1fr);gap:1px}.command-argument{grid-column:1}}
+
+/* "Only MCP" setup: this computer only calls agents on other computers. */
+.mode-note{margin:0 0 16px;padding:12px 14px;border:1px solid var(--border);border-radius:12px;font-size:13px;line-height:1.6;color:var(--muted)}
+.mode-note[hidden]{display:none}
+.pair-outbound{font-size:12.5px;color:var(--muted);line-height:1.6}

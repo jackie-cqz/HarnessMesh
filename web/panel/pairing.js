@@ -110,6 +110,8 @@ function drawPairDialog(){
  ownText.append(el('b','','这台电脑的配对码'),ownCode,el('span','','也可以把它发给对方，让对方来申请；对方的申请会出现在「配对节点」里，由你批准。'));
  const copy=button('复制','button secondary small',async()=>{try{await navigator.clipboard.writeText(own);copy.textContent='已复制';}catch{getSelection().selectAllChildren(ownCode);copy.textContent='已选中，请按复制';}});copy.type='button';copy.disabled=!own;
  ownBox.append(ownText,copy);
+ // A computer that only connects out cannot be reached: pairing starts here.
+ if(typeof outboundOnly==='function'&&outboundOnly())ownBox.replaceChildren(el('span','pair-outbound','这台电脑只用 MCP，不接受别的电脑连进来，所以配对要从这里发起：粘贴对方的配对码。'));
  const message=el('p','form-note pair-message');message.id='pair-message';message.setAttribute('role','status');message.hidden=true;
  const send=el('button','button','发出配对申请');send.type='submit';send.id='pair-send';send.disabled=!canWrite();
  const cancel=button('取消','button secondary',()=>$('#pair-dialog').close());cancel.type='button';

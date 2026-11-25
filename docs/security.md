@@ -4,6 +4,10 @@ V0 只在本机回环网运行，但每次操作仍经过证书和当前配对�
 
 显式 Tailnet 模式每次启动须通过本机 Tailscale CLI 验证运行/在线及确切监听 IP；只绑定该字面 IP，并给新证书加入对应 SAN。公开监听仅接受 Tailnet 地址来源，拒绝整个 `/local/*`，即使请求携带 owner 证书和 token；owner 经独立回环 socket 管理。候选发现只显示必要网络元数据，不自动信任、授权或调用模型。默认回环实例不能主动连接 Tailnet endpoint，owner 客户端不向 Tailnet 发送 token。当前不解析任意 DNS 或发布到公网。详见 [直连说明](quickstart-tailnet.md)。
 
+**只装 MCP（只出不进）。** `hmesh setup --mcp-only` 建的节点是 `network = "tailscale"`、`expose_to_tailnet = false`：只在回环地址上开一个监听，不开 Tailnet 监听，也不在启动时要求 Tailscale 在线；配置里的 `tailnet_address` 只写进证书 SAN，留给以后换成完整安装时用。Daemon 对任何不是本机 owner 的请求一律回 `PERMISSION_DENIED`：已配对节点的受认证请求、匿名的 hello、challenge、配对申请和申请状态查询都一样，所以它只能主动向外配对和调用，别的电脑什么都调用不了它，也看不到它的 agent。完整安装的节点看到对端名片的地址是回环地址时，就把它当成只出不进的电脑：不探测、不调用，面板上显示「只调用」。
+
+**名片更新。** 已配对且受信任的节点可以 `POST /hmesh/v1/peers/card` 更新自己在对方那里的名片：要求名片的 node_id 等于连接认证出的节点、指纹等于这条连接的证书指纹，并通过和配对时相同的 `validate_card` 校验；不会改动信任状态，也不会接受别的节点的名片；每次更新记一条 `peer.card` 审计。每个 Daemon 启动时把自己的名片发给每个受信任的对端，没送达的每 5 分钟重试。只出不进的节点拒绝这个接口，收不到对方的新名片，这是已知限制。
+
 ## 认证和授权
 
 TLS 只允许 1.3。客户端先核对明确的 SHA-256 证书 pin，再由 rustls/WebPKI 验证有效期、主机名、用途与握手签名，不存在接受所有证书的模式。匿名入口仅用于 hello、单次 challenge、签名配对申请和申请状态查询；challenge 有目标绑定、过期和使用一次的约束。

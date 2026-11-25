@@ -233,6 +233,19 @@ impl Store {
             Ok(())
         })
     }
+    /// A trusted peer's new card (a new address or name). Its identity and key
+    /// stay the same; an untrusted or unknown peer changes nothing.
+    pub fn update_peer_card(&self, card: &NodeCard) -> Result<bool> {
+        self.read(|c| {
+            let changed = c
+                .execute(
+                    "UPDATE trusted_peers SET card_json=?1 WHERE peer_node_id=?2 AND public_key_fingerprint=?3 AND status='trusted'",
+                    params![encode(card)?, card.node_id.to_string(), card.fingerprint],
+                )
+                .map_err(internal)?;
+            Ok(changed == 1)
+        })
+    }
     /// Stop trusting a peer, and end every open pair request with it: an
     /// approval that arrives later for a request sent before the revocation
     /// must not quietly trust that computer again.
@@ -707,6 +720,15 @@ impl Store {
             append_in(tx, &task, "status", json!({"status": task.status}))?;
             audit_in(tx, Some(envelope.sender_node_id), "task.submit", &task.task_id.to_string(), if approval { "pending_approval" } else { "accepted" }, envelope.trace_id)?;
             Ok(task)
+        })
+    }
+    /// How many tasks there are, without reading them: the daemon status
+    /// carries it, and MCP servers ask for that status before every call.
+    pub fn task_count(&self) -> Result<usize> {
+        self.read(|c| {
+            c.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))
+                .map(|n| n as usize)
+                .map_err(internal)
         })
     }
     pub fn tasks(&self) -> Result<Vec<TaskRecord>> {
