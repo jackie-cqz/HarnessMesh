@@ -146,6 +146,24 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
     // The node: create it, or switch an existing one between the two ways
     // and networks. Peers know it by its certificate, so pairings stay.
     let target = node_config(mode, &options, place, hostname.as_deref());
+    // Only MCP accepts no connections, so it has no sources to keep.
+    if let Some(sources) = existing
+        .as_ref()
+        .and_then(|config| config.node.allowed_sources.as_ref())
+        .filter(|_| target.node.allowed_sources.is_none())
+    {
+        report.step(
+            false,
+            format!(
+                "The sources it accepted ({}) are not kept: pass --allow-from again when it goes back to --full",
+                sources
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
     target.validate()?;
     let mut restart = false;
     if dir.join("node.toml").exists() {
@@ -388,7 +406,7 @@ async fn find_place(
                 (Err(_), Some(address)) if mode == Mode::McpOnly => (Place::Tailnet(address), None),
                 (Err(error), _) => {
                     return Err(error.context(
-                    "Tailscale is needed for --network tailscale: install it, sign in and keep it running, or pass --tailscale-executable",
+                    "Tailscale is needed for --network tailscale: install it, sign in and keep it running (or pass --tailscale-executable), or use this computer's own network with --network direct",
                 ));
                 }
             },

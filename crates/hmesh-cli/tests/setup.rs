@@ -492,6 +492,15 @@ fn full_on_a_direct_network_listens_on_the_given_address_and_switches_back() {
     assert_eq!(back["network"], "tailscale");
     assert_eq!(back["node"]["fingerprint"], fingerprint);
     assert!(home.config()["node"].get("allowed_sources").is_none());
+    // Said, not silent: the narrowed sources are gone.
+    assert!(
+        back["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["text"].as_str().unwrap().contains("127.0.0.0/8")),
+        "{back}"
+    );
 }
 
 impl Home {
