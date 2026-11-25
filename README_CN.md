@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-在一个地方使用你所有电脑上的编程 Agent。HarnessMesh 通过 [Agent Client Protocol](https://agentclientprotocol.com)（ACP）连接 OpenCode、Claude Code、Codex、Pi 等 Agent：在本机的网页面板里，不管 Agent 在哪台电脑上，都能直接和它对话；Agent 之间也能通过内置的 MCP 服务器跨电脑互相派活。
+在一个地方使用你所有电脑上的编程 Agent。HarnessMesh 通过 [Agent Client Protocol](https://agentclientprotocol.com)（ACP）连接 OpenCode、Claude Code、Codex、Pi 和 DeepSeek Harness 等 Agent：在本机的网页面板里，不管 Agent 在哪台电脑上，都能直接和它对话；Agent 之间也能通过内置的 MCP 服务器跨电脑互相派活。
 
 ![在 studio 上开的会话：backend 找到 bug，请 laptop 上的 reviewer 审查修复，再按它的建议改好](docs/images/session.png)
 
@@ -14,7 +14,7 @@
 - **Agent 互相调用。** 每个会话都自带 HarnessMesh 的 MCP 服务器，Agent 可以和另一个 Agent 开会话（`mesh_send`）、追问、拿回答复（`mesh_wait`），对方在另一台电脑上也一样。调用最多三层，也不会绕回调用链上已有的 Agent。
 - **你说了算。** Agent 要改文件或执行命令时，问题会回到打开这个会话的人那里：允许一次，或者拒绝。由 Agent 打开的会话自动允许；把发起调用的电脑设为 `confirm`，就改成等你回答。
 - **两步配好一台电脑。** 粘贴对方的配对码，对方输入 6 位校验码批准一次，两边就都能用对方的 Agent。撤销配对会关掉对方打开的会话。
-- **每个 Agent 单独配模型服务。** 用 Agent 自己的登录、一个 API key，或者自定义地址（带 31 个服务商预设）。key 只留在 Agent 所在的电脑上，只交给那个 Agent 的进程。
+- **每个 Agent 单独配模型服务。** 用 Agent 自己的登录、一个 API key，或者自定义地址（带 31 个服务商预设）。Key 保留在执行端。Pi、OpenCode 和 DSH 可为自定义地址选择 Chat Completions、Responses 或 Anthropic Messages。[模型服务配置](docs/local-panel.md#各-agent-可选的协议)
 - **不止聊天。** 「工作待办」汇总所有等你处理的事。还有一次性任务（带产物核验）、任务模板、多阶段工作流，以及按会话、按项目的用量统计。
 
 ## 界面
@@ -43,7 +43,7 @@
 flowchart LR
   subgraph A["你的电脑"]
     panel["浏览器里的面板<br/>只监听 127.0.0.1"] --> d1["hmesh daemon"]
-    d1 <-->|ACP| a1["OpenCode · Claude Code<br/>Codex · Pi"]
+    d1 <-->|ACP| a1["OpenCode · Claude Code<br/>Codex · Pi · DSH"]
     a1 -.->|"MCP：mesh_send"| d1
   end
   subgraph B["配对的电脑"]
@@ -73,6 +73,7 @@ HarnessMesh 不会替你安装 Agent。`hmesh agent detect` 会列出找到了�
 | Claude Code | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
 | Codex | `codex-acp` | `npm install -g @zed-industries/codex-acp` |
 | Pi | `pi-acp` | `npm install -g pi-acp` |
+| DeepSeek Harness | `dsh --profile acp` | `npm install -g @deepseek-ai/dsh@0.2.2-rc.5` (Node.js 24.9+) |
 | 其他 ACP Agent | 你填写的命令和参数 | — |
 
 ### 在一台电脑上试用

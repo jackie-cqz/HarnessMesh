@@ -192,8 +192,7 @@ pub async fn probe(config: &AgentConfig, probe_dir: &Path) -> Result<ProbeReport
             .and_then(Value::as_str)
             .map(|s| s.chars().take(128).collect::<String>())
     };
-    let capabilities = &result["agentCapabilities"];
-    let resumable = capabilities.get("loadSession").and_then(Value::as_bool) == Some(true);
+    let resumable = crate::acp::SessionRestore::advertised(&result).is_some();
     let needs_login = result
         .get("authMethods")
         .and_then(Value::as_array)

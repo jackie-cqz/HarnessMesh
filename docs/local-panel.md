@@ -25,11 +25,15 @@ cargo +stable build --locked -p hmesh-cli
 - 别的电脑在 `confirm` 模式下打开的会话显示「等待批准」，在这里批准或拒绝；侧栏「会话」旁的数字是等你处理的会话数。
 - agent 通过 `hmesh mcp` 打开的子会话也在列表里，标出调用者和调用链。
 - 输入框下面是 agent 报上来的会话设置（模型、模式、思考强度）：新会话发第一条消息前就能选（用的是这个 agent 上次报的选项），会话里两轮之间可以切，切换会记在对话里。只有打开会话的电脑能改。
+- 在新会话或已有会话中输入 `/`，可查看当前 Agent 支持的命令、说明和参数提示。继续输入可筛选，方向键或鼠标可选择。首次查看会启动该会话的 Agent，远端要求审批时会先等待批准。查看清单和选择模型都不发送聊天消息。
+- Pi 输入 `/model`、OpenCode 输入 `/models` 可选当前会话的模型。选择 `/compact` 后可发送执行，Pi 也接受压缩说明。压缩由该 Agent 在原会话中执行，生成摘要可能使用模型额度。切换 Agent、项目或会话时以新会话的清单为准。
+- CLI 用 `hmesh session commands <会话 ID>` 查看原生命令和模型选项，用 `hmesh session command <会话 ID> compact` 执行原生命令。Pi 可附加 `--arguments '保留未完成事项'`。切换模型使用 `hmesh session config <会话 ID> model <选项值>`。
+- 开发时，在本机安装好 `pi`、`pi-acp` 和 `opencode` 后，运行 `npm run test:real-agent-commands` 可验证两个真实适配器。脚本使用临时配置和本机模型替身，核对自定义命令、模型切换、原生压缩，以及下一轮收到的摘要。
 - 「Agents」页每个本机 agent 有「模型服务」：用它自己的登录、API key 或自定义地址，以及默认模型和额外环境变量。key 只存在这台电脑上，保存后不再显示，只给末 4 位；配对电脑只看到「已配置」。CLI 对应 `hmesh agent service <agent> --mode … --api-key-stdin` 和 `hmesh session config <session> <setting> <value>`；额外变量用 `--env NAME`，值取自这条命令自己的同名环境变量，不出现在命令行和 shell 历史里（`--keep-env NAME` 保留已存的值，`--clear-env` 全部删除）。
-- OpenCode 用自定义地址时可以填「可切换的模型」（每行一个，最多 100 个，CLI 是可重复的 `--model NAME`，`--clear-models` 清空）：这些模型都注册给 OpenCode，会话里的模型选单只显示它们；默认模型不填就用第一个。OpenCode 经这台电脑上的 HarnessMesh 转发连这个地址：key 不交给 OpenCode；有的网关回复里带 OpenCode 不认的空字段（如最后一块的 `"role":""`），转发时会去掉。
-- 「测试连接」（CLI 加 `--test`）用弹窗里正在填的内容测试，key 没重新输入就用已存的：先问服务商要模型列表，不花 token，能列出来就可以一键填入「可切换的模型」（合起来超过 100 个时不提供一键填入，需要手动挑）；列不出来才用默认模型发一次很小的请求。有的服务列模型时不检查 key，所以「列出了 N 个模型」只说明地址能连上，key 是否有效要等第一轮对话或小请求才知道。用它自己的登录、以及 OpenCode 自己的服务（API key 模式）不能在这里测。
+- Pi、OpenCode 和 DSH 的自定义地址支持模型列表（每行一个，最多 100 个）。可以填默认模型，也可以用列表第一项。CLI 使用可重复的 `--model NAME` 或 `--clear-models`。OpenCode 的自定义端点经本机 Daemon 转发，进程只收到转发令牌。
+- 「测试连接」（CLI 加 `--test`）用弹窗里正在填的内容测试，key 没重新输入就用已存的：先问服务商要模型列表，不花 token，能列出来就可以一键填入「可切换的模型」（合起来超过 100 个时不提供一键填入，需要手动挑）；列不出来才用默认模型发一次很小的请求。有的服务列模型时不检查 key，所以「列出了 N 个模型」只说明地址能连上，key 是否有效要等第一轮对话或小请求才知道。自行登录的连接，以及 Pi、OpenCode 和通用 ACP 的单独 Key，在 Agent 内实际发消息验证。
 - 弹窗顶部会说明这个 agent **自己**配好了没有（打开弹窗时检测一次，也可以点「重新检测」；CLI 是 `hmesh agent service <agent> --check`）：比如「检测到 Claude 订阅（max 套餐），you@example.com」「已存的凭据：OpenCode (api)」「4 个服务商、29 个模型」，或者「没检测到它自己的登录」并提示怎么登录。配好了就不用在这里填 key；想让它单独用别的 key 或服务，直接选「单独给它一个 key」或「自定义地址」重新配置，选回「用它自己的登录」就恢复。Agents 页的卡片也会写「用它自己的登录（已配好）」或「单独配置」；配对电脑只看到配没配好，看不到登录方式和账号。
-- 「自定义地址」可以从预设里选（31 个：AgentMeld 的 28 个加 DeepSeek、OpenAI、火山方舟），只列这个 agent 能用的地址：Claude Code 只列有 Anthropic 兼容地址的，Codex 只列有 Responses 接口的，OpenCode 列 Chat Completions 地址。CLI 是 `--preset <id>`。
+- 「自定义地址」先选网关使用的接口协议。预设只展示提供该协议地址的服务商，也可以手填含端口的基础地址，例如 `http://127.0.0.1:8080/v1`。回环地址指运行 Agent 的那台电脑。CLI 使用 `--protocol openai-chat|anthropic-messages|openai-responses`，配合 `--base-url <地址>` 或 `--preset <id>`。
 - 勾选「key 从本机环境变量读取」后只填变量名（CLI `--api-key-env NAME`）：key 不存进 HarnessMesh，启动 agent 时从这台电脑运行 HarnessMesh 的环境里读，选了预设会自动填上常用的变量名。
 
 页面用长轮询跟随当前会话（每次最多 10 秒），切换会话或离开页面就停止。
@@ -37,6 +41,34 @@ cargo +stable build --locked -p hmesh-cli
 完整访问链接带本次随机令牌，仅供本机 owner。浏览器清除地址栏 fragment，并在当前标签页 sessionStorage 保留访问令牌；新标签页需重新打开完整链接。不要转发或公开记录启动链接。`--json` 输出启动 URL、面板 PID 和本次拥有的 Daemon PID，集成工具应使用私有日志。
 
 顶部关闭按钮或 Ctrl+C 正常关闭面板，只停止它启动的 Daemon，复用的已有 Daemon 保持运行。启动和停止均核对进程身份；端口占用在初始化/启动前报错。旧 Daemon 仍可打开兼容或只读面板，不会因缺少新功能而被替换。异常硬杀或断电不提供相同的正常关闭保证。
+
+## 各 Agent 可选的协议
+
+相同类型的两个 Agent 也可以分别保存自己的 Key、地址和模型。配对电脑上的 Agent 由那台电脑的主人管理。
+
+| Agent | 「单独给它一个 key」的用途 | 「自定义地址」的协议 |
+| --- | --- | --- |
+| DSH | DeepSeek 官方 API | OpenAI Chat Completions、OpenAI Responses、Anthropic Messages |
+| Pi | 选择 DeepSeek、OpenAI 或 Anthropic 的官方模型，填写 `服务商/模型`，如 `deepseek/deepseek-v4-pro` | 同上 |
+| OpenCode | OpenCode 官方服务 | 同上 |
+| Claude Code | Anthropic | Anthropic Messages |
+| Codex | OpenAI | OpenAI Responses |
+| 其他 ACP Agent | 按其文档填写它读取 Key 的环境变量名，CLI 使用 `--key-variable NAME` | 地址及格式按该 Agent 自己的配置设置 |
+
+协议由服务商的 API 决定。例如，同一个 DeepSeek 模型可能通过网关提供 Chat Completions，也可能提供 Anthropic Messages。模型名按网关登记的 ID 填写。
+
+Pi 的独立模型配置沿用本机的提示模板、技能、扩展和主题目录，以及相应的启用或排除设置。通过 Pi 软件包安装的资源仍由原安装管理。OpenCode 的官方 Key 模式可留空默认模型，也可以填写 `opencode/<模型 ID>`。
+
+## DeepSeek Harness（DSH）
+
+1. 在执行 Agent 的电脑上安装 Node.js 24.9 或更新版本，运行 `npm install -g @deepseek-ai/dsh@0.2.2-rc.5`。可用 `hmesh agent detect` 检查 HarnessMesh 能否找到 `dsh`。
+2. 在面板「Agents → 接入项目与 Agent」选择「DeepSeek Harness (DSH)」，填写项目和工作目录，预览后登记。执行端以 `dsh --profile acp` 启动。旧 headless 登记可用 `hmesh agent update <原 Agent ID> --config <ACP 配置文件>` 保留原 ID。
+3. 在 HarnessMesh「Agents → 这个 Agent 的模型服务」选择「单独给它一个 key」连接 DeepSeek 官方服务。使用网关时，选「自定义地址」，填写协议、地址、Key 和网关的模型 ID。选「用它自己的登录」会沿用 DSH 的本机账号和模型设置。[官方模型设置指南](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.5/docs/user/guide/providers.zh.md)
+4. 在「会话 → 新会话」选择刚登记的 Agent。输入 `/` 可查看可用操作，有模型选项时可用面板快捷方式 `/model` 切换。模型和推理强度均取自当前 DSH 会话。`/compact` 不在此版本的官方 ACP 接口中。执行进程重启后，下一轮会通过 `session/resume` 继续已有的 DSH 会话，历史消息由 HarnessMesh 展示。[官方 ACP 协议](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.5/packages/acp/acp/README.md#protocol-contract)
+
+本地回归使用 `cargo build --locked -p hmesh-cli` 与 `npm run test:real-dsh`。脚本用隔离的 DSH 配置和本机模型服务替身，验证模型切换、取消，以及 Daemon 重启后下一轮是否带上首轮问答。安装好 Pi、OpenCode 和 DSH 后，可运行 `npm run test:provider-protocols` 验证各 Agent 的 Key、真实推理请求格式和回复。
+
+从自定义地址切回「用它自己的登录」时，如果 DSH 原生配置里没有旧会话使用的服务商，可以新开会话使用原生服务。切回之前的自定义配置，可继续原来的会话。
 
 ## 运行版本与兼容模式
 

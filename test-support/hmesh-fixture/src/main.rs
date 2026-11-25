@@ -2,8 +2,8 @@
 //!
 //! Default mode speaks the Agent Client Protocol on stdio. Prompts select
 //! scripted behaviour (`fixture:create`, `fixture:reply`, ...); anything else is
-//! echoed. Session history is kept under the temp directory so `session/load`
-//! works across process restarts.
+//! echoed. Session history is kept under the temp directory so both ACP
+//! restore methods work across process restarts.
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -18,6 +18,18 @@ fn send(value: Value) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{value}");
     let _ = out.flush();
+}
+fn announce_commands(session: &str) {
+    if dsh_profile() {
+        return;
+    }
+    update(
+        session,
+        json!({"sessionUpdate":"available_commands_update","availableCommands":[
+            {"name":"compact","description":"Compact this session","input":{"hint":"instructions"}},
+            {"name":"skill:review","description":"Review this project"}
+        ]}),
+    );
 }
 fn update(session: &str, update: Value) {
     send(
@@ -81,14 +93,23 @@ impl Settings {
             json!({"id":id,"name":name,"category":category,"type":"select","currentValue":current,
                 "options":choices.iter().map(|c| json!({"value":c,"name":c})).collect::<Vec<_>>()})
         };
+        // A configured OpenCode publishes its custom provider's model names.
+        let config: Option<Value> = std::env::var("OPENCODE_CONFIG_CONTENT")
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok());
+        let custom: Vec<String> = config
+            .as_ref()
+            .and_then(|c| c["provider"]["hmesh"]["models"].as_object())
+            .into_iter()
+            .flat_map(|models| models.keys().map(|id| format!("hmesh/{id}")))
+            .collect();
+        let choices: Vec<&str> = if custom.is_empty() {
+            vec!["fixture-small", "fixture-large"]
+        } else {
+            custom.iter().map(String::as_str).collect()
+        };
         let mut options = vec![
-            select(
-                "model",
-                "Model",
-                "model",
-                &self.model,
-                &["fixture-small", "fixture-large"],
-            ),
+            select("model", "Model", "model", &self.model, &choices),
             select("mode", "Mode", "mode", &self.mode, &["ask", "code"]),
         ];
         if self.model == "fixture-large" {
@@ -247,6 +268,7 @@ struct Pending {
 }
 
 fn run_acp() -> anyhow::Result<()> {
+    let resume_only = dsh_profile();
     let (events, inbox) = mpsc::channel();
     let reader = events.clone();
     std::thread::spawn(move || {
@@ -321,6 +343,10 @@ fn run_acp() -> anyhow::Result<()> {
                 // `--auth-status subscription|api_key|none` answers `auth/status`
                 // the way claude-agent-acp does.
                 let mut capabilities = json!({"loadSession":true,"promptCapabilities":{},"mcpCapabilities":{"http":false,"sse":false}});
+                if resume_only {
+                    capabilities["loadSession"] = json!(false);
+                    capabilities["sessionCapabilities"] = json!({"resume":{}});
+                }
                 if auth_status().is_some() {
                     capabilities["auth"] = json!({"status":{}});
                 }
@@ -375,7 +401,15 @@ fn run_acp() -> anyhow::Result<()> {
                 save(&session_id, &session);
                 let options = session.settings.options();
                 sessions.insert(session_id.clone(), session);
-                respond(&id, json!({"sessionId":session_id,"configOptions":options}));
+                if let Some(delay) = flag("--commands-delay-ms").and_then(|v| v.parse::<u64>().ok())
+                {
+                    respond(&id, json!({"sessionId":session_id,"configOptions":options}));
+                    std::thread::sleep(Duration::from_millis(delay));
+                    announce_commands(&session_id);
+                } else {
+                    announce_commands(&session_id);
+                    respond(&id, json!({"sessionId":session_id,"configOptions":options}));
+                }
             }
             "session/set_config_option" => {
                 // `--config-delay-ms N` simulates an agent slow to switch.
@@ -409,21 +443,28 @@ fn run_acp() -> anyhow::Result<()> {
                     Err(message) => fail(&id, -32602, &message),
                 }
             }
-            "session/load" => {
+            "session/load" | "session/resume" => {
+                if (method == "session/resume") != resume_only {
+                    fail(&id, -32601, "unadvertised restore method");
+                    continue;
+                }
                 let session_id = params["sessionId"].as_str().unwrap_or("").to_owned();
                 match restore(&session_id) {
                     Some(history) => {
-                        for (role, text) in &history {
-                            let kind = if role == "user" {
-                                "user_message_chunk"
-                            } else {
-                                "agent_message_chunk"
-                            };
-                            update(
-                                &session_id,
-                                json!({"sessionUpdate":kind,"content":{"type":"text","text":text}}),
-                            );
+                        if method == "session/load" {
+                            for (role, text) in &history {
+                                let kind = if role == "user" {
+                                    "user_message_chunk"
+                                } else {
+                                    "agent_message_chunk"
+                                };
+                                update(
+                                    &session_id,
+                                    json!({"sessionUpdate":kind,"content":{"type":"text","text":text}}),
+                                );
+                            }
                         }
+                        announce_commands(&session_id);
                         sessions.insert(
                             session_id,
                             Session {
@@ -660,6 +701,19 @@ fn run_acp() -> anyhow::Result<()> {
                         reply(session, &text);
                         end_turn(&id);
                     }
+                    "fixture:clear-commands" => {
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"available_commands_update","availableCommands":[]}),
+                        );
+                        reply(session, "Commands cleared");
+                        end_turn(&id);
+                    }
+                    _ if prompt == "/compact" || prompt.starts_with("/compact ") => {
+                        let args = prompt.strip_prefix("/compact").unwrap_or_default().trim();
+                        reply(session, &format!("Fixture compacted: {args}"));
+                        end_turn(&id);
+                    }
                     "fixture:config" => {
                         let s = session.settings.clone();
                         let mut text = format!("model={} mode={}", s.model, s.mode);
@@ -668,6 +722,30 @@ fn run_acp() -> anyhow::Result<()> {
                         }
                         reply(session, &text);
                         end_turn(&id);
+                    }
+                    "fixture:split-key end"
+                    | "fixture:split-key error"
+                    | "fixture:split-key cancel" => {
+                        let value = std::env::var("FIXTURE_SERVICE_TOKEN")?;
+                        let thought = |text: &str| {
+                            update(
+                                &session_id,
+                                json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":text}}),
+                            )
+                        };
+                        let (first, second) =
+                            value.split_at(value.char_indices().nth(6).unwrap().0);
+                        say(&session_id, &format!("answer: {first}"));
+                        thought(&format!("reason: {first}"));
+                        say(&session_id, &format!("{second} 中🙂 fixture-"));
+                        thought(&format!("{second} done fix"));
+                        match prompt.as_str() {
+                            "fixture:split-key error" => fail(&id, -32603, "fixture stopped"),
+                            "fixture:split-key cancel" => {
+                                waiting.insert(session_id.clone(), id.clone());
+                            }
+                            _ => end_turn(&id),
+                        }
                     }
                     _ if prompt.starts_with("fixture:fail-env ") => {
                         // An agent error that quotes its environment.
@@ -719,6 +797,9 @@ fn flag(name: &str) -> Option<String> {
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1))
         .cloned()
+}
+fn dsh_profile() -> bool {
+    flag("--profile").as_deref() == Some("acp")
 }
 fn auth_status() -> Option<String> {
     flag("--auth-status")

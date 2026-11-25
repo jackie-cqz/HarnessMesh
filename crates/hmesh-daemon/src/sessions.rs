@@ -27,6 +27,8 @@ use std::{
 use tokio::sync::watch;
 use uuid::Uuid;
 
+mod commands;
+
 /// Longest single long-poll wait; clients loop.
 pub const MAX_WAIT_SECONDS: u64 = 10;
 /// Agent processes of idle sessions are stopped after this long; the next
@@ -38,6 +40,8 @@ const MAX_FINAL_TEXT: usize = 32 * 1024;
 struct Live {
     conn: Arc<AcpConnection>,
     agent_session: Mutex<String>,
+    commands: Mutex<Option<(String, Vec<SessionCommand>)>>,
+    harness: HarnessKind,
     secrets: Vec<String>,
     permissions: Mutex<HashMap<String, (Value, Vec<Value>)>>,
     reply: Mutex<Reply>,
@@ -49,6 +53,7 @@ struct Live {
     /// and whether one arrived since the last turn ended.
     usage: Mutex<Option<Value>>,
     usage_fresh: std::sync::atomic::AtomicBool,
+    managed_models: Option<service::ManagedModels>,
 }
 #[derive(Default)]
 struct Reply {
@@ -118,15 +123,7 @@ impl Sessions {
     }
 }
 
-fn redact(secrets: &[String], text: &str) -> String {
-    let mut text = text.to_owned();
-    for secret in secrets {
-        if secret.len() >= 8 {
-            text = text.replace(secret, "[REDACTED]");
-        }
-    }
-    text
-}
+use hmesh_runtime::{RedactedStream, redact_text as redact};
 fn clipped(secrets: &[String], text: &str, limit: usize) -> Value {
     let (text, truncated) = clip(&redact(secrets, text), limit);
     if truncated {
@@ -279,18 +276,7 @@ fn turn_usage(latest: Option<&Value>, fresh: bool, reported: Option<&Value>) -> 
 
 /// Normalize one `session/update` into a bounded recorded event.
 fn normalize(update: &Value, secrets: &[String]) -> Option<(&'static str, Value)> {
-    fn text(v: &Value) -> Option<&str> {
-        v.pointer("/content/text").and_then(Value::as_str)
-    }
     match update.get("sessionUpdate").and_then(Value::as_str)? {
-        "agent_message_chunk" => Some((
-            "agent_message_chunk",
-            json!({"text":clipped(secrets, text(update)?, MAX_EVENT_TEXT_BYTES)}),
-        )),
-        "agent_thought_chunk" => Some((
-            "agent_thought_chunk",
-            json!({"text":clipped(secrets, text(update)?, MAX_EVENT_TEXT_BYTES)}),
-        )),
         kind @ ("tool_call" | "tool_call_update") => {
             let output: Vec<String> = update
                 .get("content")
@@ -335,15 +321,39 @@ fn normalize(update: &Value, secrets: &[String]) -> Option<(&'static str, Value)
     }
 }
 
+/// Store all safe text, splitting on UTF-8 boundaries for bounded events.
+fn record_text(s: &AppState, id: Uuid, kind: &str, mut text: &str) {
+    while !text.is_empty() {
+        let mut end = text.len().min(MAX_EVENT_TEXT_BYTES);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let _ = record_event(s, id, kind, json!({"text": &text[..end]}));
+        text = &text[end..];
+    }
+}
+
 async fn pump(
     s: AppState,
     id: Uuid,
     live: Arc<Live>,
     mut messages: tokio::sync::mpsc::UnboundedReceiver<AgentMessage>,
 ) {
+    // Thoughts and replies can be interleaved. Keep their partial credentials
+    // independent, even when tool events occur before the next text delta.
+    let mut message_text = RedactedStream::default();
+    let mut thought_text = RedactedStream::default();
+    let finish_text = |message: &mut RedactedStream, thought: &mut RedactedStream| {
+        record_text(&s, id, "agent_message_chunk", &message.finish());
+        record_text(&s, id, "agent_thought_chunk", &thought.finish());
+    };
     while let Some(message) = messages.recv().await {
         match message {
             AgentMessage::Update(params) => {
+                if params["update"]["sessionUpdate"] == "available_commands_update" {
+                    commands::advertised(&s, id, &live, &params);
+                    continue;
+                }
                 if live.replaying.load(std::sync::atomic::Ordering::SeqCst) {
                     continue;
                 }
@@ -364,9 +374,11 @@ async fn pump(
                 if update.get("sessionUpdate").and_then(Value::as_str)
                     == Some("config_option_update")
                 {
-                    let options = ConfigOption::parse_all(&update["configOptions"]);
-                    if !options.is_empty() {
+                    let options = live.options(&update["configOptions"]);
+                    if update["configOptions"].is_array() {
                         let _ = update_record(&s, id, |record| record.config_options = options);
+                        // Model choices also supply the /model(s) selector.
+                        let _ = record_event(&s, id, "commands_updated", json!({}));
                     }
                     continue;
                 }
@@ -374,6 +386,18 @@ async fn pump(
                     && let Ok(mut reply) = live.reply.lock()
                 {
                     reply.push(text);
+                }
+                let kind = update["sessionUpdate"].as_str();
+                let stream = match kind {
+                    Some("agent_message_chunk") => Some(("agent_message_chunk", &mut message_text)),
+                    Some("agent_thought_chunk") => Some(("agent_thought_chunk", &mut thought_text)),
+                    _ => None,
+                };
+                if let Some((kind, stream)) = stream {
+                    if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
+                        record_text(&s, id, kind, &stream.push(&live.secrets, text));
+                    }
+                    continue;
                 }
                 if matches!(
                     update.get("sessionUpdate").and_then(Value::as_str),
@@ -424,17 +448,23 @@ async fn pump(
                     let _ = set_status(&s, id, SessionStatus::WaitingPermission);
                 }
             }
-            AgentMessage::Barrier(done) => {
+            AgentMessage::Barrier { end_turn, done } => {
+                if end_turn {
+                    finish_text(&mut message_text, &mut thought_text);
+                }
                 let _ = done.send(());
             }
             AgentMessage::Exited => break,
         }
     }
+    finish_text(&mut message_text, &mut thought_text);
     // The process is gone; a later prompt starts a new one.
     if let Ok(mut live_map) = s.sessions.live.lock()
         && live_map.get(&id).is_some_and(|l| Arc::ptr_eq(l, &live))
     {
         live_map.remove(&id);
+        drop(live_map);
+        let _ = record_event(&s, id, "commands_updated", json!({}));
     }
 }
 
@@ -449,6 +479,16 @@ async fn discard(s: &AppState, id: Uuid, live: &Arc<Live>) {
     live.conn.shutdown().await;
 }
 
+impl Live {
+    fn options(&self, reported: &Value) -> Vec<ConfigOption> {
+        let mut options = ConfigOption::parse_all(reported);
+        if let Some(models) = &self.managed_models {
+            models.filter(&mut options);
+        }
+        options
+    }
+}
+
 /// Start (or reuse) the agent process for a session and open or reload the
 /// agent-side session, then apply the session's settings.
 async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result<Arc<Live>> {
@@ -459,26 +499,37 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
     if let Some(live) = s.sessions.live(record.session_id)
         && live.conn.alive()
     {
-        if live.service_digest == digest {
+        if live.service_digest == digest
+            && live.managed_models.as_ref().is_none_or(|models| {
+                record
+                    .config_options
+                    .iter()
+                    .find(|o| o.is_category("model"))
+                    .and_then(|o| o.current.as_str())
+                    .is_some_and(|v| models.allows(v))
+            })
+        {
             return Ok(live);
         }
         // The owner changed how this agent reaches its model service: start
         // it again so it sees the new settings (the conversation reloads).
         discard(s, record.session_id, &live).await;
     }
-    let mut command = hmesh_runtime::agent_command(&config)
-        .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
-    let mut secrets = hmesh_runtime::run_secrets(&config);
-    if let Some(service) = &service {
-        let relay = |endpoint: &str, key: &str| s.relay.route(endpoint, key);
-        let env = service
-            .launch_env(card.harness, Some(&relay))
-            .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
-        hmesh_runtime::apply_env(&mut command, &env);
-        secrets.extend(service.secrets());
-        secrets.sort();
-        secrets.dedup();
-    }
+    let previous_model = record
+        .config_options
+        .iter()
+        .find(|o| o.is_category("model"))
+        .and_then(|o| o.current.as_str());
+    let relay = |endpoint: &str, key: &str, protocol| s.relay.route(endpoint, key, protocol);
+    let (command, secrets) = hmesh_runtime::agent_launch(
+        &config,
+        &s.instance.dir,
+        record.agent_id,
+        service.as_ref(),
+        previous_model,
+        Some(&relay),
+    )
+    .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
     // The owner's explicit default is reported when the agent refuses it; the
     // older informational `adapter.model` applies only when the agent offers it.
     let default_model = match service.as_ref().and_then(|v| v.model_setting(card.harness)) {
@@ -488,24 +539,40 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
     let (conn, messages) = AcpConnection::start(command).await?;
     let cwd = config.project.root.clone();
     let mcp = mcp_server(s, record.session_id);
-    let reload = record
+    let restore = record
         .agent_session_id
-        .clone()
-        .filter(|_| conn.supports_load());
+        .as_ref()
+        .zip(acp::SessionRestore::advertised(&conn.initialize));
+    // Cached options from an older process are useful when choosing an agent,
+    // but must not create a command alias once a new process is starting.
+    // DSH checks the old model when resuming, before it accepts a new one.
+    // Keep that metadata across failed/interrupted restores. Command snapshots
+    // ignore options until this process has published its session ID.
+    if card.harness != HarnessKind::Dsh && !record.config_options.is_empty() {
+        update_record(s, record.session_id, |r| r.config_options.clear())?;
+    }
     let live = Arc::new(Live {
         conn: conn.clone(),
         agent_session: Mutex::new(String::new()),
+        commands: Mutex::new(None),
+        harness: card.harness,
         secrets,
         permissions: Mutex::new(HashMap::new()),
         reply: Mutex::new(Reply::default()),
         // Updates the agent replays while reloading are not new events.
-        replaying: std::sync::atomic::AtomicBool::new(reload.is_some()),
+        replaying: std::sync::atomic::AtomicBool::new(matches!(
+            restore,
+            Some((_, acp::SessionRestore::Load))
+        )),
         last_active: Mutex::new(Instant::now()),
         service_digest: digest,
         // A restarted agent may report only tokens at first: its last known
         // context and cost carry over until it reports new ones.
         usage: Mutex::new(earlier_usage(s, record.session_id)),
         usage_fresh: std::sync::atomic::AtomicBool::new(false),
+        managed_models: service
+            .as_ref()
+            .and_then(|svc| service::ManagedModels::from_service(svc, card.harness)),
     });
     s.sessions
         .live
@@ -523,46 +590,45 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         ));
     }
     const RELOADED: &str = "the agent reloaded this conversation";
-    const LOST: &str =
-        "the agent could not reload the earlier conversation; it continues without that context";
     const NO_RELOAD: &str =
         "this agent cannot reload conversations; it continues without the earlier context";
-    let started = async {
-        match reload {
-            Some(previous) => {
-                let loaded = conn.load_session(&previous, &cwd, &mcp).await;
-                // The replayed history is queued ahead of the barrier.
-                conn.barrier().await;
-                live.replaying
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-                match loaded {
-                    Ok(result) => Ok((previous, result, false, Some(RELOADED))),
-                    Err(_) => conn
-                        .new_session(&cwd, &mcp)
-                        .await
-                        .map(|(id, result)| (id, result, true, Some(LOST))),
-                }
-            }
-            None => {
-                let note = record.agent_session_id.as_ref().map(|_| NO_RELOAD);
-                conn.new_session(&cwd, &mcp)
-                    .await
-                    .map(|(id, result)| (id, result, true, note))
-            }
+    let started = match restore {
+        Some((previous, method)) => {
+            let restored = conn.restore_session(method, previous, &cwd, &mcp).await;
+            // Drain any replay and initial command/config updates before the next turn.
+            conn.barrier().await;
+            live.replaying
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            restored.map(|result| (previous.clone(), result, false, Some(RELOADED)))
         }
-    }
-    .await;
+        None => {
+            let note = record.agent_session_id.as_ref().map(|_| NO_RELOAD);
+            conn.new_session(&cwd, &mcp)
+                .await
+                .map(|(id, result)| (id, result, true, note))
+        }
+    };
     let (agent_session, result, fresh, note) = match started {
         Ok(started) => started,
-        Err(error) => {
+        Err(mut error) => {
+            // Native DSH validates the persisted route during session/resume,
+            // before ACP permits a model change. Its native profile may no
+            // longer contain the managed gateway. Retain the upstream cause:
+            // another recoverable fault could also have prevented resuming.
+            if restore.is_some()
+                && card.harness == HarnessKind::Dsh
+                && service.as_ref().is_none_or(|s| s.mode == MODE_AGENT_LOGIN)
+                && previous_model
+                    .and_then(service::dsh::gateway_model)
+                    .is_some()
+            {
+                error.message.push_str(". This DSH session used a HarnessMesh gateway model. To continue it, restore its custom model service and retry. To use the native DSH profile, open a new session.");
+            }
             discard(s, record.session_id, &live).await;
             return Err(error);
         }
     };
-    if let Ok(mut current) = live.agent_session.lock() {
-        *current = agent_session.clone();
-    }
-    let reported = ConfigOption::parse_all(&result["configOptions"]);
+    let reported = live.options(&result["configOptions"]);
     if fresh && !reported.is_empty() {
         // The agent's own defaults, offered before a session starts.
         let defaults = reported.clone();
@@ -579,13 +645,37 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         default_model,
     )
     .await;
+    // Native project settings or restored agent state can select another
+    // provider. The agent must confirm an owner-managed route before a turn.
+    if let Some(models) = &live.managed_models
+        && !options
+            .iter()
+            .find(|o| o.is_category("model"))
+            .is_some_and(|o| {
+                o.current.as_str() == Some(models.selected(record.config_values.get(&o.id)))
+            })
+    {
+        discard(s, record.session_id, &live).await;
+        return Err(MeshError::new(
+            ErrorCode::AgentUnavailable,
+            "the agent did not confirm the configured model",
+        ));
+    }
     let current = update_record(s, record.session_id, |current| {
-        current.agent_session_id = Some(agent_session);
-        if !options.is_empty() {
+        current.agent_session_id = Some(agent_session.clone());
+        if card.harness == HarnessKind::Dsh || !options.is_empty() {
             current.config_options = options;
         }
         current.config_values.retain(|id, _| !rejected.contains(id));
     })?;
+    if let Ok(mut current) = live.agent_session.lock() {
+        *current = agent_session;
+    }
+    // A list sent before session/new returned could not be shown until the
+    // session ID and the corresponding settings were known.
+    if commands::current_commands(&live).is_some() {
+        record_event(s, record.session_id, "commands_updated", json!({}))?;
+    }
     if let Some(note) = note {
         record_event(
             s,
@@ -612,14 +702,25 @@ async fn apply_settings(
         return (options, vec![]);
     };
     let mut wanted = record.config_values.clone();
-    if let Some((model, explicit)) = default_model
+    let mut rejected = vec![];
+    if let Some(models) = &live.managed_models
+        && let Some(option) = options.iter().find(|o| o.is_category("model"))
+    {
+        let selected = Value::from(models.selected(wanted.get(&option.id)));
+        if wanted
+            .get(&option.id)
+            .is_some_and(|value| *value != selected)
+        {
+            rejected.push(option.id.clone());
+        }
+        wanted.insert(option.id.clone(), selected);
+    } else if let Some((model, explicit)) = default_model
         && let Some(option) = options.iter().find(|o| o.is_category("model"))
         && !wanted.contains_key(&option.id)
         && (explicit || option.accepts(&Value::String(model.clone())))
     {
         wanted.insert(option.id.clone(), Value::String(model));
     }
-    let mut rejected = vec![];
     for (config_id, value) in config_apply_order(&wanted, &options) {
         let why = match options.iter().find(|o| o.id == config_id) {
             None if options.is_empty() => continue,
@@ -631,9 +732,11 @@ async fn apply_settings(
                 .await
             {
                 Ok(reported) => {
-                    let parsed = ConfigOption::parse_all(&reported);
+                    let parsed = live.options(&reported);
                     if parsed.is_empty() {
-                        if let Some(option) = options.iter_mut().find(|o| o.id == config_id) {
+                        if let Some(option) = options.iter_mut().find(|o| o.id == config_id)
+                            && !(live.managed_models.is_some() && option.is_category("model"))
+                        {
                             option.current = value.clone();
                         }
                     } else {
@@ -662,6 +765,16 @@ fn begin_turn(
     id: Uuid,
     text: &str,
     from: Value,
+) -> hmesh_core::Result<SessionRecord> {
+    begin_checked_turn(s, id, text, from, None)
+}
+
+fn begin_checked_turn(
+    s: &AppState,
+    id: Uuid,
+    text: &str,
+    from: Value,
+    command: Option<String>,
 ) -> hmesh_core::Result<SessionRecord> {
     validate_prompt(text)?;
     let mut record = {
@@ -716,6 +829,9 @@ fn begin_turn(
                 "the computer that started this session is no longer paired",
             ));
         }
+        if let Some(name) = &command {
+            commands::require_advertised(s.sessions.live(id).as_deref(), name)?;
+        }
         record.status = SessionStatus::Running;
         if record.title.is_empty() {
             let first = text
@@ -733,12 +849,12 @@ fn begin_turn(
     record_event(s, id, "user_message", json!({"text":shown,"from":from}))?;
     let state = s.clone();
     let text = text.to_owned();
-    tokio::spawn(async move { run_turn(state, id, text).await });
+    tokio::spawn(async move { run_turn(state, id, text, command).await });
     record.updated_at = now();
     Ok(record)
 }
 
-async fn run_turn(s: AppState, id: Uuid, text: String) {
+async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) {
     let finish =
         |s: &AppState, stop: Option<&str>, final_text: Option<String>, error: Option<String>| {
             if let Ok(mut record) = s.store.session(id) {
@@ -801,9 +917,17 @@ async fn run_turn(s: AppState, id: Uuid, text: String) {
         .lock()
         .map(|a| a.clone())
         .unwrap_or_default();
+    if let Some(name) = &command {
+        // A service change can restart the process after submission. Its old
+        // catalogue must never authorize a command on the replacement.
+        live.conn.barrier().await;
+        if let Err(error) = commands::require_advertised(Some(&live), name) {
+            return finish(&s, None, None, Some(error.message));
+        }
+    }
     let result = live.conn.prompt(&agent_session, &text).await;
     // The turn's last chunks may still be queued behind the response.
-    live.conn.barrier().await;
+    live.conn.finish_turn().await;
     let final_text = live
         .reply
         .lock()
@@ -1058,7 +1182,20 @@ async fn set_config(
                     redact(&live.secrets, &e.message)
                 ))
             })?;
-        let parsed = ConfigOption::parse_all(&reported);
+        let parsed = live.options(&reported);
+        if live.managed_models.is_some()
+            && options
+                .iter()
+                .any(|o| o.id == body.config_id && o.is_category("model"))
+            && !parsed
+                .iter()
+                .any(|o| o.id == body.config_id && o.current == body.value)
+        {
+            discard(s, id, &live).await;
+            return Err(MeshError::input(
+                "the agent did not confirm the selected model",
+            ));
+        }
         if !parsed.is_empty() {
             options = parsed;
         }
@@ -1431,6 +1568,7 @@ pub async fn run(s: AppState, mut shutdown: watch::Receiver<bool>) {
                         }).unwrap_or(false)
                     };
                     if taken {
+                        let _ = record_event(&s, id, "commands_updated", json!({}));
                         live.conn.shutdown().await;
                     }
                 }
@@ -1745,7 +1883,19 @@ async fn owner_config(
 
 // ---- HTTP: this computer's owner, per agent ----
 
-fn service_view(s: &AppState, agent: Uuid) -> std::result::Result<AgentServiceView, ApiError> {
+// Earlier CLIs strictly deserialize the service view. They keep receiving the
+// original shape until they ask for per-protocol addresses and capabilities.
+#[derive(Default, Deserialize)]
+struct ServiceViewQuery {
+    #[serde(default)]
+    protocols: bool,
+}
+
+fn service_view(
+    s: &AppState,
+    agent: Uuid,
+    protocols: bool,
+) -> std::result::Result<AgentServiceView, ApiError> {
     let (card, _) = s.store.agent(agent)?;
     let stored = service::load(&s.instance.dir, agent).map_err(crate::internal)?;
     let mut view = match stored {
@@ -1753,6 +1903,14 @@ fn service_view(s: &AppState, agent: Uuid) -> std::result::Result<AgentServiceVi
         None => service::default_view(agent, card.harness),
     };
     view.own_login = service::load_own_login(&s.instance.dir, agent).map_err(crate::internal)?;
+    if !protocols {
+        view.protocol = None;
+        view.protocols.clear();
+        view.key_variable = None;
+        for preset in &mut view.presets {
+            preset.addresses.clear();
+        }
+    }
     Ok(view)
 }
 /// Find out what the agent is set up with on its own: the agent's own ACP
@@ -1764,6 +1922,7 @@ async fn owner_check_service(
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
     Path(agent): Path<Uuid>,
+    Query(query): Query<ServiceViewQuery>,
 ) -> ApiResult<AgentServiceView> {
     s.owner(&headers, &c)?;
     let (_, config) = s.store.agent(agent)?;
@@ -1781,16 +1940,17 @@ async fn owner_check_service(
         &login.state,
         Uuid::new_v4(),
     );
-    Ok(Json(service_view(&s, agent)?))
+    Ok(Json(service_view(&s, agent, query.protocols)?))
 }
 async fn owner_get_service(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
     Path(agent): Path<Uuid>,
+    Query(query): Query<ServiceViewQuery>,
 ) -> ApiResult<AgentServiceView> {
     s.owner(&headers, &c)?;
-    Ok(Json(service_view(&s, agent)?))
+    Ok(Json(service_view(&s, agent, query.protocols)?))
 }
 /// Replace how an agent reaches its model service. Only this computer's owner
 /// may do this; keys are stored here and never returned.
@@ -1799,9 +1959,11 @@ async fn owner_set_service(
     Extension(c): Extension<ConnectionIdentity>,
     headers: HeaderMap,
     Path(agent): Path<Uuid>,
+    Query(query): Query<ServiceViewQuery>,
     Json(body): Json<SetAgentService>,
 ) -> ApiResult<AgentServiceView> {
     s.owner(&headers, &c)?;
+    let show_protocols = query.protocols || body.protocol.is_some() || body.key_variable.is_some();
     let (card, config) = s.store.agent(agent)?;
     let existing = service::load(&s.instance.dir, agent).map_err(crate::internal)?;
     let next = service::update(card.harness, existing.as_ref(), body)
@@ -1826,7 +1988,7 @@ async fn owner_set_service(
         mode,
         Uuid::new_v4(),
     );
-    Ok(Json(service_view(&s, agent)?))
+    Ok(Json(service_view(&s, agent, show_protocols)?))
 }
 /// Check whether (possibly unsaved) settings reach the model service. Only
 /// this computer's owner may do this: it sends the key to the address given.
@@ -2006,6 +2168,7 @@ async fn peer_config(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .merge(commands::routes())
         .route("/local/sessions", get(list).post(owner_open))
         .route("/local/sessions/{id}", get(owner_get))
         .route("/local/sessions/{id}/events", get(owner_events))

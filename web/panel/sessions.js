@@ -129,10 +129,18 @@ function renderAgentDirectory(){
   box.replaceChildren(...(groups.length?groups:[el('div','side-empty','还没有 Agent')]));
 }
 for(const label of document.querySelectorAll('.side-label'))label.addEventListener('click',()=>{const open=label.getAttribute('aria-expanded')!=='true';label.setAttribute('aria-expanded',String(open));$('#'+label.getAttribute('aria-controls')).hidden=!open;});
+const sidebarToggle=$('#sidebar-toggle');
+sidebarToggle.addEventListener('click',()=>{
+  const expanded=sidebarToggle.getAttribute('aria-expanded')==='true';
+  sidebarToggle.setAttribute('aria-expanded',String(!expanded));
+});
 
 // ---- New session ----
 function readyAgents(){return conv.nodes.flatMap(n=>(n.agents||[]).filter(a=>a.availability!=='disabled'&&a.probe?.version_supported&&n.reachable).map(a=>({node:n,agent:a})));}
 function startNew(nodeId,agentId){
+  resetSessionCommands();
+  if($('#hero-input').value.trimStart().startsWith('/'))$('#hero-input').value='';
+  $('#hero-command-status').hidden=true;
   conv.selected=null;conv.record=null;conv.generation++;
   if(nodeId&&agentId&&(conv.target?.node!==nodeId||conv.target?.agent!==agentId)){conv.target={node:nodeId,agent:agentId};conv.heroConfig={};}
   if(state.view!=='sessions')showView('sessions');else renderConversation();
@@ -154,7 +162,7 @@ function renderHero(){
   $('#hero-agents').replaceChildren(...(ready.length?ready.map(({node,agent})=>{
     const chip=el('button','agent-chip'),on=conv.target?.node===node.node_id&&conv.target?.agent===agent.agent_id;chip.type='button';chip.setAttribute('role','radio');chip.setAttribute('aria-checked',String(on));
     chip.append(icon('bot','sm'),el('span','',agent.name));if(!node.local)chip.append(el('small','',node.name));
-    chip.addEventListener('click',()=>{if(!on){conv.target={node:node.node_id,agent:agent.agent_id};conv.heroConfig={};}renderHero();$('#hero-input').focus();});
+    chip.addEventListener('click',()=>{if(!on){startNew(node.node_id,agent.agent_id);return;}renderHero();$('#hero-input').focus();});
     return chip;
   }):[el('div','side-empty','没有可用的 Agent。先在 Agents 页接入一个已安装的 ACP agent。')]));
   const target=ready.find(r=>r.node.node_id===conv.target?.node&&r.agent.agent_id===conv.target?.agent);
@@ -164,19 +172,35 @@ function renderHero(){
   renderSettings(box,target?.agent.config_options,values,!canWrite(),(id,value)=>{conv.heroConfig[id]=value;renderHero();},JSON.stringify([conv.target,target?.agent.config_options,values]));
   $('#hero-send').disabled=!target||!canWrite();
 }
-async function submitNew(event){
-  event.preventDefault();
-  const target=conv.target,message=$('#hero-input').value.trim(),node=conv.nodes.find(n=>n.node_id===target?.node);
-  if(!target||!node||!message)return;
+let openingHero=null;
+async function submitNew(event,discover=false){
+  event?.preventDefault();
+  const target=conv.target,input=$('#hero-input'),draft=input.value,message=draft.trim(),node=conv.nodes.find(n=>n.node_id===target?.node);
+  if(!target||!node||!message||!canWrite())return;
+  // A slash draft opens an empty session to get this Agent's live commands.
+  // The draft must never become a first prompt, even on an older daemon.
+  const slash=message.startsWith('/');
+  if(slash&&!sessionCommandsSupported()){
+    $('#hero-error').textContent='当前 Daemon 不提供会话命令，请升级后再试。';$('#hero-error').hidden=false;return;
+  }
+  if(discover&&!slash)return;
+  const generation=conv.generation,isCurrent=()=>generation===conv.generation&&conv.target===target&&state.view==='sessions';
+  if(openingHero?.generation===generation&&openingHero.target===target)return;
+  const opening={generation,target};openingHero=opening;
   const agent=(node.agents||[]).find(a=>a.agent_id===target.agent),defaults=heroDefaults(agent);
-  // Only choices that differ from what the agent would start with.
   const config=Object.fromEntries(Object.entries(conv.heroConfig).filter(([id,value])=>defaults[id]!==value));
   $('#hero-send').disabled=true;$('#hero-error').hidden=true;
+  const status=$('#hero-command-status');status.hidden=!slash;status.textContent='正在打开会话以读取 Agent 命令…';
   try{
-    const record=unwrap(await api('/sessions',{method:'POST',body:JSON.stringify({agent_id:target.agent,peer_id:node.local?null:node.node_id,message,...(Object.keys(config).length?{config}:{})})}));
-    $('#hero-input').value='';conv.heroConfig={};await loadSessions();selectSession({...record,_remote:!node.local});
-  }catch(e){$('#hero-error').textContent=`没有打开：${e.message||e.code}`;$('#hero-error').hidden=false;}
-  finally{$('#hero-send').disabled=false;}
+    const record=unwrap(await api('/sessions',{method:'POST',body:JSON.stringify({agent_id:target.agent,peer_id:node.local?null:node.node_id,...(!slash?{message}:{}),...(Object.keys(config).length?{config}:{})})}));
+    loadSessions();
+    if(!isCurrent()||(slash&&!input.value.trimStart().startsWith('/')))return;
+    const nextDraft=slash?input.value:(input.value===draft?'':input.value);
+    input.value='';conv.heroConfig={};selectSession({...record,_remote:!node.local});
+    const composer=$('#composer-input');composer.value=nextDraft;composer.focus();
+    if(slash)openSessionCommands();
+  }catch(e){if(isCurrent()){$('#hero-error').textContent=`没有打开：${e.message||e.code}`;$('#hero-error').hidden=false;}}
+  finally{if(openingHero===opening){openingHero=null;status.hidden=true;$('#hero-send').disabled=!conv.target||!canWrite();}}
 }
 
 // ---- Session settings (model, mode, reasoning) ----
@@ -214,6 +238,7 @@ async function changeSetting(id,value){
   try {
     const record=unwrap(await api(`/sessions/${sessionId}/config`,{method:'POST',body:JSON.stringify({config_id:id,value})}));
     if(generation===conv.generation&&sessionId===conv.selected)conv.record={...conv.record,...record};
+    return generation===conv.generation&&sessionId===conv.selected;
   } catch(e){
     if(generation===conv.generation&&sessionId===conv.selected){toast(`没有切换：${e.message||e.code}`);$('#composer-settings').dataset.key='';}
   }
@@ -222,6 +247,7 @@ async function changeSetting(id,value){
 
 // ---- Conversation ----
 function selectSession(s){
+  resetSessionCommands();
   conv.selected=s.session_id;conv.remote=!!s._remote;conv.record=s;conv.cursor=0;conv.events=[];conv.generation++;conv.openTools.clear();conv.openThoughts.clear();
   renderSessionList();renderConversation();follow(conv.generation);
 }
@@ -236,6 +262,7 @@ async function follow(generation){
       failures=0;conv.record={...conv.record,...page.session};conv.cursor=page.next;syncListRow(conv.record);
       if(typeof noteInboxSession==='function')noteInboxSession(conv.record,Date.now()/1000,inboxEpoch);
       if(page.events.length)conv.events.push(...page.events);
+      if(page.events.some(e=>e.kind==='commands_updated'||e.kind==='config_changed'))refreshOpenCommands();
       renderConversation();
       if(document.hidden)await new Promise(r=>setTimeout(r,3000));
     }catch(e){
@@ -337,7 +364,7 @@ function renderConversation(){
   send.replaceChildren(icon(busy?'square':'send'));send.classList.toggle('stop',busy);send.setAttribute('aria-label',busy?'停止本轮':'发送');
   send.disabled=!canWrite()||conv.busy||conv.settingBusy||!(busy||s.status==='idle');
   input.disabled=s.status==='closed'||!canWrite();
-  input.placeholder=s.status==='closed'?'会话已关闭':s.status==='pending_approval'?'等对方电脑批准后才能继续':busy?`${s.agent_name} 正在处理，可以先写下一条`:`回复 ${s.agent_name}…`;
+  input.placeholder=s.status==='closed'?'会话已关闭':s.status==='pending_approval'?'等对方电脑批准后才能继续':busy?`${s.agent_name} 正在处理，可以先写下一条`:`回复 ${s.agent_name}，或输入 / 查看命令…`;
   $('#composer-target').replaceChildren(icon('bot','xs'),el('span','',`${s.agent_name} · ${conv.remote?shortNode(s.node_id):'本机'}`));
   // Settings change between turns, and only by whoever opened the session.
   const opener=conv.remote||s.origin?.node_id===localNodeId(),settings=$('#composer-settings');
@@ -345,6 +372,7 @@ function renderConversation(){
   settings.hidden=!settingsSupported();
   settings.title=!opener?`这个会话由 ${nodeLabel(s.origin?.node_id)} 打开，设置由对方改`:busy?'这一轮结束后可以切换':'';
   renderSettings(settings,s.config_options,null,locked,changeSetting,JSON.stringify([s.session_id,s.config_options,locked]));
+  updateOpenCommandStatus();
 }
 async function sessionAction(name){
   const id=conv.selected,generation=conv.generation;
@@ -363,6 +391,7 @@ async function sendMessage(event){
   const s=conv.record;if(!s||conv.busy)return;
   if(s.status==='running'||s.status==='waiting_permission')return sessionAction('cancel');
   const input=$('#composer-input'),draft=input.value,message=draft.trim();if(!message)return;
+  if(message.startsWith('/'))return submitSessionCommand();
   const id=conv.selected,generation=conv.generation;
   conv.busy=true;renderConversation();
   try {
@@ -384,9 +413,11 @@ const serviceModes={
   api_key:['单独给它一个 key','用你的 key 连它平常用的服务'],
   custom:['自定义地址','连你指定的模型服务，可以从预设里选'],
 };
-const service={agent:null,view:null};
+const service={agent:null,view:null,revision:0};
+const protocolNames={'openai-chat':'OpenAI Chat Completions','anthropic-messages':'Anthropic Messages','openai-responses':'OpenAI Responses'};
 // What the agent is set up with on its own, in words; the daemon learned it
 // from the agent's own report or status command, never its credential files.
+const dshSetupHint='可在 DSH 的「设置 → 模型」中配置账号，或在下方单独给这个 Agent 配置服务。';
 const ownLoginHint={'claude-code':'在终端运行 claude 并登录','codex':'在终端运行 codex login','opencode':'在终端运行 opencode auth login','pi':'在 pi 里用 /login'};
 function ownLoginText(own){
   if(!own)return '';
@@ -419,10 +450,10 @@ function showOwnLogin(own,checking=false){
     detail.textContent=`检测到 ${ownLoginText(own)}。${withModel}${tail}`;
   }else if(own?.state==='not_configured'){
     title.textContent='没检测到它自己的登录';
-    detail.textContent=`${ownLoginHint[service.agent?.harness]?ownLoginHint[service.agent.harness]+'，':''}或者在下面单独给它一个 key。`;
+    detail.textContent=service.agent?.harness==='dsh'?dshSetupHint:`${ownLoginHint[service.agent?.harness]?ownLoginHint[service.agent.harness]+'，':''}或者在下面单独给它一个 key。`;
   }else{
     title.textContent=own?'看不出它自己配没配好':'还没检测过它自己的配置';
-    detail.textContent=`${withModel}${own?'它没有报告自己的登录方式。':'点「重新检测」看看。'}`;
+    detail.textContent=service.agent?.harness==='dsh'?`${withModel}${dshSetupHint}`:`${withModel}${own?'它没有报告自己的登录方式。':'点「重新检测」看看。'}`;
   }
 }
 async function checkOwnLogin(){
@@ -432,45 +463,81 @@ async function checkOwnLogin(){
   catch(e){if(service.agent!==agent)return;}
   showOwnLogin(service.view.own_login);
 }
+function presetAddress(preset){
+  if(!preset)return '';
+  return preset.addresses?preset.addresses[$('#service-protocol').value]||'':preset.base_url;
+}
 function servicePresets(){
   const groups=new Map();
-  for(const p of service.view?.presets||[]){if(!groups.has(p.group))groups.set(p.group,[]);groups.get(p.group).push(p);}
+  for(const p of service.view?.presets||[]){
+    if(!presetAddress(p))continue;
+    if(!groups.has(p.group))groups.set(p.group,[]);groups.get(p.group).push(p);
+  }
   const none=document.createElement('option');none.value='';none.textContent='自己填地址';
   $('#service-preset').replaceChildren(none,...[...groups].map(([name,items])=>{const g=document.createElement('optgroup');g.label=name;g.append(...items.map(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=`${p.name} · ${p.region}`;return o;}));return g;}));
-  const current=(service.view?.presets||[]).find(p=>p.base_url===service.view?.base_url);$('#service-preset').value=current?.id||'';
+  const address=$('#service-url').value.trim();
+  const current=address&&(service.view?.presets||[]).find(p=>presetAddress(p)===address);$('#service-preset').value=current?.id||'';
+  $('#service-preset-label').hidden=$('#service-modes').dataset.mode!=='custom'||groups.size===0;
 }
 function setKeySource(fromEnv){
   $('#service-key-from-env').checked=fromEnv;
   const mode=$('#service-modes').dataset.mode,needsKey=mode&&mode!=='agent_login';
   $('#service-key-label').hidden=!needsKey||fromEnv;$('#service-key-env-label').hidden=!needsKey||!fromEnv;
+  $('#service-key-env').required=needsKey&&fromEnv;
+  $('#service-key').required=needsKey&&!fromEnv&&!service.view?.api_key?.set;
 }
 function hintText(hint,empty){return hint?.set?`已设置${hint.last4?` · 末 4 位 ${hint.last4}`:''}，留空保持不变`:empty;}
-// OpenCode is the agent that takes a model list (for a custom address).
-// The daemon stores at most this many.
 const SERVICE_MAX_MODELS=100;
-function serviceTakesList(mode){return service.agent?.harness==='opencode'&&mode==='custom';}
-// Its own login has nothing to test; OpenCode's own service is tested inside OpenCode.
-function serviceTestable(mode){return state.runtime?.capabilities?.agent_service_test===true&&mode!=='agent_login'&&!(service.agent?.harness==='opencode'&&mode==='api_key');}
+function serviceTakesList(mode){return mode==='custom'&&['opencode','pi','dsh'].includes(service.agent?.harness);}
+function serviceTestable(mode){return state.runtime?.capabilities?.agent_service_test===true&&mode!=='agent_login'&&!(mode==='api_key'&&['opencode','pi','acp'].includes(service.agent?.harness));}
 function setServiceMode(mode){
   $('#service-modes').dataset.mode=mode;
   for(const b of $('#service-modes').children)b.setAttribute('aria-checked',String(b.dataset.mode===mode));
-  $('#service-url-label').hidden=mode!=='custom';$('#service-preset-label').hidden=mode!=='custom'||!(service.view?.presets||[]).length;
+  $('#service-url-label').hidden=mode!=='custom';
+  $('#service-protocol-label').hidden=mode!=='custom'||!service.view?.protocols?.length;
+  servicePresets();
+  const namedKey=mode==='api_key'&&service.agent.harness==='acp';
+  $('#service-key-variable-label').hidden=!namedKey;$('#service-key-variable').required=namedKey;
   // Daemons from before environment keys get no such option.
   const envKeys=state.runtime?.capabilities?.agent_own_login===true;
   if(!envKeys)$('#service-key-from-env').checked=false;
   $('#service-key-source').hidden=mode==='agent_login'||!envKeys;setKeySource($('#service-key-from-env').checked);
   $('#service-url').required=mode==='custom';
-  $('#service-model').placeholder=serviceTakesList(mode)?'不填就用下面第一个':mode==='custom'?'这个地址上的模型名':'不填就用 Agent 自己的默认';
+  const piKey=mode==='api_key'&&service.agent.harness==='pi';
+  $('#service-model').required=piKey;
+  $('#service-model').placeholder=piKey?'服务商/模型，例如 deepseek/deepseek-v4-pro':serviceTakesList(mode)?'不填就用下面第一个':mode==='custom'?'这个地址上的模型名':'不填就用 Agent 自己的默认';
   $('#service-model-list-label').hidden=!serviceTakesList(mode);
   $('#service-relay').hidden=!serviceTakesList(mode)||state.runtime?.capabilities?.agent_service_relay!==true;
   $('#service-test-row').hidden=!serviceTestable(mode);
-  showServiceTest(null);
+  serviceDatalist(serviceModelSuggestions(mode));
+  resetServiceTest();
   if(service.view)showOwnLogin(service.view.own_login,$('#service-own-check').disabled);
 }
 function serviceModelList(){return [...new Set($('#service-model-list').value.split('\n').map(m=>m.trim()).filter(Boolean))];}
+function serviceModelSuggestions(mode){
+  if(mode==='custom')return serviceModelList().map(value=>({value}));
+  const choices=(service.agent.config_options||[]).find(o=>o.category==='model')?.choices||[];
+  if(mode==='api_key'&&service.agent.harness==='dsh'){
+    return choices.flatMap(c=>{
+      try{
+        const route=JSON.parse(c.value);
+        if(Array.isArray(route)&&route[0]==='deepseek-official'&&typeof route[1]==='string')return [{value:route[1],name:c.name}];
+      }catch{}
+      return [];
+    });
+  }
+  if(mode==='api_key'&&service.agent.harness==='pi')return choices.filter(c=>/^(deepseek|openai|anthropic)\//.test(c.value));
+  if(mode==='api_key'&&service.agent.harness==='opencode')return choices.filter(c=>c.value.startsWith('opencode/'));
+  return choices;
+}
 function serviceDatalist(names){
   const seen=new Set();
   $('#service-models').replaceChildren(...names.filter(n=>n.value&&!seen.has(n.value)&&seen.add(n.value)).map(n=>{const o=document.createElement('option');o.value=n.value;if(n.name)o.label=n.name;return o;}));
+}
+function resetServiceTest(){
+  service.revision++;
+  const run=$('#service-test');run.disabled=false;run.textContent='测试连接';
+  showServiceTest(null);
 }
 function showServiceTest(result){
   const out=$('#service-test-result'),fill=$('#service-fill');
@@ -496,16 +563,29 @@ function showServiceTest(result){
   }else if(result.ok){out.className='ok';out.textContent=`能连上，模型能正常回复${took}`;}
   else{out.className='failed';out.textContent=`没连上：${result.message}`;}
 }
-async function testService(){
-  const mode=$('#service-modes').dataset.mode,key=$('#service-key').value.trim();
-  const body={mode,base_url:mode==='custom'?$('#service-url').value.trim()||null:null,model:$('#service-model').value.trim()||serviceModelList()[0]||null};
-  if($('#service-key-from-env').checked&&$('#service-key-env').value.trim())body.api_key_env=$('#service-key-env').value.trim();
+function serviceConnection(mode){
+  const body={mode};
+  if(mode==='agent_login')return body;
+  const key=$('#service-key').value.trim();
+  if($('#service-key-from-env').checked)body.api_key_env=$('#service-key-env').value.trim();
   else if(key)body.api_key=key;
+  if(mode==='custom'){
+    body.base_url=$('#service-url').value.trim();
+    if(service.view.protocols?.length)body.protocol=$('#service-protocol').value;
+  }
+  return body;
+}
+async function testService(){
+  if(!$('#service-form').reportValidity())return;
+  const mode=$('#service-modes').dataset.mode,revision=++service.revision;
+  const body={...serviceConnection(mode),model:$('#service-model').value.trim()||(serviceTakesList(mode)&&serviceModelList()[0])||null};
   const run=$('#service-test');run.disabled=true;run.textContent='测试中…';
   $('#service-test-result').className='muted';$('#service-test-result').textContent='正在连接…';$('#service-fill').hidden=true;
-  try{showServiceTest(unwrap(await api(`/agents/${service.agent.agent_id}/service/test`,{method:'POST',body:JSON.stringify(body)})));}
-  catch(e){$('#service-test-result').className='failed';$('#service-test-result').textContent=`没有测试：${e.message||e.code}`;}
-  finally{run.disabled=false;run.textContent='测试连接';}
+  try{
+    const result=unwrap(await api(`/agents/${service.agent.agent_id}/service/test`,{method:'POST',body:JSON.stringify(body)}));
+    if(revision===service.revision)showServiceTest(result);
+  }catch(e){if(revision===service.revision){$('#service-test-result').className='failed';$('#service-test-result').textContent=`没有测试：${e.message||e.code}`;}}
+  finally{if(revision===service.revision){run.disabled=false;run.textContent='测试连接';}}
 }
 function serviceEnvRow(name='',hint=null){
   const row=el('div','service-env-row'),key=document.createElement('input'),value=document.createElement('input'),remove=button('删除','ghost small',()=>row.remove());
@@ -514,28 +594,37 @@ function serviceEnvRow(name='',hint=null){
   row.dataset.existing=name;row.append(key,value,remove);return row;
 }
 async function openService(agent){
-  try{service.view=unwrap(await api(`/agents/${agent.agent_id}/service`));}catch(e){return toast(`读取模型服务失败：${e.message||e.code}`);}
-  service.agent=agent;const v=service.view;
+  const dialog=Symbol();service.dialog=dialog;
+  let v;
+  try{v=unwrap(await api(`/agents/${agent.agent_id}/service`));}catch(e){if(service.dialog===dialog)toast(`读取模型服务失败：${e.message||e.code}`);return;}
+  if(service.dialog!==dialog)return;
+  service.agent=agent;service.view=v;
   $('#service-title').textContent=`${agent.name} 的模型服务`;$('#service-subtitle').textContent=v.modes.length>1?String(agent.harness||''):`${agent.harness||''} · 用它自己的登录，这里可以设默认模型和额外环境变量`;
   // A type with only its own login has nothing to choose between.
   $('#service-modes').hidden=v.modes.length<2;
   $('#service-modes').replaceChildren(...v.modes.map(mode=>{
     const b=el('button','service-mode');b.type='button';b.dataset.mode=mode;b.setAttribute('role','radio');
-    b.append(el('strong','',serviceModes[mode]?.[0]||mode),el('span','',serviceModes[mode]?.[1]||''));
+    const keyTarget={dsh:'用于 DeepSeek 官方服务',pi:'用于所选服务商的官方模型',codex:'用于 OpenAI 官方服务','claude-code':'用于 Anthropic 官方服务',opencode:'用于 OpenCode 官方服务',acp:'通过指定的变量交给这个 Agent'};
+    const description=mode==='api_key'?keyTarget[agent.harness]:null;
+    b.append(el('strong','',serviceModes[mode]?.[0]||mode),el('span','',description||serviceModes[mode]?.[1]||''));
     b.addEventListener('click',()=>setServiceMode(mode));return b;
   }));
   $('#service-key').value='';$('#service-key').placeholder=hintText(v.api_key,'粘贴你的 key');
   $('#service-key-env').value=v.api_key_env||'';$('#service-key-from-env').checked=Boolean(v.api_key_env);
+  $('#service-key-variable').value=v.key_variable||'';
   $('#service-url').value=v.base_url||'';$('#service-model').value=v.default_model||'';
-  servicePresets();
+  const protocol=$('#service-protocol');protocol.replaceChildren();
+  for(const value of v.protocols||[])option(protocol,value,protocolNames[value]||value);
+  if(v.protocol&&v.protocols?.includes(v.protocol))protocol.value=v.protocol;
+  protocol.disabled=protocol.options.length<2;
   $('#service-model-list').value=(v.models||[]).join('\n');
-  const models=(agent.config_options||[]).find(o=>o.category==='model')?.choices||[];
-  serviceDatalist([...(v.models||[]).map(value=>({value})),...models.map(c=>({value:c.value,name:c.name}))]);
   $('#service-env').replaceChildren(...v.env.map(e=>serviceEnvRow(e.name,e.value)));
   $('#service-env-box').open=v.env.length>0;
   $('#service-injected').hidden=!v.injected.length;$('#service-injected').textContent=`启动 ${agent.name} 时会设置：${v.injected.join('、')}`;
-  $('#service-message').textContent='';setServiceMode(v.mode);
-  $('#service-dialog').showModal();$('#service-modes').querySelector('[aria-checked="true"]')?.focus();
+  $('#service-message').textContent='';$('#service-save').disabled=false;setServiceMode(v.mode);
+  $('#service-dialog').showModal();
+  $('#service-dialog .service-fields').scrollTop=0;
+  $('#service-modes').querySelector('[aria-checked="true"]')?.focus({preventScroll:true});
   checkOwnLogin();
 }
 function closeService(){
@@ -545,34 +634,43 @@ function closeService(){
 }
 async function saveService(event){
   event.preventDefault();
-  const mode=$('#service-modes').dataset.mode,key=$('#service-key').value.trim(),env={};
+  const {agent,dialog}=service,mode=$('#service-modes').dataset.mode,env={};
   for(const row of $('#service-env').children){
     const name=row.querySelector('.env-name').value.trim(),value=row.querySelector('.env-value').value;
     if(name)env[name]=value?value:(row.dataset.existing===name?null:'');
   }
-  const body={mode,base_url:mode==='custom'?$('#service-url').value.trim()||null:null,default_model:$('#service-model').value.trim()||null,models:serviceTakesList(mode)?serviceModelList():[],env};
-  const fromEnv=$('#service-key-from-env').checked,keyEnv=$('#service-key-env').value.trim();
-  if(mode!=='agent_login'&&fromEnv)body.api_key_env=keyEnv;
-  else if(mode!=='agent_login'&&key)body.api_key=key;
-  else if(mode!=='agent_login'&&service.view?.api_key_env)body.api_key_env='';
+  const body={...serviceConnection(mode),default_model:$('#service-model').value.trim()||null,models:serviceTakesList(mode)?serviceModelList():[],env};
+  if(mode==='api_key'&&service.agent.harness==='acp')body.key_variable=$('#service-key-variable').value.trim();
   $('#service-save').disabled=true;$('#service-message').textContent='';
   try{
-    service.view=unwrap(await api(`/agents/${service.agent.agent_id}/service`,{method:'POST',body:JSON.stringify(body)}));
-    closeService();toast(`已保存 ${service.agent.name} 的模型服务`);
+    unwrap(await api(`/agents/${agent.agent_id}/service`,{method:'POST',body:JSON.stringify(body)}));
+    if(service.dialog===dialog)closeService();
+    toast(`已保存 ${agent.name} 的模型服务`);
     await refresh();loadSessions();
-  }catch(e){$('#service-message').textContent=`没有保存：${e.message||e.code}`;}
-  finally{$('#service-save').disabled=false;}
+  }catch(e){if(service.dialog===dialog)$('#service-message').textContent=`没有保存：${e.message||e.code}`;}
+  finally{if(service.dialog===dialog)$('#service-save').disabled=false;}
 }
 $('#service-form').addEventListener('submit',saveService);
 $('#service-cancel').addEventListener('click',closeService);
 $('#close-service').addEventListener('click',closeService);
-$('#service-dialog').addEventListener('close',()=>{$('#service-key').value='';});
+$('#service-dialog').addEventListener('close',()=>{
+  service.dialog=null;
+  $('#service-key').value='';for(const input of document.querySelectorAll('#service-env .env-value'))input.value='';
+  resetServiceTest();
+});
 $('#service-test').addEventListener('click',testService);
 $('#service-own-check').addEventListener('click',checkOwnLogin);
 $('#service-key-from-env').addEventListener('change',e=>{setKeySource(e.target.checked);if(e.target.checked&&!$('#service-key-env').value){const p=(service.view?.presets||[]).find(p=>p.id===$('#service-preset').value);if(p?.env_key)$('#service-key-env').value=p.env_key;}});
+$('#service-protocol').addEventListener('change',()=>{
+  const p=(service.view?.presets||[]).find(p=>p.id===$('#service-preset').value);
+  if(p)$('#service-url').value=presetAddress(p);
+  servicePresets();resetServiceTest();
+});
+$('#service-url').addEventListener('input',servicePresets);
+$('#service-form').addEventListener('input',resetServiceTest);
 $('#service-preset').addEventListener('change',e=>{
   const p=(service.view?.presets||[]).find(p=>p.id===e.target.value);if(!p)return;
-  $('#service-url').value=p.base_url;showServiceTest(null);
+  $('#service-url').value=presetAddress(p);resetServiceTest();
   if($('#service-key-from-env').checked&&!$('#service-key-env').value&&p.env_key)$('#service-key-env').value=p.env_key;
 });
 $('#service-fill').addEventListener('click',()=>{
@@ -584,6 +682,12 @@ $('#service-env-add').addEventListener('click',()=>{$('#service-env').append(ser
 
 $('#new-session').addEventListener('click',()=>startNew());
 $('#hero-composer').addEventListener('submit',submitNew);
+$('#hero-input').addEventListener('input',e=>{
+  if(e.isComposing)return;
+  if(e.target.value.trimStart().startsWith('/')){
+    if($('#hero-error').hidden)submitNew(null,true);
+  }else{$('#hero-error').hidden=true;$('#hero-command-status').hidden=true;}
+});
 $('#hero-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey))submitNew(e);});
 $('#composer').addEventListener('submit',sendMessage);
 $('#composer-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)&&conv.record?.status==='idle')sendMessage(e);});

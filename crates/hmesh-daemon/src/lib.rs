@@ -459,8 +459,8 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
         instance.dir.clone(),
         instance.config.runtime.clone(),
         Arc::new(move |task| execution_state.authorize_execution(task)),
-        Some(Arc::new(move |endpoint: &str, key: &str| {
-            relay.route(endpoint, key)
+        Some(Arc::new(move |endpoint: &str, key: &str, protocol| {
+            relay.route(endpoint, key, protocol)
         })),
         shutdown.subscribe(),
     ));
@@ -566,7 +566,7 @@ async fn status(
     Ok(Json(
         json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":if s.instance.config.node.network == "tailscale" {"verified_at_startup"} else {"not_required"},
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","agent-service-relay-v1","pairing-auto-complete-v1"],"schema_version":9,"pair_code":hmesh_security::pair_code(&s.instance.card)}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.tasks()?.len(),"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1"],"schema_version":9,"pair_code":hmesh_security::pair_code(&s.instance.card)}),
     ))
 }
 async fn stop(
@@ -767,7 +767,7 @@ async fn register_config(
     mut config: AgentConfig,
     id: Uuid,
 ) -> std::result::Result<AgentCard, ApiError> {
-    config.validate()?;
+    config.prepare_registration()?;
     config.project.root = fs::canonicalize(&config.project.root).map_err(|_| {
         ApiError(MeshError::new(
             ErrorCode::ProjectNotFound,
@@ -863,7 +863,7 @@ async fn update_agent(
     Json(mut config): Json<AgentConfig>,
 ) -> ApiResult<AgentCard> {
     s.owner(&headers, &c)?;
-    config.validate()?;
+    config.prepare_registration()?;
     config.project.root = fs::canonicalize(&config.project.root).map_err(internal)?;
     let probe = hmesh_adapters::probe(
         &config,
@@ -886,10 +886,11 @@ async fn update_agent(
     card.availability = "unverified".into();
     card.probe.authentication = "not_checked".into();
     card.probe.managed_run = "not_checked".into();
-    card.probe.protocol_probe = "not_checked".into();
     card.probe.streaming = "not_checked".into();
-    card.probe.unavailable_reason =
-        Some("configuration changed; explicit model verification required".into());
+    if card.probe.version_supported {
+        card.probe.unavailable_reason =
+            Some("configuration changed; explicit model verification required".into());
+    }
     s.store.replace_agent(&card, &config)?;
     Ok(Json(card))
 }

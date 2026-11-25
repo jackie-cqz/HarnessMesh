@@ -44,8 +44,8 @@ async function openSession(page,group,agentName,message){
 // A model service on loopback that lists two models and records what it receives.
 async function modelService(){
  const seen=[];
- const server=createServer((req,res)=>{seen.push({method:req.method,url:req.url,authorization:req.headers.authorization||''});
-  if(req.method==='GET'&&req.url==='/v1/models'){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({object:'list',data:[{id:'m-one'},{id:'m-two'}]}));}
+ const server=createServer((req,res)=>{seen.push({method:req.method,url:req.url,authorization:req.headers.authorization||'',apiKey:req.headers['x-api-key']||''});
+  if(req.method==='GET'&&req.url.split('?')[0]==='/v1/models'){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({object:'list',data:[{id:'m-one'},{id:'m-two'}]}));}
   else if(req.method==='GET'&&req.url==='/many/v1/models'){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({object:'list',data:Array.from({length:120},(_,i)=>({id:'bulk-'+i}))}));}
   else{res.writeHead(404);res.end('not here');}
  });
@@ -56,7 +56,8 @@ const stream=page=>page.locator('#conversation-stream');
 const settle=page=>page.waitForTimeout(400);
 try{
  const a=await node('mac-a'),b=await node('mac-b');
- const local=register(a,'helper'),remote=register(b,'worker');register(a,'coder','opencode');
+ const local=register(a,'helper'),remote=register(b,'worker');register(a,'coder','opencode');register(b,'pico','pi');
+ register(a,'deepseek','dsh');
  // Fixture agents answering ACP auth/status the way claude-agent-acp does.
  register(a,'claude','claude-code',['--auth-status','subscription']);register(a,'stranger','claude-code',['--auth-status','none']);
  const models=await modelService();
@@ -64,7 +65,7 @@ try{
  const pairing=a.mesh.call(['pair','request','--peer',b.card.endpoint,'--expect-fingerprint',b.card.fingerprint]);
  b.mesh.call(['pair','approve',pairing.request_id,'--expect-fingerprint',a.card.fingerprint]);a.mesh.call(['pair','approve',pairing.request_id,'--expect-fingerprint',b.card.fingerprint]);
  const ready=await panel(a);
- browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1440,height:960}});
+ browser=await chromium.launch({headless:true,...(process.env.HMESH_CHROME?{executablePath:process.env.HMESH_CHROME}:{})});const page=await browser.newPage({viewport:{width:1440,height:960}});
  const problems=[];page.on('pageerror',e=>problems.push(e.message));page.on('console',m=>{if(m.type()==='error')problems.push(m.text());});
  await page.goto(ready.url);await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor({state:'attached'});
  stage='sidebar lists both computers\' agents';
@@ -72,8 +73,75 @@ try{
  await page.locator('#session-agents .session-group').filter({hasText:'mac-b'}).getByText('worker').waitFor();
  await settle(page);await page.screenshot({path:join(shots,'overview-light.png')});
  await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
- assert(await page.locator('#hero-agents .agent-chip').count()===5,'new-session screen does not offer every agent');
+ assert(await page.locator('#hero-agents .agent-chip').count()===7,'new-session screen does not offer every agent');
  await settle(page);await page.screenshot({path:join(shots,'sessions-empty.png')});
+ stage='slash suggestions on an approved remote Pi session';
+ b.mesh.call(['peers','access',a.card.node_id,'confirm']);
+ const sent=[];
+ page.on('request',r=>{
+   const path=new URL(r.url()).pathname;
+   if(r.method()==='POST'&&/^\/api\/sessions(?:$|\/[^/]+\/(?:prompt|config|command)$)/.test(path))sent.push({path,body:r.postDataJSON()});
+ });
+ await page.locator('#hero-agents .agent-chip').filter({hasText:'pico'}).click();
+ await page.locator('#hero-input').fill('/');
+ await page.locator('#command-help').filter({hasText:'等待执行端批准'}).waitFor();
+ const pendingId=await page.evaluate(()=>conv.selected);
+ assert(!!pendingId&&!sent.some(r=>r.body?.message),'discovering commands sent a first prompt');
+ assert(await page.locator('#command-options [role=option]').count()===0,'unapproved commands visible');
+ b.mesh.call(['session','approve',pendingId]);
+ const input=page.locator('#composer-input'),options=page.locator('#command-options');
+ const row=name=>options.getByRole('option').filter({has:page.getByText('/'+name,{exact:true})});
+ await row('compact').getByText('instructions',{exact:true}).waitFor({timeout:45000});
+ await row('model').waitFor();
+ await page.screenshot({path:join(shots,'session-commands.png')});
+ await page.setViewportSize({width:390,height:844});
+ assert(await page.locator('#command-options').evaluate(list=>list.clientWidth>0&&list.scrollWidth<=list.clientWidth),'command list overflows on mobile');
+ await page.locator('#composer').scrollIntoViewIfNeeded();await settle(page);
+ await page.screenshot({path:join(shots,'session-commands-mobile.png')});
+ await page.setViewportSize({width:1440,height:960});
+ assert(await row('models').count()===0,'Pi offered the OpenCode model spelling');
+ await row('model').click();
+ await options.getByRole('option').filter({hasText:'fixture-large'}).click();
+ await stream(page).getByText('已切换模型：fixture-large').waitFor();
+ assert(sent.some(r=>r.path.endsWith('/config')&&r.body.value==='fixture-large'),'model picker did not set the Pi session model');
+ assert(!sent.some(r=>r.path.endsWith('/prompt')||r.path.endsWith('/command')),'model selection sent a prompt');
+ await input.fill('/comp');await row('compact').waitFor();
+ await input.press('ArrowDown');await input.press('Tab');
+ assert(await input.inputValue()==='/compact ','Tab did not complete the native command');
+ await input.press('End');await input.pressSequentially('keep tests');
+ await input.press('Control+Enter');
+ await stream(page).getByText('Fixture compacted: keep tests',{exact:true}).waitFor();
+ await page.waitForFunction(()=>conv.record?.status==='idle');
+ assert(sent.some(r=>r.path.endsWith('/command')&&r.body.arguments==='keep tests'),'native command arguments missing');
+ const before=sent.length;
+ await input.fill('/omitted');await page.locator('#command-help').filter({hasText:'没有可用的 /omitted'}).waitFor();
+ await page.locator('#composer-send').click();assert(sent.length===before,'unknown slash command reached a model or command endpoint');
+ await input.fill('fixture:clear-commands');await page.locator('#composer-send').click();
+ await stream(page).getByText('Commands cleared',{exact:true}).waitFor();
+ await page.waitForFunction(()=>conv.record?.status==='idle');await input.fill('/');await row('model').waitFor();
+ assert(await row('compact').count()===0,'old commands survived an empty ACP announcement');
+ b.mesh.call(['peers','access',a.card.node_id,'auto']);
+ stage='OpenCode slash catalog and model alias';
+ await page.locator('#new-session').click();await page.locator('#hero-agents .agent-chip').filter({hasText:'coder'}).click();
+ await page.locator('#hero-input').fill('/');await row('models').waitFor();
+ assert(await row('model').count()===0,'OpenCode offered the Pi model spelling');
+ await input.fill('/models fixture-large');await page.locator('#composer-send').click();
+ await stream(page).getByText('已切换模型：fixture-large').waitFor();
+ await page.waitForFunction(()=>document.querySelector('#composer-input').value==='');
+ await input.fill('/');await row('compact').waitFor();await input.press('Escape');
+ assert(await page.locator('#command-menu').isHidden(),'Escape did not dismiss the list');
+ stage='DSH model shortcut without native commands';
+ await page.locator('#new-session').click();await page.locator('#hero-agents .agent-chip').filter({hasText:'deepseek'}).click();
+ await page.locator('#hero-input').fill('/');
+ await row('model').getByText(/面板快捷方式/).waitFor();
+ assert(await options.getByRole('option').count()===1,'DSH offered an unannounced command');
+ await row('model').click();
+ await options.getByRole('option').filter({hasText:'fixture-large'}).click();
+ await stream(page).getByText('已切换模型：fixture-large').waitFor();
+ const beforeUnknown=sent.length;
+ await input.fill('/compact');await page.locator('#command-help').filter({hasText:'没有可用的 /compact'}).waitFor();
+ await page.locator('#composer-send').click();
+ assert(sent.length===beforeUnknown,'unavailable DSH command was sent to the agent');
  stage='open remote session';
  await openSession(page,'mac-b','worker','fixture:permission');
  // The agent on mac-b asks for permission; mac-a opened the session, so mac-a answers.
@@ -196,12 +264,66 @@ try{
  await page.locator('#service-cancel').click();
  stage='its own login and presets';
  const openFor=async name=>{await page.locator('#agent-list .entity-card').filter({has:page.locator('.entity-name',{hasText:new RegExp('^'+name+'$')})}).getByRole('button',{name:'模型服务'}).click();await page.locator('#service-dialog[open]').waitFor();};
+ await openFor('deepseek');
+ const custom=page.locator('#service-modes').getByRole('radio',{name:/自定义地址/});
+ await custom.click();
+ // Check actual geometry before any locator action scrolls the dialog.
+ for(const width of [1280,390]){
+   await page.setViewportSize({width,height:720});
+   const geometry=await page.locator('#service-dialog').evaluate(dialog=>{
+     const bounds=dialog.getBoundingClientRect();
+     const close=dialog.querySelector('#close-service').getBoundingClientRect();
+     const save=dialog.querySelector('#service-save').getBoundingClientRect();
+     const fields=dialog.querySelector('.service-fields');
+     const footerBefore=save.bottom;
+     const originalScroll=fields.scrollTop;
+     fields.scrollTop=fields.scrollHeight;
+     const footerAfter=dialog.querySelector('#service-save').getBoundingClientRect().bottom;
+     fields.scrollTop=originalScroll;
+     return {visible:bounds.left>=0&&bounds.right<=innerWidth&&close.top>=bounds.top&&save.bottom<=bounds.bottom&&save.bottom<=innerHeight,
+       footerFixed:footerBefore===footerAfter,scrolls:fields.scrollHeight>fields.clientHeight,
+       horizontalOverflow:fields.scrollWidth>fields.clientWidth};
+   });
+   assert(geometry.visible&&geometry.footerFixed&&!geometry.horizontalOverflow,'model service actions or fields overflow at '+width);
+   if(width===390)assert(geometry.scrolls,'expected long mobile form to scroll inside the modal');
+ }
+ await page.setViewportSize({width:1440,height:960});
+ const format=page.locator('#service-protocol'),preset=page.locator('#service-preset');
+ assert(await format.locator('option').count()===3,'missing DSH custom protocols');
+ await format.selectOption('openai-chat');await preset.selectOption('deepseek');
+ assert(await page.locator('#service-url').inputValue()==='https://api.deepseek.com/v1','wrong OpenAI preset address');
+ await format.selectOption('anthropic-messages');
+ assert(await page.locator('#service-url').inputValue()==='https://api.deepseek.com/anthropic','protocol change kept the old preset URL');
+ await format.selectOption('openai-responses');
+ assert(await preset.inputValue()===''&&await page.locator('#service-url').inputValue()==='','unsupported preset left a stale address');
+ await page.locator('#service-url').fill(models.base);
+ await format.selectOption('anthropic-messages');
+ assert(await page.locator('#service-url').inputValue()===models.base,'manual address erased on a protocol change');
+ const dshKey='fixture-deepseek-1997';
+ await page.locator('#service-key').fill(dshKey);await page.locator('#service-model').fill('m-one');
+ await page.locator('#service-test').click();
+ await page.locator('#service-test-result.ok').waitFor();
+ assert(models.seen.at(-1).apiKey===dshKey&&!models.seen.at(-1).authorization,'wrong header or agent key in Messages request');
+ await page.locator('#service-save').click();await page.locator('#service-dialog').waitFor({state:'hidden'});
+ await openFor('deepseek');
+ assert(await format.inputValue()==='anthropic-messages','saved DSH protocol did not round-trip');
+ assert(await page.locator('#service-key').inputValue()===''&&!((await page.content()).includes(dshKey)),'DSH key returned to browser');
+ await page.locator('#service-cancel').click();
+ await openFor('helper');
+ await page.locator('#service-modes').getByRole('radio',{name:/单独给它一个 key/}).click();
+ await page.getByLabel('Agent 读取 Key 的变量名').fill('FIXTURE_MODEL_KEY');
+ await page.locator('#service-key').fill('generic-fixture-key');
+ await page.locator('#service-save').click();await page.locator('#service-dialog').waitFor({state:'hidden'});
+ await openFor('helper');
+ assert(await page.getByLabel('Agent 读取 Key 的变量名').inputValue()==='FIXTURE_MODEL_KEY','generic ACP key binding missing');
+ await page.locator('#service-cancel').click();
  await openFor('claude');
  await page.locator('#service-own.configured').filter({hasText:'它自己已经配好了'}).waitFor({timeout:30000});
  const own=await page.locator('#service-own').innerText();
  assert(own.includes('fixture@example.com')&&own.includes('Claude 订阅（max 套餐）'),'own login details missing: '+own);
  await settle(page);await page.screenshot({path:join(shots,'service-own.png')});
  await page.locator('#service-modes').getByRole('radio',{name:/自定义地址/}).click();
+ assert(await format.isDisabled()&&await format.inputValue()==='anthropic-messages','Claude offered unsupported protocols');
  assert(await page.locator('#service-preset').isVisible(),'no presets for Claude Code');
  const presetUrls=await page.locator('#service-preset option').evaluateAll(o=>o.map(x=>x.value).filter(Boolean));
  assert(presetUrls.includes('deepseek')&&!presetUrls.includes('openai'),'Claude Code presets not limited to Anthropic endpoints: '+presetUrls);
@@ -228,6 +350,15 @@ try{
  const usageText=await usageBox.innerText();
  assert(usageText.includes('1.2k / 128.0k')&&usageText.includes('总 40 · 输入 30 / 输出 10')&&usageText.includes('累计费用合计 $0.0125'),'session usage row incomplete: '+usageText);
  await settle(page);await usageBox.screenshot({path:join(shots,'session-usage.png')});
+ stage='compact navigation on mobile';
+ await page.setViewportSize({width:390,height:720});
+ const directory=page.locator('#sidebar-directory'),directoryToggle=page.locator('#sidebar-toggle');
+ assert(await directory.isHidden(),'mobile directory takes up space before being opened');
+ await directoryToggle.click();await directory.getByText('可用 Agent',{exact:true}).waitFor();
+ assert(await directoryToggle.getAttribute('aria-expanded')==='true','mobile directory state not announced');
+ await directoryToggle.click();assert(await directory.isHidden(),'mobile directory did not collapse');
+ await page.setViewportSize({width:1440,height:960});
+ assert(await directory.isVisible()&&await directoryToggle.isHidden(),'desktop directory was affected by the mobile toggle');
  stage='dark theme';
  await page.emulateMedia({colorScheme:'dark'});
  await page.locator('.session-row').filter({hasText:'fixture:reply'}).first().click();

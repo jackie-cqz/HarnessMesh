@@ -1,8 +1,8 @@
 //! Persistent queue executor and bounded, individually tracked managed runs.
 pub mod acp_conn;
 mod prepare;
-pub use prepare::inspect_references;
-pub use prepare::{agent_command, apply_env, run_secrets};
+pub use prepare::{RedactedStream, inspect_references, redact_text};
+pub use prepare::{agent_command, agent_launch, apply_env, run_secrets};
 pub mod git_version;
 pub mod process_tree;
 pub mod service;
@@ -22,7 +22,8 @@ use tokio::{
 
 pub type ExecutionAuthorizer = Arc<dyn Fn(&TaskRecord) -> Result<()> + Send + Sync>;
 /// The daemon's local model relay (see [`service::AgentService::relayed`]).
-pub type RelayFn = dyn Fn(&str, &str) -> anyhow::Result<service::Relayed> + Send + Sync;
+pub type RelayFn =
+    dyn Fn(&str, &str, service::Protocol) -> anyhow::Result<service::Relayed> + Send + Sync;
 pub type ServiceRelay = Arc<RelayFn>;
 pub async fn run_queue(
     store: Store,
@@ -208,12 +209,21 @@ async fn execute(
         .ok_or_else(|| MeshError::new(ErrorCode::TaskUnknown, "execution attempt lease missing"))?;
     let dir = data_dir.join("runs").join(attempt.to_string());
     let config = workspace::prepare(store, task, &config, &dir).map_err(failure)?;
-    let mut prepared = prepare::prepare(&config, task, &dir).map_err(failure)?;
-    if let Some(service) = service::load(data_dir, task.agent_id).map_err(failure)? {
-        let env = service
-            .launch_env(config.agent.harness, relay.map(|r| r as service::Relay))
-            .map_err(|e| MeshError::new(ErrorCode::AgentUnavailable, e.to_string()))?;
-        prepared.add_service(&env, service.secrets());
+    let service = service::load(data_dir, task.agent_id).map_err(failure)?;
+    let mut prepared = prepare::prepare(
+        &config,
+        task,
+        &dir,
+        data_dir,
+        service.as_ref(),
+        relay.map(|r| r as service::Relay),
+    )
+    .map_err(failure)?;
+    if let Some(models) = service
+        .as_ref()
+        .and_then(|s| service::ManagedModels::from_service(s, config.agent.harness))
+    {
+        prepared.driver.require_model(models.default);
     }
     if store.task(task.task_id)?.status == TaskStatus::Cancelling {
         store.transition(task.task_id, TaskStatus::Cancelled, None)?;

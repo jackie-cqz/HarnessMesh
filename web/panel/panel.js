@@ -18,7 +18,7 @@ if(location.hash)history.replaceState(null,'',location.pathname);
 function gate() { $('#access-gate').hidden=false; $('#app').hidden=true; $('#sync-state').textContent='需要访问链接'; }
 async function api(path, options={}) {
   if(options.method&&options.method!=='GET'&&path!=='/panel/stop'&&!canWrite())throw Object.assign(Error('面板处于只读模式，请查看运行版本与升级步骤。'),{code:'PANEL_READ_ONLY',submission_attempted:false});
-  const response=await fetch('/api'+path,{...options,credentials:'omit',redirect:'error',headers:{Authorization:`Bearer ${access}`,...(options.body?{'content-type':'application/json'}:{})},signal:AbortSignal.timeout(20000)});
+  const response=await fetch('/api'+path,{...options,credentials:'omit',redirect:'error',headers:{Authorization:`Bearer ${access}`,...(options.body?{'content-type':'application/json'}:{})},signal:options.signal??AbortSignal.timeout(20000)});
   if(response.status===401){gate();throw Error('访问令牌已失效，请从启动终端重新打开链接。');}
   const body=await response.json();
   if(!response.ok)throw Object.assign(Error(body.error?.code||`HTTP ${response.status}`),body.error||{},{preflight:body.preflight});

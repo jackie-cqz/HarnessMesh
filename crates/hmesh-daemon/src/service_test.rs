@@ -117,6 +117,28 @@ fn listed(bytes: &[u8]) -> Option<Vec<String>> {
     Some(names)
 }
 
+/// Some gateways return HTTP 200 with an error or with a reply from a
+/// different API. A fallback inference probe verifies the selected wire format.
+fn model_reply(protocol: Protocol, bytes: &[u8]) -> bool {
+    let Ok(reply) = serde_json::from_slice::<Value>(bytes) else {
+        return false;
+    };
+    if !reply["error"].is_null() {
+        return false;
+    }
+    match protocol {
+        Protocol::OpenAi => reply["choices"]
+            .as_array()
+            .is_some_and(|choices| choices.iter().any(|choice| choice["message"].is_object())),
+        Protocol::Anthropic => reply["type"] == "message" && reply["content"].is_array(),
+        Protocol::Responses => {
+            reply["object"] == "response"
+                && reply["output"].is_array()
+                && !matches!(reply["status"].as_str(), Some("failed" | "cancelled"))
+        }
+    }
+}
+
 /// The start of a service's answer with the key removed.
 fn snippet(key: &str, bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes).replace(key, "[REDACTED]");
@@ -198,7 +220,8 @@ pub(crate) async fn run(target: TestTarget) -> ServiceTestResult {
             return finish(false, Some(TESTED_BY_MODELS), list_url, vec![], message);
         }
         Answer::Status(status, bytes) if (200..300).contains(&status) => match listed(&bytes) {
-            Some(models) => {
+            Some(mut models) => {
+                models.retain(|id| !id.contains(&target.key));
                 let mut message = format!("connected; the service lists {} models", models.len());
                 if let Some(model) = &target.model
                     && !models.is_empty()
@@ -226,6 +249,17 @@ pub(crate) async fn run(target: TestTarget) -> ServiceTestResult {
     let model = target.model.clone().unwrap_or_default();
     match call(&client, &target, &request_url, Some(body), deadline).await {
         Answer::Unreachable(reason) => finish(false, None, request_url, vec![], reason),
+        Answer::Status(status, bytes)
+            if (200..300).contains(&status) && !model_reply(target.protocol, &bytes) =>
+        {
+            finish(
+                false,
+                Some(TESTED_BY_REQUEST),
+                request_url,
+                vec![],
+                "the endpoint did not return a model reply in the selected API format".into(),
+            )
+        }
         Answer::Status(status, _) if (200..300).contains(&status) => finish(
             true,
             Some(TESTED_BY_REQUEST),
@@ -264,6 +298,29 @@ mod tests {
             Some(vec!["local".to_owned()])
         );
         assert_eq!(listed(b"<html>not found</html>"), None);
+    }
+    #[test]
+    fn an_http_success_with_the_wrong_format_is_not_a_model_reply() {
+        let replies = [
+            (
+                Protocol::OpenAi,
+                br#"{"choices":[{"message":{"role":"assistant","content":"x"}}]}"#.as_slice(),
+            ),
+            (
+                Protocol::Anthropic,
+                br#"{"type":"message","content":[]}"#.as_slice(),
+            ),
+            (
+                Protocol::Responses,
+                br#"{"object":"response","output":[],"status":"completed"}"#.as_slice(),
+            ),
+        ];
+        for (actual, reply) in replies {
+            for (expected, _) in replies {
+                assert_eq!(model_reply(expected, reply), expected == actual);
+            }
+            assert!(!model_reply(actual, br#"{"error":"bad key"}"#));
+        }
     }
     #[test]
     fn answers_never_repeat_the_key() {

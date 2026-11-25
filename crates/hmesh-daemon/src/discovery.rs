@@ -122,7 +122,7 @@ fn executable_present(config: &AgentConfig) -> bool {
 }
 
 fn inspect(card: &AgentCard, config: &AgentConfig, actor: Actor, decision: Decision) -> Agent {
-    let supported_harness = card.harness != HarnessKind::Dsh;
+    let current_dsh = !config.is_legacy_dsh();
     let current_pi = !legacy_pi(config);
     let configuration_valid = config.validate().is_ok();
     let executable = executable_present(config);
@@ -146,8 +146,8 @@ fn inspect(card: &AgentCard, config: &AgentConfig, actor: Actor, decision: Decis
     let checks = vec![
         check(
             "LEGACY_DSH_UNSUPPORTED",
-            supported_harness,
-            "DSH does not provide ACP. On the execution computer, register an ACP agent such as OpenCode or Claude Code; keep the old registration for its history.",
+            current_dsh,
+            "This headless DSH registration predates ACP. On the execution computer, use hmesh agent update with this Agent ID and the official dsh executable, or register a new DSH Agent under a different name.",
         ),
         check(
             "LEGACY_PI_ADAPTER",
@@ -494,6 +494,8 @@ mod tests {
                     && !c.passed
                     && c.action.contains("ACP"))
         );
+        dsh.prepare_registration().unwrap();
+        assert!(inspect(&dsh_card, &dsh, owner, Decision::Allowed).session_ready);
         let mut pi = config.clone();
         let mut pi_card = card.clone();
         pi.agent.harness = HarnessKind::Pi;

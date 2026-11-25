@@ -15,6 +15,10 @@ mod panel;
 mod startup;
 mod storage;
 
+fn parse_provider_protocol(value: &str) -> serde_json::Result<hmesh_core::service::Protocol> {
+    serde_json::from_value(json!(value))
+}
+
 #[derive(Parser)]
 #[command(name = "hmesh", version, about = "Local-first coding harness mesh")]
 struct Cli {
@@ -448,6 +452,12 @@ enum AgentCommand {
         /// Endpoint address for the custom mode.
         #[arg(long, conflicts_with = "preset")]
         base_url: Option<String>,
+        /// Wire format for a custom endpoint: openai-chat, anthropic-messages or openai-responses.
+        #[arg(long, value_parser = parse_provider_protocol)]
+        protocol: Option<hmesh_core::service::Protocol>,
+        /// Provider key variable that a generic ACP agent reads.
+        #[arg(long)]
+        key_variable: Option<String>,
         /// Use a known provider's address for the custom mode (the presets
         /// listed for this agent type).
         #[arg(long)]
@@ -459,7 +469,7 @@ enum AgentCommand {
         /// Model new sessions start with; an empty value removes it.
         #[arg(long)]
         default_model: Option<String>,
-        /// OpenCode with a custom endpoint: offer this model (repeatable;
+        /// For OpenCode, Pi or DSH on a custom endpoint: offer this model (repeatable;
         /// the complete list). Without --model the stored list is kept.
         #[arg(long = "model")]
         models: Vec<String>,
@@ -526,6 +536,17 @@ enum SessionCommand {
         session_id: Uuid,
         #[arg(long)]
         message: String,
+    },
+    /// Discover commands offered by this session, starting its agent if needed.
+    Commands {
+        session_id: Uuid,
+    },
+    /// Run a command advertised by this session, e.g. compact.
+    Command {
+        session_id: Uuid,
+        name: String,
+        #[arg(long, default_value = "")]
+        arguments: String,
     },
     /// Read events after a sequence number (waits up to --wait seconds for new ones).
     Events {
@@ -711,12 +732,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
     } = &cli.command
     {
         let found = hmesh_core::detect_installed_agents();
-        let missing: Vec<Value> = [
-            HarnessKind::Opencode,
-            HarnessKind::ClaudeCode,
-            HarnessKind::Codex,
-            HarnessKind::Pi,
-        ]
+        let missing: Vec<Value> = HarnessKind::KNOWN_ACP_AGENTS
         .into_iter()
         .filter(|h| !found.iter().any(|f| f.harness == *h))
         .map(|h| json!({"harness":h,"command":h.acp_command(),"install":h.acp_package().map(|p| format!("npm install -g {p}"))}))
@@ -1221,6 +1237,8 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                     agent_id,
                     mode,
                     base_url,
+                    protocol,
+                    key_variable,
                     preset,
                     check,
                     default_model,
@@ -1237,17 +1255,23 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         } => {
             let path = format!("/local/agents/{agent_id}/service");
             let current: hmesh_core::service::AgentServiceView = if check {
-                client.post(&format!("{path}/check"), &json!({})).await?
+                client
+                    .post(&format!("{path}/check?protocols=true"), &json!({}))
+                    .await?
             } else {
-                client.get(&path).await?
+                client.get(&format!("{path}?protocols=true")).await?
             };
+            let selected_protocol = protocol.or(current.protocol);
             let base_url = match preset {
                 Some(id) => Some(
                     current
                         .presets
                         .iter()
                         .find(|p| p.id == id)
-                        .map(|p| p.base_url.clone())
+                        .and_then(|p| match selected_protocol {
+                            Some(format) => p.addresses.get(&format).cloned(),
+                            None => Some(p.base_url.clone()),
+                        })
                         .with_context(|| {
                             format!(
                                 "preset {id:?} has no address this agent type can use; the usable presets are listed by `hmesh agent service {agent_id}`"
@@ -1257,6 +1281,8 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 None => base_url,
             };
             let changing = mode.is_some()
+                || protocol.is_some()
+                || key_variable.is_some()
                 || base_url.is_some()
                 || api_key_env.is_some()
                 || default_model.is_some()
@@ -1324,12 +1350,21 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                     "api_key":api_key,
                     "env":env,
                 });
+                if let Some(protocol) = protocol {
+                    body["protocol"] = json!(protocol);
+                }
+                if let Some(name) = key_variable {
+                    body["key_variable"] = json!(name);
+                }
                 // Sent only when given, so daemons without it accept the request.
                 if let Some(name) = api_key_env {
                     body["api_key_env"] = json!(name);
                 }
                 client
-                    .post::<_, hmesh_core::service::AgentServiceView>(&path, &body)
+                    .post::<_, hmesh_core::service::AgentServiceView>(
+                        &format!("{path}?protocols=true"),
+                        &body,
+                    )
                     .await?
             };
             if test {
@@ -1407,6 +1442,30 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                     .post(
                         &format!("/local/sessions/{session_id}/prompt"),
                         &json!({"message":message}),
+                    )
+                    .await?
+            }
+            SessionCommand::Commands { session_id } => {
+                client
+                    .post_with_timeout(
+                        &format!("/local/sessions/{session_id}/commands"),
+                        &json!({}),
+                        40,
+                    )
+                    .await?
+            }
+            SessionCommand::Command {
+                session_id,
+                name,
+                arguments,
+            } => {
+                client
+                    .post(
+                        &format!("/local/sessions/{session_id}/command"),
+                        &hmesh_core::sessions::RunSessionCommand {
+                            name: name.strip_prefix('/').unwrap_or(&name).to_owned(),
+                            arguments,
+                        },
                     )
                     .await?
             }

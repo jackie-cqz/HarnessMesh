@@ -18,7 +18,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
-use hmesh_runtime::service::Relayed;
+use hmesh_runtime::service::{Protocol, Relayed};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -70,6 +70,7 @@ const DROPPED_RESPONSE: &[&str] = &[
 struct Route {
     endpoint: String,
     key: String,
+    protocol: Protocol,
 }
 
 #[derive(Clone)]
@@ -95,9 +96,9 @@ impl ModelRelay {
     }
 
     /// The relay address and token an agent uses for this endpoint and key.
-    /// The same endpoint and key keep their token, so agents already running
+    /// The same endpoint, key and protocol keep their token, so agents already running
     /// are not cut off; must be called inside the daemon's runtime.
-    pub fn route(&self, endpoint: &str, key: &str) -> anyhow::Result<Relayed> {
+    pub fn route(&self, endpoint: &str, key: &str, protocol: Protocol) -> anyhow::Result<Relayed> {
         let address = self.address()?;
         let mut routes = self
             .routes
@@ -105,7 +106,7 @@ impl ModelRelay {
             .map_err(|_| anyhow::anyhow!("model relay lock poisoned"))?;
         let token = match routes
             .iter()
-            .find(|(_, r)| r.endpoint == endpoint && r.key == key)
+            .find(|(_, r)| r.endpoint == endpoint && r.key == key && r.protocol == protocol)
         {
             Some((token, _)) => token.clone(),
             None => {
@@ -115,6 +116,7 @@ impl ModelRelay {
                     Route {
                         endpoint: endpoint.to_owned(),
                         key: key.to_owned(),
+                        protocol,
                     },
                 );
                 token
@@ -201,7 +203,7 @@ async fn forward(
     else {
         return refuse(StatusCode::NOT_FOUND, "not a HarnessMesh relay path");
     };
-    let token = headers
+    let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| {
@@ -209,12 +211,18 @@ async fn forward(
                 .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
         })
         .map(|(_, token)| token.trim().to_owned());
-    let route = token.and_then(|token| {
-        shared
-            .routes
-            .lock()
-            .ok()
-            .and_then(|routes| routes.get(&token).cloned())
+    let anthropic = headers.get("x-api-key").and_then(|v| v.to_str().ok());
+    let route = shared.routes.lock().ok().and_then(|routes| {
+        match (bearer.as_deref(), anthropic) {
+            (Some(token), None) => routes
+                .get(token)
+                .filter(|r| r.protocol != Protocol::Anthropic),
+            (None, Some(token)) => routes
+                .get(token)
+                .filter(|r| r.protocol == Protocol::Anthropic),
+            _ => None,
+        }
+        .cloned()
     });
     let Some(route) = route else {
         return refuse(
@@ -256,7 +264,10 @@ async fn forward(
         }
     }
     if !route.key.is_empty() {
-        request = request.bearer_auth(&route.key);
+        request = match route.protocol {
+            Protocol::Anthropic => request.header("x-api-key", &route.key),
+            _ => request.bearer_auth(&route.key),
+        };
     }
     if !body.is_empty() {
         request = request.body(body);
@@ -285,7 +296,11 @@ async fn forward(
             out = out.header(name, value);
         }
     }
-    let fix = Fix::for_reply(&reply_headers);
+    let fix = if route.protocol == Protocol::OpenAi {
+        Fix::for_reply(&reply_headers)
+    } else {
+        Fix::Raw
+    };
     out.body(Body::from_stream(relay_body(response, fix)))
         .unwrap_or_else(|_| refuse(StatusCode::BAD_GATEWAY, "unusable reply"))
 }
@@ -536,8 +551,15 @@ mod tests {
         });
         let (_stop, stopped) = watch::channel(false);
         let relay = ModelRelay::new(stopped);
-        let route = relay.route(&base, "sk-unit-0123456789").unwrap();
-        assert_eq!(relay.route(&base, "sk-unit-0123456789").unwrap(), route);
+        let route = relay
+            .route(&base, "sk-unit-0123456789", Protocol::OpenAi)
+            .unwrap();
+        assert_eq!(
+            relay
+                .route(&base, "sk-unit-0123456789", Protocol::OpenAi)
+                .unwrap(),
+            route
+        );
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let mut reply = client
             .get(format!("{}/chat/completions", route.url))

@@ -1083,6 +1083,7 @@ nav{display:flex;flex-direction:column;gap:2px}
 .nav-count{margin-left:auto;min-width:16px;height:16px;padding:0 5px;border-radius:999px;background:var(--amber-tint);color:var(--amber-strong);font:600 10px/16px var(--mono);text-align:center}
 .sidebar-scroll{flex:1;min-height:0;overflow:auto;margin-top:10px;padding-bottom:8px;scrollbar-width:none}
 .sidebar-scroll::-webkit-scrollbar{display:none}
+.sidebar-toggle{display:none}
 .side-section+.side-section{margin-top:10px}
 .side-label{display:flex;align-items:center;gap:4px;width:100%;height:30px;padding:0 8px;border:0;background:transparent;color:var(--foreground);opacity:.5;font-size:13px;text-align:left}
 .side-label:hover{opacity:.8}
@@ -1149,6 +1150,13 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 .task-title{font-weight:500}
 @media(max-width:1100px){.sidebar{width:232px}main{margin-left:232px}.toast{left:calc(50% + 116px)}}
 @media(max-width:700px){.sidebar{width:100%;position:static}main{margin-left:0}nav{flex-direction:row}.sidebar-scroll{max-height:200px}.toast{left:50%}.nav-item{height:30px}.nav-item>svg{display:none}}
+@media(max-width:700px){
+  .sidebar-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .sidebar-heading .brand{padding-block:6px}
+  .sidebar-toggle{display:flex;align-items:center;gap:5px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--foreground);font-size:12px}
+  .sidebar-toggle[aria-expanded="true"] svg{transform:rotate(180deg)}
+  .sidebar-heading:has(.sidebar-toggle[aria-expanded="false"])~.sidebar-scroll{display:none}
+}
 
 /* ---------------------------------------------------------------------------
    Sessions in codeg's shape: list in the app sidebar, a centered 768px
@@ -1318,14 +1326,25 @@ main:has(#app[data-page="sessions"]) footer{display:none}
 .setting-pill.toggle[aria-pressed="true"]{color:var(--foreground);background:var(--secondary)}
 
 /* Model service dialog */
-.service-dialog{width:min(600px,94vw)}
+.service-dialog{width:min(640px,calc(100vw - 24px));max-height:calc(100vh - 24px);max-height:calc(100dvh - 24px);padding:0;overflow:hidden;--service-padding:24px}
+.service-dialog[open]{display:flex;flex-direction:column}
+.service-dialog .dialog-heading{flex:none;gap:12px;margin:0;padding:14px var(--service-padding)}
+.service-dialog .dialog-heading>div{min-width:0;overflow-wrap:anywhere}
+.service-dialog .dialog-heading .icon-button{flex:none}
 .service-dialog .dialog-heading p{margin:2px 0 0;font-size:12px}
+#service-form{display:flex;flex-direction:column;min-height:0}
+.service-fields{min-height:0;overflow:auto;overscroll-behavior:contain;padding:14px var(--service-padding)}
+.service-footer{flex:none;padding:10px var(--service-padding);border-top:1px solid var(--border)}
+.service-footer .confirm-actions{margin-top:0}
+#service-message{overflow-wrap:anywhere;max-height:5em;overflow:auto}
+#service-message:empty{display:none}
 .service-modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:4px 0 18px}
 .service-mode{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--background);color:var(--foreground);text-align:left}
 .service-mode span{color:var(--muted);font-size:12px;line-height:1.5}
 .service-mode:hover{background:var(--secondary)}
 .service-mode[aria-checked="true"]{border-color:var(--foreground);box-shadow:var(--shadow)}
-.service-dialog .form-grid{grid-template-columns:1fr}
+.service-dialog .form-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.service-dialog #service-protocol-label:has(+ #service-preset-label[hidden]){grid-column:1/-1}
 .service-dialog [hidden]{display:none}
 .service-env{margin:14px 0 4px;font-size:13px}
 .service-env summary{cursor:pointer;color:var(--muted)}
@@ -1409,3 +1428,23 @@ footer{margin-top:28px}
 .pair-sent-title{font-size:15px;font-weight:600}
 .pair-digits{display:inline-block;margin:6px 0 14px;padding:10px 18px;border:1px solid var(--border);border-radius:12px;font:600 26px/1.2 var(--mono);letter-spacing:.22em}
 @media(max-width:700px){.pair-own{flex-direction:column}}
+@media(max-width:540px){
+  .service-dialog{--service-padding:14px}
+  .service-dialog .form-grid{grid-template-columns:minmax(0,1fr)}
+  .service-modes{grid-template-columns:minmax(0,1fr);gap:4px}
+  .service-mode{padding:8px 10px}
+}
+
+/* Session-specific slash commands stay attached to the active composer. */
+.command-menu{border-bottom:1px solid var(--border);padding:5px}
+.command-menu[hidden]{display:none}
+#command-options{max-height:min(28vh,232px);overflow:auto;overscroll-behavior:contain}
+.command-option{display:grid;grid-template-columns:minmax(7em,auto) minmax(0,1fr);align-items:baseline;gap:2px 16px;padding:7px 10px;border-radius:6px;cursor:pointer;color:var(--foreground)}
+.command-option[aria-selected="true"],.command-option:hover{background:var(--secondary)}
+.command-name{font:600 12px/1.5 var(--mono);overflow-wrap:anywhere}
+.command-name .icon{vertical-align:middle;margin-left:5px}
+.command-description,.command-argument,.command-help,.command-status{font:12px/1.5 var(--body);color:var(--muted);overflow-wrap:anywhere}
+.command-argument{grid-column:2;font-style:italic}
+.command-help{margin:0;padding:5px 10px}
+.command-status{margin:0}
+@media(max-width:600px){.command-option{grid-template-columns:minmax(0,1fr);gap:1px}.command-argument{grid-column:1}}

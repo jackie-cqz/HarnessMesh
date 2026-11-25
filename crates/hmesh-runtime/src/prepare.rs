@@ -9,61 +9,66 @@ use std::{
 };
 use tokio::process::Command;
 
+/// Redact known secrets before text reaches persistent task or session events.
+pub fn redact_text(secrets: &[String], value: &str) -> String {
+    let mut text = value.to_owned();
+    for secret in secrets.iter().filter(|s| s.len() >= 8) {
+        text = text.replace(secret, "[REDACTED]");
+    }
+    text
+}
+
+/// Keep only the suffix which could start a credential in the next delta.
+/// Each independent text stream has its own pending suffix.
+#[derive(Default)]
+pub struct RedactedStream {
+    suffix: String,
+}
+impl RedactedStream {
+    pub fn push(&mut self, secrets: &[String], delta: &str) -> String {
+        let mut text = std::mem::take(&mut self.suffix);
+        text.push_str(delta);
+        text = redact_text(secrets, &text);
+        let mut keep_from = text.len();
+        for secret in secrets.iter().filter(|s| s.len() >= 8) {
+            let mut start = text.len().saturating_sub(secret.len() - 1);
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            for (index, _) in text[start..keep_from.max(start)].char_indices() {
+                let i = start + index;
+                if secret.starts_with(&text[i..]) {
+                    keep_from = i;
+                    break;
+                }
+            }
+        }
+        self.suffix = text.split_off(keep_from);
+        text
+    }
+
+    pub fn finish(&mut self) -> String {
+        std::mem::take(&mut self.suffix)
+    }
+}
+
 pub struct Prepared {
     pub command: Command,
     /// Drives the ACP turn: initialize, session/new, the prompt, and answers
     /// to the agent's permission requests.
     pub driver: AcpTaskDriver,
     pub(super) secrets: Vec<String>,
-    pending_text: String,
+    pending_text: RedactedStream,
 }
 impl Prepared {
-    /// Start the agent with its owner's model service settings and keep
-    /// their secret values out of recorded output.
-    pub fn add_service(&mut self, env: &[(String, Option<String>)], secrets: Vec<String>) {
-        apply_env(&mut self.command, env);
-        self.secrets.extend(secrets);
-        self.secrets.sort();
-        self.secrets.dedup();
-    }
     pub fn redact_stream(&mut self, delta: &str) -> String {
-        self.pending_text.push_str(delta);
-        for secret in &self.secrets {
-            if secret.len() >= 8 {
-                self.pending_text = self.pending_text.replace(secret, "[REDACTED]");
-            }
-        }
-        let retain = self
-            .secrets
-            .iter()
-            .filter(|s| s.len() >= 8)
-            .map(String::len)
-            .max()
-            .unwrap_or(1)
-            - 1;
-        let mut bound = self.pending_text.len().saturating_sub(retain);
-        while !self.pending_text.is_char_boundary(bound) {
-            bound -= 1;
-        }
-        let remainder = self.pending_text.split_off(bound);
-        let ready = std::mem::replace(&mut self.pending_text, remainder);
-        self.redact_full(&ready)
+        self.pending_text.push(&self.secrets, delta)
     }
     pub fn flush_text(&mut self) -> String {
-        let pending = std::mem::take(&mut self.pending_text);
-        self.redact_full(&pending)
-    }
-    fn redact_full(&self, value: &str) -> String {
-        let mut value = value.to_owned();
-        for secret in &self.secrets {
-            if secret.len() >= 8 {
-                value = value.replace(secret, "[REDACTED]");
-            }
-        }
-        value
+        self.pending_text.finish()
     }
     pub fn redact(&self, value: &str) -> String {
-        let mut value = self.redact_full(value);
+        let mut value = redact_text(&self.secrets, value);
         let mut bound = value.len().min(4096);
         while !value.is_char_boundary(bound) {
             bound -= 1;
@@ -125,10 +130,8 @@ pub fn apply_env(command: &mut Command, env: &[(String, Option<String>)]) {
         };
     }
 }
-/// The ACP launch command for an Agent: its executable and ACP arguments, run
-/// in the project with the daemon's environment so the agent uses its own
-/// login and model settings.
-pub fn agent_command(config: &AgentConfig) -> Result<Command> {
+/// Build the executable and working directory before adding the adapter's arguments.
+fn base_command(config: &AgentConfig) -> Result<Command> {
     config.validate()?;
     if config
         .adapter
@@ -143,12 +146,72 @@ pub fn agent_command(config: &AgentConfig) -> Result<Command> {
     }
     let executable = resolve_configured_executable(config)?;
     let mut command = executable.command();
-    command
-        .args(config.launch_args())
-        .current_dir(native_path(&config.project.root));
+    command.current_dir(native_path(&config.project.root));
     Ok(command)
 }
-pub fn prepare(config: &AgentConfig, task: &TaskRecord, directory: &Path) -> Result<Prepared> {
+
+pub fn agent_command(config: &AgentConfig) -> Result<Command> {
+    let mut command = base_command(config)?;
+    command.args(config.launch_args());
+    Ok(command)
+}
+
+/// The same launch configuration serves interactive sessions and one-shot tasks.
+pub fn agent_launch(
+    config: &AgentConfig,
+    data_dir: &Path,
+    agent: uuid::Uuid,
+    service: Option<&crate::service::AgentService>,
+    previous_model: Option<&str>,
+    relay: Option<crate::service::Relay>,
+) -> Result<(Command, Vec<String>)> {
+    let mut secrets = run_secrets(config);
+    let Some(service) = service else {
+        return Ok((agent_command(config)?, secrets));
+    };
+    let mut command = base_command(config)?;
+    let harness = config.agent.harness;
+    let args = config.launch_args();
+    let env = service.launch_env(harness, relay)?;
+    if relay.is_some() && service.relayed(harness).is_some() {
+        secrets.extend(env.iter().filter_map(|(name, value)| {
+            if name == crate::service::OPENCODE_KEY_VAR {
+                value.clone()
+            } else {
+                None
+            }
+        }));
+    }
+    apply_env(&mut command, &env);
+    if harness == HarnessKind::Dsh {
+        crate::service::dsh::launch_args(
+            &mut command,
+            &args,
+            data_dir,
+            agent,
+            service,
+            previous_model,
+        )?;
+    } else {
+        command.args(args);
+    }
+    if harness == HarnessKind::Pi {
+        crate::service::pi::configure(&mut command, data_dir, agent, service)?;
+    }
+    secrets.extend(service.secrets());
+    secrets.sort();
+    secrets.dedup();
+    Ok((command, secrets))
+}
+
+pub fn prepare(
+    config: &AgentConfig,
+    task: &TaskRecord,
+    directory: &Path,
+    data_dir: &Path,
+    service: Option<&crate::service::AgentService>,
+    relay: Option<crate::service::Relay>,
+) -> Result<Prepared> {
     let supported = ["read", "write", "edit", "bash", "grep", "find", "ls"];
     if config
         .project
@@ -159,7 +222,7 @@ pub fn prepare(config: &AgentConfig, task: &TaskRecord, directory: &Path) -> Res
         bail!("unsupported tool name in local allowlist");
     }
     fs::create_dir_all(directory)?;
-    let command = agent_command(config)?;
+    let (command, secrets) = agent_launch(config, data_dir, task.agent_id, service, None, relay)?;
     let prompt = if task.request.inputs.is_empty() {
         task.request.goal.clone()
     } else {
@@ -178,8 +241,8 @@ pub fn prepare(config: &AgentConfig, task: &TaskRecord, directory: &Path) -> Res
     Ok(Prepared {
         command,
         driver,
-        secrets: run_secrets(config),
-        pending_text: String::new(),
+        secrets,
+        pending_text: RedactedStream::default(),
     })
 }
 
@@ -219,7 +282,7 @@ mod tests {
             command: Command::new("unused"),
             driver: AcpTaskDriver::new(Path::new("/"), "", vec![], &[]),
             secrets: vec![secret.into()],
-            pending_text: String::new(),
+            pending_text: RedactedStream::default(),
         };
         let mut output = String::new();
         for chunk in [
@@ -241,7 +304,7 @@ mod tests {
             command: Command::new("unused"),
             driver: AcpTaskDriver::new(Path::new("/"), "", vec![], &[]),
             secrets: vec![secret.into()],
-            pending_text: String::new(),
+            pending_text: RedactedStream::default(),
         };
         let prefix = "中🙂\n\u{0000}\"\\".repeat(10000);
         let mut output = prepared.redact_stream(&format!("{prefix}fixture-secret-value-"));
@@ -277,6 +340,49 @@ mod tests {
             args(&agent_command(&config("acp", json!(["--acp", "--quiet"]))).unwrap()),
             ["--acp", "--quiet"]
         );
-        assert!(agent_command(&config("dsh", json!([]))).is_err());
+        let mut dsh = config("dsh", json!([]));
+        assert!(
+            agent_command(&dsh)
+                .unwrap_err()
+                .to_string()
+                .contains("legacy headless DSH")
+        );
+        dsh.prepare_registration().unwrap();
+        assert_eq!(args(&agent_command(&dsh).unwrap()), ["--profile", "acp"]);
+        for invalid in [
+            json!(["--profile", "headless"]),
+            json!(["plugin", "--profile", "acp"]),
+        ] {
+            assert!(config("dsh", invalid).prepare_registration().is_err());
+        }
+        for acp in [vec!["acp"], vec!["--patch", "extra.yml", "--profile=acp"]] {
+            assert_eq!(
+                args(&agent_command(&config("dsh", json!(acp))).unwrap()),
+                acp
+            );
+        }
+    }
+
+    #[test]
+    fn dsh_npm_shims_launch_the_official_js_entry_with_node() {
+        let temp = tempfile::tempdir().unwrap();
+        let shim = temp.path().join("dsh.cmd");
+        fs::write(&shim, "unused shell wrapper").unwrap();
+        let entry = temp.path().join("node_modules/@deepseek-ai/dsh/lib/bin.js");
+        fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        fs::write(&entry, "").unwrap();
+        let node = std::env::current_exe().unwrap();
+        let mut config: AgentConfig = serde_json::from_value(json!({
+            "agent":{"name":"dsh","harness":"dsh","project_id":"demo"},
+            "project":{"root":temp.path(),"allowed_tools":["read"]},
+            "adapter":{"executable":shim,"node_executable":node}
+        }))
+        .unwrap();
+        config.prepare_registration().unwrap();
+        let command = agent_command(&config).unwrap();
+        assert_eq!(Path::new(command.as_std().get_program()), node);
+        let argv: Vec<_> = command.as_std().get_args().collect();
+        assert_eq!(Path::new(argv[0]), entry);
+        assert_eq!(&argv[1..], ["--profile", "acp"]);
     }
 }

@@ -523,6 +523,62 @@ async fn answer(owner: &Owner, id: Uuid, allow: bool) -> SessionRecord {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn resume_only_agent_keeps_its_session_id_and_context_after_a_failed_restore() {
+    let root = tempfile::tempdir().unwrap();
+    let node = init(root.path(), "solo");
+    let agent = register_as(
+        &node,
+        &root.path().join("project"),
+        "resume",
+        "dsh",
+        &["--profile", "acp"],
+    );
+    let daemon = Daemon::start(&node.dir);
+    daemon.ready().await;
+    let session = open(
+        &daemon.owner(),
+        json!({"agent_id":agent,"message":"fixture:echo one"}),
+    )
+    .await;
+    let id = session.session_id;
+    let (first, _) = turn_done(&daemon.owner(), id, 1).await;
+    assert_eq!(first.last_final_text.as_deref(), Some("Echo #1: one"));
+    daemon.stop().await;
+
+    // Simulate an agent whose persisted state is temporarily unavailable.
+    let saved = std::env::temp_dir()
+        .join("hmesh-fixture-sessions")
+        .join(format!(
+            "{}.json",
+            first.agent_session_id.as_deref().unwrap()
+        ));
+    let backup = saved.with_extension("bak");
+    std::fs::rename(&saved, &backup).unwrap();
+    let daemon = Daemon::start(&node.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    prompt(&owner, id, "fixture:echo must not run").await;
+    let (failed, _) = until(&owner, id, |r, _| r.status == SessionStatus::Idle).await;
+    assert!(failed.last_error.unwrap().contains("session/resume"));
+    assert_eq!(failed.agent_session_id, first.agent_session_id);
+    assert_eq!(failed.turns, 1);
+
+    std::fs::rename(&backup, &saved).unwrap();
+    prompt(&owner, id, "fixture:echo two").await;
+    let (resumed, events) = turn_done(&owner, id, 2).await;
+    assert_eq!(resumed.agent_session_id, first.agent_session_id);
+    assert_eq!(resumed.last_final_text.as_deref(), Some("Echo #2: two"));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == "agent_message_chunk")
+            .count(),
+        2
+    );
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rejected_permissions_depth_and_running_children_are_enforced() {
     unsafe { std::env::set_var("HMESH_MCP_COMMAND", env!("CARGO_BIN_EXE_hmesh-fixture")) };
     let root = tempfile::tempdir().unwrap();
@@ -935,9 +991,13 @@ async fn fake_model_service() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Se
                         "200 OK",
                         r#"{"object":"list","data":[{"id":"m-one"},{"id":"m-two"}]}"#.to_owned(),
                     ),
-                    ("POST", "/unlisted/v1/chat/completions" | "/unlisted/v1/responses") => (
+                    ("POST", "/unlisted/v1/chat/completions") => (
                         "200 OK",
                         r#"{"choices":[{"message":{"content":"p"}}]}"#.to_owned(),
+                    ),
+                    ("POST", "/unlisted/v1/responses") => (
+                        "200 OK",
+                        r#"{"object":"response","status":"completed","output":[]}"#.to_owned(),
                     ),
                     ("GET", "/locked/v1/models") => (
                         "401 Unauthorized",
@@ -1286,6 +1346,23 @@ async fn model_lists_reach_opencode_and_connection_tests_ask_for_models_first() 
     );
     assert_eq!(requests[0].authorization, format!("Bearer {key}"));
 
+    let legacy: Value = owner
+        .get(&format!("/local/agents/{opencode}/service"))
+        .await
+        .unwrap();
+    assert!(legacy.get("protocols").is_none());
+    assert!(legacy["presets"][0].get("addresses").is_none());
+    let current: Value = owner
+        .get(&format!("/local/agents/{opencode}/service?protocols=true"))
+        .await
+        .unwrap();
+    assert_eq!(current["protocol"], "openai-chat");
+    assert_eq!(current["protocols"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        current["presets"][0]["addresses"]["anthropic-messages"],
+        "https://api.deepseek.com/anthropic"
+    );
+
     // Save the list; the agent process gets every model and only them.
     let saved = set_service(
         &owner,
@@ -1595,8 +1672,8 @@ async fn model_service_settings_reach_the_agent_redacted_and_stay_on_its_compute
     let path = format!("/local/agents/{agent}/service");
 
     let fresh: service::AgentServiceView = owner.get(&path).await.unwrap();
-    assert_eq!((fresh.mode.as_str(), fresh.modes.len()), ("agent_login", 1));
-    // A generic ACP agent takes only extra variables, not key modes.
+    assert_eq!((fresh.mode.as_str(), fresh.modes.len()), ("agent_login", 2));
+    // A generic ACP agent must declare which variable its provider reads.
     let refused = owner
         .post::<_, service::AgentServiceView>(
             &path,
@@ -1609,10 +1686,10 @@ async fn model_service_settings_reach_the_agent_redacted_and_stay_on_its_compute
     let view = set_service(
         &owner,
         agent,
-        json!({"mode":"agent_login","default_model":"fixture-large","env":{"FIXTURE_SERVICE_TOKEN":secret}}),
+        json!({"mode":"api_key","default_model":"fixture-large","key_variable":"FIXTURE_SERVICE_TOKEN","api_key":secret}),
     )
     .await;
-    assert_eq!(view.env[0].value.last4.as_deref(), Some("6789"));
+    assert_eq!(view.api_key.last4.as_deref(), Some("6789"));
     let shown = serde_json::to_string(&owner.get::<Value>(&path).await.unwrap()).unwrap();
     assert!(!shown.contains(secret), "{shown}");
     #[cfg(unix)]
@@ -1639,6 +1716,69 @@ async fn model_service_settings_reach_the_agent_redacted_and_stay_on_its_compute
     );
     assert_eq!(done.last_final_text.as_deref(), Some(expected.as_str()));
     assert!(!serde_json::to_string(&events).unwrap().contains(secret));
+    // A provider can split a credential over several ACP frames and interleave
+    // thoughts and replies. Both streams must stay safe before persistence.
+    for ending in ["end", "error", "cancel"] {
+        let split = open(
+            &owner,
+            json!({"agent_id":agent,"message":format!("fixture:split-key {ending}")}),
+        )
+        .await;
+        let gather = |events: &[SessionEvent], kind: &str| -> String {
+            events
+                .iter()
+                .filter(|e| e.kind == kind)
+                .filter_map(|e| e.payload["text"].as_str())
+                .collect()
+        };
+        let (_, events) = match ending {
+            "error" => {
+                until(&owner, split.session_id, |s, events| {
+                    !s.status.is_busy() && events.iter().any(|e| e.kind == "error")
+                })
+                .await
+            }
+            "cancel" => {
+                let (_, running) = until(&owner, split.session_id, |s, ev| {
+                    s.status.is_busy() && gather(ev, "agent_thought_chunk").contains("done")
+                })
+                .await;
+                assert_eq!(
+                    gather(&running, "agent_message_chunk"),
+                    "answer: [REDACTED] 中🙂 "
+                );
+                assert_eq!(
+                    gather(&running, "agent_thought_chunk"),
+                    "reason: [REDACTED] done "
+                );
+                post(
+                    &owner,
+                    &format!("/local/sessions/{}/cancel", split.session_id),
+                )
+                .await;
+                turn_done(&owner, split.session_id, 1).await
+            }
+            _ => turn_done(&owner, split.session_id, 1).await,
+        };
+        assert_eq!(
+            gather(&events, "agent_message_chunk"),
+            "answer: [REDACTED] 中🙂 fixture-",
+            "{ending}"
+        );
+        assert_eq!(
+            gather(&events, "agent_thought_chunk"),
+            "reason: [REDACTED] done fix",
+            "{ending}"
+        );
+        let terminal = events
+            .iter()
+            .position(|e| e.kind == "error" || e.kind == "turn_end")
+            .unwrap();
+        assert!(events[terminal..].iter().all(|e| !matches!(
+            e.kind.as_str(),
+            "agent_message_chunk" | "agent_thought_chunk"
+        )));
+    }
     // An agent error that quotes the value is redacted too.
     prompt(
         &owner,
@@ -2037,4 +2177,117 @@ async fn an_agents_own_login_is_checked_on_its_computer_and_peers_see_only_wheth
     );
     daemon_a.stop().await;
     daemon_b.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn advertised_commands_follow_the_approved_session_and_live_process() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "a");
+    let b = init(root.path(), "b");
+    Store::open(&a.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&b.card)
+        .unwrap();
+    Store::open(&b.dir.join("state.sqlite3"))
+        .unwrap()
+        .trust_peer(&a.card)
+        .unwrap();
+    // Like Pi/OpenCode, this fixture returns from session/new before
+    // announcing its commands; the first discovery request must see them.
+    let agent = register_with_args(
+        &b,
+        &root.path().join("project"),
+        "fixture",
+        &["--commands-delay-ms", "180"],
+    );
+    let da = Daemon::start(&a.dir);
+    let db = Daemon::start(&b.dir);
+    da.ready().await;
+    db.ready().await;
+    let owner = da.owner();
+    db.owner()
+        .post::<_, Value>(
+            &format!("/local/peers/{}/access", a.card.node_id),
+            &json!({"access":"confirm"}),
+        )
+        .await
+        .unwrap();
+    let record = open(&owner, json!({"agent_id":agent,"peer_id":b.card.node_id})).await;
+    let id = record.session_id;
+    let commands = format!("/local/sessions/{id}/commands");
+    let command = format!("/local/sessions/{id}/command");
+    let list = || owner.post::<_, SessionCommands>(&commands, &Value::Null);
+    let compact = json!({"name":"compact","arguments":"keep tests"});
+    assert_eq!(
+        list().await.unwrap().state,
+        CommandListState::PendingApproval
+    );
+    assert_eq!(
+        owner
+            .post::<_, Value>(&command, &compact)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalRequired
+    );
+    post(&db.owner(), &format!("/local/sessions/{id}/approve")).await;
+    assert_eq!(
+        owner.get::<SessionCommands>(&commands).await.unwrap().state,
+        CommandListState::Inactive
+    );
+    let catalog = list().await.unwrap();
+    assert_eq!(catalog.state, CommandListState::Ready);
+    assert!(
+        catalog
+            .config_options
+            .iter()
+            .any(|o| o.is_category("model"))
+    );
+    assert!(
+        catalog
+            .commands
+            .iter()
+            .any(|c| c.name == "compact" && c.input_hint.as_deref() == Some("instructions"))
+    );
+    let ready = page(&owner, id, 0, 0).await;
+    assert_eq!(ready.session.turns, 0);
+    assert!(!kinds(&ready.events).contains(&"user_message"));
+    assert!(
+        owner
+            .post::<_, Value>(&command, &json!({"name":"typo"}))
+            .await
+            .is_err()
+    );
+    owner.post::<_, Value>(&command, &compact).await.unwrap();
+    let (done, events) = turn_done(&owner, id, 1).await;
+    assert_eq!(
+        done.last_final_text.as_deref(),
+        Some("Fixture compacted: keep tests")
+    );
+    assert_eq!(
+        kinds(&events)
+            .iter()
+            .filter(|k| **k == "user_message")
+            .count(),
+        1
+    );
+    prompt(&owner, id, "fixture:clear-commands").await;
+    turn_done(&owner, id, 2).await;
+    let cleared = owner.get::<SessionCommands>(&commands).await.unwrap();
+    assert_eq!(cleared.state, CommandListState::Ready);
+    assert!(cleared.commands.is_empty());
+    assert!(owner.post::<_, Value>(&command, &compact).await.is_err());
+    db.stop().await;
+    let db = Daemon::start(&b.dir);
+    db.ready().await;
+    assert_eq!(
+        owner.get::<SessionCommands>(&commands).await.unwrap().state,
+        CommandListState::Inactive
+    );
+    assert!(owner.post::<_, Value>(&command, &compact).await.is_err());
+    assert_eq!(list().await.unwrap().state, CommandListState::Ready);
+    post(&owner, &format!("/local/sessions/{id}/close")).await;
+    assert_eq!(list().await.unwrap().state, CommandListState::Closed);
+    da.stop().await;
+    db.stop().await;
 }

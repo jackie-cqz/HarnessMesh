@@ -31,7 +31,10 @@ pub enum AgentMessage {
     /// The process closed its output.
     Exited,
     /// Queued behind everything received so far; answered by the consumer.
-    Barrier(oneshot::Sender<()>),
+    Barrier {
+        end_turn: bool,
+        done: oneshot::Sender<()>,
+    },
 }
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<std::result::Result<Value, String>>>>>;
@@ -183,19 +186,24 @@ impl AcpConnection {
     /// Responses overtake the notifications queued before them, so call this
     /// after a request returns and before reading state its updates build.
     pub async fn barrier(&self) {
+        self.drain_updates(false).await;
+    }
+    /// Finish recording the turn, including any partial text held for redaction.
+    pub async fn finish_turn(&self) {
+        self.drain_updates(true).await;
+    }
+    async fn drain_updates(&self, end_turn: bool) {
         let (done, wait) = oneshot::channel();
-        if self.events.send(AgentMessage::Barrier(done)).is_ok() {
+        if self
+            .events
+            .send(AgentMessage::Barrier { end_turn, done })
+            .is_ok()
+        {
             let _ = tokio::time::timeout(Duration::from_secs(10), wait).await;
         }
     }
     pub fn alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
-    }
-    pub fn supports_load(&self) -> bool {
-        self.initialize
-            .pointer("/agentCapabilities/loadSession")
-            .and_then(Value::as_bool)
-            == Some(true)
     }
     fn send(&self, frame: &Value) -> Result<()> {
         let mut line = frame.to_string().into_bytes();
@@ -258,20 +266,17 @@ impl AcpConnection {
             .ok_or_else(|| failure("the agent created a session without an ID"))?;
         Ok((session, result))
     }
-    /// Reload a session; returns the `session/load` result.
-    pub async fn load_session(
+    /// Restore the same session using the method advertised during initialization.
+    pub async fn restore_session(
         &self,
+        method: acp::SessionRestore,
         session: &str,
         cwd: &std::path::Path,
         mcp: &[Value],
     ) -> Result<Value> {
         let id = self.id();
-        self.call(
-            id,
-            acp::load_session_request(id, session, cwd, mcp),
-            SETUP_TIMEOUT,
-        )
-        .await
+        self.call(id, method.request(id, session, cwd, mcp), SETUP_TIMEOUT)
+            .await
     }
     /// Change one session setting; returns the agent's full `configOptions`.
     pub async fn set_config_option(
