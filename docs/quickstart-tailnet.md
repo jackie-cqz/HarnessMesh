@@ -62,7 +62,7 @@ node .\scripts\start-tailnet.mjs
 .\target\debug\hmesh.exe --json peers candidates
 ```
 
-候选仅含主机名、DNS 名、OS、Tailnet IP 和在线状态，不导入 Tailscale 账户、node key 或 Mesh 信任。实际 endpoint 使用字面 IP；当前不以 MagicDNS 作为证书或 Node 身份。
+候选仅含主机名、DNS 名、OS、Tailnet IP 和在线状态，不导入 Tailscale 账户、node key 或 Mesh 信任。实际 endpoint 使用字面 IP；当前不以 MagicDNS 作为证书或 Node 身份。名片和配对码只带 IP；配对之后，两台电脑之间交换的地址列表可以带主机名（默认 `本机名.local`，可在 `node.toml` 的 `node.host_names` 里改），对方换了地址时用来找回它，见 [安全说明](security.md) 的「地址列表」。
 
 ## 配对和首条任务
 
