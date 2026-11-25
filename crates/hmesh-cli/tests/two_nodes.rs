@@ -658,7 +658,14 @@ async fn a_direct_computer_answers_pairing_only_while_its_owner_has_it_open() {
     let root = tempfile::tempdir().expect("tempdir");
     let a_dir = root.path().join("laptop");
     let b_dir = root.path().join("studio");
-    // Loopback stands in for a LAN address; the rules are the same.
+    // Loopback stands in for a LAN address; the rules are the same. A fixed
+    // port, so the studio is found again after it restarts.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("free port")
+        .local_addr()
+        .expect("port")
+        .port()
+        .to_string();
     cli(
         &b_dir,
         &[
@@ -666,7 +673,7 @@ async fn a_direct_computer_answers_pairing_only_while_its_owner_has_it_open() {
             "--name",
             "studio",
             "--port",
-            "0",
+            &port,
             "--network",
             "direct",
             "--listen-address",
@@ -687,7 +694,7 @@ async fn a_direct_computer_answers_pairing_only_while_its_owner_has_it_open() {
         ],
     );
     let _a = daemon(&a_dir);
-    let _b = daemon(&b_dir);
+    let b = daemon(&b_dir);
     let a_card = ready(&a_dir).await;
     let b_card = ready(&b_dir).await;
     let status = cli(&b_dir, &["daemon", "status"]);
@@ -710,6 +717,32 @@ async fn a_direct_computer_answers_pairing_only_while_its_owner_has_it_open() {
     assert_eq!(
         anonymous
             .get::<Value>("/hmesh/v1/hello")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    // Nor the other two steps, asked for directly.
+    assert_eq!(
+        anonymous
+            .get::<Value>("/hmesh/v1/pair/challenge")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    let mut asker = Instance::load(&a_dir).expect("a");
+    asker.card = a_card.clone();
+    let submission = asker
+        .pair_submission(PairChallenge {
+            nonce: uuid::Uuid::new_v4(),
+            node_id: b_card.node_id,
+            expires_at: 0,
+        })
+        .expect("submission");
+    assert_eq!(
+        anonymous
+            .post::<_, Value>("/hmesh/v1/pair/requests", &submission)
             .await
             .unwrap_err()
             .code,
@@ -753,6 +786,17 @@ async fn a_direct_computer_answers_pairing_only_while_its_owner_has_it_open() {
             .node_id,
         b_card.node_id
     );
+
+    // Restarted, the studio's pairing window is closed: the laptop still
+    // sees it online and reads its agents, by its certificate.
+    drop(b);
+    let _ = std::fs::remove_file(b_dir.join("daemon.json"));
+    let _b = daemon(&b_dir);
+    ready(&b_dir).await;
+    assert!(cli(&b_dir, &["daemon", "status"])["pairing_window"]["closes_at"].is_null());
+    let peers = cli(&a_dir, &["peers", "list"]);
+    assert_eq!(peers[0]["node_connectivity"], "online", "{peers}");
+    assert_eq!(peers[0]["registry_readable"], true, "{peers}");
 }
 
 /// A direct node set up for an address this computer no longer has (a new

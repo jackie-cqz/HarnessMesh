@@ -493,3 +493,60 @@ fn full_on_a_direct_network_listens_on_the_given_address_and_switches_back() {
     assert_eq!(back["node"]["fingerprint"], fingerprint);
     assert!(home.config()["node"].get("allowed_sources").is_none());
 }
+
+impl Home {
+    /// A Tailscale CLI here that reports `state`.
+    fn tailscale(&self, state: &str) -> String {
+        let path = self.bin.join(format!("tailscale-{state}"));
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho '{{\"BackendState\":\"{state}\",\"Self\":{{\"HostName\":\"probe\",\"TailscaleIPs\":[\"100.64.0.9\"],\"Online\":true}}}}'\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.display().to_string()
+    }
+}
+
+/// Run again without naming a network, a node keeps the one it has, with
+/// its address and sources, even with Tailscale running here now.
+#[test]
+fn setup_again_keeps_the_network_address_and_sources_it_has() {
+    let home = Home::new();
+    home.setup_with(&[
+        "--full",
+        "--network",
+        "direct",
+        "--listen",
+        "127.0.0.1",
+        "--allow-from",
+        "127.0.0.0/8",
+    ]);
+    let before = home.config();
+    let running = home.tailscale("Running");
+    let again = home.setup_with(&["--full", "--tailscale-executable", &running]);
+    assert_eq!(again["network"], "direct", "{again}");
+    let after = home.config();
+    for key in [
+        "network",
+        "listen_address",
+        "expose_to_tailnet",
+        "allowed_sources",
+    ] {
+        assert_eq!(after["node"].get(key), before["node"].get(key), "{key}");
+    }
+    assert!(after["node"].get("tailnet_address").is_none());
+}
+
+/// Tailscale installed but signed out counts as not here: only MCP connects
+/// out over this computer's own network instead of failing.
+#[test]
+fn only_mcp_with_tailscale_signed_out_connects_out_directly() {
+    let home = Home::new();
+    let signed_out = home.tailscale("NeedsLogin");
+    let summary = home.setup_with(&["--mcp-only", "--tailscale-executable", &signed_out]);
+    assert_eq!(summary["network"], "direct", "{summary}");
+    assert_eq!(summary["outbound_only"], true);
+}

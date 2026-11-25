@@ -95,8 +95,30 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
         steps: vec![],
     };
 
-    // The network paired computers reach this one on.
-    let (place, hostname) = find_place(mode, &options, interactive).await?;
+    // The network paired computers reach this one on. Run again without
+    // naming one, a node keeps the network, address and sources it has.
+    let existing = dir
+        .join("node.toml")
+        .exists()
+        .then(|| Instance::load(dir))
+        .transpose()?
+        .map(|instance| instance.config);
+    let (place, hostname) = find_place(mode, &options, interactive, existing.as_ref()).await?;
+    let allow_from = options
+        .allow_from
+        .clone()
+        .or_else(|| match (&existing, place) {
+            (Some(config), Place::Direct(Some(address)))
+                if config.node.network == "direct" && config.node.listen_address == address =>
+            {
+                config.node.allowed_sources.clone()
+            }
+            _ => None,
+        });
+    let options = Options {
+        allow_from,
+        ..options
+    };
     match place {
         Place::Tailnet(address) => {
             report.step(true, format!("This computer is {address} on the Tailnet"))
@@ -301,15 +323,27 @@ async fn find_place(
     mode: Mode,
     options: &Options,
     interactive: bool,
+    existing: Option<&NodeConfig>,
 ) -> Result<(Place, Option<String>)> {
     let wants_direct = options.listen.is_some() || options.allow_from.is_some();
+    let kept = existing
+        .map(|config| config.node.network.as_str())
+        .filter(|network| matches!(*network, "tailscale" | "direct"));
     let network = match options.network.as_deref() {
         Some(network) => network.to_owned(),
         None if wants_direct => "direct".into(),
         None if options.tailnet_address.is_some() => "tailscale".into(),
+        // Set up before: the same network again.
+        None if kept.is_some() => kept.unwrap_or_default().to_owned(),
         None => {
+            // Here and signed in: Tailscale. Installed but signed out or
+            // stopped counts as not here.
             let tailnet = match CliTailscale::discover(options.tailscale_executable.as_deref()) {
-                Ok(provider) => provider.status().await.ok(),
+                Ok(provider) => provider
+                    .status()
+                    .await
+                    .ok()
+                    .filter(|status| status.require_running().is_ok()),
                 Err(_) => None,
             };
             match (tailnet, mode) {
@@ -332,7 +366,10 @@ async fn find_place(
         if wants_direct {
             bail!("--listen and --allow-from are for --network direct");
         }
-        return Ok(match options.tailnet_address {
+        let known = existing
+            .filter(|config| config.node.network == "tailscale")
+            .and_then(|config| config.node.tailnet_address);
+        return Ok(match options.tailnet_address.or(known) {
             Some(address) => (Place::Tailnet(address), None),
             None => {
                 let status = CliTailscale::discover(options.tailscale_executable.as_deref())
@@ -357,8 +394,18 @@ async fn find_place(
         }
         return Ok((Place::Direct(None), host_name()));
     }
+    // A direct node that listened before keeps its address, while this
+    // computer still has it.
+    let listen = options.listen.or_else(|| {
+        existing
+            .filter(|config| config.node.network == "direct" && config.node.expose_to_tailnet)
+            .map(|config| config.node.listen_address)
+            .filter(|address| {
+                address.is_loopback() || local_addresses().iter().any(|(_, ip)| ip == address)
+            })
+    });
     Ok((
-        Place::Direct(Some(choose_address(options.listen, interactive)?)),
+        Place::Direct(Some(choose_address(listen, interactive)?)),
         host_name(),
     ))
 }

@@ -95,8 +95,8 @@ fn outbound_only() -> ApiError {
 struct HandshakeCounts(HashMap<(i64, &'static str, Option<IpAddr>), usize>);
 impl HandshakeCounts {
     /// Count one request. Refused over `per_minute` from one source, or ten
-    /// times that across all of them: one computer cannot use up the
-    /// allowance of everyone else.
+    /// times that across all of them. Refused requests count nowhere, so one
+    /// computer cannot use up the allowance of everyone else.
     fn admit(
         &mut self,
         minute: i64,
@@ -105,14 +105,15 @@ impl HandshakeCounts {
         per_minute: usize,
     ) -> bool {
         self.0.retain(|key, _| key.0 == minute);
-        let mut count = |source| {
-            let count = self.0.entry((minute, kind, source)).or_default();
-            *count += 1;
-            *count
-        };
-        let mine = count(Some(source.to_canonical()));
-        let everyone = count(None);
-        mine <= per_minute && everyone <= per_minute * 10
+        let mine = (minute, kind, Some(source.to_canonical()));
+        let everyone = (minute, kind, None);
+        let count = |key| self.0.get(&key).copied().unwrap_or(0);
+        if count(mine) >= per_minute || count(everyone) >= per_minute * 10 {
+            return false;
+        }
+        *self.0.entry(mine).or_default() += 1;
+        *self.0.entry(everyone).or_default() += 1;
+        true
     }
 }
 #[cfg(test)]
@@ -132,6 +133,12 @@ mod handshake_counts {
         // Another computer is still let in, and so is another kind.
         assert!(counts.admit(7, "handshake", other, 3));
         assert!(counts.admit(7, "pair-status", one, 3));
+        // One computer asking on and on does not use up the others' share.
+        let mut counts = HandshakeCounts::default();
+        for _ in 0..600 {
+            counts.admit(7, "handshake", one, 3);
+        }
+        assert!(counts.admit(7, "handshake", other, 3));
         // A new minute starts over.
         assert!(counts.admit(8, "handshake", one, 3));
         // Many sources together stop at ten times the allowance.
@@ -775,26 +782,10 @@ async fn peers(
         if peer.status == "trusted" && !s.reaches(&peer) {
             view.node_connectivity = NodeConnectivity::OutboundOnly;
         } else if peer.status == "trusted" {
-            let hello = Client::new(
-                &s.instance,
-                &peer.card.endpoint,
-                &peer.card.fingerprint,
-                true,
-                false,
-            )
-            .map_err(internal)?;
-            view.node_connectivity = if matches!(
-                tokio::time::timeout(
-                    std::time::Duration::from_millis(750),
-                    hello.get::<NodeCard>("/hmesh/v1/hello")
-                )
-                .await,
-                Ok(Ok(_))
-            ) {
-                NodeConnectivity::Online
-            } else {
-                NodeConnectivity::Unreachable
-            };
+            // Asked with this computer's certificate first: a direct node
+            // answers the anonymous hello only while its pairing window is
+            // open. One that no longer accepts this computer (it revoked the
+            // pairing there) still answers hello.
             let client = Client::new(
                 &s.instance,
                 &peer.card.endpoint,
@@ -803,6 +794,41 @@ async fn peers(
                 false,
             )
             .map_err(internal)?;
+            let accepted = matches!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(750),
+                    client.get::<NodeCard>("/hmesh/v1/node")
+                )
+                .await,
+                Ok(Ok(_))
+            );
+            let online = accepted || {
+                let hello = Client::new(
+                    &s.instance,
+                    &peer.card.endpoint,
+                    &peer.card.fingerprint,
+                    true,
+                    false,
+                )
+                .map_err(internal)?;
+                matches!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(750),
+                        hello.get::<NodeCard>("/hmesh/v1/hello")
+                    )
+                    .await,
+                    Ok(Ok(_))
+                )
+            };
+            view.node_connectivity = if online {
+                NodeConnectivity::Online
+            } else {
+                NodeConnectivity::Unreachable
+            };
+            if !accepted {
+                views.push(view);
+                continue;
+            }
             if let Ok(Ok(agents)) = tokio::time::timeout(
                 std::time::Duration::from_millis(750),
                 client.get::<Vec<AgentCard>>("/hmesh/v1/agents"),

@@ -65,3 +65,36 @@ async fn a_pinned_peer_is_reached_on_an_address_its_certificate_does_not_name() 
         .unwrap_err();
     assert!(refused.contains("fingerprint mismatch"), "{refused}");
 }
+
+/// The source fence runs before TLS: a connection from outside the allowed
+/// ranges is dropped, one from inside is served.
+#[tokio::test]
+async fn a_direct_listener_serves_only_its_allowed_sources() {
+    use axum::{Json, Router, routing::get};
+    use hmesh_transport::{Client, Scope, serve_peers};
+    let root = tempfile::tempdir().unwrap();
+    let server =
+        Arc::new(Instance::init(&root.path().join("studio"), NodeConfig::default()).unwrap());
+    let client = Instance::init(&root.path().join("laptop"), NodeConfig::default()).unwrap();
+    for (allowed, served) in [("10.0.0.0/8", false), ("127.0.0.0/8", true)] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("https://{}", listener.local_addr().unwrap());
+        let app = Router::new().route("/hmesh/v1/hello", get(|| async { Json("hello") }));
+        let tls = server.clone();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(serve_peers(
+            listener,
+            app,
+            Arc::new(move || tls.server_config(&[])),
+            stopped,
+            Scope::Sources(Arc::new(vec![allowed.parse().unwrap()])),
+        ));
+        let answer = Client::new(&client, &endpoint, &server.card.fingerprint, true, false)
+            .unwrap()
+            .get::<String>("/hmesh/v1/hello")
+            .await;
+        assert_eq!(answer.is_ok(), served, "allowed {allowed}: {answer:?}");
+        let _ = stop.send(true);
+        let _ = task.await;
+    }
+}
