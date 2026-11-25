@@ -219,7 +219,7 @@ pub fn watch(state: AppState, record: PairRecord) {
 
 /// Ask once. True when the request is settled, either way; false while the
 /// other computer says pending or cannot be reached.
-async fn check(s: &AppState, record: &PairRecord) -> bool {
+pub(crate) async fn check(s: &AppState, record: &PairRecord) -> bool {
     let fingerprint = &record.card.fingerprint;
     let path = format!("/hmesh/v1/pair/requests/{}", record.request_id);
     // Not reachable right now, or a computer without this check: keep asking

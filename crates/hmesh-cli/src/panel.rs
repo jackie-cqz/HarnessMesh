@@ -40,6 +40,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "agent-own-login-v1",
     "agent-service-relay-v1",
     "pairing-auto-complete-v1",
+    "pairing-nearby-v1",
     "session-commands-v1",
     "agent-projects-v1",
 ];
@@ -212,6 +213,8 @@ pub async fn run(
         .route("/api/peers/{id}/agents", get(remote_agents))
         .route("/api/pairs/request", post(request_pair))
         .route("/api/pairing/window", post(open_pairing_window))
+        .route("/api/pairing/nearby", get(pairing_nearby))
+        .route("/api/pairs/passcode", post(pair_with_passcode))
         .route("/api/pairs/{id}/{action}", post(pair_action))
         .route(
             "/assets/sessions.js",
@@ -430,7 +433,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -1265,6 +1268,36 @@ struct PairCheck {
 /// pairing handshake only while it is open).
 async fn open_pairing_window(State(s): State<Panel>) -> Response {
     mutation(s.client.post("/local/pairing/window", &json!({})).await)
+}
+/// Computers on this network with pairing open (direct network).
+async fn pairing_nearby(State(s): State<Panel>) -> Response {
+    mutation(s.client.get::<Value>("/local/pairing/nearby").await)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PasscodeBody {
+    endpoint: String,
+    passcode: String,
+}
+/// Pair with a nearby computer using the passcode its screen shows.
+async fn pair_with_passcode(
+    State(s): State<Panel>,
+    body: Result<Json<PasscodeBody>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return error(StatusCode::BAD_REQUEST, "INVALID_INPUT");
+    };
+    mutation(
+        s.client
+            .post(
+                "/local/pairs/passcode",
+                &hmesh_daemon::passcode::PasscodeTarget {
+                    endpoint: body.endpoint,
+                    passcode: body.passcode,
+                },
+            )
+            .await,
+    )
 }
 async fn pair_action(
     State(s): State<Panel>,

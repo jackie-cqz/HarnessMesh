@@ -17,6 +17,9 @@ hmesh-security = { path = "../hmesh-security" }
 hmesh-transport = { path = "../hmesh-transport" }
 hmesh-adapters = { path = "../hmesh-adapters" }
 hmesh-runtime = { path = "../hmesh-runtime" }
+hex.workspace = true
+mdns-sd.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

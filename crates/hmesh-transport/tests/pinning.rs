@@ -98,3 +98,45 @@ async fn a_direct_listener_serves_only_its_allowed_sources() {
         let _ = task.await;
     }
 }
+
+/// First contact (passcode pairing) learns the certificate the other
+/// computer shows, and refuses a card that names another one.
+#[tokio::test]
+async fn first_contact_learns_the_certificate_and_refuses_a_card_naming_another() {
+    use axum::{Json, Router, routing::get};
+    use hmesh_transport::{Client, serve};
+    let root = tempfile::tempdir().unwrap();
+    let server =
+        Arc::new(Instance::init(&root.path().join("studio"), NodeConfig::default()).unwrap());
+    let client = Instance::init(&root.path().join("laptop"), NodeConfig::default()).unwrap();
+    let other = Instance::init(&root.path().join("other"), NodeConfig::default()).unwrap();
+    for (card, honest) in [(server.card.clone(), true), (other.card.clone(), false)] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("https://{}", listener.local_addr().unwrap());
+        let app = Router::new().route("/hmesh/v1/hello", get(move || async move { Json(card) }));
+        let tls = server.clone();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(serve(
+            listener,
+            app,
+            Arc::new(move || tls.server_config(&[])),
+            stopped,
+        ));
+        let learned = Client::learn(&client, &endpoint).await;
+        if honest {
+            let (card, seen) = learned.expect("learned");
+            assert_eq!(seen, server.card.fingerprint);
+            assert_eq!(card.node_id, server.card.node_id);
+        } else {
+            let error = learned.unwrap_err();
+            assert_eq!(
+                error.code,
+                hmesh_core::ErrorCode::Unauthenticated,
+                "{}",
+                error.message
+            );
+        }
+        let _ = stop.send(true);
+        let _ = task.await;
+    }
+}

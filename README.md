@@ -113,6 +113,8 @@ Open the panel (`hmesh panel`) and go to **配对节点 → 配对新电脑** (p
 2. On computer A, paste it in the same dialog and send the request. A shows a check code.
 3. On B, type the check code and approve. A finishes by itself.
 
+**On a direct network, computers nearby are listed.** While B has 配对新电脑 open, it shows a 6-digit passcode, and the same dialog on A lists B under **附近的电脑** (computers nearby). Choose B, type its passcode, and both computers are paired: nothing to approve. A passcode allows three tries and works once; after three wrong ones it ends, while the pairing code keeps working. Guest Wi-Fi and some routers block this lookup; the pairing code above always works. On the command line: `hmesh pair nearby`, then `hmesh pair join <address>`, which asks for the passcode.
+
 A computer set up with only MCP accepts no connections, so pairing always starts there: it is computer A. Two only-MCP computers cannot pair with each other. The [Tailscale guide](docs/quickstart-tailnet.md) has firewall notes and the command-line equivalents (`hmesh pair show`, `hmesh pair request --code`, `hmesh pair approve`).
 
 ### Try it on one computer
@@ -157,7 +159,7 @@ On a computer set up with `hmesh setup`, the MCP server starts the daemon when i
 - **Pinned certificates.** Every connection uses TLS 1.3 with a pinned certificate. Anonymous routes exist only for the pairing handshake.
 - **Owner controls stay local.** The owner API and the panel listen on loopback only.
 - **Only-MCP computers let nothing in.** They listen on loopback only and refuse every request from another computer, pairing requests included.
-- **Direct networks open pairing on request.** A computer on a LAN or VPN of your own accepts connections only from the networks it allows, and answers pairing requests only for 10 minutes after you open 配对新电脑 on it.
+- **Direct networks open pairing on request.** A computer on a LAN or VPN of your own accepts connections only from the networks it allows, and answers pairing requests only for 10 minutes after you open 配对新电脑 on it. Only then does it announce itself nearby. A name heard on the network proves nothing; the one-time passcode on its screen does, checked with SPAKE2 so a wrong guess teaches nothing that could be tried offline.
 - **Per-computer access mode.** Each paired computer is either `auto` (its sessions start right away) or `confirm` (you approve first): `hmesh peers access <peer> confirm`.
 - **Keys stay put.** Model keys never leave the agent's computer and are not shown again after saving. HarnessMesh does not read agents' own credential files.
 

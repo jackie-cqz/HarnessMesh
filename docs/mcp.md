@@ -108,7 +108,8 @@ hmesh peers access <对端名字或节点ID> auto      # 恢复直接开始
 - `node scripts/sessions-panel-smoke.mjs`：真实浏览器在面板里完成同样的流程。
 - `crates/hmesh-cli/tests/setup.rs`：用假的 `claude` 命令和临时 HOME 跑 `hmesh setup --mcp-only`，核对节点配置、Claude Code 和 Codex 各只接入一次、不同意就一个客户端和开机自启都不碰、`hmesh mcp` 自己拉起 daemon（包括 daemon 被强杀之后）、daemon 起不来时立刻报出原因、Codex 配置是符号链接时链接保留。
 - `test-support/hmesh-fixture/tests/mesh_e2e.rs` 的 `a_computer_that_only_connects_out_opens_sessions_but_none_open_on_it`：只装 MCP 的电脑经 MCP 在配对电脑上开会话、拿回答复；对方在它上面开会话被拒。
-- `crates/hmesh-cli/tests/two_nodes.rs`：只装 MCP 的电脑能向外配对和调用，对方发来的配对申请、`hello` 和节点请求都被拒；换了端口的电脑会把新名片发给配对的电脑；直连网络的电脑只在配对窗口开着时回应配对，地址没了时启动会说明怎么办。
+- `crates/hmesh-cli/tests/two_nodes.rs`：只装 MCP 的电脑能向外配对和调用，对方发来的配对申请、`hello` 和节点请求都被拒；换了端口的电脑会把新名片发给配对的电脑；直连网络的电脑只在配对窗口开着时回应配对，地址没了时启动会说明怎么办；口令配对：错口令谁都不信任，对上的口令双方互信、不用批准，用一次作废，错满 3 次口令作废而配对码照样能用，只发起握手不确认的也照样扣次数；macOS 上附近的电脑在窗口开着时能被列出，口令用掉后撤回。
+- `scripts/pairing-nearby-smoke.mjs`（`npm run test:pairing-nearby`，macOS）：真实浏览器里的「附近的电脑」和口令配对。
 - `crates/hmesh-transport/tests/pinning.rs`：证书里没写着拨的那个地址也能靠指纹连上，换一张证书就连不上。
 - 以上只用 fixture，不调用模型。
 
