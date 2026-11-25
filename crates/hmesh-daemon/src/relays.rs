@@ -24,8 +24,9 @@ pub struct UseRelay {
     pub code: String,
 }
 
-/// Connections put through relays served at once.
-const RELAYED_CONNECTIONS: usize = 64;
+/// Connections put through relays opened and served at once; past that a
+/// computer asking is turned down (`BUSY`).
+const RELAYED_CONNECTIONS: usize = hmesh_transport::relay::SERVED_AT_ONCE;
 
 /// Whether a computer configured as `config` is reached through relays:
 /// one that takes connections from other computers.
@@ -263,10 +264,17 @@ pub async fn run(state: AppState, mut stop: watch::Receiver<bool>) {
             let (release, released) = watch::channel(false);
             holding.insert(name, release);
             let label = relay.label();
-            let arrived = arrived(state.clone(), peers.clone(), slots.clone());
+            let arrived = arrived(state.clone(), peers.clone());
             let shown = state.clone();
             let held: relay_protocol::Held = Arc::new(move |held| shown.relay_held(&label, held));
-            tokio::spawn(relay_protocol::hold(relay, tls, arrived, held, released));
+            tokio::spawn(relay_protocol::hold(
+                relay,
+                tls,
+                slots.clone(),
+                arrived,
+                held,
+                released,
+            ));
         }
         tokio::select! {
             changed = wanted.changed() => if changed.is_err() { break },
@@ -280,15 +288,8 @@ pub async fn run(state: AppState, mut stop: watch::Receiver<bool>) {
 /// What to do with a connection put through a relay to this computer: serve
 /// it like one from another computer over a network (the peer API only),
 /// as from `RELAYED`, never as from its owner.
-fn arrived(
-    state: AppState,
-    peers: Router,
-    slots: Arc<tokio::sync::Semaphore>,
-) -> relay_protocol::Arrived {
-    Arc::new(move |stream| {
-        let Ok(slot) = slots.clone().try_acquire_owned() else {
-            return;
-        };
+fn arrived(state: AppState, peers: Router) -> relay_protocol::Arrived {
+    Arc::new(move |stream, slot| {
         let config = match state
             .instance
             .server_config(&state.store.peers().unwrap_or_default())
@@ -317,6 +318,183 @@ fn arrived(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hmesh_transport::relay::{Limits, Token};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{
+            TcpStream,
+            tcp::{OwnedReadHalf, OwnedWriteHalf},
+        },
+    };
+
+    /// Reaches `to` over a long link: a connection takes a whole round trip
+    /// to open, and everything read either way arrives half a round trip
+    /// later.
+    async fn far(to: SocketAddr, round_trip: std::time::Duration) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((inbound, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    tokio::time::sleep(round_trip).await;
+                    let Ok(outbound) = TcpStream::connect(to).await else {
+                        return;
+                    };
+                    let (from_client, to_client) = inbound.into_split();
+                    let (from_server, to_server) = outbound.into_split();
+                    tokio::join!(
+                        late(from_client, to_server, round_trip / 2),
+                        late(from_server, to_client, round_trip / 2),
+                    );
+                });
+            }
+        });
+        address
+    }
+    async fn late(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, delay: std::time::Duration) {
+        let (queue, mut queued) =
+            tokio::sync::mpsc::unbounded_channel::<(tokio::time::Instant, Vec<u8>)>();
+        let reading = async move {
+            let mut buffer = vec![0; 16384];
+            while let Ok(read @ 1..) = from.read(&mut buffer).await {
+                if queue
+                    .send((tokio::time::Instant::now() + delay, buffer[..read].to_vec()))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        };
+        let writing = async move {
+            while let Some((due, bytes)) = queued.recv().await {
+                tokio::time::sleep_until(due).await;
+                if to.write_all(&bytes).await.is_err() {
+                    return;
+                }
+            }
+            let _ = to.shutdown().await;
+        };
+        tokio::join!(reading, writing);
+    }
+
+    /// The studio is reached only through a relay far from the laptop (150
+    /// ms there and back; the studio holds it from next door). The panel's
+    /// list of computers (`/local/peers`: 1.5 s for the first call, then
+    /// 750 ms for the agents) still shows it online with its agents.
+    #[tokio::test]
+    async fn a_computer_behind_a_far_relay_is_listed_online_with_its_agents() {
+        let root = tempfile::tempdir().unwrap();
+        let identity =
+            hmesh_security::relay::RelayIdentity::open(&root.path().join("relay")).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let near = identity
+            .code(&listener.local_addr().unwrap().to_string())
+            .unwrap();
+        let (_relay, relay_stopped) = watch::channel(false);
+        tokio::spawn(hmesh_transport::relay::serve(
+            listener,
+            Arc::new(identity.server_config().unwrap()),
+            Token::fixed(identity.token().unwrap()),
+            Limits::default(),
+            relay_stopped,
+        ));
+        let to_relay = SocketAddr::from(([127, 0, 0, 1], near.port()));
+        let far_away = far(to_relay, std::time::Duration::from_millis(150)).await;
+        let far_relay = RelayAddress::parse(&format!(
+            "hmesh-relay://{far_away}/{}/{}",
+            near.fingerprint(),
+            near.token()
+        ))
+        .unwrap();
+
+        // The studio: every interface, no network trusted, holding the relay.
+        let mut config = NodeConfig::default();
+        config.node.name = "hearth".into();
+        config.node.network = "direct".into();
+        config.node.expose_to_tailnet = true;
+        config.node.listen_address = "::".parse().unwrap();
+        config.node.trusted_networks = Some(vec![]);
+        config.node.host_names = Some(vec![]);
+        config.node.relays = Some(vec![near.to_string()]);
+        let b = Arc::new(Instance::init(&root.path().join("hearth"), config).unwrap());
+        let b_store = Store::open(&b.dir.join("state.sqlite3")).unwrap();
+        // The laptop only connects out.
+        let mut config = NodeConfig::default();
+        config.node.name = "rover".into();
+        config.node.network = "direct".into();
+        let a = Arc::new(Instance::init(&root.path().join("rover"), config).unwrap());
+        let a_store = Store::open(&a.dir.join("state.sqlite3")).unwrap();
+        b_store.trust_peer(&a.card).unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let agent: AgentConfig = serde_json::from_value(json!({
+            "agent":{"name":"fixture","harness":"acp","project_id":"demo"},
+            "project":{"root":project,"allowed_tools":["read"]},
+            "adapter":{"executable":"/nonexistent/fixture","args":[],"provider":"fixture","model":"fixture"}
+        }))
+        .unwrap();
+        let card: AgentCard = serde_json::from_value(json!({
+            "agent_id":Uuid::new_v4(),"node_id":b.card.node_id,"name":"fixture","harness":"acp","project_ids":["demo"],"availability":"idle","capabilities":[],
+            "probe":{"installed":true,"version":"test-fixture","version_supported":true,"protocol_probe":"fixture","authentication":"not_applicable_test_fixture","managed_run":"passed","streaming":"fixture","cancel":"not_checked","session_resume":"not_checked","unavailable_reason":null}
+        }))
+        .unwrap();
+        b_store.register_agent(&card, &agent).unwrap();
+        // The laptop knows the studio by a card address that refuses it, and
+        // the far relay.
+        let refused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut b_card = b.card.clone();
+        b_card.endpoint = format!("https://{}", refused.local_addr().unwrap());
+        drop(refused);
+        a_store.trust_peer(&b_card).unwrap();
+        a_store
+            .set_advertised_addresses(&PeerAddresses {
+                node_id: b.card.node_id,
+                revision: 1,
+                addresses: vec![far_relay.to_string()],
+                find_key: None,
+            })
+            .unwrap();
+
+        let (b_shutdown, _) = watch::channel(false);
+        let b_state = AppState::load(b.clone(), b_store, b_shutdown.clone()).unwrap();
+        tokio::spawn(run(b_state.clone(), b_shutdown.subscribe()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while b_state.relays_view()[0]["connected"] != true {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the studio does not hold the relay"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let (a_shutdown, _) = watch::channel(false);
+        let a_state = AppState::load(a.clone(), a_store, a_shutdown).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            format!("Bearer {}", a.owner_token()).parse().unwrap(),
+        );
+        let owner = ConnectionIdentity {
+            fingerprint: Some(a.card.fingerprint.clone()),
+            address: "127.0.0.1:9".parse().unwrap(),
+        };
+        let started = std::time::Instant::now();
+        let Json(views) = crate::peers(State(a_state), Extension(owner), headers)
+            .await
+            .unwrap();
+        let view = &views[0];
+        assert!(
+            matches!(view.node_connectivity, NodeConnectivity::Online),
+            "{view:?}"
+        );
+        assert!(
+            view.registry_readable,
+            "{view:?} after {:?}",
+            started.elapsed()
+        );
+        assert_eq!(view.visible_agent_count, Some(1), "{view:?}");
+        assert_eq!(view.routes.last_good, Some(far_relay.label()), "{view:?}");
+        let _ = b_shutdown.send(true);
+    }
 
     fn relay(authority: &str, token: char) -> RelayAddress {
         RelayAddress::parse(&format!(

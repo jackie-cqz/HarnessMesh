@@ -531,8 +531,10 @@ enum RelayCommand {
     /// Hold a connection to a relay (its relay code, from `hmesh relay
     /// show` there): paired computers reach this one through it.
     Use {
-        /// The relay code; keep it out of shared places, it is a secret.
-        code: String,
+        /// The relay code. Leave it out (or write -) to paste it when asked,
+        /// or pipe it in: then it is read from standard input and stays out
+        /// of the shell history and the process list. It is a secret.
+        code: Option<String>,
     },
     /// Stop using every relay.
     Forget,
@@ -548,8 +550,12 @@ enum PairCommand {
     /// trusts it too; there is nothing to approve here.
     Request {
         /// The other computer's pairing code (`hmesh pair show` there), or
-        /// its relay pairing code (`hmesh-relay://...`) to pair through its relay.
-        #[arg(long, conflicts_with_all = ["peer", "expect_fingerprint"], required_unless_present = "peer")]
+        /// its relay pairing code (`hmesh-relay://...`) to pair through its
+        /// relay. `--code` with nothing after it reads the code from
+        /// standard input (asked for at a terminal): a relay pairing code
+        /// holds the relay's token, which should stay out of the shell
+        /// history and the process list.
+        #[arg(long, num_args = 0..=1, default_missing_value = "-", conflicts_with_all = ["peer", "expect_fingerprint"], required_unless_present = "peer")]
         code: Option<String>,
         #[arg(long, requires = "expect_fingerprint")]
         peer: Option<String>,
@@ -1384,7 +1390,10 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
     }
     if let Commands::Relay { command } = cli.command {
         let change = match command {
-            RelayCommand::Use { code } => relay::Change::Use(code),
+            RelayCommand::Use { code } => relay::Change::Use(secret_line(
+                code,
+                "Relay code (hmesh relay show on the relay): ",
+            )?),
             RelayCommand::Forget => relay::Change::Forget,
             RelayCommand::List => relay::Change::List,
             RelayCommand::Serve { .. } | RelayCommand::Show { .. } => {
@@ -1543,6 +1552,9 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 peer,
                 expect_fingerprint,
             } => {
+                let code = code
+                    .map(|code| secret_line(Some(code), "Pairing code: "))
+                    .transpose()?;
                 let (endpoint, expect_fingerprint) = match (code, peer, expect_fingerprint) {
                     // Through the other computer's relay.
                     (Some(code), _, _) if hmesh_core::is_relay_address(&code) => {
@@ -1586,19 +1598,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             }
             PairCommand::Nearby => client.get("/local/pairing/nearby").await?,
             PairCommand::Join { address, passcode } => {
-                let passcode = match passcode {
-                    Some(passcode) => passcode,
-                    None => {
-                        use std::io::{BufRead, IsTerminal, Write};
-                        if std::io::stdin().is_terminal() {
-                            eprint!("Passcode shown on the other computer: ");
-                            std::io::stderr().flush()?;
-                        }
-                        let mut line = String::new();
-                        std::io::stdin().lock().read_line(&mut line)?;
-                        line.trim().to_owned()
-                    }
-                };
+                let passcode = secret_line(passcode, "Passcode shown on the other computer: ")?;
                 client
                     .post(
                         "/local/pairs/passcode",
@@ -2301,6 +2301,22 @@ async fn networks(instance: &Instance, command: NetworksCommand) -> Result<Value
         }
     }
     Ok(hmesh_daemon::networks_view(every, &trusted, &observed))
+}
+/// A secret given on the command line, or else (none given, or `-`) the
+/// first line of standard input, asked for with `prompt` at a terminal: so
+/// it can stay out of the shell history and the process list.
+fn secret_line(given: Option<String>, prompt: &str) -> Result<String> {
+    if let Some(given) = given.filter(|given| given != "-") {
+        return Ok(given);
+    }
+    use std::io::{BufRead, IsTerminal, Write};
+    if std::io::stdin().is_terminal() {
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
+    }
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(line.trim().to_owned())
 }
 /// The one paired computer with this node ID or display name.
 fn one_peer<'a>(peers: &'a [PeerView], peer: &str) -> Result<&'a PeerView> {

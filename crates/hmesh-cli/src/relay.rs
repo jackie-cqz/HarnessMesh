@@ -104,7 +104,7 @@ pub fn show(dir: &Path, rotate: bool, public_address: Option<String>) -> Result<
         "relay": code.label(),
         "fingerprint": identity.fingerprint,
         "token_rotated": rotate,
-        "next": "On each computer that should be reached through this relay: hmesh relay use <relay code>",
+        "next": "On each computer that should be reached through this relay, run hmesh relay use and paste the relay code when asked (it is read from standard input, so it stays out of the shell history)",
     }))
 }
 fn say_code(code: &RelayAddress, identity: &RelayIdentity, json_output: bool) -> Result<()> {
@@ -118,7 +118,7 @@ fn say_code(code: &RelayAddress, identity: &RelayIdentity, json_output: bool) ->
     } else {
         writeln!(
             out,
-            "Relay code (keep it secret; give it to the computers that should be reached through this relay, as hmesh relay use <relay code>):"
+            "Relay code (keep it secret; on each computer that should be reached through this relay, run hmesh relay use and paste it when asked):"
         )?;
         writeln!(out, "{code}")?;
     }

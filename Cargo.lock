@@ -815,6 +815,7 @@ dependencies = [
  "axum",
  "hmesh-core",
  "hmesh-security",
+ "hyper",
  "hyper-util",
  "if-addrs",
  "reqwest",

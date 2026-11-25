@@ -85,7 +85,8 @@ pub struct AppState {
     relays: Arc<watch::Sender<Vec<RelayAddress>>>,
     /// Whether it holds each relay now and since when, by the relay's label.
     relays_held: Arc<Mutex<HashMap<String, (bool, i64)>>>,
-    /// Loopback ports that reach other computers through their relays.
+    /// Dials other computers through their relays, and keeps those
+    /// connections a while for the next call.
     relay_dialer: Arc<RelayDialer>,
 }
 #[derive(Debug)]

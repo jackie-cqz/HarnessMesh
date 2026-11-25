@@ -48,14 +48,39 @@ fn cli(dir: &Path, args: &[&str]) -> Value {
     );
     serde_json::from_slice(&output.stdout).expect("JSON output")
 }
-fn cli_fails(dir: &Path, args: &[&str]) -> String {
-    let output = hmesh()
+/// The CLI with `secret` on its standard input, as a person pastes a relay
+/// code (or pipes it in) so it stays out of the command line.
+fn piped(dir: &Path, args: &[&str], secret: &str) -> std::process::Output {
+    use std::io::Write;
+    let mut child = hmesh()
         .arg("--data-dir")
         .arg(dir)
         .arg("--json")
         .args(args)
-        .output()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("CLI process");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(format!("{secret}\n").as_bytes())
+        .expect("write the secret");
+    child.wait_with_output().expect("CLI output")
+}
+fn cli_piped(dir: &Path, args: &[&str], secret: &str) -> Value {
+    let output = piped(dir, args, secret);
+    assert!(
+        output.status.success(),
+        "CLI {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("JSON output")
+}
+fn cli_piped_fails(dir: &Path, args: &[&str], secret: &str) -> String {
+    let output = piped(dir, args, secret);
     assert!(
         !output.status.success(),
         "CLI {args:?} unexpectedly succeeded"
@@ -273,7 +298,8 @@ async fn computers_that_cannot_reach_each_other_pair_and_talk_through_a_relay() 
     );
     let b_id = b_card["node_id"].as_str().expect("id").to_owned();
     // It holds the relay, from now on.
-    let used = cli(&b_dir, &["relay", "use", &code]);
+    // Pasted, not on the command line.
+    let used = cli_piped(&b_dir, &["relay", "use"], &code);
     assert_eq!(
         used[0]["relay"],
         format!("hmesh-relay://127.0.0.1:{relay_port}"),
@@ -315,14 +341,10 @@ async fn computers_that_cannot_reach_each_other_pair_and_talk_through_a_relay() 
 
     // Through its relay, the studio answers pairing only while it is open.
     let b_fingerprint = b_card["fingerprint"].as_str().expect("fp").to_owned();
-    let closed = cli_fails(
+    let closed = cli_piped_fails(
         &a_dir,
-        &[
-            "pair",
-            "request",
-            "--code",
-            &format!("{code}/{b_fingerprint}"),
-        ],
+        &["pair", "request", "--code"],
+        &format!("{code}/{b_fingerprint}"),
     );
     assert!(
         closed.contains("PERMISSION_DENIED") && closed.contains("pairing is closed"),
@@ -338,7 +360,7 @@ async fn computers_that_cannot_reach_each_other_pair_and_talk_through_a_relay() 
     assert_eq!(relay_code, format!("{code}/{b_fingerprint}"));
     assert!(pairing["pairing_window"]["closes_at"].is_i64(), "{pairing}");
     let wrong = relay_code.replace(&token, &"0".repeat(64));
-    let refused = cli_fails(&a_dir, &["pair", "request", "--code", &wrong]);
+    let refused = cli_piped_fails(&a_dir, &["pair", "request", "--code"], &wrong);
     assert!(refused.contains("PEER_UNREACHABLE"), "{refused}");
     assert!(
         refused.contains("was not put through by its relay"),
@@ -347,7 +369,7 @@ async fn computers_that_cannot_reach_each_other_pair_and_talk_through_a_relay() 
     assert!(!refused.contains(&token), "{refused}");
 
     // Paired through the relay, with one approval on the studio.
-    let request = cli(&a_dir, &["pair", "request", "--code", &relay_code]);
+    let request = cli_piped(&a_dir, &["pair", "request", "--code"], &relay_code);
     let id = request["request_id"].as_str().expect("request").to_owned();
     cli(
         &b_dir,
@@ -552,7 +574,7 @@ async fn computers_that_cannot_reach_each_other_pair_and_talk_through_a_relay() 
         |held| held == false,
     )
     .await;
-    cli(&b_dir, &["relay", "use", &new_code]);
+    cli_piped(&b_dir, &["relay", "use", "-"], &new_code);
     let listed = cli(&b_dir, &["relay", "list"]);
     assert_eq!(
         listed.as_array().map(Vec::len),
