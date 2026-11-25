@@ -180,6 +180,7 @@ tool_timeout_sec = 660
 | 面板逐页说明 | [docs/local-panel.md](docs/local-panel.md) |
 | Agent 互相调用（MCP 工具、限制、手动接入） | [docs/mcp.md](docs/mcp.md) |
 | 两台电脑经 Tailscale 或局域网直连 | [docs/quickstart-tailnet.md](docs/quickstart-tailnet.md) |
+| 两台电脑都在 NAT 后面：经一台云服务器连 | [docs/cloud-server.md](docs/cloud-server.md) |
 | 单机命令行演练 | [docs/quickstart-v0.md](docs/quickstart-v0.md) |
 | 安全模型 | [docs/security.md](docs/security.md) |
 | 任务、模板、工作流、用量和预算 | [docs/development-workflows.md](docs/development-workflows.md) |

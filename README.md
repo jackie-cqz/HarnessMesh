@@ -180,6 +180,7 @@ On a computer set up with `hmesh setup`, the MCP server starts the daemon when i
 | The panel, page by page | [docs/local-panel.md](docs/local-panel.md) |
 | Agents calling agents (MCP tools, limits, manual setup) | [docs/mcp.md](docs/mcp.md) |
 | Two computers over Tailscale, or directly on a LAN or VPN | [docs/quickstart-tailnet.md](docs/quickstart-tailnet.md) |
+| Two computers behind NAT, through a cloud server | [docs/cloud-server.md](docs/cloud-server.md) |
 | Command-line walkthrough on one computer | [docs/quickstart-v0.md](docs/quickstart-v0.md) |
 | Security model | [docs/security.md](docs/security.md) |
 | Tasks, templates, workflows, usage and budgets | [docs/development-workflows.md](docs/development-workflows.md) |
