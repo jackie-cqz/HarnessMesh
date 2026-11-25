@@ -229,6 +229,15 @@ pub async fn run(
             }),
         )
         .route(
+            "/assets/projects.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/projects.js"),
+                )
+            }),
+        )
+        .route(
             "/assets/project-work.js",
             get(|| async {
                 (

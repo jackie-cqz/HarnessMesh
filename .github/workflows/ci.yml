@@ -61,6 +61,9 @@ jobs:
       - name: Sessions, settings and model service across two computers without models
         if: runner.os == 'Linux'
         run: npm run test:sessions-panel
+      - name: Projects, earlier sessions and shared folders across two computers without models
+        if: runner.os == 'Linux'
+        run: npm run test:projects-panel
       - name: Pairing from the panel with one approval, without models
         if: runner.os == 'Linux'
         run: npm run test:pairing-panel

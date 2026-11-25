@@ -1493,8 +1493,6 @@ async fn continue_earlier(s: AppState, id: Uuid) {
     if let Some(error) = error {
         let _ = record_event(&s, id, "error", json!({"message":error}));
     }
-    let status = s.store.session(id).map(|r| r.status).ok();
-    let _ = record_event(&s, id, "status", json!({"status":status}));
 }
 
 fn peer_client(s: &AppState, peer: Uuid) -> std::result::Result<Client, ApiError> {

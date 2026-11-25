@@ -761,3 +761,140 @@ async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
     daemon_a.stop().await;
     daemon_b.stop().await;
 }
+
+/// The real Claude Code adapter (`claude-agent-acp`) lists a transcript it
+/// already has and replays it when HarnessMesh continues it. Opt in with
+/// `HMESH_CLAUDE_ACP=/path/to/claude-agent-acp cargo test -p hmesh-fixture
+/// --test projects_e2e -- --ignored real_claude`. Uses a throwaway home with a
+/// written transcript: no login, and no message is sent, so no model is called.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs claude-agent-acp; set HMESH_CLAUDE_ACP"]
+async fn real_claude_adapter_lists_and_continues_an_earlier_session() {
+    let adapter = std::env::var("HMESH_CLAUDE_ACP").expect("set HMESH_CLAUDE_ACP");
+    let root = tempfile::tempdir().unwrap();
+    let home = real(&root.path().join("home"));
+    let config_dir = home.join(".claude");
+    let folder = real(&root.path().join("work/site"));
+    unsafe {
+        std::env::set_var("HMESH_MCP_COMMAND", env!("CARGO_BIN_EXE_hmesh-fixture"));
+        std::env::set_var("HOME", &home);
+        std::env::set_var("CLAUDE_CONFIG_DIR", &config_dir);
+        std::env::set_var("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+        std::env::set_var("DISABLE_TELEMETRY", "1");
+        std::env::set_var("DISABLE_AUTOUPDATER", "1");
+    }
+    // A transcript in Claude Code's own format, as `claude` writes it.
+    let sid = Uuid::new_v4().to_string();
+    let sanitized: String = folder
+        .to_str()
+        .unwrap()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let dir = config_dir.join("projects").join(sanitized);
+    std::fs::create_dir_all(&dir).unwrap();
+    let branch_key = ["gi", "tBranch"].concat();
+    let mut base = json!({"sessionId":sid,"cwd":folder,"version":"2.1.0","userType":"external","isSidechain":false});
+    base[branch_key.as_str()] = json!("main");
+    let ids: Vec<String> = (0..4).map(|_| Uuid::new_v4().to_string()).collect();
+    let line = |i: usize, kind: &str, message: Value| {
+        let mut entry = base.clone();
+        entry["type"] = json!(kind);
+        entry["uuid"] = json!(ids[i]);
+        entry["parentUuid"] = if i == 0 {
+            Value::Null
+        } else {
+            json!(ids[i - 1])
+        };
+        entry["timestamp"] = json!(format!("2026-11-20T09:0{i}:00.000Z"));
+        entry["message"] = message;
+        entry.to_string()
+    };
+    let assistant = |id: &str, text: &str| json!({"id":id,"type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":text}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}});
+    let transcript = [
+        line(
+            0,
+            "user",
+            json!({"role":"user","content":"Explain what README.md says"}),
+        ),
+        line(
+            1,
+            "assistant",
+            assistant("msg_1", "It describes the project."),
+        ),
+        line(
+            2,
+            "user",
+            json!({"role":"user","content":"Now list the build steps"}),
+        ),
+        line(3, "assistant", assistant("msg_2", "Run cargo build.")),
+    ]
+    .join("\n");
+    std::fs::write(dir.join(format!("{sid}.jsonl")), transcript + "\n").unwrap();
+
+    let a = init(root.path(), "node-a");
+    std::fs::create_dir_all(home.join("agent")).unwrap();
+    let config: AgentConfig = serde_json::from_value(json!({
+        "agent":{"name":"claude","harness":"claude-code","project_id":"agent-home"},
+        "project":{"root":home.join("agent"),"allowed_tools":["read"]},
+        "adapter":{"executable":adapter,"args":[]}
+    }))
+    .unwrap();
+    let agent = Uuid::new_v4();
+    let card: AgentCard = serde_json::from_value(json!({
+        "agent_id":agent,"node_id":a.card.node_id,"name":"claude","harness":"claude-code","project_ids":["agent-home"],"availability":"idle","capabilities":[],
+        "probe":{"installed":true,"version":"test","version_supported":true,"protocol_probe":"real","authentication":"not_checked","managed_run":"not_checked","streaming":"not_checked","cancel":"not_checked","session_resume":"not_checked","unavailable_reason":null}
+    }))
+    .unwrap();
+    Store::open(&a.dir.join("state.sqlite3"))
+        .unwrap()
+        .register_agent(&card, &config)
+        .unwrap();
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    let project: Project = owner
+        .post("/local/projects", &json!({"path":folder}))
+        .await
+        .unwrap();
+    let history: ProjectHistory = owner
+        .get(&format!("/local/projects/{}/history", project.project_id))
+        .await
+        .unwrap();
+    let claude = &history.agents[0];
+    assert_eq!(claude.state, HistoryState::Listed, "{history:?}");
+    let listed = claude
+        .sessions
+        .iter()
+        .find(|s| s.agent_session_id == sid)
+        .unwrap_or_else(|| panic!("{history:?}"));
+    assert_eq!(listed.title.as_deref(), Some("Explain what README.md says"));
+    let opened: SessionRecord = owner
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":agent,"project_id":project.project_id,"resume":sid,"title":listed.title}),
+        )
+        .await
+        .unwrap();
+    let (record, events) = until(&owner, opened.session_id, |s, _| {
+        s.status != SessionStatus::Running
+    })
+    .await;
+    assert_eq!(record.last_error, None, "{events:#?}");
+    assert_eq!(
+        texts(&events, "user_message"),
+        ["Explain what README.md says", "Now list the build steps"]
+    );
+    let replies = texts(&events, "agent_message_chunk").concat();
+    assert!(
+        replies.contains("It describes the project.") && replies.contains("Run cargo build."),
+        "{replies}"
+    );
+    assert_eq!(record.turns, 0, "no message was sent");
+    println!(
+        "listed {} session(s); continued {sid} with {} replayed events",
+        claude.sessions.len(),
+        events.len()
+    );
+    daemon.stop().await;
+}

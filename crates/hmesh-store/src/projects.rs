@@ -159,7 +159,8 @@ impl Store {
         })
     }
     /// Move a project `by` places in the list (negative moves it up), among
-    /// the projects with the same pin.
+    /// the projects with the same pin and visibility, so moving never seems
+    /// to stop at a hidden one.
     pub fn move_project(&self, id: &str, by: i64) -> Result<()> {
         self.transaction(|tx| {
             let mut q = tx
@@ -175,9 +176,9 @@ impl Store {
                 .iter()
                 .position(|p| p.project_id == id)
                 .ok_or_else(not_found)?;
-            let pinned = list[from].pinned;
+            let (pinned, hidden) = (list[from].pinned, list[from].hidden);
             let group: Vec<usize> = (0..list.len())
-                .filter(|&i| list[i].pinned == pinned)
+                .filter(|&i| list[i].pinned == pinned && list[i].hidden == hidden)
                 .collect();
             let at = group.iter().position(|&i| i == from).unwrap_or(0) as i64;
             let to = (at + by).clamp(0, group.len() as i64 - 1) as usize;
@@ -194,8 +195,9 @@ impl Store {
             Ok(())
         })
     }
-    /// Remove a project the owner added; agent directories can only be hidden.
-    pub fn remove_project(&self, id: &str) -> Result<()> {
+    /// Remove a project the owner added. An agent's directory can only be
+    /// hidden while an agent is registered there (`agent_present`).
+    pub fn remove_project(&self, id: &str, agent_present: bool) -> Result<()> {
         self.transaction(|tx| {
             let source: Option<String> = tx
                 .query_row(
@@ -207,7 +209,7 @@ impl Store {
                 .map_err(internal)?;
             match source.as_deref() {
                 None => Err(not_found()),
-                Some("agent") => Err(MeshError::new(
+                Some("agent") if agent_present => Err(MeshError::new(
                     ErrorCode::PermissionDenied,
                     "an agent's registered directory can be hidden but not removed",
                 )),

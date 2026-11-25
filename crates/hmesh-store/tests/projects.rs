@@ -61,6 +61,15 @@ fn projects_keep_one_row_per_folder_in_the_owners_order() {
     assert_eq!(ids(&store), ["a", "c", "b"]);
     store.move_project("b", -5).unwrap();
     assert_eq!(ids(&store), ["a", "b", "c"]);
+    // Hidden projects do not count: "e" moves above "c", the visible one before it.
+    store.update_project("b", |p| p.hidden = true).unwrap();
+    store
+        .add_project(&project("e", "/work/e", ProjectSource::Added))
+        .unwrap();
+    store.move_project("e", -1).unwrap();
+    assert_eq!(ids(&store), ["a", "b", "e", "c"]);
+    store.update_project("b", |p| p.hidden = false).unwrap();
+    store.remove_project("e", false).unwrap();
 
     let changed = store
         .update_project("c", |p| {
@@ -84,16 +93,19 @@ fn projects_keep_one_row_per_folder_in_the_owners_order() {
         "b"
     );
 
-    // An agent's directory is hidden, never removed.
+    // While an agent is registered there, its directory is hidden, not removed.
     assert_eq!(
-        store.remove_project("b").unwrap_err().code,
+        store.remove_project("b", true).unwrap_err().code,
         ErrorCode::PermissionDenied
     );
-    store.remove_project("c").unwrap();
+    store.remove_project("c", false).unwrap();
     assert_eq!(
         store.project("c").unwrap_err().code,
         ErrorCode::ProjectNotFound
     );
+    // Once no agent is registered there, its directory can go too.
+    store.remove_project("b", false).unwrap();
+    assert_eq!(ids(&store), ["a"]);
 }
 
 #[test]

@@ -32,9 +32,16 @@ HTTP 桥接每次重查当前信任和服务租约，缓冲响应释放前再次
 
 ## Agent 运行机制（ACP）
 
-HarnessMesh 只通过 [Agent Client Protocol](https://agentclientprotocol.com) 驱动 agent：以参数数组直接启动 owner 登记的 ACP 命令（`opencode acp`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh --profile acp` 或其他），工作目录为登记的项目目录，不拼 shell 命令。远端不能改变命令、cwd、环境或参数。默认 agent 用它自己的登录和模型设置；HarnessMesh 不读取、不复制、不导入任何 agent 的凭据文件（旧的 `credential_source` / `models_file` 已移除并会被拒绝），只有 owner 在「模型服务」里给的值会以环境变量交给 agent（见下）。owner 在 `env_allowlist` 里列出的环境变量缺失时，启动前失败。
+HarnessMesh 只通过 [Agent Client Protocol](https://agentclientprotocol.com) 驱动 agent：以参数数组直接启动 owner 登记的 ACP 命令（`opencode acp`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh --profile acp` 或其他），工作目录默认是登记的项目目录，不拼 shell 命令。远端不能改变命令、环境或参数，也不能传入路径（见下面「项目」）。默认 agent 用它自己的登录和模型设置；HarnessMesh 不读取、不复制、不导入任何 agent 的凭据文件（旧的 `credential_source` / `models_file` 已移除并会被拒绝），只有 owner 在「模型服务」里给的值会以环境变量交给 agent（见下）。owner 在 `env_allowlist` 里列出的环境变量缺失时，启动前失败。
 
 客户端在 `initialize` 里声明不提供文件系统和终端能力，agent 用自己的工具读写项目。agent 的每个 `session/request_permission` 都由会话的回答方决定（见上节）；一次性任务只允许 owner 在 `allowed_tools` 里列出的工具类别，其余一律拒绝并以 `FAILED_NEEDS_INPUT` 结束。**固定工作目录和权限回答不构成 OS 文件系统沙箱**；agent 进程拥有当前用户的底层权限，只应登记可信项目。
+
+### 项目和 agent 已有的会话
+
+- **项目**是本机的文件夹：每个登记 agent 的目录自动是一个项目，owner 可以通过 `/local/projects` 添加更多（必须是已存在的绝对路径，按解析符号链接后的真实路径存，同一文件夹只存一次）。本机 owner 和本机发起的调用链可以让任意本机 agent 在任意项目里开会话（`OpenSession.project_id`），agent 进程的工作目录和 ACP `cwd` 都换成该项目。
+- **共享项目**：项目默认不共享。owner 打开共享后，配对电脑经 `GET /hmesh/v1/projects` 只拿到项目 ID 和名字，**拿不到路径**；它开会话时只能带项目 ID（`PeerOpenSession.project_id`），本机用自己的项目表换成路径并检查仍在共享，不在共享就拒绝。agent 自己的登记目录不需要共享。配对电脑发起的调用链在本机开子会话时同样只能用共享项目。会话记录里的本机路径（`cwd`）在发给配对电脑前去掉。取消共享后，对方在这个项目里已开的会话从下一轮起被拒。共享后对方的 agent 能按工具白名单读写该文件夹，固定工作目录**不构成文件系统沙箱**。
+- **agent 已有的会话**：只有本机 owner 能调 `/local/projects/{id}/history` 和 `/local/history`。daemon 临时启动 agent，只发 `initialize` 和 ACP `session/list`（最多 20 页、1000 条、45 秒），然后停掉；不建会话、不调模型，HarnessMesh 不读取、不复制、不改写 agent 自己的会话文件，标题经脱敏后只在本机显示。接上旧会话（`OpenSession.resume`）只限本机 owner 本人（agent 发起的调用和配对电脑都会被拒），由 agent 自己 `session/load` 回放；回放的消息第一次保存为会话事件，之后重启不再保存。没有对应的 peer 接口，旧会话不会发给配对的电脑。
+- **会话标记**（改名、置顶、隐藏）只存在本机 `session_marks` 表里，不发给 agent，也不发给配对电脑。
 
 每个打开的会话对应一个长驻 agent 进程，空闲 10 分钟后停止。下次发消息时，HarnessMesh 根据新进程的 ACP 握手续上原会话。声明 `loadSession` 的 agent 使用 `session/load`，DSH 使用 `session/resume` 恢复上下文，面板从本地记录显示历史。恢复请求失败时，本轮停止并保留原会话 ID，便于重试。两种恢复能力都未声明的 agent 会开新会话，并提示之前的上下文已丢失。登记 agent 只做一次 `initialize` 握手，不创建会话、不调用模型。
 

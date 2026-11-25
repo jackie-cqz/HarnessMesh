@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessMesh：项目和旧会话，用 ACP 自带的「列出、接上」读 Agent 已有的会话</title>
+<style>
+  :root{--bg:#fff;--ink:#0a0a0a;--muted:#737373;--line:#e5e5e5;--card:#fff;--accent:#171717;--ok:#047857;--warn:#b45309;--bad:#b42318;--soft:#f5f5f5}
+  @media (prefers-color-scheme: dark){:root{--bg:#0a0a0a;--ink:#ededed;--muted:#a3a3a3;--line:#2a2a2a;--card:#171717;--accent:#e5e5e5;--ok:#34d399;--warn:#fbbf24;--bad:#f2877c;--soft:#1f1f1f}}
+  *{box-sizing:border-box}
+  html,body{background:var(--bg)}
+  body{margin:0;color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif}
+  main{max-width:1000px;margin:0 auto;padding:44px 28px 80px}
+  h1{font-size:27px;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
+  h2{font-size:19px;margin:48px 0 14px}
+  h3{font-size:15px;margin:0 0 8px}
+  p{margin:0 0 10px}
+  .sub{color:var(--muted)}
+  code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 5px;border:1px solid var(--line);border-radius:6px;overflow-wrap:anywhere}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0 8px}
+  .stat{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--card);min-width:0}
+  .stat b{display:block;font-size:15px;margin-bottom:4px}
+  .stat span{color:var(--muted);font-size:13px}
+  .table-wrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line);vertical-align:top;min-width:0}
+  th{color:var(--muted);font-weight:500;font-size:13px}
+  td.y{color:var(--ok);font-weight:600;white-space:nowrap}
+  td.n{color:var(--muted);white-space:nowrap}
+  th.c{white-space:nowrap}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--card);min-width:0}
+  .card .label{color:var(--muted);font-size:12px;margin-bottom:10px}
+  .note{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;margin:0 0 10px}
+  .note b{display:block;margin-bottom:2px}
+  .note.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+  .note span{color:var(--muted)}
+  ul,ol{padding-left:20px;margin:0}
+  li{margin-bottom:6px}
+  .ev li{font-size:13.5px}
+  svg{width:100%;height:auto;display:block}
+  svg text{font:12.5px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;fill:var(--ink)}
+  svg .muted{fill:var(--muted)}
+  svg .bold{font-weight:600}
+  svg .box{fill:var(--card);stroke:var(--line)}
+  svg .strong{stroke:var(--accent)}
+  svg .zone{fill:none;stroke:var(--line);stroke-dasharray:4 4}
+  svg .life{stroke:var(--line);stroke-dasharray:4 4}
+  svg .arrow{stroke:var(--ink);stroke-width:1.3;fill:none}
+  svg .dash{stroke-dasharray:5 4}
+  svg .dot{fill:var(--ink)}
+  svg .hollow{fill:none;stroke:var(--ink);stroke-width:1.3}
+  svg .hl{fill:var(--soft);stroke:none}
+  .scroll{overflow-x:auto}
+  @media (max-width:760px){.scroll svg{min-width:760px}.scroll table{min-width:620px}}
+  @media (max-width:760px){.stats{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}}
+  @media (max-width:520px){.stats{grid-template-columns:1fr}main{padding:28px 16px 60px}table{font-size:13px}th,td{padding:8px 6px}}
+</style>
+</head>
+<body>
+<main>
+<h1>项目和旧会话：用 ACP 自带的「列出、接上」读 Agent 已有的会话，不自己解析文件</h1>
+<p class="sub">2026-11-25 的核查结论：HarnessMesh 现在只管它自己开的会话，每个 Agent 固定一个目录。Claude Code、Codex、OpenCode、Pi 的 ACP 适配器都自带 <code>session/list</code>（列出）和 <code>session/load</code>（回放并接上），HarnessMesh 的续聊代码也已经有了。所以只需要补两块：「项目」和「列出旧会话」。</p>
+
+<div class="stats">
+  <div class="stat"><b>4 家能用</b><span>Claude Code、Codex、OpenCode、Pi 的适配器都能列出和接上旧会话（2 家本机实测）</span></div>
+  <div class="stat"><b>0 行解析代码</b><span>不读各家的文件格式。codeg 为此写了约 2.5 万行（只算 Claude、Codex 两个）</span></div>
+  <div class="stat"><b>0.2–0.9 秒</b><span>临时起一个适配器并列出会话（临时目录实测，会话很少）</span></div>
+  <div class="stat"><b>旧会话不出本机</b><span>只在本机面板现读，不复制；配对的电脑只能在你共享的项目里开新会话</span></div>
+</div>
+
+<h2>侧栏：现在 → 改后</h2>
+<div class="two">
+  <div class="card">
+    <div class="label">现在：只有在 HarnessMesh 里开过的会话，按电脑分组</div>
+    <svg viewBox="0 0 440 330" role="img" aria-label="现在的会话侧栏">
+      <text x="16" y="28" class="muted">会话</text>
+      <text x="16" y="58" class="muted">studio（本机）</text>
+      <circle class="dot" cx="30" cy="82" r="3.5"/><text x="42" y="86">登录接口偶尔返回 500，帮…</text><text x="424" y="86" class="muted" text-anchor="end">刚刚</text>
+      <circle class="dot" cx="30" cy="110" r="3.5"/><text x="42" y="114">给 /health 加上版本号…</text><text x="424" y="114" class="muted" text-anchor="end">刚刚</text>
+      <text x="16" y="146" class="muted">laptop</text>
+      <circle class="dot" cx="30" cy="170" r="3.5"/><text x="42" y="174">把设置页的保存按钮改成主色</text><text x="424" y="174" class="muted" text-anchor="end">刚刚</text>
+      <text x="16" y="212" class="muted">可用 Agent</text>
+      <text x="16" y="240" class="muted">studio（本机）</text>
+      <text x="30" y="266">backend　　ops</text>
+      <line x1="16" y1="288" x2="424" y2="288" stroke="var(--line)"/>
+      <text x="16" y="312" class="muted">Claude Code、Codex 以前的会话：看不到，也接不上</text>
+    </svg>
+  </div>
+  <div class="card">
+    <div class="label">改后：电脑 → 项目 → 会话，Agent 的旧会话也列出来</div>
+    <svg viewBox="0 0 440 330" role="img" aria-label="改后的会话侧栏">
+      <text x="16" y="28" class="muted">会话</text>
+      <rect class="box" x="262" y="12" width="162" height="24" rx="6"/><text x="274" y="29" class="muted">搜索会话标题</text>
+      <text x="16" y="58" class="muted">studio（本机）</text>
+      <text x="20" y="86" class="bold">▾ HarnessMesh</text><text x="130" y="86" class="muted">~/code/HarnessMesh</text><text x="424" y="86" text-anchor="end">＋</text>
+      <circle class="dot" cx="40" cy="108" r="3.5"/><text x="52" y="112">登录接口偶尔返回 500…</text><text x="300" y="112" class="muted">backend</text><text x="424" y="112" class="muted" text-anchor="end">刚刚</text>
+      <circle class="hollow" cx="40" cy="134" r="3.5"/><text x="52" y="138">修 CI 缓存</text><text x="300" y="138" class="muted">Claude Code</text><text x="424" y="138" class="muted" text-anchor="end">昨天</text>
+      <circle class="hollow" cx="40" cy="160" r="3.5"/><text x="52" y="164">重写 README</text><text x="300" y="164" class="muted">Codex</text><text x="424" y="164" class="muted" text-anchor="end">3天</text>
+      <text x="20" y="192" class="bold">▸ zwork</text><text x="130" y="192" class="muted">~/code/zwork</text><text x="424" y="192" class="muted" text-anchor="end">12 个会话</text>
+      <text x="20" y="220" class="muted">＋ 从 Agent 历史添加项目</text>
+      <text x="16" y="252" class="muted">laptop</text>
+      <circle class="dot" cx="30" cy="274" r="3.5"/><text x="42" y="278">把设置页的保存按钮改成主色</text><text x="424" y="278" class="muted" text-anchor="end">刚刚</text>
+      <line x1="16" y1="294" x2="424" y2="294" stroke="var(--line)"/>
+      <circle class="dot" cx="20" cy="312" r="3.5"/><text x="30" y="316" class="muted">HarnessMesh 开过</text>
+      <circle class="hollow" cx="150" cy="312" r="3.5"/><text x="160" y="316" class="muted">Agent 自己的旧会话，点开接着聊</text>
+    </svg>
+  </div>
+</div>
+
+<div class="table-wrap">
+<table style="margin-top:16px">
+  <tr><th style="width:18%"></th><th style="width:38%">现在</th><th>改后</th></tr>
+  <tr><td>Agent 和目录</td><td>一个 Agent 绑一个目录，开会话不能换</td><td>登记时的目录变成默认项目；在本机可以用任意 Agent、在任意已添加的项目里开会话</td></tr>
+  <tr><td>项目</td><td>没有，只是 Agent 配置里的一个字段</td><td>本机文件夹列表：从 Agent 历史里勾选，或手动添加；能改名、隐藏、置顶</td></tr>
+  <tr><td>Agent 的旧会话</td><td>看不到</td><td>展开项目时现列；点开一条，回放历史并接着聊</td></tr>
+  <tr><td>HarnessMesh 开的会话</td><td>能续，不能改名、隐藏，没有搜索</td><td>加上改名、隐藏、按标题搜索（第 3 步）</td></tr>
+  <tr><td>配对的电脑</td><td>只能在 Agent 登记的目录里开会话</td><td>还能在你标了「共享」的项目里开新会话（第 2 步）；你的旧会话仍不给对方看</td></tr>
+</table>
+</div>
+
+<h2>怎么列出、接上旧会话</h2>
+<div class="card scroll">
+  <svg viewBox="0 0 960 400" role="img" aria-label="列出和接上旧会话的流程">
+    <defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+    <rect class="box" x="10" y="10" width="180" height="52" rx="8"/><text x="24" y="32">面板</text><text x="24" y="51" class="muted">只有本机主人能用</text>
+    <rect class="box strong" x="250" y="10" width="180" height="52" rx="8"/><text x="264" y="32">hmesh daemon</text><text x="264" y="51" class="muted">列表缓存 30 秒</text>
+    <rect class="box" x="500" y="10" width="180" height="52" rx="8"/><text x="514" y="32">Agent 的 ACP 适配器</text><text x="514" y="51" class="muted">列表时临时起一个</text>
+    <rect class="box" x="760" y="10" width="190" height="52" rx="8"/><text x="774" y="32">Agent 自己的会话文件</text><text x="774" y="51" class="muted">~/.claude、~/.codex …</text>
+    <line class="life" x1="100" y1="62" x2="100" y2="392"/><line class="life" x1="340" y1="62" x2="340" y2="392"/><line class="life" x1="590" y1="62" x2="590" y2="392"/><line class="life" x1="855" y1="62" x2="855" y2="392"/>
+    <text x="104" y="92" class="muted">① 列出</text>
+    <text x="220" y="112" text-anchor="middle">展开项目 HarnessMesh</text><path class="arrow" d="M100 120 H338" marker-end="url(#m)" style="color:var(--ink)"/>
+    <text x="465" y="146" text-anchor="middle">session/list（按目录）</text><path class="arrow" d="M340 154 H588" marker-end="url(#m)" style="color:var(--ink)"/>
+    <text x="722" y="180" text-anchor="middle">读这个目录的会话</text><path class="arrow" d="M590 188 H853" marker-end="url(#m)" style="color:var(--ink)"/>
+    <text x="220" y="214" text-anchor="middle">标题、时间、会话 ID</text><path class="arrow dash" d="M340 222 H102" marker-end="url(#m)" style="color:var(--ink)"/>
+    <line x1="10" y1="242" x2="950" y2="242" stroke="var(--line)"/>
+    <text x="104" y="266" class="muted">② 点开一条接着聊</text>
+    <text x="220" y="288" text-anchor="middle">打开「修 CI 缓存」</text><path class="arrow" d="M100 296 H338" marker-end="url(#m)" style="color:var(--ink)"/>
+    <text x="465" y="320" text-anchor="middle">session/load（会话 ID、目录）</text><path class="arrow" d="M340 328 H588" marker-end="url(#m)" style="color:var(--ink)"/>
+    <text x="465" y="352" text-anchor="middle">回放历史消息</text><path class="arrow dash" d="M590 360 H342" marker-end="url(#m)" style="color:var(--ink)"/>
+    <text x="220" y="376" text-anchor="middle">第一次把回放存下来，之后照常续聊</text><path class="arrow dash" d="M340 384 H102" marker-end="url(#m)" style="color:var(--ink)"/>
+  </svg>
+</div>
+<p class="sub" style="margin-top:10px">②里从 daemon 往后是现有代码：会话记录里存着 Agent 的会话 ID，就先试 <code>session/load</code>，不支持再退到 <code>session/resume</code>。现在回放出来的消息会被丢掉（防止重启后重复），要改成第一次接上旧会话时留下来。</p>
+
+<h2>各家 Agent 支持到哪</h2>
+<div class="table-wrap scroll">
+<table>
+  <tr><th style="width:22%">Agent（适配器版本）</th><th class="c">列出</th><th class="c">回放并接上</th><th class="c">不回放接上</th><th>怎么确认的</th></tr>
+  <tr><td>Claude Code（claude-agent-acp 0.112.0）</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td>本机实测：伪造一份 Claude Code 格式的旧会话，被列出来（标题取第一句话），换个目录列表为空；<code>session/load</code> 回放出全部 4 条消息。不登录、不调模型</td></tr>
+  <tr><td>OpenCode（1.18.33）</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td>本机实测：两个目录各开一个会话，不带目录列出 2 条、带目录列出 1 条；换一个进程后 load、resume 都成功。会话是空的，没测有消息时的回放</td></tr>
+  <tr><td>Codex（codex-acp 主干）</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td>读源码：列表来自 Codex CLI 和 VS Code 的历史线程，按目录过滤。本机没装，没实测</td></tr>
+  <tr><td>Pi（pi-acp 0.0.35）</td><td class="y">✓</td><td class="y">✓</td><td class="n">—</td><td>读源码，没实测</td></tr>
+  <tr><td>DeepSeek Harness（dsh）</td><td class="n">没查</td><td class="n">没查</td><td class="y">✓</td><td>main 上的代码对它用 resume；能不能列出没查</td></tr>
+</table>
+</div>
+<p class="sub" style="margin-top:10px">别的 ACP Agent 看它启动时声明的能力；不支持列出的，面板显示「这个 Agent 不能列出旧会话」。</p>
+
+<h2>和 codeg 的做法比</h2>
+<div class="table-wrap">
+<table>
+  <tr><th style="width:18%"></th><th style="width:41%">codeg</th><th>本方案</th></tr>
+  <tr><td>怎么列旧会话</td><td>15 个解析器离线读各家文件，要跟着各家改格式</td><td>调适配器的 <code>session/list</code>，各家自己读</td></tr>
+  <tr><td>什么时候读</td><td>手动「导入」时扫一遍，存进自己的数据库</td><td>展开项目时现读，缓存 30 秒；只存点开过的会话</td></tr>
+  <tr><td>聊天记录</td><td>每次打开都重新解析 Agent 的文件</td><td>第一次接上时由 <code>session/load</code> 回放，存下来</td></tr>
+  <tr><td>续聊</td><td>resume → load → 都不行就开新会话</td><td>load → resume（现有代码）→ 都不行就开新会话</td></tr>
+  <tr><td>覆盖的 Agent</td><td>15 家，包括不支持 ACP 的</td><td>适配器支持 <code>session/list</code> 的（已确认 4 家）</td></tr>
+  <tr><td>不启动 Agent 就能列</td><td>能</td><td>不能，要临时起适配器（0.2–0.9 秒）</td></tr>
+</table>
+</div>
+<p class="sub" style="margin-top:10px">codeg 不用 <code>session/list</code> 的理由是「不想为了列表启动适配器」。HarnessMesh 的 daemon 本来就负责启动适配器，这条理由对我们不成立。</p>
+
+<h2>分三步</h2>
+<div class="table-wrap">
+<table>
+  <tr><th style="width:20%">步骤</th><th style="width:46%">做什么</th><th>做完你能</th></tr>
+  <tr><td>1. 本机：项目和旧会话</td><td>项目表；从 Agent 历史勾选添加、手动添加；侧栏改成「电脑 → 项目 → 会话」；展开项目时列出旧会话；点开回放并接着聊；本机任意 Agent 在任意已添加项目里开新会话</td><td>在面板里找到 Claude Code、Codex 以前的会话接着聊；同一个 Claude Code 用在多个项目里</td></tr>
+  <tr><td>2. 共享项目</td><td>项目可以标「共享给配对的电脑」；对方能在共享的项目里开新会话；<code>mesh_list_agents</code> 显示可用项目，<code>mesh_send</code> 加 <code>project</code> 参数（见下一节）</td><td>让别的电脑的 Agent 去你的另一个项目干活</td></tr>
+  <tr><td>3. 会话管理</td><td>会话改名、隐藏、置顶、按标题搜索；项目改名、隐藏、排序</td><td>会话多了也找得到</td></tr>
+</table>
+</div>
+
+<h2>第 2 步：共享项目的规则</h2>
+<div class="two">
+  <div class="card">
+    <div class="label">对方能做的</div>
+    <ul>
+      <li>看到你共享的项目：只给项目 ID 和名字，不给完整路径。</li>
+      <li>用你开放给它的 Agent，在共享的项目里开新会话。</li>
+      <li>通过 MCP：<code>mesh_list_agents</code> 列出每个 Agent 可用的项目，<code>mesh_send</code> 带 <code>project</code> 选一个；不带就用 Agent 登记的目录，和现在一样。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="label">对方不能做的</div>
+    <ul>
+      <li>指定任意路径：请求里只能带项目 ID，daemon 用本机的项目表换成路径，并检查它还在共享。</li>
+      <li>列出、接上你的旧会话（第 1 项定的）。</li>
+      <li>绕过工具白名单和审批：都按现在的规则走，审批仍按电脑开关。</li>
+      <li>取消共享后继续用：之后的新会话被拒，已开的会话从下一轮起被拒。</li>
+    </ul>
+  </div>
+</div>
+<p class="sub" style="margin-top:10px">每个项目默认不共享，共享时对所有配对的电脑生效。兼容老版本：共享项目通过一个新接口查询，老版本电脑返回 404，就当它没有共享项目；只有对方支持时，开会话的请求里才带项目（老版本会拒绝不认识的字段）。</p>
+
+<h2>不做什么</h2>
+<ul>
+  <li>不自己解析各家的会话文件。</li>
+  <li>不改写、不删除 Agent 自己的会话文件。面板里的「改名」「隐藏」只存在 HarnessMesh 里。</li>
+  <li>不在启动时扫全部历史，不把历史整个复制进 HarnessMesh，只存你点开过的那几条会话。</li>
+  <li>不支持没有 <code>session/list</code> 的 Agent 列出旧会话。</li>
+  <li>先不做「从某一轮分叉」（<code>session/fork</code> 在协议里还是试验性的）。</li>
+</ul>
+
+<h2>要改的地方</h2>
+<div class="table-wrap">
+<table>
+  <tr><th style="width:20%">位置</th><th>改什么</th></tr>
+  <tr><td><code>hmesh-core</code></td><td>会话记录加「工作目录」；本机开会话时可以带项目，或带一个要接上的 Agent 会话 ID；配对电脑发来的开会话请求加一个可选的项目 ID（第 2 步，只发给支持的电脑）</td></tr>
+  <tr><td><code>hmesh-store</code></td><td>新的项目表（真实路径、名字、置顶、隐藏、是否共享）</td></tr>
+  <tr><td><code>hmesh-adapters</code></td><td>能发 <code>session/list</code> 并翻页；探测 Agent 时记下「能列出」「能 resume」</td></tr>
+  <tr><td><code>hmesh-daemon</code></td><td>启动 Agent 时用会话自己的目录，不再固定用登记目录；项目增删、列出旧会话的接口，只认本机主人；第一次接上旧会话时把回放留下；第 2 步加「共享项目」查询接口，并在对方开会话时检查项目还在共享</td></tr>
+  <tr><td><code>hmesh-mcp</code></td><td>第 2 步：<code>mesh_list_agents</code> 显示可用项目，<code>mesh_send</code> 加 <code>project</code> 参数</td></tr>
+  <tr><td>面板</td><td>侧栏改成「电脑 → 项目 → 会话」；「从 Agent 历史添加项目」窗口；旧会话的行样式；项目上的「新会话」；第 2 步加项目的「共享给配对的电脑」开关，开新会话时可以选对方共享的项目</td></tr>
+  <tr><td>文档</td><td><code>docs/security.md</code> 写清新的目录边界；<code>docs/local-panel.md</code>；工程规格书第 524 行（「不从 ~/.pi 擅自收集历史聊天」）</td></tr>
+</table>
+</div>
+
+<h2>已定的事（2026-11-25）</h2>
+<div class="note"><b>1. 旧会话只在本机面板看</b><span>私人对话不经过配对通道，HarnessMesh 也不复制，只存你点开过的。代价是在 laptop 上看不到 studio 的旧会话。连带把工程规格书第 524 行改成「只在本机面板现读，不复制、不外传」。</span></div>
+<div class="note"><b>2. 项目从 Agent 历史里勾选添加，也能手动添加</b><span>侧栏只出现你要的项目；第一次要多点一步。</span></div>
+<div class="note"><b>3. 配对的电脑能在你标了「共享」的项目里开会话</b><span>没选推荐的「只在登记目录」。所以共享项目从原来的第 3 步提前到第 2 步，规则见上面「第 2 步：共享项目的规则」。代价：要改对外接口、配对电脑之间的协议和安全测试，比只改本机多一步工作量。</span></div>
+<div class="note"><b>4. 侧栏按「电脑 → 项目 → 会话」</b><span>同一项目里不同 Agent 的会话放在一起；配对电脑的会话没有项目信息时，仍按现在平铺。</span></div>
+
+<h2>风险和应对</h2>
+<div class="note warn"><b>终端里还开着同一个会话时，两边会同时写</b><span>应对：打开旧会话前提示「如果终端里还开着它，先关掉」。HarnessMesh 没法可靠判断终端里是不是还开着。</span></div>
+<div class="note warn"><b>每次列表都要起适配器，会话多了可能慢</b><span>应对：只在展开项目时列，按「Agent + 目录」缓存 30 秒，有刷新按钮；不在启动时扫所有目录。0.2–0.9 秒是在临时目录、只有一两条会话时测的，真实目录没测。</span></div>
+<div class="note warn"><b>「从历史添加项目」要扫全部历史，可能要翻很多页</b><span>应对：后台翻页并显示进度，可以中途停；扫到的目录只用来勾选，不存会话内容。</span></div>
+<div class="note warn"><b>同一个目录，各家给的路径写法不同</b><span>OpenCode 实测返回 <code>/private/tmp/…</code>（macOS 的真实路径），而不是 <code>/tmp/…</code>。应对：都转成真实路径再比较。</span></div>
+<div class="note warn"><b>Agent 能去的目录变多了</b><span>应对：本机只能用你添加过的项目；工具白名单和权限审批照旧。</span></div>
+<div class="note warn"><b>共享项目后，对方的 Agent 能在这个目录里读写文件</b><span>能做什么取决于该 Agent 的工具白名单，审批按电脑开关。应对：每个项目默认不共享；面板里共享开关旁写清这一点；对方只拿到项目 ID，路径永远由本机决定；取消共享立刻生效。</span></div>
+<div class="note warn"><b>共享对所有配对的电脑生效</b><span>只想给其中一台时做不到。应对：先这样做；真有需要再加「按电脑共享」，协议本来就按项目 ID 检查，以后加也不用改接口。</span></div>
+<div class="note warn"><b>列表里会混进 HarnessMesh 自己开的会话（包括 Agent 之间互相调用开的）</b><span>应对：按 Agent 会话 ID 去重，HarnessMesh 开过的只显示一次，并保留调用关系。</span></div>
+
+<h2>怎么验证</h2>
+<ul>
+  <li>假 ACP Agent（测试用）加上列出和回放：两个目录的会话各自列对；点开旧会话后历史出现在会话里；接着发消息能续；daemon 重启后还能续。</li>
+  <li>真适配器、不调模型：Claude 适配器配伪造的旧会话；OpenCode 用临时 HOME。把这次的实验脚本整理成需要手动开启的检查脚本。</li>
+  <li>安全：配对电脑带旧会话 ID、路径，或带没共享的项目 ID 都被拒；取消共享后对方下一轮被拒；相对路径、不存在的目录不能添加；列出旧会话的接口只认本机主人。</li>
+  <li>共享项目的双节点测试：A 共享项目 P，B 通过 MCP 用 <code>project</code> 在 P 里开会话并拿回结果；老版本节点（不认识项目字段）照常能互相调用。</li>
+  <li>面板冒烟：侧栏、添加项目窗口、旧会话回放，深色、浅色和窄窗各截一张。</li>
+</ul>
+
+<h2>依据</h2>
+<ul class="ev">
+  <li>会话固定在登记目录：<code>crates/hmesh-daemon/src/sessions.rs:540</code>（<code>let cwd = config.project.root.clone()</code>）。开会话的请求没有目录字段：<code>crates/hmesh-core/src/sessions.rs:180</code>。以上均为最新 main（6cb5691）。</li>
+  <li>续聊已有：<code>sessions.rs:542</code> 取存下的 Agent 会话 ID；<code>crates/hmesh-adapters/src/acp.rs:27</code> 先 load 后 resume；<code>sessions.rs:563</code> 回放时不记事件。</li>
+  <li>侧栏按电脑分组：<code>web/panel/sessions.js:96</code>；列表取最近 200 条：<code>sessions.rs:1648</code>。</li>
+  <li>之前的方案把「导入 Agent 历史」列进「不拿」：<code>docs/proposals/acp-agent-hub-plan.html:301</code>；工程规格书：<code>HarnessMesh_Engineering_SPEC_V0.1_to_V2.md:524</code>。</li>
+  <li>协议：<code>agent-client-protocol-schema</code> 1.22.0 里，<code>session/list</code>、<code>session/load</code>、<code>session/resume</code>、<code>session/close</code> 是正式方法；<code>session/fork</code>、归档、改标题还是试验性的（<code>src/v1/agent.rs</code>）。</li>
+  <li>实验 1（Claude）：<code>/tmp/hm-sessions-spike/claude-probe.mjs</code>，临时 <code>CLAUDE_CONFIG_DIR</code>，伪造两轮对话。启动加初始化 0.22–0.26 秒，列表 6–7 毫秒。</li>
+  <li>实验 2（OpenCode）：<code>/tmp/hm-sessions-spike/acp-probe.mjs</code>，临时 HOME，只开会话不发消息。启动加初始化 0.9 秒。</li>
+  <li>Codex：<code>zed-industries/codex-acp</code> 主干的 <code>src/codex_agent.rs</code>（声明 load、list、resume、close）。Pi：<code>pi-acp</code> 0.0.35 的 <code>dist/index.js:2061</code>。</li>
+  <li>codeg（10 月 13 日版本）：解析器在 <code>src-tauri/src/parsers/</code>，<code>claude.rs</code> 和 <code>codex.rs</code> 合计约 2.5 万行；不用 <code>session/list</code> 的理由在 <code>src-tauri/src/acp/connection.rs:4965</code>；续聊回退在 <code>connection.rs:6601</code> 起。</li>
+</ul>
+</main>
+</body>
+</html>

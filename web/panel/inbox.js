@@ -36,7 +36,7 @@ function buildInboxItems({tasks=[],sessions=[],pairs=[],localNodeId=null,taskObs
   else if(status==='waiting_permission'){category=mayAnswer?'permission':'execution';statusLabel=mayAnswer?'等待你回答工具授权':session.approver==='auto'?'自动授权处理中':'等待执行端回答工具授权';}
   else if(status==='running')category='execution';
   if(session.last_error&&!['running','waiting_permission','pending_approval'].includes(status))category='attention';
-  items.push({key:`session:${session.session_id}`,kind:'session',id:session.session_id,title:session.title||session.agent_name||'Agent 会话',nodeId:session.node_id,category,status,statusLabel,acceptance:null,observedAt:remote?(session._observed||null):inboxLatestTime(session._observed,sessionObserved),cached:remote||!!session._sourceCached,record:session,needsOwner:category==='approval'||category==='permission'});
+  items.push({key:`session:${session.session_id}`,kind:'session',id:session.session_id,title:(typeof markOf==='function'&&markOf(session.session_id)?.title)||session.title||session.agent_name||'Agent 会话',nodeId:session.node_id,category,status,statusLabel,acceptance:null,observedAt:remote?(session._observed||null):inboxLatestTime(session._observed,sessionObserved),cached:remote||!!session._sourceCached,record:session,needsOwner:category==='approval'||category==='permission'});
  }
  return items.sort((a,b)=>Number(b.needsOwner)-Number(a.needsOwner)||((b.record.updated_at||b.record.created_at||0)-(a.record.updated_at||a.record.created_at||0))||a.key.localeCompare(b.key));
 }

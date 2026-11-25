@@ -431,7 +431,10 @@ async fn remove_project(
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
     validate_project_id(&id)?;
-    s.store.remove_project(&id)?;
+    let agent_present = projects(&s)?
+        .iter()
+        .any(|p| p.project_id == id && !p.agent_ids.is_empty());
+    s.store.remove_project(&id, agent_present)?;
     Ok(Json(json!({})))
 }
 async fn project_history(

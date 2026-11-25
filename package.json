@@ -7,6 +7,7 @@
     "test:delegation-ux": "node scripts/delegation-ux-smoke.mjs",
     "test:project-work": "node scripts/project-work-smoke.mjs",
     "test:sessions-panel": "node scripts/sessions-panel-smoke.mjs",
+    "test:projects-panel": "node scripts/projects-panel-smoke.mjs",
     "test:pairing-panel": "node scripts/pairing-panel-smoke.mjs",
     "test:real-agent-commands": "node scripts/real-agent-commands-smoke.mjs",
     "test:real-dsh": "node scripts/real-dsh-smoke.mjs",
