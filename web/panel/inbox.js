@@ -84,14 +84,21 @@ async function inboxOpen(item){
  if(item.kind==='task'){await openTask(item.record);return;}
  showView('sessions');selectSession(item.record);
 }
+// Plain words for the read failures people meet most; other codes as they are.
+function inboxProblem(code){return ({PEER_UNREACHABLE:'对方电脑连不上',READ_UNAVAILABLE:'暂时读不到',VERIFICATION_UNAVAILABLE:'验收结果暂时读不到',UNAUTHENTICATED:'对方不认这台电脑',PERMISSION_DENIED:'对方不允许读取'})[code]||code;}
 function inboxCard(item){
  const card=el('article','inbox-item');card.dataset.key=item.key;card.dataset.kind=item.kind;card.dataset.category=item.category;
- const text=el('div','inbox-item-main'),heading=el('div','inbox-item-heading');heading.append(el('span','inbox-kind',item.kind==='task'?'任务':'ACP 会话'),el('strong','inbox-status',item.statusLabel));
+ const text=el('div','inbox-item-main'),heading=el('div','inbox-item-heading');heading.append(el('span','inbox-kind',item.kind==='task'?'任务':'会话'),el('strong','inbox-status',item.statusLabel));
  if(item.acceptance)heading.append(el('span',`badge ${item.acceptance==='passed'?'good':item.acceptance==='failed'?'bad':'warn'}`,inboxAcceptanceNames[item.acceptance]||'验收状态未知'));
  const title=el('p','inbox-title',String(item.title).slice(0,240));
- const observed=el('p','inbox-observed',`${item.cached?'最近已确认 · ':'本机观察 · '}${item.observedAt?fullTime(item.observedAt):'时间未知'}`);if(item.observedAt)observed.dataset.observedAt=item.observedAt;
- text.append(heading,title,el('p','inbox-location',`${nodeName(item.nodeId)} · ${short(item.id)}`),observed);
- const failure=inboxState.failures.get(item.key);if(failure)text.append(el('p','inbox-connection-note',`当前读取失败：${failure}。以上保留最近确认结果，未重新执行。`));
+ // Where it runs, and when its state was last read: from the other computer
+ // (a cached copy) or here.
+ const where=[item.kind==='session'?item.record?.agent_name:null,nodeName(item.nodeId)].filter(Boolean).join(' · ');
+ const when=item.observedAt?time(item.observedAt):null;
+ const observedText=item.cached?(when?`上次同步 ${when}`:'还没从对方读到最新状态'):(when?`更新于 ${when}`:'');
+ const details=el('p','inbox-location',observedText?`${where} · ${observedText}`:where);details.title=item.id;if(item.observedAt)details.dataset.observedAt=item.observedAt;
+ text.append(heading,title,details);
+ const failure=inboxState.failures.get(item.key);if(failure)text.append(el('p','inbox-connection-note',`当前读取失败（${inboxProblem(failure)}），显示的是上次同步到的状态，没有重新执行。`));
  const actions=el('div','inbox-item-actions'),label=item.kind==='task'?'查看任务与验收':item.category==='permission'?'审阅工具授权':item.category==='approval'?'审阅会话审批':'打开会话';
  actions.append(button(label,'button secondary',()=>inboxOpen(item)));
  if(item.kind==='task'&&item.status==='UNCONFIRMED'&&item.requestId&&typeof recoverOriginal==='function'){
@@ -104,23 +111,27 @@ function renderInbox(){
  const items=inboxModel(),actionCount=items.filter(item=>item.needsOwner).length,badgeNode=document.querySelector('#nav-inbox-count');
  if(badgeNode){badgeNode.textContent=actionCount;badgeNode.hidden=!actionCount;}
  if(state.view!=='inbox')return;
- const header=el('div','section-heading'),copy=el('div');copy.append(el('h2','','待办与运行状态'),el('p','form-note','审批、执行、验收分别记录。连接失败保留最近确认结果，不重建任务。'));
- const refresh=button(inboxState.loading?'正在读取…':'刷新待办','button secondary',()=>refreshInbox(true));refresh.id='inbox-refresh';refresh.disabled=inboxState.loading;header.append(copy,refresh);
- const filters=el('div','segmented inbox-filters');filters.setAttribute('aria-label','待办类型');
+ // One row: the kinds that have something (plus 需要处理, 全部 and the one
+ // chosen), and refresh. The page title already says what this page is.
+ const toolbar=el('div','inbox-toolbar');
+ const refresh=button(inboxState.loading?'正在读取…':'刷新','button secondary',()=>refreshInbox(true));refresh.id='inbox-refresh';refresh.disabled=inboxState.loading;
+ const filters=el('div','segmented inbox-filters'),scrolled=box.querySelector('.inbox-filters')?.scrollLeft||0;filters.setAttribute('aria-label','待办类型');
  for(const key of ['attention','approval','permission','execution','acceptance','recent','all']){
   const count=items.filter(item=>inboxMatches(item,key)).length;
+  if(!count&&key!==inboxState.filter&&!['attention','all'].includes(key))continue;
   const select=button(`${inboxCategoryNames[key]} · ${count}`,key===inboxState.filter?'selected':'',()=>{inboxState.filter=key;renderInbox();});select.dataset.inboxFilter=key;filters.append(select);
  }
+ toolbar.append(filters,refresh);
  const problems=el('section','inbox-connectivity');problems.id='inbox-connectivity';problems.setAttribute('aria-label','连接与读取状态');
  const notes=[];if(inboxState.overviewError)notes.push(`状态读取失败：${inboxState.overviewError}`);if(inboxState.taskListError)notes.push(`任务列表读取失败：${inboxState.taskListError}`);if(inboxState.sessionError)notes.push(`会话列表读取失败：${inboxState.sessionError}`);
- for(const [key,code]of inboxState.failures)notes.push(`${key.startsWith('task:')?'任务':'会话'} ${short(key.split(':')[1])}：${code}`);
+ for(const [key,code]of inboxState.failures)notes.push(`${key.startsWith('task:')?'任务':'会话'} ${short(key.split(':')[1])}：${inboxProblem(code)}`);
  if(state.snapshot?.peers?.error)notes.push(`节点探测不可用：${state.snapshot.peers.error.code}`);
  for(const peer of data('peers'))if(peer.node_connectivity==='unreachable')notes.push(`${peer.card.display_name} 当前不可达；历史任务结果保持不变。`);
  if(notes.length){problems.append(el('h3','','当前连接与读取问题'),...notes.slice(0,12).map(note=>el('p','',note)),el('p','form-note','这里的读取问题不代表任务执行失败。可打开原记录核对；不会自动重提。'));}else problems.hidden=true;
  const shown=items.filter(item=>inboxMatches(item,inboxState.filter));
- const list=el('div','inbox-list');list.id='inbox-items';list.append(...(shown.length?shown.slice(0,100).map(inboxCard):[empty('当前分类没有待办','可以切换分类查看执行、验收和最近结果。')]));
- const foot=el('p','list-note',`显示 ${Math.min(shown.length,100)} / ${shown.length} 条。远端记录标注最后确认时间；未观察过的缓存时间保持未知。`);
- box.replaceChildren(header,filters,problems,list,foot);
+ const list=el('div','inbox-list');list.id='inbox-items';list.append(...(shown.length?shown.slice(0,100).map(inboxCard):[empty('这一类现在没有','换个分类看看，或点「全部」。')]));
+ const foot=shown.length>100?[el('p','list-note inbox-foot',`只显示最近 100 条，共 ${shown.length} 条。`)]:[];
+ box.replaceChildren(toolbar,problems,list,...foot);filters.scrollLeft=scrolled;
 }
 function inboxCandidates(items){return items.filter(item=>item.kind==='task'?item.record._direction==='outbound'&&(inboxState.failures.has(item.key)||['UNCONFIRMED','PENDING_APPROVAL','QUEUED','RUNNING','CANCELLING','WAITING_INPUT','UNKNOWN'].includes(item.status)||(item.status==='SUCCEEDED'&&['pending','unknown'].includes(item.acceptance))):item.record._remote&&(item.status!=='closed'||inboxState.failures.has(item.key)));}
 async function observeInboxItem(item,epoch){

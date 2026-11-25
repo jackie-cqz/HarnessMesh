@@ -143,7 +143,7 @@ function renderNodes() {
 }
 async function loadRemote(peer) {
   const box=$('#remote-agents');box.hidden=false;box.replaceChildren(el('h2','',`${peer.card.display_name} / Agents`),empty('正在读取授权的 Agent…'));
-  try { const rows=unwrap(await api(`/peers/${peer.card.node_id}/agents`));const grid=el('div','card-grid');grid.append(...(rows.length?rows.map(a=>agentCard(a,true)):[empty('该节点没有对本机可见的 Agent')]));box.replaceChildren(el('h2','',`${peer.card.display_name} / Agents`),grid); }
+  try { const rows=unwrap(await api(`/peers/${peer.card.node_id}/agents`));const grid=el('div','card-grid entity-list');grid.append(...(rows.length?rows.map(a=>agentCard(a,true)):[empty('该节点没有对本机可见的 Agent')]));box.replaceChildren(el('h2','',`${peer.card.display_name} / Agents`),grid); }
   catch(e){box.replaceChildren(el('h2','',`${peer.card.display_name} / Agents`),empty('远端 Agent 暂不可读取',e.message));}
 }
 function render() {
