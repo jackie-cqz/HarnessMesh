@@ -111,7 +111,7 @@ hmesh peers address <对端名字或节点ID> --clear              # 清除手�
 - `crates/hmesh-cli/tests/setup.rs`：用假的 `claude` 命令和临时 HOME 跑 `hmesh setup --mcp-only`，核对节点配置、Claude Code 和 Codex 各只接入一次、不同意就一个客户端和开机自启都不碰、`hmesh mcp` 自己拉起 daemon（包括 daemon 被强杀之后）、daemon 起不来时立刻报出原因、Codex 配置是符号链接时链接保留。
 - `test-support/hmesh-fixture/tests/mesh_e2e.rs` 的 `a_computer_that_only_connects_out_opens_sessions_but_none_open_on_it`：只装 MCP 的电脑经 MCP 在配对电脑上开会话、拿回答复；对方在它上面开会话被拒。
 - `crates/hmesh-cli/tests/two_nodes.rs`：只装 MCP 的电脑能向外配对和调用，对方发来的配对申请、`hello` 和节点请求都被拒；换了端口的电脑会把新名片发给配对的电脑；直连网络的电脑只在配对窗口开着时回应配对，地址没了时启动会说明怎么办；口令配对：错口令谁都不信任，对上的口令双方互信、不用批准，用一次作废，错满 3 次口令作废而配对码照样能用，只发起握手不确认的也照样扣次数；macOS 上附近的电脑在窗口开着时能被列出，口令用掉后撤回；已配对的电脑交换地址列表：对方换了地址（127.0.0.1 换成 ::1）后靠 `localhost` 主机名连上并记下 `last_good`，手动地址能连上名片地址已失效的电脑，排在前面的另一台电脑的地址被跳过，排在最前面的地址不回包时对方照样显示在线。
-- `crates/hmesh-transport/tests/routes.rs`：多地址拨号只在请求没发出去时换地址（返回错误或超时的写请求不会再发到别的地址），跳过证书不对的电脑，记住连上的地址，全部失败时逐条说明原因；第一条地址不回包（包丢掉、连上了但 TLS 不应答、文档用的 192.0.2.1）时 750 毫秒内用上下一条，只是慢的第一条在没有别的地址时照常重试。
+- `crates/hmesh-transport/tests/routes.rs`：多地址拨号只在请求没发出去时换地址（返回错误或超时的写请求不会再发到别的地址），跳过证书不对的电脑，记住连上的地址，全部失败时逐条说明原因；第一条地址不回包（包丢掉、连上了但 TLS 不应答、文档用的 192.0.2.1）时 750 毫秒内用上下一条；排在最前面的是慢但通的路（每个包单程延迟半个来回的本机代理，来回 260 和 400 毫秒）、后面的地址失效时，在调用方等的 1.5 秒内照样用上它；第一条连上后回答再慢也不探测、不在别的地址再发；第一条恰好在另一条握手成功的同一刻连上时，请求也只执行一次（`client.rs` 的单元测试在连接建好的那一刻放弃，确认这条连接不被使用、请求不发）。
 - `scripts/pairing-nearby-smoke.mjs`（`npm run test:pairing-nearby`，macOS）：真实浏览器里的「附近的电脑」和口令配对。
 - `crates/hmesh-transport/tests/pinning.rs`：证书里没写着拨的那个地址也能靠指纹连上，换一张证书就连不上。
 - 以上只用 fixture，不调用模型。
