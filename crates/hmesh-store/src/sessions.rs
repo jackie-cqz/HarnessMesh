@@ -171,6 +171,52 @@ impl Store {
             })
         })
     }
+    /// Append several events at once: all are stored, or none.
+    pub fn append_session_events(
+        &self,
+        session_id: Uuid,
+        events: &[(String, Value)],
+    ) -> Result<Option<u64>> {
+        if events.is_empty() {
+            return Ok(None);
+        }
+        self.transaction(|tx| {
+            let mut seq: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(seq),0) FROM session_events WHERE session_id=?1",
+                    [session_id.to_string()],
+                    |r| r.get(0),
+                )
+                .map_err(internal)?;
+            let created_at = now();
+            for (kind, payload) in events {
+                seq += 1;
+                tx.execute(
+                    "INSERT INTO session_events VALUES(?1,?2,?3,?4,?5)",
+                    params![
+                        session_id.to_string(),
+                        seq,
+                        created_at,
+                        kind,
+                        encode(payload)?
+                    ],
+                )
+                .map_err(internal)?;
+            }
+            Ok(Some(seq as u64))
+        })
+    }
+    /// Whether any of a session's events is marked `"replayed": true`.
+    pub fn has_replayed_events(&self, id: Uuid) -> Result<bool> {
+        self.read(|c| {
+            c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_events WHERE session_id=?1 AND json_extract(payload_json,'$.replayed')=1)",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .map_err(internal)
+        })
+    }
     /// The payload of a session's most recent event of one kind.
     pub fn latest_session_event(&self, id: Uuid, kind: &str) -> Result<Option<Value>> {
         self.read(|c| {

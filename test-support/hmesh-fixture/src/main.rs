@@ -605,6 +605,15 @@ fn run_acp() -> anyhow::Result<()> {
                                 );
                             }
                         }
+                        // `<id>.fail-after-replay` in the state directory: the
+                        // reload fails once it has replayed the history.
+                        if state_dir()
+                            .join(format!("{session_id}.fail-after-replay"))
+                            .exists()
+                        {
+                            fail(&id, -32603, "the reload stopped part way");
+                            continue;
+                        }
                         announce_commands(&session_id);
                         sessions.insert(
                             session_id,

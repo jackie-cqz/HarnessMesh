@@ -50,6 +50,9 @@ struct Live {
     /// Replayed updates are this session's history: it continues a session
     /// the agent already had and is being reloaded for the first time.
     keep_replay: std::sync::atomic::AtomicBool,
+    /// That history as it is replayed, recorded at once when the reload
+    /// succeeds: a reload that stops part way records none of it.
+    replayed: Mutex<Vec<(String, Value)>>,
     last_active: Mutex<Instant>,
     /// The model service settings the process was started with.
     service_digest: String,
@@ -327,13 +330,13 @@ fn normalize(update: &Value, secrets: &[String]) -> Option<(&'static str, Value)
 }
 
 /// Store all safe text, splitting on UTF-8 boundaries for bounded events.
-fn record_text(s: &AppState, id: Uuid, kind: &str, mut text: &str) {
+fn record_text(write: &impl Fn(&str, Value), kind: &str, mut text: &str) {
     while !text.is_empty() {
         let mut end = text.len().min(MAX_EVENT_TEXT_BYTES);
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        let _ = record_event(s, id, kind, json!({"text": &text[..end]}));
+        write(kind, json!({"text": &text[..end]}));
         text = &text[end..];
     }
 }
@@ -348,18 +351,26 @@ async fn pump(
     // independent, even when tool events occur before the next text delta.
     let mut message_text = RedactedStream::default();
     let mut thought_text = RedactedStream::default();
+    // A first reload's history is kept until the reload succeeds.
+    let write = |kind: &str, payload: Value| {
+        if live.keep_replay.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Ok(mut kept) = live.replayed.lock() {
+                kept.push((kind.to_owned(), payload));
+            }
+        } else {
+            let _ = record_event(&s, id, kind, payload);
+        }
+    };
     let finish_text = |message: &mut RedactedStream, thought: &mut RedactedStream| {
-        record_text(&s, id, "agent_message_chunk", &message.finish());
-        record_text(&s, id, "agent_thought_chunk", &thought.finish());
+        record_text(&write, "agent_message_chunk", &message.finish());
+        record_text(&write, "agent_thought_chunk", &thought.finish());
     };
     // A replayed user message, recorded once the agent moves on.
     let mut replayed_user = String::new();
     let flush_user = |text: &mut String| {
         let text = std::mem::take(text);
         if !text.trim().is_empty() {
-            let _ = record_event(
-                &s,
-                id,
+            write(
                 "user_message",
                 json!({"text":clipped(&live.secrets, text.trim(), MAX_EVENT_TEXT_BYTES),"from":{"replayed":true}}),
             );
@@ -424,7 +435,7 @@ async fn pump(
                 };
                 if let Some((kind, stream)) = stream {
                     if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
-                        record_text(&s, id, kind, &stream.push(&live.secrets, text));
+                        record_text(&write, kind, &stream.push(&live.secrets, text));
                     }
                     continue;
                 }
@@ -436,7 +447,7 @@ async fn pump(
                     reply.tool();
                 }
                 if let Some((kind, payload)) = normalize(update, &live.secrets) {
-                    let _ = record_event(&s, id, kind, payload);
+                    write(kind, payload);
                 }
             }
             AgentMessage::Permission { id: rpc, params } => {
@@ -616,6 +627,7 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         keep_replay: std::sync::atomic::AtomicBool::new(
             matches!(restore, Some((_, acp::SessionRestore::Load))) && keep_history,
         ),
+        replayed: Mutex::new(Vec::new()),
         last_active: Mutex::new(Instant::now()),
         service_digest: digest,
         // A restarted agent may report only tokens at first: its last known
@@ -678,12 +690,14 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
     };
     let (agent_session, result, fresh, note) = match started {
         Ok(started) => {
-            // The replay is recorded; a later start must not record it again,
-            // even if applying settings fails below.
+            // Record the replayed history, then note it as kept so a later
+            // start does not record it again, even if applying settings fails
+            // below.
             if record.history_pending
                 && !started.2
-                && let Err(error) =
+                && let Err(error) = record_history(s, record.session_id, &live).and_then(|()| {
                     update_record(s, record.session_id, |r| r.history_pending = false)
+                })
             {
                 discard(s, record.session_id, &live).await;
                 return Err(error);
@@ -928,15 +942,29 @@ fn begin_checked_turn(
         record
     };
     let (shown, _) = clip(text, MAX_EVENT_TEXT_BYTES);
-    record_event(s, id, "user_message", json!({"text":shown,"from":from}))?;
+    let message = json!({"text":shown,"from":from});
+    // An earlier session not reloaded yet: its history comes first, so the
+    // message is recorded once the agent has started.
+    let message = if record.history_pending {
+        Some(message)
+    } else {
+        record_event(s, id, "user_message", message)?;
+        None
+    };
     let state = s.clone();
     let text = text.to_owned();
-    tokio::spawn(async move { run_turn(state, id, text, command).await });
+    tokio::spawn(async move { run_turn(state, id, text, command, message).await });
     record.updated_at = now();
     Ok(record)
 }
 
-async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) {
+async fn run_turn(
+    s: AppState,
+    id: Uuid,
+    text: String,
+    command: Option<String>,
+    message: Option<Value>,
+) {
     let finish =
         |s: &AppState, stop: Option<&str>, final_text: Option<String>, error: Option<String>| {
             if let Ok(mut record) = s.store.session(id) {
@@ -971,7 +999,13 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
         Ok(record) => record,
         Err(_) => return,
     };
-    let live = match ensure_live(&s, &record).await {
+    let started = ensure_live(&s, &record).await;
+    if let Some(message) = message
+        && s.store.session(id).is_ok_and(|r| r.status.is_open())
+    {
+        let _ = record_event(&s, id, "user_message", message);
+    }
+    let live = match started {
         Ok(live) => live,
         // Closed while starting: the close already explains itself.
         Err(_) if !s.store.session(id).is_ok_and(|r| r.status.is_open()) => return,
@@ -1338,16 +1372,32 @@ fn check_place(s: &AppState, record: &SessionRecord) -> hmesh_core::Result<()> {
     Ok(())
 }
 
-/// Whether an earlier start already recorded (part of) the replayed history,
-/// e.g. when the daemon stopped during the first reload. A replay comes
-/// before any message sent here, so the first user message tells.
+/// Whether an earlier start already recorded the replayed history, e.g. when
+/// the daemon stopped before it noted the history as kept. A history is
+/// recorded whole (see `record_history`), so any replayed event tells.
 fn replay_recorded(s: &AppState, id: Uuid) -> bool {
-    s.store
-        .session_events(id, 0, MAX_PAGE_EVENTS)
-        .unwrap_or_default()
-        .iter()
-        .find(|e| e.kind == "user_message")
-        .is_some_and(|e| e.payload["from"]["replayed"] == true)
+    s.store.has_replayed_events(id).unwrap_or(true)
+}
+
+/// Record the history replayed during a first reload, all at once and marked
+/// as replayed.
+fn record_history(s: &AppState, id: Uuid, live: &Live) -> hmesh_core::Result<()> {
+    let kept = live
+        .replayed
+        .lock()
+        .map(|mut kept| std::mem::take(&mut *kept))
+        .unwrap_or_default();
+    let marked: Vec<(String, Value)> = kept
+        .into_iter()
+        .map(|(kind, mut payload)| {
+            payload["replayed"] = json!(true);
+            (kind, payload)
+        })
+        .collect();
+    if let Some(seq) = s.store.append_session_events(id, &marked)? {
+        s.sessions.notify(id, seq);
+    }
+    Ok(())
 }
 
 /// Projects this computer's agents can work in when asked: every project

@@ -414,6 +414,73 @@ async fn earlier_sessions_are_listed_per_folder_and_continue_with_their_history(
     assert_eq!(said.matches("Fixed the token check.").count(), 1, "{said}");
     assert_eq!(said.matches("cwd=").count(), 1, "{said}");
 
+    // An earlier session whose first reloads fail: once before the agent
+    // replays anything, once after it replayed the history. Neither records
+    // any of it; the reload that succeeds records the history once, before
+    // the message that triggered it.
+    seed(
+        &state,
+        "native-flaky",
+        &web,
+        &[
+            ("user", "Add a logout button"),
+            ("agent", "Added the button."),
+        ],
+    );
+    let saved = state.join("native-flaky.json");
+    let aside = state.join("native-flaky.aside");
+    std::fs::rename(&saved, &aside).unwrap();
+    let flaky: SessionRecord = owner
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":agent,"project_id":web_project.project_id,"resume":"native-flaky"}),
+        )
+        .await
+        .unwrap();
+    let (failed, _) = until(&owner, flaky.session_id, |s, _| {
+        s.status == SessionStatus::Idle
+    })
+    .await;
+    assert!(
+        failed.history_pending && failed.last_error.is_some(),
+        "{failed:?}"
+    );
+    std::fs::rename(&aside, &saved).unwrap();
+    let stop = state.join("native-flaky.fail-after-replay");
+    std::fs::write(&stop, "").unwrap();
+    prompt(&owner, flaky.session_id, "fixture:echo one").await;
+    let (failed, events) = idle_after(&owner, flaky.session_id, 0).await;
+    assert!(
+        failed.history_pending && failed.last_error.is_some(),
+        "{failed:?}"
+    );
+    assert!(
+        events.iter().all(|e| e.payload.get("replayed").is_none()),
+        "{events:#?}"
+    );
+    assert_eq!(texts(&events, "user_message"), ["fixture:echo one"]);
+    std::fs::remove_file(&stop).unwrap();
+    prompt(&owner, flaky.session_id, "fixture:echo two").await;
+    let (continued, events) = idle_after(&owner, flaky.session_id, 1).await;
+    assert!(!continued.history_pending, "{continued:?}");
+    assert_eq!(
+        texts(&events, "user_message"),
+        [
+            "fixture:echo one",
+            "Add a logout button",
+            "fixture:echo two"
+        ]
+    );
+    let said = texts(&events, "agent_message_chunk").concat();
+    assert_eq!(said.matches("Added the button.").count(), 1, "{said}");
+    // Every replayed event is marked, and only those.
+    let replayed: Vec<&str> = events
+        .iter()
+        .filter(|e| e.payload["replayed"] == true)
+        .filter_map(|e| e.payload["text"].as_str())
+        .collect();
+    assert_eq!(replayed.concat(), "Add a logout buttonAdded the button.");
+
     // A new session in another project runs there.
     let api_project: Project = owner
         .post("/local/projects", &json!({"path":api,"name":" API "}))
