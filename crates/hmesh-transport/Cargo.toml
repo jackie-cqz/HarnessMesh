@@ -11,10 +11,12 @@ axum.workspace = true
 hmesh-core = { path = "../hmesh-core" }
 hmesh-security = { path = "../hmesh-security" }
 hyper-util.workspace = true
+if-addrs.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+socket2 = "=0.6.5"
 tokio.workspace = true
 tokio-rustls.workspace = true
 tower-layer.workspace = true

@@ -74,13 +74,16 @@ async fn peer_card(
 /// and ask each for its own list, now and every few minutes: a computer that
 /// only connects out learns where the others are only by asking. Computers
 /// that are off are tried again later, as are ones too old to take the card;
-/// one too old to know address lists is not told again. Nothing waits on this.
+/// one too old to know address lists is not told again. A card that names a
+/// new address (a computer on every interface moved) and a newer list are
+/// told again. Nothing waits on this.
 pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
     let mut told = std::collections::HashSet::new();
     let mut told_addresses = std::collections::HashSet::new();
     loop {
         if let Ok(peers) = state.store.peers() {
             let revision = state.addresses().revision;
+            let endpoint = state.card().endpoint;
             for peer in peers.into_iter().filter(|p| p.status == "trusted") {
                 // No address this computer can call: a computer that only
                 // connects out, seen from one that takes connections.
@@ -91,8 +94,8 @@ pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
                     continue;
                 }
                 let id = peer.card.node_id;
-                if !told.contains(&id) && peer_told(&state, &client).await {
-                    told.insert(id);
+                if !told.contains(&(id, endpoint.clone())) && peer_told(&state, &client).await {
+                    told.insert((id, endpoint.clone()));
                 }
                 if !told_addresses.contains(&(id, revision))
                     && addresses::push(&state, &client).await
@@ -111,7 +114,7 @@ pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
 pub(crate) async fn peer_told(state: &AppState, client: &Client) -> bool {
     tokio::time::timeout(
         Duration::from_secs(5),
-        client.post::<_, Value>("/hmesh/v1/peers/card", &state.instance.card),
+        client.post::<_, Value>("/hmesh/v1/peers/card", &state.card()),
     )
     .await
     .is_ok_and(|r| r.is_ok())

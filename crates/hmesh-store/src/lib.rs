@@ -198,6 +198,20 @@ impl Store {
     pub fn set_node(&self, card: &NodeCard) -> Result<()> {
         self.read(|c| { c.execute("INSERT INTO nodes VALUES(?1,?2) ON CONFLICT(node_id) DO UPDATE SET card_json=excluded.card_json", params![card.node_id.to_string(), encode(card)?]).map_err(internal)?; Ok(()) })
     }
+    /// This computer's card as its last run published it.
+    pub fn node(&self, node_id: Uuid) -> Result<Option<NodeCard>> {
+        self.read(|c| {
+            let value: Option<String> = c
+                .query_row(
+                    "SELECT card_json FROM nodes WHERE node_id=?1",
+                    [node_id.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(internal)?;
+            value.as_deref().map(decode).transpose()
+        })
+    }
     pub fn peers(&self) -> Result<Vec<Peer>> {
         self.read(|c| {
             let mut q = c

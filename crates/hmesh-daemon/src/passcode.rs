@@ -382,7 +382,7 @@ async fn pair_with_passcode(
             "pair challenge belongs to a different node",
         )));
     }
-    let submission = s.instance.pair_submission(challenge).map_err(internal)?;
+    let submission = s.pair_submission(challenge)?;
     let request_id = submission.request_id;
     let (asker, message) = Asker::start(
         &code,

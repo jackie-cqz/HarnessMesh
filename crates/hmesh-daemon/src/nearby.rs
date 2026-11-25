@@ -1,6 +1,7 @@
 //! Computers nearby (direct network). A computer that takes connections
 //! announces itself over mDNS (`_hmesh._tcp`) only while its pairing window
-//! is open and its passcode unused, and only on the interface it listens on.
+//! is open and its passcode unused, and only on the interface it listens on
+//! (on every interface: its addresses on trusted LANs, none on others).
 //! The pairing dialog on another computer lists what it hears. Hearing a
 //! name proves nothing: anyone on the network can announce one. The passcode
 //! shown on that computer's screen is what confirms it (see `passcode`).
@@ -28,8 +29,8 @@ const MAX_LISTED: usize = 32;
 #[derive(Default)]
 pub struct Nearby {
     daemon: Mutex<Option<ServiceDaemon>>,
-    /// The full service name announced now.
-    announced: Mutex<Option<String>>,
+    /// The full service name announced now, and on which addresses.
+    announced: Mutex<Option<(String, Vec<IpAddr>)>>,
     /// One look around at a time: they share the daemon's browse.
     looking: tokio::sync::Mutex<()>,
     /// Woken when the pairing window opens or the passcode is used.
@@ -61,7 +62,11 @@ async fn nearby(
     if s.instance.config.node.network != "direct" {
         return Ok(Json(json!({"supported": false, "computers": []})));
     }
-    let own = own_address(&s);
+    let (addresses, port) = announce_on(&s);
+    let own: Vec<SocketAddr> = addresses
+        .into_iter()
+        .map(|ip| SocketAddr::new(ip, port))
+        .collect();
     let paired: Vec<String> = s
         .store
         .peers()?
@@ -69,7 +74,7 @@ async fn nearby(
         .filter(|p| p.status == "trusted")
         .map(|p| p.card.endpoint)
         .collect();
-    let mut heard = s.nearby.look(own).await.map_err(|error| {
+    let mut heard = s.nearby.look(&own).await.map_err(|error| {
         ApiError(MeshError::new(
             ErrorCode::PeerUnreachable,
             format!("could not look for computers on this network: {error}"),
@@ -108,7 +113,7 @@ async fn nearby(
 
 /// Where this computer listens for other computers, if it does.
 fn own_address(s: &AppState) -> Option<SocketAddr> {
-    hmesh_security::validate_endpoint(&s.instance.card.endpoint)
+    hmesh_security::validate_endpoint(&s.card().endpoint)
         .ok()
         .and_then(|url| {
             Some(SocketAddr::new(
@@ -131,12 +136,17 @@ impl Nearby {
         *slot = Some(daemon.clone());
         Ok(daemon)
     }
-    fn announced(&self) -> bool {
-        self.announced.lock().is_ok_and(|a| a.is_some())
+    /// The addresses announced on now (none when nothing is).
+    fn announced(&self) -> Option<Vec<IpAddr>> {
+        self.announced
+            .lock()
+            .ok()
+            .and_then(|a| a.as_ref().map(|(_, addresses)| addresses.clone()))
     }
-    /// Announce this computer on the interface that has `address`, and only there.
-    fn announce(&self, name: &str, address: SocketAddr) -> anyhow::Result<()> {
-        if self.announced() {
+    /// Announce this computer on the interfaces that have `addresses`, and
+    /// only there.
+    fn announce(&self, name: &str, addresses: &[IpAddr], port: u16) -> anyhow::Result<()> {
+        if self.announced().is_some() || addresses.is_empty() {
             return Ok(());
         }
         let mut label = [0u8; 4];
@@ -149,22 +159,23 @@ impl Nearby {
             SERVICE,
             &instance_name(name),
             &host,
-            address.ip(),
-            address.port(),
+            addresses,
+            port,
             &[("v", VERSION)][..],
         )?;
-        info.set_interfaces(vec![IfKind::Addr(address.ip())]);
+        info.set_interfaces(addresses.iter().map(|ip| IfKind::Addr(*ip)).collect());
         let fullname = info.get_fullname().to_owned();
         self.daemon()?.register(info)?;
         *self
             .announced
             .lock()
-            .map_err(|_| anyhow::anyhow!("nearby state poisoned"))? = Some(fullname);
+            .map_err(|_| anyhow::anyhow!("nearby state poisoned"))? =
+            Some((fullname, addresses.to_vec()));
         Ok(())
     }
     /// Stop announcing, telling the network the name is gone.
     async fn withdraw(&self) {
-        let Some(fullname) = self.announced.lock().ok().and_then(|mut a| a.take()) else {
+        let Some((fullname, _)) = self.announced.lock().ok().and_then(|mut a| a.take()) else {
             return;
         };
         if let Ok(daemon) = self.daemon()
@@ -174,8 +185,8 @@ impl Nearby {
         }
     }
     /// Listen for a moment for computers announcing themselves; `own` is
-    /// this computer's address, left out.
-    pub async fn look(&self, own: Option<SocketAddr>) -> anyhow::Result<Vec<Heard>> {
+    /// this computer's addresses, left out.
+    pub async fn look(&self, own: &[SocketAddr]) -> anyhow::Result<Vec<Heard>> {
         let _one = self.looking.lock().await;
         let daemon = self.daemon()?;
         let events = daemon.browse(SERVICE)?;
@@ -188,7 +199,7 @@ impl Nearby {
             }
             match tokio::time::timeout(left, events.recv_async()).await {
                 Ok(Ok(ServiceEvent::ServiceResolved(service))) => {
-                    if let Some(heard) = heard(&service).filter(|h| Some(h.address) != own) {
+                    if let Some(heard) = heard(&service).filter(|h| !own.contains(&h.address)) {
                         found.insert(service.fullname.clone(), heard);
                     }
                 }
@@ -254,21 +265,47 @@ fn heard(service: &ResolvedService) -> Option<Heard> {
     })
 }
 
+/// Where to announce this computer: the address it listens on, or on
+/// every interface its addresses on trusted LANs (not Tailscale ones: mDNS
+/// does not cross a Tailnet), at its port.
+fn announce_on(state: &AppState) -> (Vec<IpAddr>, u16) {
+    let Some(own) = own_address(state) else {
+        return (vec![], 0);
+    };
+    if !state.networks.every_interface() {
+        return (vec![own.ip()], own.port());
+    }
+    let lans = state
+        .networks
+        .open()
+        .into_iter()
+        .filter(|(_, tailnet)| !tailnet)
+        .map(|(ip, _)| ip)
+        .collect();
+    (lans, own.port())
+}
+
 /// Announce this computer while its passcode can be used; nothing
 /// otherwise. Runs until the daemon stops.
 pub async fn run(state: AppState, mut stop: watch::Receiver<bool>) {
     if !state.offers_passcode() {
         return;
     }
-    let Some(address) = own_address(&state) else {
-        return;
-    };
     let mut failed = false;
     loop {
+        let (addresses, port) = announce_on(&state);
+        // Moved to other networks: announced again, where it is now.
+        if state
+            .nearby
+            .announced()
+            .is_some_and(|announced| announced != addresses)
+        {
+            state.nearby.withdraw().await;
+        }
         if state.passcode_open() {
             match state
                 .nearby
-                .announce(&state.instance.card.display_name, address)
+                .announce(&state.instance.card.display_name, &addresses, port)
             {
                 Ok(()) => failed = false,
                 Err(error) if !failed => {
