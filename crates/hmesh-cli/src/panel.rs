@@ -40,6 +40,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "agent-own-login-v1",
     "agent-service-relay-v1",
     "pairing-auto-complete-v1",
+    "session-commands-v1",
 ];
 
 #[derive(Clone)]
@@ -218,6 +219,15 @@ pub async fn run(
             }),
         )
         .route(
+            "/assets/session-commands.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/session-commands.js"),
+                )
+            }),
+        )
+        .route(
             "/assets/project-work.js",
             get(|| async {
                 (
@@ -265,6 +275,11 @@ pub async fn run(
         .route("/api/sessions/{id}/events", get(session_events))
         .route("/api/sessions/{id}/prompt", post(session_prompt))
         .route("/api/sessions/{id}/config", post(session_config))
+        .route(
+            "/api/sessions/{id}/commands",
+            get(session_commands).post(prepare_session_commands),
+        )
+        .route("/api/sessions/{id}/command", post(run_session_command))
         .route(
             "/api/sessions/{id}/permissions/{key}",
             post(session_permission),
@@ -392,7 +407,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -422,9 +437,11 @@ async fn guarded_api(s: &Panel, req: Request, next: Next) -> Response {
     let path = req.uri().path();
     let write = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
     let development = path.starts_with("/api/development/");
+    let session_commands = path.starts_with("/api/sessions/")
+        && matches!(path.rsplit('/').next(), Some("command" | "commands"));
     let preflight = path == "/api/tasks/preflight"
         || (path.starts_with("/api/tasks/") && path.ends_with("/preflight"));
-    if path != "/api/panel/stop" && (write || development || preflight) {
+    if path != "/api/panel/stop" && (write || development || preflight || session_commands) {
         // Read capabilities for each protected request, not just panel startup:
         // an owner can replace/restart a Daemon while this panel remains open.
         let view = current_runtime(s).await;
@@ -440,6 +457,9 @@ async fn guarded_api(s: &Panel, req: Request, next: Next) -> Response {
         }
         if preflight && view["capabilities"]["task_preflight"] != true {
             return unavailable("task_preflight");
+        }
+        if session_commands && view["capabilities"]["session_commands"] != true {
+            return unavailable("session_commands");
         }
     }
     next.run(req).await
@@ -904,7 +924,39 @@ async fn session_config(
 async fn agent_service(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
     session_reply(
         s.client
-            .get::<Value>(&format!("/local/agents/{id}/service"))
+            .get::<Value>(&format!("/local/agents/{id}/service?protocols=true"))
+            .await,
+    )
+}
+async fn session_commands(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
+    session_reply(
+        s.client
+            .get(&format!("/local/sessions/{id}/commands"))
+            .await,
+    )
+}
+async fn prepare_session_commands(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Value>,
+) -> Response {
+    if body != json!({}) {
+        return error(StatusCode::BAD_REQUEST, "INVALID_COMMAND_DISCOVERY");
+    }
+    session_reply(
+        s.client
+            .post_with_timeout(&format!("/local/sessions/{id}/commands"), &body, 40)
+            .await,
+    )
+}
+async fn run_session_command(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<hmesh_core::sessions::RunSessionCommand>,
+) -> Response {
+    session_reply(
+        s.client
+            .post(&format!("/local/sessions/{id}/command"), &body)
             .await,
     )
 }
@@ -917,7 +969,7 @@ async fn set_agent_service(
 ) -> Response {
     session_reply(
         s.client
-            .post::<_, Value>(&format!("/local/agents/{id}/service"), &body)
+            .post::<_, Value>(&format!("/local/agents/{id}/service?protocols=true"), &body)
             .await,
     )
 }
@@ -925,7 +977,10 @@ async fn set_agent_service(
 async fn check_agent_service(State(s): State<Panel>, Path(id): Path<Uuid>) -> Response {
     session_reply(
         s.client
-            .post::<_, Value>(&format!("/local/agents/{id}/service/check"), &json!({}))
+            .post::<_, Value>(
+                &format!("/local/agents/{id}/service/check?protocols=true"),
+                &json!({}),
+            )
             .await,
     )
 }

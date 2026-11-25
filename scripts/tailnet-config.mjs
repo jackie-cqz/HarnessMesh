@@ -1,12 +1,17 @@
 import { createHash } from 'node:crypto';
 
-const HARNESSES = ['opencode', 'claude-code', 'codex', 'pi'];
+const HARNESSES = ['opencode', 'claude-code', 'codex', 'pi', 'dsh'];
+
+// Keep the official ACP registration separate from earlier headless DSH agents.
+export function agentName(node, harness) {
+  return harness === 'dsh' ? `${node}-dsh-acp` : `${node}-${harness}`;
+}
 
 /** Agent configuration (TOML) for one installed ACP agent command. */
 export function agentConfig({ node, harness, executable, project, projectId = 'tailnet-demo' }) {
   if (!HARNESSES.includes(harness)) throw new Error(`Unsupported agent type: ${harness}`);
   const toml = value => JSON.stringify(value);
-  return ['[agent]', `name = ${toml(`${node}-${harness}`)}`, `harness = ${toml(harness)}`, `project_id = ${toml(projectId)}`,
+  return ['[agent]', `name = ${toml(agentName(node, harness))}`, `harness = ${toml(harness)}`, `project_id = ${toml(projectId)}`,
     '[project]', `root = ${toml(project)}`, 'allowed_tools = ["read", "write", "edit"]',
     '[adapter]', `executable = ${toml(executable)}`, ''].join('\n');
 }

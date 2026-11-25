@@ -127,7 +127,7 @@ impl TaskStatus {
 pub enum HarnessKind {
     /// Pi through the `pi-acp` adapter.
     Pi,
-    /// DSH has no ACP mode; kept so older registrations still load.
+    /// DeepSeek Harness's built-in `dsh --profile acp`.
     Dsh,
     /// OpenCode's built-in `opencode acp`.
     Opencode,
@@ -140,11 +140,19 @@ pub enum HarnessKind {
     Acp,
 }
 impl HarnessKind {
+    pub const KNOWN_ACP_AGENTS: [Self; 5] = [
+        Self::Opencode,
+        Self::ClaudeCode,
+        Self::Codex,
+        Self::Pi,
+        Self::Dsh,
+    ];
     /// Arguments that start the agent in ACP mode when the configuration does
     /// not list its own.
     pub fn default_acp_args(self) -> &'static [&'static str] {
         match self {
             Self::Opencode => &["acp"],
+            Self::Dsh => &["--profile", "acp"],
             _ => &[],
         }
     }
@@ -155,7 +163,8 @@ impl HarnessKind {
             Self::ClaudeCode => Some("claude-agent-acp"),
             Self::Codex => Some("codex-acp"),
             Self::Pi => Some("pi-acp"),
-            Self::Dsh | Self::Acp => None,
+            Self::Dsh => Some("dsh"),
+            Self::Acp => None,
         }
     }
     /// What to install for this agent's ACP command (HarnessMesh never installs it).
@@ -165,7 +174,8 @@ impl HarnessKind {
             Self::ClaudeCode => Some("@agentclientprotocol/claude-agent-acp"),
             Self::Codex => Some("@zed-industries/codex-acp"),
             Self::Pi => Some("pi-acp"),
-            Self::Dsh | Self::Acp => None,
+            Self::Dsh => Some("@deepseek-ai/dsh"),
+            Self::Acp => None,
         }
     }
 }
@@ -193,27 +203,22 @@ pub fn detect_installed_agents() -> Vec<DetectedAgent> {
     } else {
         &[""]
     };
-    [
-        HarnessKind::Opencode,
-        HarnessKind::ClaudeCode,
-        HarnessKind::Codex,
-        HarnessKind::Pi,
-    ]
-    .into_iter()
-    .filter_map(|harness| {
-        let command = harness.acp_command()?;
-        directories.iter().find_map(|dir| {
-            suffixes.iter().find_map(|suffix| {
-                let path = dir.join(format!("{command}{suffix}"));
-                path.is_file().then(|| DetectedAgent {
-                    harness,
-                    command: command.to_owned(),
-                    executable: path,
+    HarnessKind::KNOWN_ACP_AGENTS
+        .into_iter()
+        .filter_map(|harness| {
+            let command = harness.acp_command()?;
+            directories.iter().find_map(|dir| {
+                suffixes.iter().find_map(|suffix| {
+                    let path = dir.join(format!("{command}{suffix}"));
+                    path.is_file().then(|| DetectedAgent {
+                        harness,
+                        command: command.to_owned(),
+                        executable: path,
+                    })
                 })
             })
         })
-    })
-    .collect()
+        .collect()
 }
 impl fmt::Display for HarnessKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -823,6 +828,20 @@ pub struct AdapterOptions {
 }
 
 impl AgentConfig {
+    /// The retired headless DSH registration format had no adapter arguments.
+    pub fn is_legacy_dsh(&self) -> bool {
+        self.agent.harness == HarnessKind::Dsh && self.adapter.args.is_empty()
+    }
+
+    /// Materialize DSH's default only on explicit owner registration/update.
+    /// This keeps historical headless records distinguishable after restart.
+    pub fn prepare_registration(&mut self) -> Result<()> {
+        if self.is_legacy_dsh() {
+            self.adapter.args = self.launch_args();
+        }
+        self.validate()
+    }
+
     /// Arguments that start this agent in ACP mode.
     pub fn launch_args(&self) -> Vec<String> {
         if self.adapter.args.is_empty() {
@@ -839,10 +858,30 @@ impl AgentConfig {
     pub fn validate(&self) -> Result<()> {
         validate_name(&self.agent.name)?;
         validate_name(&self.agent.project_id)?;
-        if self.agent.harness == HarnessKind::Dsh {
+        if self.is_legacy_dsh() {
             return Err(MeshError::input(
-                "DSH has no Agent Client Protocol mode; register an ACP agent such as OpenCode or Claude Code",
+                "legacy headless DSH registration; update this Agent with the official dsh executable to probe its ACP profile, or register it under a new name",
             ));
+        }
+        if self.agent.harness == HarnessKind::Dsh {
+            let positional = self
+                .adapter
+                .args
+                .first()
+                .filter(|arg| !arg.starts_with('-'));
+            let flags = self.adapter.args.iter().enumerate().filter_map(|(i, arg)| {
+                if arg == "--profile" {
+                    Some(self.adapter.args.get(i + 1).map_or("", String::as_str))
+                } else {
+                    arg.strip_prefix("--profile=")
+                }
+            });
+            let mut profiles = positional.map(String::as_str).into_iter().chain(flags);
+            if profiles.next() != Some("acp") || profiles.next().is_some() {
+                return Err(MeshError::input(
+                    "DSH uses its built-in ACP profile; omit adapter.args or select --profile acp",
+                ));
+            }
         }
         if self.adapter.credential_source.is_some() || self.adapter.models_file.is_some() {
             return Err(MeshError::input(

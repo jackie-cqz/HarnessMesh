@@ -6,7 +6,7 @@
 
 ## 启动（Mac、Windows、Linux 相同）
 
-需要 Node.js 20+、通过 rustup 安装的 Rust stable >= 1.90、已登录的 Tailscale，以及你自己装好并登录过的 ACP agent（任选：`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`）。HarnessMesh 不会安装 agent；`hmesh agent detect` 会列出本机找到了哪些、缺的该怎么装。
+需要 Node.js 20+、通过 rustup 安装的 Rust stable >= 1.90、已登录的 Tailscale，以及你自己装好并登录过的 ACP agent（任选：`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh`）。DSH 0.2.2-rc.5 需要 Node.js 24.9 或更高版本。HarnessMesh 不会安装 agent；`hmesh agent detect` 会列出本机找到了哪些、缺的该怎么装。
 
 ```sh
 git clone https://github.com/jackie-cqz/HarnessMesh.git
@@ -14,7 +14,7 @@ cd HarnessMesh
 node scripts/start-tailnet.mjs --name mac-a
 ```
 
-脚本编译 CLI，从本机 Tailscale 状态选择确切 IP，创建独立 Node 和项目目录，把本机已安装的每个 ACP agent 登记为 `<名字>-<类型>`（例如 `mac-a-opencode`、`mac-a-claude-code`），再保持前台运行。登记只做一次 ACP `initialize` 握手，不调用模型，不读取、不复制任何凭据：agent 用它自己的登录和模型设置。保持终端打开；Ctrl+C 正常停止本次 Daemon。
+脚本编译 CLI，从本机 Tailscale 状态选择确切 IP，创建独立 Node 和项目目录，把本机已安装的每个 ACP agent 登记为 `<名字>-<类型>`（例如 `mac-a-opencode`、`mac-a-claude-code`；官方 DSH 使用 `mac-a-dsh-acp`），再保持前台运行。登记只做一次 ACP `initialize` 握手，不调用模型，不读取、不复制任何凭据：agent 用它自己的登录和模型设置。保持终端打开；Ctrl+C 正常停止本次 Daemon。
 
 常用选项：
 

@@ -17,6 +17,50 @@ fn agent(store: &Store, project: &str, root: &std::path::Path) -> Uuid {
     id
 }
 #[test]
+fn old_dsh_verification_never_advertises_acp_until_explicit_update() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = temp.path().join("node.sqlite3");
+    let store = Store::open(&db).unwrap();
+    let id = agent(&store, "project", temp.path());
+    let (mut card, mut config) = store.agent(id).unwrap();
+    card.harness = HarnessKind::Dsh;
+    card.availability = "idle".into();
+    card.probe.managed_run = "passed".into();
+    card.probe.protocol_probe = "passed_real_run".into();
+    config.agent.harness = HarnessKind::Dsh;
+    let historical_config = serde_json::to_string(&config).unwrap();
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute(
+            "UPDATE agents SET card_json=?1, config_json=?2 WHERE agent_id=?3",
+            rusqlite::params![
+                serde_json::to_string(&card).unwrap(),
+                historical_config,
+                id.to_string()
+            ],
+        )
+        .unwrap();
+    assert!(!store.agent(id).unwrap().0.probe.version_supported);
+    let old = store.agents().unwrap().pop().unwrap();
+    assert_eq!(old.probe.protocol_probe, "legacy_dsh_headless");
+    assert_eq!(old.probe.managed_run, "passed");
+    let stored: String = connection
+        .query_row(
+            "SELECT config_json FROM agents WHERE agent_id=?1",
+            [id.to_string()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, historical_config);
+    config.prepare_registration().unwrap();
+    card.probe.protocol_probe = "acp_initialize_passed".into();
+    card.probe.managed_run = "not_checked".into();
+    store.replace_agent(&card, &config).unwrap();
+    let (updated, stored) = Store::open(&db).unwrap().agent(id).unwrap();
+    assert!(updated.probe.version_supported);
+    assert_eq!(stored.adapter.args, ["--profile", "acp"]);
+}
+#[test]
 fn completion_snapshot_is_attempt_bound_sealed_and_atomic_on_write_failure() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("db");

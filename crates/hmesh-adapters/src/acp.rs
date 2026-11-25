@@ -23,8 +23,31 @@ pub fn initialize_request(id: u64) -> Value {
 pub fn new_session_request(id: u64, cwd: &Path, mcp_servers: &[Value]) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"session/new","params":{"cwd":cwd,"mcpServers":mcp_servers}})
 }
-pub fn load_session_request(id: u64, session_id: &str, cwd: &Path, mcp_servers: &[Value]) -> Value {
-    json!({"jsonrpc":"2.0","id":id,"method":"session/load","params":{"sessionId":session_id,"cwd":cwd,"mcpServers":mcp_servers}})
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionRestore {
+    /// The agent replays its transcript before answering.
+    Load,
+    /// The agent restores context without replaying messages.
+    Resume,
+}
+impl SessionRestore {
+    pub fn advertised(initialize: &Value) -> Option<Self> {
+        let capabilities = &initialize["agentCapabilities"];
+        if capabilities["loadSession"].as_bool() == Some(true) {
+            Some(Self::Load)
+        } else if capabilities["sessionCapabilities"]["resume"].is_object() {
+            Some(Self::Resume)
+        } else {
+            None
+        }
+    }
+    pub fn request(self, id: u64, session_id: &str, cwd: &Path, mcp_servers: &[Value]) -> Value {
+        let method = match self {
+            Self::Load => "session/load",
+            Self::Resume => "session/resume",
+        };
+        json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"sessionId":session_id,"cwd":cwd,"mcpServers":mcp_servers}})
+    }
 }
 pub fn prompt_request(id: u64, session_id: &str, text: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"session/prompt","params":{"sessionId":session_id,"prompt":[{"type":"text","text":text}]}})
@@ -201,6 +224,7 @@ pub fn stop_reason_error(reason: &str) -> MeshError {
 enum Phase {
     Initializing,
     CreatingSession,
+    SelectingModel,
     Prompting,
     Done,
 }
@@ -210,6 +234,7 @@ enum Phase {
 /// project's tool allowlist. Feed every decoded frame to `observe` and write
 /// `take_outbound` frames to the agent's stdin.
 pub struct AcpTaskDriver {
+    required_model: Option<String>,
     cwd: std::path::PathBuf,
     prompt: String,
     mcp_servers: Vec<Value>,
@@ -225,6 +250,7 @@ pub struct AcpTaskDriver {
 const INITIALIZE_ID: u64 = 1;
 const NEW_SESSION_ID: u64 = 2;
 const PROMPT_ID: u64 = 3;
+const CONFIG_ID: u64 = 4;
 impl AcpTaskDriver {
     pub fn new(
         cwd: &Path,
@@ -237,6 +263,7 @@ impl AcpTaskDriver {
             prompt: prompt.to_owned(),
             mcp_servers,
             allowed_tools: allowed_tools.to_vec(),
+            required_model: None,
             phase: Phase::Initializing,
             session_id: None,
             outbound: vec![initialize_request(INITIALIZE_ID)],
@@ -245,6 +272,39 @@ impl AcpTaskDriver {
             needs_input: false,
             tools: HashMap::new(),
         }
+    }
+    /// A managed provider may be overridden by native project settings. Verify
+    /// its advertised selection before forwarding any prompt to the model.
+    pub fn require_model(&mut self, model: String) {
+        self.required_model = Some(model);
+    }
+
+    fn prepare_prompt(&mut self, session: &str, result: &Value) -> Option<crate::ObservedEvent> {
+        if let Some(model) = &self.required_model {
+            let options = hmesh_core::sessions::ConfigOption::parse_all(&result["configOptions"]);
+            let option = options.iter().find(|o| o.is_category("model"));
+            if !option.is_some_and(|o| o.current == model.as_str()) {
+                let selected = Value::String(model.clone());
+                if self.phase == Phase::CreatingSession
+                    && let Some(option) = option.filter(|o| o.accepts(&selected))
+                {
+                    self.phase = Phase::SelectingModel;
+                    self.outbound.push(set_config_option_request(
+                        CONFIG_ID, session, &option.id, &selected,
+                    ));
+                } else {
+                    self.fail(MeshError::new(
+                        ErrorCode::AgentUnavailable,
+                        "the agent did not confirm the configured model",
+                    ));
+                }
+                return None;
+            }
+        }
+        self.phase = Phase::Prompting;
+        self.outbound
+            .push(prompt_request(PROMPT_ID, session, &self.prompt));
+        Some(crate::ObservedEvent::Started)
     }
     pub fn take_outbound(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.outbound)
@@ -274,6 +334,7 @@ impl AcpTaskDriver {
                     let step = match id {
                         INITIALIZE_ID => "initialize",
                         NEW_SESSION_ID => "session/new",
+                        CONFIG_ID => "session/set_config_option",
                         _ => "session/prompt",
                     };
                     self.fail(MeshError::new(
@@ -303,15 +364,17 @@ impl AcpTaskDriver {
                     match result.get("sessionId").and_then(Value::as_str) {
                         Some(session) => {
                             self.session_id = Some(session.to_owned());
-                            self.phase = Phase::Prompting;
-                            self.outbound
-                                .push(prompt_request(PROMPT_ID, session, &self.prompt));
-                            events.push(ObservedEvent::Started);
+                            events.extend(self.prepare_prompt(session, &result));
                         }
                         None => self.fail(MeshError::new(
                             ErrorCode::AgentUnavailable,
                             "agent created a session without an ID",
                         )),
+                    }
+                }
+                (CONFIG_ID, Ok(result)) if self.phase == Phase::SelectingModel => {
+                    if let Some(session) = self.session_id.clone() {
+                        events.extend(self.prepare_prompt(&session, &result));
                     }
                 }
                 (PROMPT_ID, Ok(result)) if self.phase == Phase::Prompting => {

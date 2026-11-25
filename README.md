@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README_CN.md)
 
-One place to work with the coding agents on all of your own computers. HarnessMesh talks to agents such as OpenCode, Claude Code, Codex and Pi over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP). You chat with any of them from a local web panel, whichever computer it runs on. They can also hand work to each other, across computers, through a built-in MCP server.
+One place to work with the coding agents on all of your own computers. HarnessMesh talks to agents such as OpenCode, Claude Code, Codex, Pi and DeepSeek Harness over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP). You chat with any of them from a local web panel, whichever computer it runs on. They can also hand work to each other, across computers, through a built-in MCP server.
 
 ![A session on studio: the backend agent finds the bug, asks the reviewer agent on laptop to check the fix, and applies its suggestion](docs/images/session.png)
 
@@ -14,7 +14,7 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 - **Agents call each other.** Every session gets the HarnessMesh MCP server, so an agent can open a session with another agent (`mesh_send`), follow up, and read its reply (`mesh_wait`), even on another computer. Calls go at most three levels deep and never loop back to an agent already in the chain.
 - **You stay in charge.** When an agent wants to edit a file or run a command, the question comes back to whoever opened the session: 允许一次 (allow once) or 拒绝 (reject). In sessions an agent opened, they are answered automatically; set the calling computer to `confirm` and they wait for you instead.
 - **Pair a computer in two steps.** Paste the other computer's pairing code; it approves once with a six-character check code. Then both sides can use each other's agents. Revoking a pairing closes the sessions that computer opened.
-- **Model service per agent.** Each agent can use its own login, an API key, or a custom endpoint (31 provider presets). Keys stay on the agent's computer and are passed only to that agent's process.
+- **Model service per agent.** Each agent can use its own login, an API key, or a custom endpoint (31 provider presets). Keys stay on the execution computer. Pi, OpenCode and DSH can select Chat Completions, Responses or Anthropic Messages for a custom endpoint. See the [model service options](docs/local-panel.md#各-agent-可选的协议).
 - **Work beyond chat.** The 工作待办 (inbox) collects whatever waits for you. One-shot tasks come with artifact checks, templates and multi-stage workflows, and you can see usage per session and per project.
 
 ## Screens
@@ -43,7 +43,7 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 flowchart LR
   subgraph A["Your computer"]
     panel["Panel in your browser<br/>127.0.0.1 only"] --> d1["hmesh daemon"]
-    d1 <-->|ACP| a1["OpenCode · Claude Code<br/>Codex · Pi"]
+    d1 <-->|ACP| a1["OpenCode · Claude Code<br/>Codex · Pi · DSH"]
     a1 -.->|"MCP: mesh_send"| d1
   end
   subgraph B["A paired computer"]
@@ -73,6 +73,7 @@ HarnessMesh never installs agents. `hmesh agent detect` shows what it found and 
 | Claude Code | `claude-agent-acp` | `npm install -g @agentclientprotocol/claude-agent-acp` |
 | Codex | `codex-acp` | `npm install -g @zed-industries/codex-acp` |
 | Pi | `pi-acp` | `npm install -g pi-acp` |
+| DeepSeek Harness | `dsh --profile acp` | `npm install -g @deepseek-ai/dsh@0.2.2-rc.5` (Node.js 24.9+) |
 | Any other ACP agent | the command and arguments you give it | — |
 
 ### On one computer

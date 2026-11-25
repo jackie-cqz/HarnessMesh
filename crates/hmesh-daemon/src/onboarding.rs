@@ -10,7 +10,7 @@ pub struct OnboardingRequest {
     pub expected_sha256: Option<String>,
 }
 fn inspect(s: &AppState, body: &mut OnboardingRequest) -> std::result::Result<Value, ApiError> {
-    body.config.validate()?;
+    body.config.prepare_registration()?;
     if s.store
         .agents()?
         .into_iter()
@@ -61,7 +61,7 @@ fn inspect(s: &AppState, body: &mut OnboardingRequest) -> std::result::Result<Va
         .map_err(internal)?,
     );
     Ok(
-        json!({"agent_id":body.agent_id,"name":body.config.agent.name,"project_id":body.config.agent.project_id,"project_root":body.config.project.root,"workspace_mode":body.config.project.workspace_mode,"harness":body.config.agent.harness,"model":body.config.adapter.model,"references":references,"configuration_sha256":digest,"policy_preview":toml::to_string_pretty(&policy).map_err(internal)?,"policy_applied":false,"model_called":false}),
+        json!({"agent_id":body.agent_id,"name":body.config.agent.name,"project_id":body.config.agent.project_id,"project_root":body.config.project.root,"workspace_mode":body.config.project.workspace_mode,"harness":body.config.agent.harness,"launch_args":body.config.launch_args(),"model":body.config.adapter.model,"references":references,"configuration_sha256":digest,"policy_preview":toml::to_string_pretty(&policy).map_err(internal)?,"policy_applied":false,"model_called":false}),
     )
 }
 pub async fn preview(

@@ -14,6 +14,29 @@ pub const MODE_API_KEY: &str = "api_key";
 /// An API key for a custom endpoint (`base_url`).
 pub const MODE_CUSTOM: &str = "custom";
 
+/// HTTP API used between an agent and its model provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Protocol {
+    #[serde(rename = "openai-chat")]
+    OpenAi,
+    #[serde(rename = "openai-responses")]
+    Responses,
+    #[serde(rename = "anthropic-messages")]
+    Anthropic,
+}
+/// The first entry is the default for a new custom endpoint.
+pub fn protocols_for(harness: HarnessKind) -> &'static [Protocol] {
+    use Protocol::*;
+    match harness {
+        HarnessKind::Opencode | HarnessKind::Pi | HarnessKind::Dsh => {
+            &[OpenAi, Anthropic, Responses]
+        }
+        HarnessKind::ClaudeCode => &[Anthropic],
+        HarnessKind::Codex => &[Responses],
+        HarnessKind::Acp => &[],
+    }
+}
+
 /// What the owner sees about one agent's model service.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,10 +45,17 @@ pub struct AgentServiceView {
     pub mode: String,
     #[serde(default)]
     pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<Protocol>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protocols: Vec<Protocol>,
+    /// Variable a generic ACP process reads as its provider key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_variable: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
     /// Models offered through a custom endpoint, default model first. Only
-    /// OpenCode uses a list; other agents report their own models.
+    /// a harness with a configurable model catalog offers this list.
     #[serde(default)]
     pub models: Vec<String>,
     pub api_key: SecretHint,
@@ -108,6 +138,8 @@ pub struct PresetView {
     pub region: String,
     /// The address for this agent type's protocol.
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub addresses: BTreeMap<Protocol, String>,
     /// The environment variable this provider's key usually lives in.
     #[serde(default)]
     pub env_key: Option<String>,
@@ -442,15 +474,11 @@ pub const PRESETS: &[Preset] = &[
 ];
 
 impl Preset {
-    /// The address this agent type would use, if the preset has one: Claude
-    /// Code speaks only Anthropic Messages, Codex only OpenAI Responses, and
-    /// OpenCode OpenAI Chat Completions. Other types take no endpoint.
-    pub fn address(&self, harness: HarnessKind) -> Option<&'static str> {
-        match harness {
-            HarnessKind::ClaudeCode => self.anthropic,
-            HarnessKind::Codex => self.responses,
-            HarnessKind::Opencode => Some(self.chat),
-            _ => None,
+    pub fn address(&self, protocol: Protocol) -> Option<&'static str> {
+        match protocol {
+            Protocol::Anthropic => self.anthropic,
+            Protocol::Responses => self.responses,
+            Protocol::OpenAi => Some(self.chat),
         }
     }
 }
@@ -459,12 +487,18 @@ pub fn presets_for(harness: HarnessKind) -> Vec<PresetView> {
     PRESETS
         .iter()
         .filter_map(|p| {
+            let protocols = protocols_for(harness);
+            let addresses = protocols
+                .iter()
+                .filter_map(|&protocol| Some((protocol, p.address(protocol)?.to_owned())))
+                .collect();
             Some(PresetView {
                 id: p.id.into(),
                 name: p.name.into(),
                 group: p.group.into(),
                 region: p.region.into(),
-                base_url: p.address(harness)?.into(),
+                base_url: p.address(*protocols.first()?)?.into(),
+                addresses,
                 env_key: p.env_key.map(Into::into),
             })
         })
@@ -505,11 +539,15 @@ pub struct EnvHint {
 #[serde(deny_unknown_fields)]
 pub struct SetAgentService {
     pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<Protocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_variable: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
-    /// The complete model list for a custom endpoint (OpenCode only); the
+    /// The complete model list for a configurable custom endpoint; the
     /// default model is added when missing.
     #[serde(default)]
     pub models: Vec<String>,
@@ -533,6 +571,8 @@ pub struct SetAgentService {
 #[serde(deny_unknown_fields)]
 pub struct TestAgentService {
     pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<Protocol>,
     #[serde(default)]
     pub base_url: Option<String>,
     /// A key typed but not saved yet; omitted uses the stored key.

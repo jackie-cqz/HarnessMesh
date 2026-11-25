@@ -37,6 +37,32 @@ fn update(update: Value) -> Value {
 }
 
 #[test]
+fn restore_uses_the_advertised_method_with_the_same_session_project_and_mcp_servers() {
+    use acp::SessionRestore::{self, Load, Resume};
+    let advertised = |caps| SessionRestore::advertised(&json!({"agentCapabilities":caps}));
+    assert_eq!(
+        advertised(json!({"sessionCapabilities":{"resume":{}}})),
+        Some(Resume)
+    );
+    assert_eq!(
+        advertised(json!({"loadSession":true,"sessionCapabilities":{"resume":{}}})),
+        Some(Load)
+    );
+    assert_eq!(
+        advertised(json!({"sessionCapabilities":{"resume":false}})),
+        None
+    );
+    assert_eq!(advertised(json!({})), None);
+    let servers = [json!({"name":"mesh","command":"/bin/mesh","args":[],"env":[]})];
+    for (method, wire_name) in [(Load, "session/load"), (Resume, "session/resume")] {
+        assert_eq!(
+            method.request(4, "existing", Path::new("/project"), &servers),
+            json!({"jsonrpc":"2.0","id":4,"method":wire_name,"params":{"sessionId":"existing","cwd":"/project","mcpServers":servers}})
+        );
+    }
+}
+
+#[test]
 fn a_turn_succeeds_only_when_the_prompt_ends_with_end_turn() {
     let mut d = driver(&["read"]);
     initialized(&mut d);
@@ -226,4 +252,36 @@ fn native_frames_are_bounded_independently_of_mesh_event_size() {
     over.push(record).unwrap();
     let error = over.push(b" ").expect_err("one byte beyond limit");
     assert_eq!(error.code, ErrorCode::RateLimited);
+}
+
+#[test]
+fn configured_task_waits_for_the_agent_to_confirm_the_selected_model() {
+    let options = |value| {
+        json!([{"id":"model","category":"model","type":"select","currentValue":value,
+        "options":[{"value":"hmesh/fast"},{"value":"elsewhere/other"}]}])
+    };
+    for confirmed in [true, false] {
+        let mut d = driver(&[]);
+        d.require_model("hmesh/fast".into());
+        d.take_outbound();
+        d.observe(&json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}));
+        d.take_outbound();
+        d.observe(&json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"abc","configOptions":options("elsewhere/other")}}));
+        let selection = d.take_outbound();
+        assert_eq!(selection.len(), 1);
+        assert_eq!(selection[0]["method"], "session/set_config_option");
+        assert_eq!(selection[0]["params"]["value"], "hmesh/fast");
+        let current = if confirmed {
+            "hmesh/fast"
+        } else {
+            "elsewhere/other"
+        };
+        d.observe(&json!({"jsonrpc":"2.0","id":selection[0]["id"],"result":{"configOptions":options(current)}}));
+        if confirmed {
+            assert_eq!(d.take_outbound()[0]["method"], "session/prompt");
+        } else {
+            assert!(d.take_outbound().is_empty());
+            assert_eq!(d.finish().unwrap_err().code, ErrorCode::AgentUnavailable);
+        }
+    }
 }

@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { agentConfig, selectAgents, configDigest } from './tailnet-config.mjs';
+import { agentConfig, agentName, selectAgents, configDigest } from './tailnet-config.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const flags = new Map();
@@ -16,7 +16,7 @@ for (let i = 2; i < process.argv.length; i++) {
   if (valued.has(flag) && process.argv[i + 1] && !process.argv[i + 1].startsWith('--')) flags.set(flag, process.argv[++i]);
   else if (flag === '--skip-build') flags.set(flag, true);
   else if (flag === '--help') {
-    console.log('node scripts/start-tailnet.mjs [--root ABSOLUTE_DIR] [--port 39880] [--name NODE_NAME] [--project ABSOLUTE_DIR] [--agents opencode,claude-code,codex,pi] [--tailscale-executable ABSOLUTE_PATH] [--skip-build]\nRegisters every ACP agent already installed on this computer (or the ones --agents lists). Nothing is installed and no model is called.');
+    console.log('node scripts/start-tailnet.mjs [--root ABSOLUTE_DIR] [--port 39880] [--name NODE_NAME] [--project ABSOLUTE_DIR] [--agents opencode,claude-code,codex,pi,dsh] [--tailscale-executable ABSOLUTE_PATH] [--skip-build]\nRegisters every ACP agent already installed on this computer (or the ones --agents lists). Nothing is installed and no model is called.');
     process.exit(0);
   } else throw new Error(`Unknown option or missing value: ${flag}`);
 }
@@ -81,7 +81,7 @@ try {
     const config = agentConfig({ node: nodeName, harness: agent.harness, executable: agent.executable, project });
     const path = join(root, `${nodeName}-${agent.harness}-${configDigest(config)}.toml`);
     if (!existsSync(path)) writeFileSync(path, config, { flag: 'wx', mode: 0o600 });
-    return { agent, path, name: `${nodeName}-${agent.harness}` };
+    return { path, name: agentName(nodeName, agent.harness) };
   });
   // A second invocation refuses the daemon lock; it never adopts another process.
   daemon = spawn(binary, [...hargs, 'daemon', 'start'], { cwd: repo, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
@@ -98,6 +98,9 @@ try {
   for (const { path, name } of configs) {
     // Registration runs only an ACP initialize handshake; no session, no model.
     const existing = mesh(['agents', 'list']).find(item => item.name === name);
+    if (existing?.probe?.protocol_probe === 'legacy_dsh_headless') {
+      throw new Error(`${name} is a historical headless registration. To keep its ID, run hmesh agent update ${existing.agent_id} --config ${JSON.stringify(path)} in this instance, then restart.`);
+    }
     registered.push(existing ?? mesh(['agent', 'register', '--config', path]));
   }
   const receipt = { node: card, agents: registered.map(a => ({ agent_id: a.agent_id, name: a.name, harness: a.harness, acp: a.probe?.protocol_probe })), data_dir: nodeDir, project };

@@ -28,6 +28,26 @@ fn encode(v: &impl serde::Serialize) -> Result<String> {
 fn decode<T: DeserializeOwned>(s: &str) -> Result<T> {
     serde_json::from_str(s).map_err(internal)
 }
+fn agent_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String)> {
+    Ok((row.get(0)?, row.get(1)?))
+}
+fn decode_agent((card, config): (String, String)) -> Result<(AgentCard, AgentConfig)> {
+    let mut card: AgentCard = decode(&card)?;
+    let config: AgentConfig = decode(&config)?;
+    if config.is_legacy_dsh() {
+        // A successful headless model run in an older release did not probe ACP.
+        // Keep the stored record and task history intact.
+        card.probe.version_supported = false;
+        card.probe.protocol_probe = "legacy_dsh_headless".into();
+        if matches!(card.availability.as_str(), "idle" | "busy") {
+            card.availability = "unverified".into();
+        }
+        card.probe.unavailable_reason = Some(
+            "legacy headless DSH registration; update this Agent with the official dsh executable to probe ACP".into(),
+        );
+    }
+    Ok((card, config))
+}
 fn status(s: TaskStatus) -> Result<String> {
     encode(&s).map(|s| s.trim_matches('"').to_owned())
 }
@@ -456,11 +476,11 @@ impl Store {
     pub fn agents(&self) -> Result<Vec<AgentCard>> {
         self.read(|c| {
             let mut q = c
-                .prepare("SELECT card_json FROM agents WHERE agent_id NOT IN (SELECT agent_id FROM retired_agents) ORDER BY name")
+                .prepare("SELECT card_json,config_json FROM agents WHERE agent_id NOT IN (SELECT agent_id FROM retired_agents) ORDER BY name")
                 .map_err(internal)?;
-            q.query_map([], |r| r.get::<_, String>(0))
+            q.query_map([], agent_row)
                 .map_err(internal)?
-                .map(|r| decode(&r.map_err(internal)?))
+                .map(|r| decode_agent(r.map_err(internal)?).map(|(card, _)| card))
                 .collect()
         })
     }
@@ -470,14 +490,14 @@ impl Store {
                 .query_row(
                     "SELECT card_json,config_json FROM agents WHERE agent_id=?1",
                     [id.to_string()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    agent_row,
                 )
                 .optional()
                 .map_err(internal)?;
-            let (card, config) = row.ok_or_else(|| {
+            let row = row.ok_or_else(|| {
                 MeshError::new(ErrorCode::AgentUnavailable, "agent not registered")
             })?;
-            Ok((decode(&card)?, decode(&config)?))
+            decode_agent(row)
         })
     }
     fn mark_agent_verified_in(tx: &Transaction<'_>, id: Uuid) -> Result<()> {
@@ -867,7 +887,13 @@ impl Store {
         })
     }
     pub fn retired_agents(&self) -> Result<Vec<AgentCard>> {
-        self.read(|c| { let mut q=c.prepare("SELECT card_json FROM agents JOIN retired_agents USING(agent_id) ORDER BY name").map_err(internal)?; q.query_map([],|r|r.get::<_,String>(0)).map_err(internal)?.map(|r|decode(&r.map_err(internal)?)).collect() })
+        self.read(|c| {
+            let mut q = c.prepare("SELECT card_json,config_json FROM agents JOIN retired_agents USING(agent_id) ORDER BY name").map_err(internal)?;
+            q.query_map([], agent_row)
+                .map_err(internal)?
+                .map(|r| decode_agent(r.map_err(internal)?).map(|(card, _)| card))
+                .collect()
+        })
     }
     pub fn retire_agent(&self, id: Uuid, restore: bool) -> Result<AgentCard> {
         self.transaction(|tx| {

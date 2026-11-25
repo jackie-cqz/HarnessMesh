@@ -6,18 +6,23 @@
 //! agent's own configuration files are never changed.
 use anyhow::{Context, Result, bail};
 use hmesh_core::HarnessKind;
+pub use hmesh_core::service::Protocol;
 use hmesh_core::service::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+pub mod dsh;
+pub mod pi;
+mod routes;
+pub use routes::ManagedModels;
 use uuid::Uuid;
 
 const MAX_SECRET_BYTES: usize = 8 * 1024;
 const MAX_ENV: usize = 32;
 const MAX_MODELS: usize = 100;
 /// Environment variable carrying the key OpenCode's `hmesh` provider reads.
-const OPENCODE_KEY_VAR: &str = "HMESH_OPENCODE_API_KEY";
+pub(crate) const OPENCODE_KEY_VAR: &str = "HMESH_OPENCODE_API_KEY";
 /// OpenCode's provider ID for a custom endpoint configured here.
 pub const OPENCODE_PROVIDER: &str = "hmesh";
 
@@ -50,18 +55,22 @@ fn with_loopback<'a>(lists: impl IntoIterator<Item = &'a str>) -> String {
 }
 
 /// Registers an endpoint and its key with the relay: `(endpoint, key)`.
-pub type Relay<'a> = &'a dyn Fn(&str, &str) -> Result<Relayed>;
+pub type Relay<'a> = &'a dyn Fn(&str, &str, Protocol) -> Result<Relayed>;
 
 /// The stored settings, secrets included. Never sent over the network.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentService {
     pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<Protocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_variable: Option<String>,
     #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
-    /// OpenCode custom endpoint only: every model offered, default first.
+    /// Models offered by a custom provider, default first.
     /// Settings saved before lists existed have none and offer the default.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
@@ -75,16 +84,6 @@ pub struct AgentService {
     pub env: BTreeMap<String, String>,
 }
 
-/// The wire format a connection test speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Protocol {
-    /// `GET {base}/models`, `POST {base}/chat/completions`.
-    OpenAi,
-    /// `GET {base}/models`, `POST {base}/responses`: Codex speaks only this.
-    Responses,
-    /// `GET {base}/v1/models`, `POST {base}/v1/messages`.
-    Anthropic,
-}
 /// How the key is sent, matching what the agent itself would send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyHeader {
@@ -165,12 +164,9 @@ fn write_private(dir: &Path, path: &Path, agent: Uuid, bytes: &[u8]) -> Result<(
 /// Modes an agent type supports. Every type may use its own login and
 /// extra environment variables.
 pub fn modes(harness: HarnessKind) -> Vec<String> {
-    let mut modes = vec![MODE_AGENT_LOGIN.to_owned()];
-    if matches!(
-        harness,
-        HarnessKind::Opencode | HarnessKind::ClaudeCode | HarnessKind::Codex
-    ) {
-        modes.extend([MODE_API_KEY.to_owned(), MODE_CUSTOM.to_owned()]);
+    let mut modes = vec![MODE_AGENT_LOGIN.to_owned(), MODE_API_KEY.to_owned()];
+    if !protocols_for(harness).is_empty() {
+        modes.push(MODE_CUSTOM.to_owned());
     }
     modes
 }
@@ -234,6 +230,28 @@ const RESERVED_ENV: [&str; 7] = [
     "USERPROFILE",
 ];
 
+fn validate_key_variable(name: &str) -> Result<()> {
+    if !valid_env_name(name) || RESERVED_ENV.contains(&name) || name.starts_with("HMESH_") {
+        bail!("invalid or reserved environment variable name for a provider key");
+    }
+    Ok(())
+}
+
+fn validate_key(key: &str) -> Result<()> {
+    if key.len() < 8 || !plain(key, MAX_SECRET_BYTES) || key.contains(' ') {
+        bail!("the API key must be one line of 8 characters or more, without spaces");
+    }
+    Ok(())
+}
+
+fn key_from_env(name: &str) -> Result<String> {
+    validate_key_variable(name)?;
+    let key = std::env::var(name).ok().map(|s|s.trim().to_owned()).filter(|s|!s.is_empty())
+        .with_context(||format!("the API key comes from the environment variable {name}, which is not set where HarnessMesh runs; set it and restart the daemon"))?;
+    validate_key(&key)?;
+    Ok(key)
+}
+
 /// An endpoint address the agent may be given: http(s), with a host, without
 /// credentials, query or fragment. A trailing slash is dropped.
 fn endpoint(url: Option<String>) -> Result<String> {
@@ -253,6 +271,47 @@ fn endpoint(url: Option<String>) -> Result<String> {
         bail!("the endpoint address must be an http(s) URL without credentials, query or fragment");
     }
     Ok(url)
+}
+
+fn custom_catalog(harness: HarnessKind) -> bool {
+    matches!(
+        harness,
+        HarnessKind::Opencode | HarnessKind::Pi | HarnessKind::Dsh
+    )
+}
+
+fn select_protocol(harness: HarnessKind, requested: Option<Protocol>) -> Result<Protocol> {
+    let allowed = protocols_for(harness);
+    let value = requested
+        .or_else(|| allowed.first().copied())
+        .context("this agent does not support custom model protocols")?;
+    if !allowed.contains(&value) {
+        bail!("this agent does not support the selected model protocol");
+    }
+    Ok(value)
+}
+
+/// The Anthropic API clients for Claude, Pi and DSH append /v1/messages.
+/// Store a root so that a user-provided /v1 suffix is added exactly once.
+fn endpoint_for(url: Option<String>, protocol: Protocol) -> Result<String> {
+    let mut base = endpoint(url)?;
+    if protocol == Protocol::Anthropic && url::Url::parse(&base)?.path().ends_with("/v1") {
+        base.truncate(base.len() - "/v1".len());
+    }
+    Ok(base)
+}
+
+/// A key for OpenCode's native service must stay bound to that provider,
+/// including when loading a saved registration from an earlier version.
+fn opencode_key_model(model: Option<&str>) -> Result<()> {
+    if let Some(model) = model
+        && model
+            .strip_prefix("opencode/")
+            .is_none_or(|id| id.trim().is_empty())
+    {
+        bail!("choose opencode/<model> or leave the default model empty for this OpenCode key");
+    }
+    Ok(())
 }
 
 fn model_name(model: Option<String>) -> Result<Option<String>> {
@@ -308,10 +367,8 @@ pub fn update(
         }
     }
     if !models.is_empty() {
-        if harness != HarnessKind::Opencode || mode != MODE_CUSTOM {
-            bail!(
-                "a model list only applies to OpenCode with a custom endpoint; other agents list their own models"
-            );
+        if !custom_catalog(harness) || mode != MODE_CUSTOM {
+            bail!("this agent does not accept a model catalog in this service mode");
         }
         // The default comes first; with none chosen, the first listed is it.
         let default = default_model
@@ -323,7 +380,51 @@ pub fn update(
             bail!("at most {MAX_MODELS} models");
         }
     }
+    if request.protocol.is_some() && mode != MODE_CUSTOM {
+        bail!("a protocol can only be selected for a custom endpoint");
+    }
+    let protocol = if mode == MODE_CUSTOM {
+        Some(select_protocol(
+            harness,
+            request
+                .protocol
+                .or_else(|| existing.and_then(|s| s.protocol)),
+        )?)
+    } else {
+        None
+    };
+    let key_variable = if harness == HarnessKind::Acp && mode == MODE_API_KEY {
+        let name = request
+            .key_variable
+            .or_else(|| existing.and_then(|s| s.key_variable.clone()))
+            .context("enter the name of the provider key variable this ACP agent reads")?;
+        validate_key_variable(&name)?;
+        Some(name)
+    } else {
+        if request.key_variable.is_some() {
+            bail!("key_variable applies only to a generic ACP agent in API key mode");
+        }
+        None
+    };
+    if harness == HarnessKind::Opencode && mode == MODE_API_KEY {
+        opencode_key_model(default_model.as_deref())?;
+    }
+    if harness == HarnessKind::Pi
+        && mode == MODE_API_KEY
+        && !default_model
+            .as_deref()
+            .and_then(|value| value.split_once('/'))
+            .is_some_and(|(provider, id)| {
+                matches!(provider, "deepseek" | "openai" | "anthropic") && !id.trim().is_empty()
+            })
+    {
+        bail!(
+            "choose a Pi default model as deepseek/<model>, openai/<model>, or anthropic/<model> for this key"
+        );
+    }
     let mut service = AgentService {
+        protocol,
+        key_variable,
         mode: mode.clone(),
         base_url: None,
         default_model,
@@ -340,13 +441,13 @@ pub fn update(
             .filter(|n| !n.is_empty());
         if let Some(name) = named {
             // A key read from the environment: nothing stored.
-            if !valid_env_name(name) {
-                bail!(
-                    "invalid environment variable name {name:?}: use capital letters, digits and _"
-                );
-            }
-            if RESERVED_ENV.contains(&name) || name.starts_with("HMESH_") {
-                bail!("{name} is managed by the system or by HarnessMesh and cannot hold the key");
+            validate_key_variable(name)?;
+            if request
+                .api_key
+                .as_deref()
+                .is_some_and(|key| !key.trim().is_empty())
+            {
+                bail!("provide a key or an environment reference, but not both");
             }
             service.api_key_env = Some(name.to_owned());
         } else {
@@ -354,11 +455,7 @@ pub fn update(
                 Some(key) if key.is_empty() => None,
                 Some(key) => {
                     let key = key.trim().to_owned();
-                    if key.len() < 8 || !plain(&key, MAX_SECRET_BYTES) || key.contains(' ') {
-                        bail!(
-                            "the API key must be one line of 8 characters or more, without spaces"
-                        );
-                    }
+                    validate_key(&key)?;
                     Some(key)
                 }
                 None => existing.and_then(|e| e.api_key.clone()),
@@ -372,12 +469,21 @@ pub fn update(
             bail!("this mode needs an API key");
         }
     }
-    if mode == MODE_CUSTOM {
-        let url = endpoint(request.base_url)?;
-        if harness == HarnessKind::Opencode && service.default_model.is_none() {
-            bail!("OpenCode needs the model name the custom endpoint serves");
+    if let Some(protocol) = protocol {
+        let url = endpoint_for(request.base_url, protocol)?;
+        if custom_catalog(harness) && service.default_model.is_none() {
+            bail!("enter the model name the custom endpoint serves");
         }
         service.base_url = Some(url);
+    }
+    if mode != MODE_AGENT_LOGIN {
+        for (name, _) in service.provider_env(harness, "", None)? {
+            if service.env.contains_key(&name) {
+                bail!(
+                    "{name} is already managed by the selected model service; remove the duplicate extra variable"
+                );
+            }
+        }
     }
     let empty = service.mode == MODE_AGENT_LOGIN
         && service.env.is_empty()
@@ -386,6 +492,9 @@ pub fn update(
 }
 
 impl AgentService {
+    pub fn custom_protocol(&self, harness: HarnessKind) -> Result<Protocol> {
+        select_protocol(harness, self.protocol)
+    }
     /// Environment changes for the agent process: `Some` sets a variable,
     /// `None` removes one inherited from the daemon that would conflict.
     ///
@@ -399,7 +508,7 @@ impl AgentService {
         let key = self.key()?.unwrap_or_default();
         match (relay, self.relayed(harness)) {
             (Some(relay), Some(endpoint)) => {
-                let route = relay(endpoint, &key)?;
+                let route = relay(endpoint, &key, self.custom_protocol(harness)?)?;
                 self.env_for(harness, &route.token, Some(&route.url))
             }
             _ => self.env_with_key(harness, &key),
@@ -417,12 +526,7 @@ impl AgentService {
     /// the daemon's environment, which must be set.
     pub fn key(&self) -> Result<Option<String>> {
         match &self.api_key_env {
-            Some(name) => match std::env::var(name) {
-                Ok(value) if !value.trim().is_empty() => Ok(Some(value.trim().to_owned())),
-                _ => bail!(
-                    "the API key comes from the environment variable {name}, which is not set where HarnessMesh runs; set it and restart the daemon"
-                ),
-            },
+            Some(name) => key_from_env(name).map(Some),
             None => Ok(self.api_key.clone()),
         }
     }
@@ -439,11 +543,59 @@ impl AgentService {
         key: &str,
         relay_url: Option<&str>,
     ) -> Result<Vec<(String, Option<String>)>> {
+        let mut env = self
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), Some(v.clone())))
+            .collect::<Vec<_>>();
+        // Apply managed names after extra variables, including old saved settings.
+        env.extend(self.provider_env(harness, key, relay_url)?);
+        if relay_url.is_some() {
+            const NAMES: [&str; 2] = ["NO_PROXY", "no_proxy"];
+            let inherited: Vec<String> = NAMES
+                .iter()
+                .filter_map(|name| std::env::var(name).ok())
+                .collect();
+            let lists = NAMES
+                .iter()
+                .filter_map(|name| self.env.get(*name).map(String::as_str))
+                .chain(inherited.iter().map(String::as_str));
+            let merged = with_loopback(lists);
+            env.extend(NAMES.map(|name| (name.to_owned(), Some(merged.clone()))));
+        }
+        Ok(env)
+    }
+    fn provider_env(
+        &self,
+        harness: HarnessKind,
+        key: &str,
+        relay_url: Option<&str>,
+    ) -> Result<Vec<(String, Option<String>)>> {
         let set = |name: &str, value: &str| (name.to_owned(), Some(value.to_owned()));
         let unset = |name: &str| (name.to_owned(), None);
-        let mut env = match (self.mode.as_str(), harness) {
+        let env = match (self.mode.as_str(), harness) {
             (MODE_AGENT_LOGIN, _) => vec![],
-            (MODE_API_KEY, HarnessKind::Opencode) => vec![set("OPENCODE_API_KEY", key)],
+            (MODE_CUSTOM | MODE_API_KEY, HarnessKind::Dsh) => vec![set(dsh::KEY_VAR, key)],
+            (MODE_CUSTOM | MODE_API_KEY, HarnessKind::Pi) => vec![set("HMESH_PI_API_KEY", key)],
+            (MODE_API_KEY, HarnessKind::Acp) => vec![set(
+                self.key_variable
+                    .as_deref()
+                    .context("missing key variable")?,
+                key,
+            )],
+            (MODE_API_KEY, HarnessKind::Opencode) => {
+                opencode_key_model(self.default_model.as_deref())?;
+                let mut config = serde_json::json!({"enabled_providers":["opencode"],"provider":{
+                    "opencode":{"options":{"apiKey":"{env:OPENCODE_API_KEY}"}}
+                }});
+                if let Some(model) = &self.default_model {
+                    config["model"] = serde_json::json!(model);
+                }
+                vec![
+                    set("OPENCODE_API_KEY", key),
+                    set("OPENCODE_CONFIG_CONTENT", &config.to_string()),
+                ]
+            }
             (MODE_API_KEY, HarnessKind::ClaudeCode) => vec![
                 set("ANTHROPIC_API_KEY", key),
                 unset("ANTHROPIC_AUTH_TOKEN"),
@@ -455,6 +607,12 @@ impl AgentService {
             (MODE_CUSTOM, HarnessKind::Opencode) => {
                 let model = self.default_model.as_deref().unwrap_or_default();
                 let url = relay_url.or(self.base_url.as_deref()).unwrap_or_default();
+                let protocol = self.custom_protocol(harness)?;
+                let (package, base) = match protocol {
+                    Protocol::OpenAi => ("@ai-sdk/openai-compatible", url.to_owned()),
+                    Protocol::Anthropic => ("@ai-sdk/anthropic", format!("{url}/v1")),
+                    Protocol::Responses => ("@ai-sdk/openai", url.to_owned()),
+                };
                 let models: serde_json::Map<String, serde_json::Value> = self
                     .model_list()
                     .into_iter()
@@ -463,8 +621,8 @@ impl AgentService {
                 let config = serde_json::json!({
                     "provider":{OPENCODE_PROVIDER:{
                         "name":"HarnessMesh",
-                        "npm":"@ai-sdk/openai-compatible",
-                        "options":{"baseURL":url,"apiKey":format!("{{env:{OPENCODE_KEY_VAR}}}")},
+                        "npm":package,
+                        "options":{"baseURL":base,"apiKey":format!("{{env:{OPENCODE_KEY_VAR}}}")},
                         "models":models
                     }},
                     // Sessions offer only this endpoint's models, not the ones
@@ -508,24 +666,6 @@ impl AgentService {
             ],
             (mode, _) => bail!("this agent type does not support the model service mode {mode:?}"),
         };
-        env.extend(self.env.iter().map(|(k, v)| (k.clone(), Some(v.clone()))));
-        if relay_url.is_some() {
-            // The relay is on this computer: a proxy the agent inherits must
-            // not carry its requests, or the relay token, anywhere else.
-            const NAMES: [&str; 2] = ["NO_PROXY", "no_proxy"];
-            let inherited: Vec<String> = NAMES
-                .iter()
-                .filter_map(|name| std::env::var(name).ok())
-                .collect();
-            let lists = NAMES
-                .iter()
-                .filter_map(|name| self.env.get(*name).map(String::as_str))
-                .chain(inherited.iter().map(String::as_str));
-            let merged = with_loopback(lists);
-            for name in NAMES {
-                env.push(set(name, &merged));
-            }
-        }
         Ok(env)
     }
     /// Models offered through the custom endpoint, default first.
@@ -558,13 +698,16 @@ impl AgentService {
     /// The model setting value new sessions start with.
     pub fn default_model_value(&self, harness: HarnessKind) -> Option<String> {
         let model = self.default_model.clone()?;
-        Some(
-            if harness == HarnessKind::Opencode && self.mode == MODE_CUSTOM {
+        Some(match (self.mode.as_str(), harness) {
+            (MODE_CUSTOM, HarnessKind::Opencode | HarnessKind::Pi) => {
                 format!("{OPENCODE_PROVIDER}/{model}")
-            } else {
-                model
-            },
-        )
+            }
+            (MODE_CUSTOM, HarnessKind::Dsh) => serde_json::json!(["hmesh", model]).to_string(),
+            (MODE_API_KEY, HarnessKind::Dsh) => {
+                serde_json::json!(["deepseek-official", model]).to_string()
+            }
+            _ => model,
+        })
     }
     /// The model setting HarnessMesh asks the agent for over ACP. Claude Code
     /// on a custom endpoint gets its model through the environment instead,
@@ -579,11 +722,14 @@ impl AgentService {
         AgentServiceView {
             agent_id: agent,
             mode: self.mode.clone(),
+            protocol: self.custom_protocol(harness).ok(),
+            protocols: protocols_for(harness).to_vec(),
+            key_variable: self.key_variable.clone(),
             base_url: self.base_url.clone(),
             default_model: self.default_model.clone(),
             // The stored list only: settings with just a default model show
             // an empty list, so changing the default does not keep the old one.
-            models: if harness == HarnessKind::Opencode && self.mode == MODE_CUSTOM {
+            models: if custom_catalog(harness) && self.mode == MODE_CUSTOM {
                 self.models.clone()
             } else {
                 Vec::new()
@@ -635,34 +781,46 @@ pub fn test_target(
         .map(str::trim)
         .filter(|n| !n.is_empty());
     let key = match (request.api_key.map(|k| k.trim().to_owned()), named) {
+        (Some(key), Some(_)) if !key.is_empty() => {
+            bail!("provide a key or an environment reference, but not both")
+        }
         (Some(key), _) if !key.is_empty() => key,
-        (_, Some(name)) => std::env::var(name)
-            .ok()
-            .map(|v| v.trim().to_owned())
-            .filter(|v| !v.is_empty())
-            .with_context(|| format!("{name} is not set where HarnessMesh runs"))?,
+        (_, Some(name)) => key_from_env(name)?,
         _ => match existing {
             Some(e) => e.key()?.context("enter an API key to test")?,
             None => bail!("enter an API key to test"),
         },
     };
-    if !plain(&key, MAX_SECRET_BYTES) || key.contains(' ') {
-        bail!("the API key must be one line without spaces");
+    validate_key(&key)?;
+    if mode != MODE_CUSTOM && request.protocol.is_some() {
+        bail!("a protocol can only be selected for a custom endpoint");
     }
-    let base = match (mode, harness) {
-        (MODE_CUSTOM, _) => endpoint(request.base_url)?,
-        (_, HarnessKind::ClaudeCode) => "https://api.anthropic.com".to_owned(),
-        (_, HarnessKind::Codex) => "https://api.openai.com/v1".to_owned(),
+    let (protocol, base) = match (mode, harness) {
+        (MODE_CUSTOM, _) => {
+            let protocol = select_protocol(
+                harness,
+                request
+                    .protocol
+                    .or_else(|| existing.and_then(|s| s.protocol)),
+            )?;
+            (protocol, endpoint_for(request.base_url, protocol)?)
+        }
+        (_, HarnessKind::Dsh) => (
+            Protocol::Anthropic,
+            "https://api.deepseek.com/anthropic".into(),
+        ),
+        (_, HarnessKind::ClaudeCode) => (Protocol::Anthropic, "https://api.anthropic.com".into()),
+        (_, HarnessKind::Codex) => (Protocol::Responses, "https://api.openai.com/v1".into()),
         _ => bail!(
-            "OpenCode's own service cannot be tested from here; test it in OpenCode, or use a custom endpoint"
+            "test this agent's native provider inside the agent, or configure a custom endpoint"
         ),
     };
-    let (protocol, header) = match (harness, mode) {
-        (HarnessKind::ClaudeCode, MODE_API_KEY) => (Protocol::Anthropic, KeyHeader::XApiKey),
-        // A custom endpoint for Claude Code gets ANTHROPIC_AUTH_TOKEN, a bearer token.
-        (HarnessKind::ClaudeCode, _) => (Protocol::Anthropic, KeyHeader::Bearer),
-        (HarnessKind::Codex, _) => (Protocol::Responses, KeyHeader::Bearer),
-        _ => (Protocol::OpenAi, KeyHeader::Bearer),
+    let header = if protocol == Protocol::Anthropic
+        && !(harness == HarnessKind::ClaudeCode && mode == MODE_CUSTOM)
+    {
+        KeyHeader::XApiKey
+    } else {
+        KeyHeader::Bearer
     };
     let model = match model_name(request.model)? {
         Some(model) => Some(model),
@@ -762,7 +920,8 @@ mod tests {
             ..AgentService::default()
         };
         let asked = std::sync::Mutex::new(Vec::new());
-        let relay = |endpoint: &str, key: &str| {
+        let relay = |endpoint: &str, key: &str, protocol| {
+            assert_eq!(protocol, Protocol::OpenAi);
             asked
                 .lock()
                 .unwrap()
@@ -828,6 +987,8 @@ mod tests {
     #[test]
     fn each_agent_type_receives_its_own_variables_and_secrets_are_hidden() {
         let service = AgentService {
+            protocol: None,
+            key_variable: None,
             mode: MODE_CUSTOM.into(),
             base_url: Some("http://127.0.0.1:9/v1".into()),
             default_model: Some("demo-model".into()),
@@ -982,6 +1143,95 @@ mod tests {
         );
     }
     #[test]
+    fn custom_protocol_reaches_both_the_provider_and_its_connection_test() {
+        let base = "http://127.0.0.1:9876/gateway/v1";
+        for (protocol, package, key_header) in [
+            (
+                Protocol::OpenAi,
+                "@ai-sdk/openai-compatible",
+                KeyHeader::Bearer,
+            ),
+            (Protocol::Anthropic, "@ai-sdk/anthropic", KeyHeader::XApiKey),
+            (Protocol::Responses, "@ai-sdk/openai", KeyHeader::Bearer),
+        ] {
+            let req = SetAgentService {
+                protocol: Some(protocol),
+                base_url: Some(base.into()),
+                api_key: Some("fixture-model-key".into()),
+                models: vec!["smoke".into()],
+                ..request(MODE_CUSTOM)
+            };
+            let service = update(HarnessKind::Opencode, None, req.clone())
+                .unwrap()
+                .unwrap();
+            let env: BTreeMap<_, _> = service
+                .launch_env(HarnessKind::Opencode, None)
+                .unwrap()
+                .into_iter()
+                .collect();
+            let config: serde_json::Value =
+                serde_json::from_str(env["OPENCODE_CONFIG_CONTENT"].as_deref().unwrap()).unwrap();
+            let provider = &config["provider"][OPENCODE_PROVIDER];
+            assert_eq!(provider["npm"], package);
+            assert_eq!(provider["options"]["baseURL"], base);
+            assert!(!config.to_string().contains("fixture-model-key"));
+            let old_client = SetAgentService {
+                protocol: None,
+                api_key: None,
+                ..req
+            };
+            let again = update(HarnessKind::Opencode, Some(&service), old_client)
+                .unwrap()
+                .unwrap();
+            assert_eq!(again.protocol, Some(protocol));
+            let target = test_target(
+                HarnessKind::Opencode,
+                Some(&service),
+                TestAgentService {
+                    mode: MODE_CUSTOM.into(),
+                    base_url: Some(base.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(target.protocol, protocol);
+            assert_eq!(target.header, key_header);
+        }
+        for (harness, protocol) in [
+            (HarnessKind::Codex, Protocol::OpenAi),
+            (HarnessKind::ClaudeCode, Protocol::Responses),
+        ] {
+            let custom = SetAgentService {
+                protocol: Some(protocol),
+                base_url: Some(base.into()),
+                api_key: Some("fixture-model-key".into()),
+                ..request(MODE_CUSTOM)
+            };
+            assert!(update(harness, None, custom).is_err());
+        }
+    }
+
+    #[test]
+    fn generic_acp_key_is_bound_to_its_requested_variable() {
+        let mut req = SetAgentService {
+            key_variable: Some("VENDOR_API_KEY".into()),
+            api_key: Some("fixture-one-agent".into()),
+            ..request(MODE_API_KEY)
+        };
+        let service = update(HarnessKind::Acp, None, req.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            service.launch_env(HarnessKind::Acp, None).unwrap(),
+            [("VENDOR_API_KEY".into(), Some("fixture-one-agent".into()))]
+        );
+        req.env
+            .insert("VENDOR_API_KEY".into(), Some("second-key".into()));
+        assert!(update(HarnessKind::Acp, None, req.clone()).is_err());
+        req.key_variable = Some("HOME".into());
+        assert!(update(HarnessKind::Acp, None, req).is_err());
+    }
+    #[test]
     fn connection_tests_go_where_the_agent_would_go() {
         let stored = AgentService {
             mode: MODE_API_KEY.into(),
@@ -994,6 +1244,7 @@ mod tests {
                 harness,
                 Some(&stored),
                 TestAgentService {
+                    protocol: None,
                     mode: mode.into(),
                     base_url: base.map(Into::into),
                     api_key: key.map(Into::into),
@@ -1140,7 +1391,7 @@ mod tests {
             .map(|p| p.id)
             .collect();
         assert_eq!(codex, ["openai"]);
-        assert!(presets_for(HarnessKind::Pi).is_empty());
+        assert_eq!(presets_for(HarnessKind::Pi).len(), 31);
         assert!(presets_for(HarnessKind::Acp).is_empty());
         assert!(
             PRESETS

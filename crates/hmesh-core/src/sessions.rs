@@ -105,7 +105,7 @@ pub struct SessionRecord {
     pub status: SessionStatus,
     pub title: String,
     pub turns: u64,
-    /// The agent's own session ID, used with `session/load` after restarts.
+    /// The agent's own session ID, used to load or resume it after restarts.
     #[serde(default)]
     pub agent_session_id: Option<String>,
     #[serde(default)]
@@ -208,6 +208,39 @@ pub struct PeerOpenSession {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, Value>,
 }
+/// A command the running agent advertised for this particular ACP session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCommand {
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_hint: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionCommands {
+    pub session_id: Uuid,
+    pub harness: crate::HarnessKind,
+    pub state: CommandListState,
+    pub commands: Vec<SessionCommand>,
+    pub config_options: Vec<ConfigOption>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandListState {
+    Inactive,
+    PendingApproval,
+    Closed,
+    Unadvertised,
+    Ready,
+}
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunSessionCommand {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: String,
+}
+
 /// Change one session setting between turns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
