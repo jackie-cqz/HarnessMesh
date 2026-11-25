@@ -112,7 +112,7 @@ function renderInbox(){
   const select=button(`${inboxCategoryNames[key]} · ${count}`,key===inboxState.filter?'selected':'',()=>{inboxState.filter=key;renderInbox();});select.dataset.inboxFilter=key;filters.append(select);
  }
  const problems=el('section','inbox-connectivity');problems.id='inbox-connectivity';problems.setAttribute('aria-label','连接与读取状态');
- const notes=[];if(inboxState.overviewError)notes.push(`总览读取失败：${inboxState.overviewError}`);if(inboxState.taskListError)notes.push(`任务列表读取失败：${inboxState.taskListError}`);if(inboxState.sessionError)notes.push(`会话列表读取失败：${inboxState.sessionError}`);
+ const notes=[];if(inboxState.overviewError)notes.push(`状态读取失败：${inboxState.overviewError}`);if(inboxState.taskListError)notes.push(`任务列表读取失败：${inboxState.taskListError}`);if(inboxState.sessionError)notes.push(`会话列表读取失败：${inboxState.sessionError}`);
  for(const [key,code]of inboxState.failures)notes.push(`${key.startsWith('task:')?'任务':'会话'} ${short(key.split(':')[1])}：${code}`);
  if(state.snapshot?.peers?.error)notes.push(`节点探测不可用：${state.snapshot.peers.error.code}`);
  for(const peer of data('peers'))if(peer.node_connectivity==='unreachable')notes.push(`${peer.card.display_name} 当前不可达；历史任务结果保持不变。`);

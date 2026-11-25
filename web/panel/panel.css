@@ -317,53 +317,6 @@ main {
   font:9px/1.8 var(--mono);
   color:var(--muted)
 }
-.metrics {
-  display:grid;
-  grid-template-columns:repeat(4,minmax(0,1fr));
-  gap:14px;
-  margin-bottom:26px
-}
-.metric {
-  background:var(--sidebar);
-  border:1px solid var(--line);
-  padding:18px 21px;
-  border-radius:6px;
-  position:relative;
-  min-height:118px
-}
-.metric-label {
-  font-size:11px;
-  color:var(--muted);
-  display:flex;
-  justify-content:space-between
-}
-.metric-label span {
-  font-family:var(--mono);
-  color:var(--faint)
-}
-.metric-number {
-  font:36px/1.4 var(--body);
-  letter-spacing:-1.5px;
-  font-weight:500;
-  margin:6px 0 0
-}
-.metric small {
-  color:var(--muted);
-  font-size:10px
-}
-.metric.accent {
-  background:var(--secondary);
-  border-color:var(--border)
-}
-.metric-number.emphasis {
-  color:var(--green)
-}
-.overview-grid {
-  display:grid;
-  grid-template-columns:minmax(0,1fr) 285px;
-  gap:20px;
-  align-items:start
-}
 .surface {
   background:var(--white);
   border:1px solid var(--line);
@@ -402,94 +355,8 @@ main {
   padding:3px 7px;
   border-radius:3px
 }
-.overview-side {
-  display:flex;
-  flex-direction:column;
-  gap:18px
-}
-.mesh-map {
-  background:var(--sidebar)
-}
-.mesh-map>.section-heading {
-  padding:20px 20px 8px
-}
-.mesh-node {
-  display:flex;
-  align-items:center;
-  gap:11px;
-  padding:15px 20px;
-  border-bottom:1px solid var(--line)
-}
-.mesh-node:last-child {
-  border:0
-}
-.mesh-icon {
-  display:grid;
-  place-items:center;
-  background:var(--secondary);
-  color:var(--muted);
-  width:33px;
-  height:33px;
-  border:1px solid var(--border);
-  border-radius:6px;
-  font:12px var(--mono);
-  flex-shrink:0
-}
-.mesh-info {
-  min-width:0;
-  flex:1
-}
-.mesh-info strong {
-  display:block;
-  font-size:12px;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap
-}
-.mesh-info small {
-  color:var(--muted);
-  font:9px var(--mono)
-}
-.mesh-node .dot {
-  flex-shrink:0
-}
 .dot.offline {
   background:var(--faint)
-}
-.approval-card {
-  padding:24px 21px;
-  background:var(--primary);
-  color:var(--primary-foreground);
-  border-radius:7px;
-  position:relative;
-  overflow:hidden
-}
-.approval-card::after {
-  content:"⊹";
-  position:absolute;
-  right:12px;
-  top:40px;
-  color:var(--primary-foreground-soft);
-  font:110px Georgia,serif;
-  pointer-events:none;
-  opacity:.28
-}
-.approval-card .eyebrow {
-  color:var(--primary-foreground-soft)
-}
-.approval-card h2 {
-  margin:15px 0 12px;
-  font-size:19px;
-  max-width:210px;
-  line-height:1.6;
-  position:relative
-}
-.approval-card p {
-  font-size:11px;
-  line-height:1.9;
-  color:var(--primary-foreground-soft);
-  position:relative;
-  max-width:220px
 }
 .button {
   border:1px solid var(--green);
@@ -502,15 +369,6 @@ main {
 }
 .button:hover {
   filter:brightness(.94)
-}
-.button.light {
-  background:var(--lime);
-  color:var(--primary);
-  border:0;
-  margin-top:21px;
-  display:flex;
-  justify-content:space-between;
-  width:100%
 }
 .button.secondary {
   color:var(--ink);
@@ -985,11 +843,6 @@ dialog::backdrop {
     transform:none
   }
 }
-@media(min-width:1450px) {
-  .overview-grid {
-    grid-template-columns:minmax(0,1fr) 320px
-  }
-}
 @media(max-width:1100px) {
   .sidebar {
     width:195px;
@@ -1010,19 +863,6 @@ dialog::backdrop {
   }
   .topbar {
     padding-inline:25px
-  }
-  .overview-grid {
-    grid-template-columns:minmax(0,1fr)
-  }
-  .overview-side {
-    display:grid;
-    grid-template-columns:1fr 1fr
-  }
-  .metrics {
-    gap:10px
-  }
-  .metric {
-    padding:15px
   }
   .toast {
     left:calc(50% + 97px)
@@ -1084,20 +924,6 @@ dialog::backdrop {
   }
   .node-pill {
     display:none
-  }
-  .metrics {
-    grid-template-columns:repeat(2,minmax(0,1fr));
-    gap:10px;
-    margin-bottom:20px
-  }
-  .metric {
-    min-height:108px
-  }
-  .metric-number {
-    font-size:31px
-  }
-  .overview-side {
-    grid-template-columns:1fr
   }
   .task-table th,.task-table td {
     padding:13px 12px
@@ -1201,7 +1027,7 @@ select:focus-visible,textarea:focus-visible { outline:2px solid var(--green); ou
 #stop-panel { margin:0; }
 @media(max-width:700px) { .form-grid {grid-template-columns:1fr;} .compose-dialog {max-height:92vh;} }
 .onboard-fields{border:0;padding:0;margin:0;min-width:0}.onboard-fields input,.onboard-fields select{width:100%;min-width:0}.full-field{grid-column:1/-1}#onboard-dialog{max-height:90dvh;overflow-y:auto}#onboard-policy{max-height:240px;overflow:auto}.workspace-diff{max-height:400px;overflow:auto;white-space:pre;font-size:12px}.queue-note{margin-top:6px;color:var(--muted)}
-.pipeline-list{display:grid;gap:18px}.pipeline-card{padding:24px}.pipeline-stages{list-style:decimal-leading-zero;padding-left:26px;margin:24px 0}.pipeline-stages li{padding:0 0 18px 12px;border-left:2px solid var(--line)}.pipeline-stages li.current{border-color:var(--green)}.pipeline-stages li.complete{opacity:.7}.pipeline-stages strong,.pipeline-stages .muted{display:block;margin-bottom:5px}.pipeline-stages .text-button{display:block;margin-top:6px}.development-form>.button{margin:18px 10px 0 0}.development-form input{padding:10px 12px;border:1px solid var(--line);font:12px/1.6 var(--body);border-radius:5px;min-width:0}.pipeline-editor-stage{border:1px solid var(--line);padding:16px;margin-top:18px;min-width:0}.pipeline-editor-stage legend{font:11px var(--mono);padding:0 8px}#development-dialog{max-height:90dvh;overflow:auto}#usage-list,#storage-summary{padding:20px;overflow:auto}#usage-list td{overflow-wrap:anywhere}#template-list .goal{max-height:120px;overflow:auto}.development-form .goal{max-height:200px;overflow:auto}
+.pipeline-list{display:grid;gap:18px}.pipeline-card{padding:24px}.pipeline-stages{list-style:decimal-leading-zero;padding-left:26px;margin:24px 0}.pipeline-stages li{padding:0 0 18px 12px;border-left:2px solid var(--line)}.pipeline-stages li.current{border-color:var(--green)}.pipeline-stages li.complete{opacity:.7}.pipeline-stages strong,.pipeline-stages .muted{display:block;margin-bottom:5px}.pipeline-stages .text-button{display:block;margin-top:6px}.development-form>.button{margin:18px 10px 0 0}.development-form input{padding:10px 12px;border:1px solid var(--line);font:12px/1.6 var(--body);border-radius:5px;min-width:0}.pipeline-editor-stage{border:1px solid var(--line);padding:16px;margin-top:18px;min-width:0}.pipeline-editor-stage legend{font:11px var(--mono);padding:0 8px}#development-dialog{max-height:90dvh;overflow:auto}#usage-list,#session-usage-list,#storage-summary{padding:20px;overflow:auto}#usage-list td{overflow-wrap:anywhere}#template-list .goal{max-height:120px;overflow:auto}.development-form .goal{max-height:200px;overflow:auto}
 
 .runtime-summary{margin:0 0 18px;padding:16px 20px;border:1px solid var(--line);border-radius:6px;background:var(--sidebar);font-size:12px}
 .runtime-summary .entity-meta{grid-template-columns:80px 1fr;margin:10px 0;font-size:11px}
@@ -1282,15 +1108,7 @@ nav{display:flex;flex-direction:column;gap:2px}
 .node-pill small{font:12px var(--body);letter-spacing:0;color:var(--muted)}
 
 /* Surfaces */
-.surface,.entity-card,.metric,.runtime-summary,.approval-inbox,.handoff,.remote-agents,.mesh-map{border-radius:12px;box-shadow:none}
-.metric{background:var(--card)}
-.metric-label{font-size:13px;color:var(--muted)}
-.metric-number{font:600 30px/1.3 var(--body);letter-spacing:-.02em}
-.metric.accent{background:var(--secondary);border-color:var(--border)}
-.approval-card{background:var(--card);color:var(--foreground);border:1px solid var(--border);border-radius:12px}
-.approval-card::after{content:none}
-.approval-card .eyebrow,.approval-card p{color:var(--muted)}
-.button.light{background:var(--primary);color:var(--primary-foreground);border-radius:999px}
+.surface,.entity-card,.runtime-summary,.approval-inbox,.handoff,.remote-agents{border-radius:12px;box-shadow:none}
 .entity-card{padding:18px}
 .entity-name{font-size:15px;font-weight:600;letter-spacing:-.01em}
 .entity-harness{font:11px var(--mono);letter-spacing:0;color:var(--muted)}
@@ -1363,8 +1181,17 @@ dialog::backdrop{background:rgba(0,0,0,.35)}
 .agent-row-name{flex:1;min-width:0;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .agent-row-kind{font:11px var(--mono);color:var(--muted)}
 
+/* Settings sits a little apart from the everyday pages. */
+.nav-settings{margin-top:14px}
+@media(max-width:700px){.nav-settings{margin-top:4px}}
+/* The version box belongs to the settings page; elsewhere it shows only when
+   the daemon is read-only, only compatible, or needs an upgrade. Delegated
+   tasks are created from the tasks page. */
+#app:not([data-page="settings"]) #runtime-summary[data-alert="false"]{display:none}
+#app:not([data-page="tasks"]) .workspace-actions{display:none}
+
 /* The sessions page is a full-height workspace without the page heading. */
-#app[data-page="sessions"] .page-heading,#app[data-page="sessions"] .workspace-actions,#app[data-page="sessions"] #runtime-summary[data-mode="full"],#app[data-page="sessions"] #approval-inbox,#app[data-page="sessions"] #pending-submission,#app[data-page="sessions"] #development-pending,#app[data-page="sessions"]~footer{display:none}
+#app[data-page="sessions"] .page-heading,#app[data-page="sessions"] .workspace-actions,#app[data-page="sessions"] #runtime-summary[data-alert="false"],#app[data-page="sessions"] #approval-inbox,#app[data-page="sessions"] #pending-submission,#app[data-page="sessions"] #development-pending,#app[data-page="sessions"]~footer{display:none}
 main:has(#app[data-page="sessions"]) .content{max-width:none;padding:0}
 main:has(#app[data-page="sessions"]) .topbar{display:none}
 main:has(#app[data-page="sessions"]) footer{display:none}
@@ -1461,7 +1288,7 @@ main:has(#app[data-page="sessions"]) footer{display:none}
 
 /* Meta line separators; no decorative eyebrows or counters (codeg has neither). */
 .chat-meta span+span::before{content:"·";margin-right:10px;color:var(--faint)}
-.page-heading .eyebrow,.section-heading .eyebrow,.approval-card .eyebrow,.metric-label span{display:none}
+.page-heading .eyebrow,.section-heading .eyebrow{display:none}
 
 .project-discovery { padding: .85rem; margin-block: .7rem; border: 1px solid var(--line); border-radius: 8px; }
 .discover-targets { display: grid; gap: .4rem; margin-top: .5rem; }
@@ -1519,3 +1346,17 @@ main:has(#app[data-page="sessions"]) footer{display:none}
 .button.small{height:28px;padding:0 12px;font-size:12px}
 .ghost.small{height:28px}
 @media(max-width:700px){.composer-bar .composer-target{max-width:none}.service-env-row{grid-template-columns:1fr}}
+
+/* Pages made of two sections (tasks with templates and workflows, settings
+   with diagnostics and services) keep them apart. */
+#development-view,#services-view{margin-top:48px}
+/* Session usage: five short columns. */
+table.usage-table{table-layout:auto}
+table.usage-table th{white-space:nowrap}
+table.usage-table th:first-child{width:34%}
+table.usage-table th:nth-child(2){width:8%}
+table.usage-table th:nth-child(3){width:14%}
+table.usage-table th:nth-child(4){width:16%}
+table.usage-table td{white-space:nowrap}
+table.usage-table td:first-child{white-space:normal}
+@media(max-width:700px){table.usage-table th:first-child{width:auto}table.usage-table th:nth-child(2),table.usage-table td:nth-child(2){display:none}}

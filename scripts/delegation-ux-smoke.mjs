@@ -129,13 +129,14 @@ try {
   for (const view of [page, owner]) { view.setDefaultTimeout(20000); view.on('pageerror', error => errors.push(error.message)); }
   await page.goto(originReady.url);
   await owner.goto(workerReady.url);
-  await page.locator('#local-name').filter({ hasText: 'ux-origin' }).waitFor();
-  await owner.locator('#local-name').filter({ hasText: 'ux-worker' }).waitFor();
+  await page.locator('#local-name').filter({ hasText: 'ux-origin' }).waitFor({state:'attached'});
+  await owner.locator('#local-name').filter({ hasText: 'ux-worker' }).waitFor({state:'attached'});
 
   stage = 'runtime-capabilities';
   const runtime = await panelApi(page, '/runtime');
   assert(runtime.mode === 'full' && runtime.capabilities.task_workflow && runtime.capabilities.task_preflight && runtime.capabilities.development_workflows, 'Current daemon capabilities were not detected');
   assert(runtime.cli_version && Number.isInteger(runtime.cli_schema_version) && runtime.daemon.running, 'Runtime version information missing');
+  await page.locator('[data-view="settings"]').click();
   await page.locator('#runtime-summary').filter({ hasText: runtime.cli_version }).waitFor();
   pass(stage);
 
@@ -143,6 +144,7 @@ try {
   const before = counts(origin, worker);
   let taskPosts = 0;
   page.on('request', request => { if (new URL(request.url()).pathname === '/api/tasks' && request.method() === 'POST') taskPosts++; });
+  await page.locator('[data-view="tasks"]').click();
   await page.locator('#new-task').click();
   await page.locator('#compose-peer').selectOption(worker.card.node_id);
   await page.waitForFunction(id => document.querySelector('#compose-agent').value === id && !document.querySelector('#compose-agent').disabled, agent.agent_id);
@@ -209,6 +211,9 @@ try {
   pass(stage);
 
   stage = 'receiver-inbox-and-approval-preflight';
+  // The start page (sessions) counts pending approvals in the navigation; the banner is on the other pages.
+  await owner.locator('#nav-pending').filter({ hasText: '1' }).waitFor();
+  await owner.locator('[data-view="tasks"]').click();
   await owner.locator('#refresh').click();
   await owner.locator('#approval-inbox').getByRole('button', { name: /审阅本机待审批.*1/ }).waitFor();
   assert(await owner.locator('#nav-pending').innerText() === '1', 'Receiver did not count its own pending task');
@@ -325,10 +330,12 @@ try {
   }));
   await legacy.goto(originReady.url);
   await legacy.locator('#runtime-summary').filter({ hasText: '只读' }).waitFor();
-  await legacy.locator('#local-name').filter({ hasText: 'ux-origin' }).waitFor();
+  await legacy.locator('#local-name').filter({ hasText: 'ux-origin' }).waitFor({state:'attached'});
   assert(await legacy.locator('#new-task').isDisabled() || await legacy.locator('#new-task').isHidden(), 'Legacy read-only mode exposed task creation');
-  const development = legacy.locator('[data-view="development"]');
-  assert(await development.isDisabled() || await development.isHidden(), 'Legacy mode exposed unsupported development actions');
+  await legacy.locator('[data-view="tasks"]').click();
+  assert(await legacy.locator('#development-view').isHidden() && await legacy.locator('#create-pipeline').isHidden(), 'Legacy mode exposed unsupported development actions');
+  await legacy.locator('[data-view="settings"]').click();
+  assert(await legacy.locator('#operations-view').isHidden() && await legacy.locator('#services-view').isVisible(), 'Legacy settings showed unsupported diagnostics or lost services');
   assert(await legacy.locator('#stop-panel').isEnabled(), 'Read-only mode disabled closing the owned panel');
   await legacy.setViewportSize({ width: 390, height: 844 });
   await legacy.evaluate(() => {

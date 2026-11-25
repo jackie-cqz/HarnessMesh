@@ -522,7 +522,11 @@ async fn usage(
     headers: HeaderMap,
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
-    Ok(Json(s.store.usage_report()?))
+    let mut report = s.store.usage_report()?;
+    if let Some(fields) = report.as_object_mut() {
+        fields.insert("sessions".into(), s.store.session_usage_report(200)?);
+    }
+    Ok(Json(report))
 }
 async fn budgets(
     State(s): State<AppState>,
