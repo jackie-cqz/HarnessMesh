@@ -39,6 +39,15 @@ pub fn resolve_configured_executable(config: &AgentConfig) -> Result<ResolvedExe
         config.adapter.node_executable.as_deref(),
     )
 }
+/// Like `resolve_executable`, running a JavaScript entry with `node` instead
+/// of the first Node.js on PATH when one is given.
+pub fn resolve_executable_with_node(
+    kind: HarnessKind,
+    executable: &Path,
+    node: Option<&Path>,
+) -> Result<ResolvedExecutable> {
+    resolve_with_node(kind, executable, node)
+}
 fn resolve_with_node(
     kind: HarnessKind,
     executable: &Path,
@@ -95,7 +104,9 @@ fn resolve_with_node(
     {
         let node = if let Some(node) = node_override {
             if !node.is_absolute() || !node.is_file() {
-                bail!("Node override must be an existing absolute executable path");
+                bail!(
+                    "Node override must be an existing absolute executable path; if the Node.js this agent was registered with has been removed, install the adapter again in the panel and register the agent again"
+                );
             }
             node.to_owned()
         } else {

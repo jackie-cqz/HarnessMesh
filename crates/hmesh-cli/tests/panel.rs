@@ -76,7 +76,12 @@ async fn adapter_install_requires_owner_origin_and_an_allowlisted_package() {
         .iter()
         .map(|row| row["harness"].as_str().unwrap())
         .collect();
-    assert_eq!(kinds, ["codex", "claude-code"]);
+    assert_eq!(kinds, ["codex", "claude-code", "pi", "dsh"]);
+    let dsh = &offers["data"][3];
+    assert_eq!(dsh["package"], "@deepseek-ai/dsh");
+    assert_eq!(dsh["node"], "24.9");
+    assert!(dsh["timeout_s"].as_u64().unwrap() > 300);
+    assert_eq!(offers["data"][2]["needs"]["command"], "pi");
     let install = |body: Value| http.post(&path).json(&body);
     assert_eq!(
         install(json!({"harness":"codex"}))
@@ -107,7 +112,7 @@ async fn adapter_install_requires_owner_origin_and_an_allowlisted_package() {
         422
     );
     assert_eq!(
-        install(json!({"harness":"pi"}))
+        install(json!({"harness":"opencode"}))
             .bearer_auth(token)
             .header("origin", origin)
             .send()

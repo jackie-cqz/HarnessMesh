@@ -916,7 +916,7 @@ async fn detect_agents(State(s): State<Panel>) -> Json<Value> {
 async fn installable_agents() -> Json<Value> {
     let entries: Vec<_> = hmesh_runtime::agent_install::RECOMMENDED
         .iter()
-        .map(|entry| json!({"harness":entry.harness,"package":entry.package(),"version":entry.version,"node":entry.node}))
+        .map(|entry| json!({"harness":entry.harness,"package":entry.package(),"version":entry.version,"node":entry.node,"needs":entry.needs,"download_mb":entry.download_mb,"timeout_s":entry.timeout.as_secs()}))
         .collect();
     Json(json!({"data":entries}))
 }
@@ -1033,7 +1033,7 @@ async fn project_history(
     Query(form): Query<HistoryForm>,
 ) -> Response {
     match project_path(&id, &format!("/history?refresh={}", form.refresh)) {
-        Some(path) => session_reply(s.client.get::<Value>(&path).await),
+        Some(path) => session_reply(s.client.get_with_timeout::<Value>(&path, 35).await),
         None => invalid_project(),
     }
 }
@@ -1104,14 +1104,14 @@ async fn folder_history(State(s): State<Panel>, Query(form): Query<FolderForm>) 
         .finish();
     session_reply(
         s.client
-            .get::<Value>(&format!("/local/history/folder?{query}"))
+            .get_with_timeout::<Value>(&format!("/local/history/folder?{query}"), 35)
             .await,
     )
 }
 async fn history_folders(State(s): State<Panel>, Query(form): Query<HistoryForm>) -> Response {
     session_reply(
         s.client
-            .get::<Value>(&format!("/local/history?refresh={}", form.refresh))
+            .get_with_timeout::<Value>(&format!("/local/history?refresh={}", form.refresh), 35)
             .await,
     )
 }

@@ -17,18 +17,21 @@ cargo +stable build --locked -p hmesh-cli
 
 ## 安装 ACP 适配器
 
-在运行 Agent 的电脑打开面板，进入「Agents → 接入项目与 Agent」。选择 Codex 或 Claude Code 后，面板会先找本机已经安装的 ACP 命令。缺少时可以点「安装推荐版本」，确认后使用本机 Node.js 和 npm 下载。推荐版本以界面显示为准。
+在运行 Agent 的电脑打开面板，进入「Agents → 接入项目与 Agent」。选择 Codex、Claude Code、Pi 或 DeepSeek Harness 后，面板会先找本机已经安装的 ACP 命令。缺少时可以点「安装推荐版本」，确认后使用本机 Node.js 和 npm 下载。推荐版本以界面显示为准。
+
+- Pi：装的是适配器 `pi-acp`，它会启动本机的 `pi`，所以要先装好 Pi 本体（`npm install -g @earendil-works/pi-coding-agent`，0.81 或更新）。
+- DeepSeek Harness：需要 Node.js 24.9 或更新版本，装好后约 1.4 GB，下载要几分钟。PATH 上第一个 `node` 版本不够时，会在 PATH 其余位置和 nvm、fnm、Volta、asdf、mise、Homebrew、Pi 自带的 Node.js 目录里找一个够新的来安装和运行，并在登记时写入 `adapter.node_executable`。都不够新时会提示需要的版本和找到的最高版本。
 
 安装目录为节点数据目录下的 `agent-runtimes/<类型>/<版本>`。通过 ACP 握手后，面板自动填入绝对启动路径。进入「绑定项目」，填写 Agent 名称、项目 ID 和执行电脑上的绝对路径。工件、工作目录模式、环境变量名和远端授权预览在「高级设置」里。检查配置后，点击「登记此 Agent」。安装与登记无需发送模型请求。登记完成后，可点击「配置模型服务」检查本机登录，或单独设置 API 地址和 Key。
 
-CLI 可在已初始化的节点数据目录下运行 `hmesh agent install codex` 或 `hmesh agent install claude-code`。命令会输出可用于登记的路径。`hmesh agent detect` 同时查找 PATH 上的命令和当前节点已安装的推荐版本。
+CLI 可在已初始化的节点数据目录下运行 `hmesh agent install codex`、`claude-code`、`pi` 或 `dsh`。命令会输出可用于登记的路径。`hmesh agent detect` 同时查找 PATH 上的命令和当前节点已安装的推荐版本。
 
 ## 会话
 
 「会话」页是和 agent 对话的地方：左边是本机的会话和本机在配对电脑上打开的会话，右边是选中会话的实时对话（消息、思考、工具调用、计划、权限请求）。
 
 - 「新会话」：选电脑、agent 和项目，可直接写第一条消息。不选项目时 agent 在它自己的项目目录里工作；发出消息就会调用模型。
-- 权限请求：会话是你打开的，就在这里点「允许一次」或「拒绝」；agent 打开的会话按执行端设置自动允许或等那台电脑的主人回答，页面上会写明。
+- 权限请求：会话是你打开的，就在这里点「允许一次」或「拒绝」；agent 打开的会话按执行端设置自动允许或等那台电脑的主人回答，页面上会写明。Pi 的适配器不把 ACP 的 MCP 服务转给 Pi，Pi 会话里 agent 互相调用不可用；Pi 内置的读写和命令也不经过 ACP 权限，HarnessMesh 不会为它弹审批，面板会在会话顶部写明。
 - 「停止本轮」发 ACP `session/cancel`，会话保留；「关闭会话」停掉 agent 进程，不能再继续。
 - 别的电脑在 `confirm` 模式下打开的会话显示「等待批准」，在这里批准或拒绝；侧栏「会话」旁的数字是等你处理的会话数。
 - agent 通过 `hmesh mcp` 打开的子会话也在列表里，标出调用者和调用链。
@@ -48,8 +51,8 @@ CLI 可在已初始化的节点数据目录下运行 `hmesh agent install codex`
 
 - 本机的会话按「电脑 → 项目 → 会话」分组。每个登记 agent 的目录自动是一个项目。
 - 「添加项目」先选文件夹：点「选择文件夹…」会弹出这台电脑自带的文件夹选择框（macOS 用系统的「选取文件夹」，Windows 用 PowerShell 的文件夹对话框，Linux 用 zenity 或 kdialog）。选好后，对话框列出本机每个 agent 在这个文件夹里已有的会话；点「添加为项目」加进侧栏，或者直接点某个会话：会先把文件夹加成项目，再接着这个会话聊。已经是项目的文件夹显示「打开项目」。
-- 选择框由本机面板服务弹出（面板只在 127.0.0.1 上监听，所以它和浏览器在同一台电脑上），daemon 不弹窗，配对电脑也触发不了。同一时间只开一个，10 分钟没选会自动关掉。在 macOS 上它可能出现在浏览器后面，面板会提示。弹不出来时（比如 Linux 没装 zenity/kdialog，或者没有桌面），可以直接填文件夹的完整路径再点「查看」；也可以展开「Agent 用过的文件夹」，从各 agent 的历史里点一个。`HMESH_FOLDER_PICKER` 可以换成别的程序：它打印选中的文件夹的完整路径，什么都不打印表示取消。
-- 展开一个项目，除了 HarnessMesh 开的会话，还会列出 agent 自己在这个文件夹里已有的会话（支持 ACP `session/list` 的 agent，如 Claude Code、Codex、OpenCode、Pi）。展开时现读，30 秒内复用；HarnessMesh 不读取、不复制、不改写 agent 自己的会话文件。不支持列出的 agent 显示一行说明。
+- 选择框由本机面板服务弹出（面板只在 127.0.0.1 上监听，所以它和浏览器在同一台电脑上），daemon 不弹窗，配对电脑也触发不了。同一时间只开一个，10 分钟没选会自动关掉。万一被其他窗口挡住，面板会提示去其他窗口后面找。弹不出来时（比如 Linux 没装 zenity/kdialog，或者没有桌面），可以直接填文件夹的完整路径再点「查看」；也可以展开「Agent 用过的文件夹」，从各 agent 的历史里点一个。`HMESH_FOLDER_PICKER` 可以换成别的程序：它打印选中的文件夹的完整路径，什么都不打印表示取消。
+- 展开一个项目，除了 HarnessMesh 开的会话，还会列出 agent 自己在这个文件夹里已有的会话（支持 ACP `session/list` 的 agent，如 Claude Code、Codex、OpenCode、Pi）。展开时现读，30 秒内复用；HarnessMesh 不读取、不复制、不改写 agent 自己的会话文件。不支持列出的 agent 显示一行说明。会话很多的 agent（例如 Pi 读上千个本地会话）一次可能要十几秒，最多等约 25 秒；超时会说明原因，并继续显示上次读到的列表。
 - 点一条旧会话就接上它：agent 用 `session/load` 回放之前的对话，接上成功后面板把这份记录一次存下来，然后像普通会话一样接着聊。只在第一次接上时保留回放，之后进程重启不会重复；接上失败或中途停止时不存半份，下次接上再完整存。agent 还在启动时发的消息会先存着，接上后显示在历史后面；这时关掉会话或重启 HarnessMesh，消息也会保留。只支持 `session/resume` 的 agent 能接着聊，但不显示之前的记录。**如果终端里还开着同一个会话，先关掉它**，避免两边同时写。
 - 本机任意 agent 都能在任意已添加的项目里开新会话；配对电脑的 agent 只能在它的主人共享的项目里开会话（项目菜单里的「共享给配对的电脑」，默认不共享）。共享后，对方的 agent 能按它的工具白名单读写这个文件夹。
 - 项目菜单：改名、置顶、上移、下移、隐藏、共享、移除（只限自己添加的；agent 的目录只能隐藏）。会话菜单：改名、置顶、隐藏。改名只改这台电脑上显示的名字，不改 agent 里的标题。侧栏顶部可按标题搜索；底部开关可以显示已隐藏的项目和会话。隐藏的项目不会出现在新会话的项目选择里，共享的项目隐藏后配对电脑也看不到它。
@@ -86,7 +89,7 @@ Pi 的独立模型配置沿用本机的提示模板、技能、扩展和主题�
 
 ## DeepSeek Harness（DSH）
 
-1. 在执行 Agent 的电脑上安装 Node.js 24.9 或更新版本，运行 `npm install -g @deepseek-ai/dsh@0.2.2-rc.5`。可用 `hmesh agent detect` 检查 HarnessMesh 能否找到 `dsh`。
+1. 在执行 Agent 的电脑上安装 Node.js 24.9 或更新版本，然后在面板里点「安装推荐版本」，或运行 `npm install -g @deepseek-ai/dsh@0.2.2-rc.5`。可用 `hmesh agent detect` 检查 HarnessMesh 能否找到 `dsh`。
 2. 在面板「Agents → 接入项目与 Agent」选择「DeepSeek Harness (DSH)」，填写项目和工作目录，预览后登记。执行端以 `dsh --profile acp` 启动。旧 headless 登记可用 `hmesh agent update <原 Agent ID> --config <ACP 配置文件>` 保留原 ID。
 3. 在 HarnessMesh「Agents → 这个 Agent 的模型服务」选择「单独给它一个 key」连接 DeepSeek 官方服务。使用网关时，选「自定义地址」，填写协议、地址、Key 和网关的模型 ID。选「用它自己的登录」会沿用 DSH 的本机账号和模型设置。[官方模型设置指南](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.5/docs/user/guide/providers.zh.md)
 4. 在「会话 → 新会话」选择刚登记的 Agent。输入 `/` 可查看可用操作，有模型选项时可用面板快捷方式 `/model` 切换。模型和推理强度均取自当前 DSH 会话。`/compact` 不在此版本的官方 ACP 接口中。执行进程重启后，下一轮会通过 `session/resume` 继续已有的 DSH 会话，历史消息由 HarnessMesh 展示。[官方 ACP 协议](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.5/packages/acp/acp/README.md#protocol-contract)

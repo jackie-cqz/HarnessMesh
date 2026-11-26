@@ -462,6 +462,24 @@ impl Client {
         self.send::<(), T>(reqwest::Method::GET, path, None, None)
             .await
     }
+    /// A GET that may take longer than the default request deadline, for reads
+    /// the remote side performs by starting an agent (session history).
+    pub async fn get_with_timeout<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        seconds: u64,
+    ) -> hmesh_core::Result<T> {
+        if !(1..=40).contains(&seconds) {
+            return Err(MeshError::input("RPC deadline must be 1..40 seconds"));
+        }
+        self.send::<(), T>(
+            reqwest::Method::GET,
+            path,
+            None,
+            Some(Duration::from_secs(seconds)),
+        )
+        .await
+    }
     pub async fn post<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,

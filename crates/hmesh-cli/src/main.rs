@@ -598,7 +598,7 @@ enum AgentCommand {
     Detect,
     /// Install and check a recommended local ACP adapter.
     Install {
-        #[arg(value_parser = ["codex", "claude-code"])]
+        #[arg(value_parser = ["codex", "claude-code", "pi", "dsh"])]
         harness: String,
     },
     Retired,
@@ -940,7 +940,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         .map(|h| json!({"harness":h,"command":h.acp_command(),"install":h.acp_package().map(|p| format!("npm install -g {p}"))}))
         .collect();
         return Ok(Some(
-            json!({"installed":found,"not_found":missing,"note":"Use hmesh agent install for Codex or Claude Code, or install the command yourself."}),
+            json!({"installed":found,"not_found":missing,"note":"Use hmesh agent install for Codex, Claude Code, Pi or DeepSeek Harness (dsh), or install the command yourself."}),
         ));
     }
     if let Commands::Agent {
