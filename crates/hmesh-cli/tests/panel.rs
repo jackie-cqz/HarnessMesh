@@ -993,7 +993,8 @@ async fn the_folder_dialog_is_this_computers_own_one_at_a_time() {
         .send()
         .await;
     assert!(gave_up.is_err());
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // `kill -0` also finds a zombie: gone means killed and waited for by the
+    // panel, which is still running.
     let alive = |pid: &str| {
         std::process::Command::new("kill")
             .args(["-0", pid.trim()])
@@ -1003,8 +1004,14 @@ async fn the_folder_dialog_is_this_computers_own_one_at_a_time() {
             .success()
     };
     let gone = std::fs::read_to_string(root.path().join("pick-pid")).unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        while alive(&gone) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
     assert!(
-        !alive(&gone),
+        closed.is_ok(),
         "the dialog the browser gave up on still runs"
     );
     std::fs::write(&mode, "pick").unwrap();

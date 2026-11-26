@@ -219,6 +219,39 @@ pub fn chosen(
     }
 }
 
+/// The open dialog. However `pick` ends (answered, timed out, or dropped
+/// because the browser stopped waiting), the dialog is killed and waited
+/// for, so it neither keeps running nor lingers as a zombie of the panel.
+struct Dialog(Option<tokio::process::Child>);
+impl Drop for Dialog {
+    fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        let _ = child.start_kill();
+        // Without a runtime to wait on, kill_on_drop and tokio's own reaping
+        // are left to it.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = child.wait().await;
+            });
+        }
+    }
+}
+
+/// Everything the dialog writes to one of its outputs.
+async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut bytes = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut bytes).await?;
+    }
+    Ok(bytes)
+}
+
 /// Show the dialog and wait for an answer (at most `DIALOG_LIMIT`).
 pub async fn pick(start: Option<&Path>) -> Result<Option<PathBuf>, PickError> {
     let picker = picker(start).ok_or(PickError::Unavailable)?;
@@ -230,20 +263,19 @@ pub async fn pick(start: Option<&Path>) -> Result<Option<PathBuf>, PickError> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let child = command
+    let mut child = command
         .spawn()
         .map_err(|e| PickError::Failed(format!("could not show the folder dialog: {e}")))?;
-    let output = match tokio::time::timeout(DIALOG_LIMIT, child.wait_with_output()).await {
-        Ok(output) => output.map_err(|e| PickError::Failed(e.to_string()))?,
-        // Dropping the future kills the dialog.
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let mut dialog = Dialog(Some(child));
+    let child = dialog.0.as_mut().expect("the dialog was just started");
+    let answer = async { tokio::try_join!(child.wait(), read_all(stdout), read_all(stderr)) };
+    let (status, stdout, stderr) = match tokio::time::timeout(DIALOG_LIMIT, answer).await {
+        Ok(answer) => answer.map_err(|e| PickError::Failed(e.to_string()))?,
+        // Dropping the dialog kills it.
         Err(_) => return Err(PickError::TimedOut),
     };
-    chosen(
-        picker.kind,
-        output.status.code(),
-        &output.stdout,
-        &output.stderr,
-    )
+    chosen(picker.kind, status.code(), &stdout, &stderr)
 }
 
 #[cfg(test)]
