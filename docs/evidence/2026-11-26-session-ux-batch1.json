@@ -1,0 +1,63 @@
+{
+  "checkpoint": "session-ux-batch1",
+  "date": "2026-11-26",
+  "scope": "HarnessMesh session UX on one computer, real Pi through pi-acp; approval path with Pi is not available (Pi never asks over ACP)",
+  "environment": {
+    "platform": "macOS arm64",
+    "agents": "pi-local (pi 0.83.0 through pi-acp 0.0.35, own login)",
+    "model": "test-gateway-claude/deepseek-v4.1-flash-1017 via local gateway"
+  },
+  "tested": [
+    {
+      "check": "two sessions running at once",
+      "result": "pass",
+      "detail": "both sidebar rows showed 进行中 within the same screen; both turns completed"
+    },
+    {
+      "check": "switching between running sessions",
+      "result": "pass",
+      "detail": "content rendered in 32-38 ms; no message crossed between sessions"
+    },
+    {
+      "check": "draft while a turn is running",
+      "result": "observed",
+      "detail": "the draft stays in the composer; Ctrl+Enter was silently ignored (now shows a short notice)"
+    },
+    {
+      "check": "agent child process dies mid-turn",
+      "result": "fixed",
+      "before": "session stayed 进行中 indefinitely; cancel did not finish it; only 关闭会话 recovered",
+      "after": "after cancel, 10 s grace then the agent process is ended; session idle with 中断 error, tool card failed, a follow-up message continued normally in 2 s"
+    },
+    {
+      "check": "daemon restarts mid-turn",
+      "result": "pass with note",
+      "detail": "session came back idle with last_error; the raw English message is now translated in the panel (Agent 进程已退出，这一轮中断)"
+    },
+    {
+      "check": "daemon unavailable while the panel is open",
+      "result": "fixed",
+      "before": "a single banner repeated PEER_UNREACHABLE for eight sections and the summary said 只读模式 · 现有 Daemon 保持运行",
+      "after": "one sentence: 本机 Daemon 没有响应…；summary says 只读模式 · Daemon 不可达"
+    }
+  ],
+  "fixes": [
+    "cancel escalates after 10 s: the agent process is ended and the turn is marked interrupted",
+    "an agent death closes unfinished tool cards with a failed state",
+    "panel maps agent-exit errors and the stop-timeout note to Chinese",
+    "daemon-down banner is one sentence instead of raw codes",
+    "Ctrl+Enter while a turn runs shows a notice instead of doing nothing"
+  ],
+  "remaining": [
+    "without a cancel click, a dead agent still leaves the session 进行中 until the owner acts",
+    "messages typed while a turn runs are not queued; only drafts are kept",
+    "approval UX (允许一次/拒绝/等待授权) is not exercised by Pi and still needs Claude Code or Codex"
+  ],
+  "verification": {
+    "fmt": "pass",
+    "clippy_strict": "pass",
+    "workspace_tests": "pass",
+    "panel_js": "node --check pass",
+    "panel_page_errors": "none"
+  }
+}
