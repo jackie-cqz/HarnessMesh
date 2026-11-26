@@ -30,11 +30,11 @@ pwsh -NoProfile -File .\examples\ssh-todo\start.ps1
 
 Linux 服务端 10 项测试、本机客户端 4 项测试全部通过。独立 HTTP 验收覆盖新增、完成、读取、非法参数、未知 ID 与超大请求；浏览器也实际执行新增、勾选、刷新和页面重载。已核对 Linux JSON 文件，并重启后端确认两条验收待办和完成状态保留。
 
-2026-10-28 的 DSH 生成任务为 `SUCCEEDED`。Pi 的首次任务触发累计输出额度，后续独立任务写完全部服务端文件后触发当时的 64 KiB JSONL 单条记录保护，因此原任务状态仍为 `FAILED`。本目录服务端是这些真实 Pi 产物的原样导出，文件 hash 与 Linux 一致；后续测试通过不代表该原始模型任务成功。
+2026-10-28 的 DSH 生成任务为 `SUCCEEDED`。Pi 的首次任务触发累计输出额度，后续独立任务写完全部服务端文件后触发当时的 64 KiB JSONL 单条记录保护，因此原任务状态仍为 `FAILED`。本目录服务端是这些真实 Pi 产物的导出，导出时文件 hash 与 Linux 一致；2026-11-26 为去掉机器名改过服务名和节点名，现在的文件 hash 与记录不同，见 [docs/evidence/README.md](../../docs/evidence/README.md)；后续测试通过不代表该原始模型任务成功。
 
 2026-10-29 已修复该原生消息限制：Pi 单条最多 4 MiB，内部事件仍限制 64 KiB，正文脱敏后分段保存，累计额度与超时继续生效。新的隔离 Pi/Flash 任务重新生成完整服务端并正常 `SUCCEEDED`，实测最大消息 375,131 字节；新生成服务端 14 项测试通过，原前后端 14 项测试与 HTTP/持久化也重跑通过。原任务终态和本目录原代码保留，新生成文件留在私有回归目录。见 [修复回归证据](../../docs/evidence/latest-pi-output-regression.json) 和 [ADR 0003](../../docs/adr/0003-native-output-limits.md)。
 
-详情见 [验收记录](../../docs/evidence/latest-todo-integration.json) 和 [页面截图](../../docs/evidence/ssh-todo.png)。代码生成用的 Daemon/Mesh 隧道已停止，应用前后端和专用 SSH 应用转发继续运行供试用。
+详情见 [验收记录](../../docs/evidence/latest-todo-integration.json) 和 [页面截图](../../docs/evidence/ssh-todo.png)（2026-11-26 在本机用同一份示例代码重拍）。代码生成用的 Daemon/Mesh 隧道已停止，应用前后端和专用 SSH 应用转发继续运行供试用。
 
 ## 独立运行代码
 
