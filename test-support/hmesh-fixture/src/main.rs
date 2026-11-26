@@ -1227,6 +1227,57 @@ fn run_acp() -> anyhow::Result<()> {
                         reply(session, "Wrote big.txt.");
                         end_turn(&id);
                     }
+                    // Every update repeats the same arguments while the command
+                    // runs, for longer than the daemon holds details.
+                    "fixture:repeated-args" => {
+                        let same = json!({"rawInput":{"command":"npm test"},"locations":[{"path":"/work/demo"}]});
+                        let mut first = json!({"sessionUpdate":"tool_call","toolCallId":"repeat","title":"bash","kind":"execute","status":"pending"});
+                        first
+                            .as_object_mut()
+                            .unwrap()
+                            .extend(same.as_object().unwrap().clone());
+                        update(&session_id, first);
+                        for _ in 0..20 {
+                            let mut again = json!({"sessionUpdate":"tool_call_update","toolCallId":"repeat","status":"in_progress"});
+                            again
+                                .as_object_mut()
+                                .unwrap()
+                                .extend(same.as_object().unwrap().clone());
+                            update(&session_id, again);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call_update","toolCallId":"repeat","status":"completed","content":[{"type":"content","content":{"type":"text","text":"ok"}}]}),
+                        );
+                        reply(session, "Tests pass.");
+                        end_turn(&id);
+                    }
+                    // The request describes the call more recently than the stream.
+                    "fixture:permission-newer-args" => {
+                        next += 1;
+                        let key = format!("perm-{next}");
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":key,"title":"bash","kind":"execute","status":"pending","rawInput":{"command":"git push"}}),
+                        );
+                        send(
+                            json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"toolCallId":key,"title":"bash","rawInput":{"command":"git push --force"}},"options":[
+                                {"optionId":"allow","name":"Allow once","kind":"allow_once"},
+                                {"optionId":"reject","name":"Reject","kind":"reject_once"}
+                            ]}}),
+                        );
+                        permissions.insert(
+                            key,
+                            Pending {
+                                prompt_id: id.clone(),
+                                session: session_id.clone(),
+                                granted: "",
+                                denied: "",
+                                echo: true,
+                            },
+                        );
+                    }
                     // The call's arguments change a little just before it asks.
                     "fixture:permission-changed-args" => {
                         next += 1;

@@ -471,15 +471,21 @@ impl PendingText {
 const TEXT_FLUSH_BYTES: usize = 512;
 const TEXT_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 /// What is recorded about one tool call so far.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct ToolTrace {
     status: String,
-    /// Characters of the recorded title.
-    title: usize,
+    title: String,
     /// Bytes of the recorded output.
     output: usize,
-    /// Bytes of the recorded details.
-    detail: usize,
+    /// Hash and size of each recorded detail, by `DETAIL_KEYS`; 0 when none.
+    details: [(u64, usize); DETAIL_KEYS.len()],
+}
+impl ToolTrace {
+    fn record(&mut self, payload: &Value) {
+        for (i, detail) in details_of(payload) {
+            self.details[i] = detail;
+        }
+    }
 }
 /// What a tool call's update says beyond its status, title and output.
 const DETAIL_KEYS: [&str; 6] = [
@@ -490,13 +496,17 @@ const DETAIL_KEYS: [&str; 6] = [
     "locations",
     "terminal",
 ];
-fn detail_bytes(payload: &Value) -> usize {
-    DETAIL_KEYS
-        .iter()
-        .filter_map(|k| payload.get(*k))
-        .filter(|v| !v.is_null())
-        .map(|v| v.to_string().len())
-        .sum()
+/// The details a payload carries, by index into `DETAIL_KEYS`, as a hash of
+/// their text (never 0) and its size.
+fn details_of(payload: &Value) -> impl Iterator<Item = (usize, (u64, usize))> + '_ {
+    use std::hash::{Hash, Hasher};
+    DETAIL_KEYS.iter().enumerate().filter_map(|(i, key)| {
+        let value = payload.get(*key).filter(|v| !v.is_null())?;
+        let text = value.to_string();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut hasher);
+        Some((i, (hasher.finish().max(1), text.len())))
+    })
 }
 /// What one page of events may carry, well within the 1 MiB a reply may be.
 const MAX_PAGE_BYTES: usize = 512 * 1024;
@@ -581,7 +591,7 @@ async fn pump(
             fields.insert("id".into(), json!(id));
             let payload = Value::Object(fields);
             if let Some(trace) = traces.get_mut(&id) {
-                trace.detail = detail_bytes(&payload);
+                trace.record(&payload);
             }
             write("tool_call_update", payload);
         }
@@ -711,7 +721,6 @@ async fn pump(
                             }
                         }
                         let output = payload["output"].as_str().map_or(0, str::len);
-                        let detail = detail_bytes(&payload);
                         let previous = tool_trace.get(&call).cloned();
                         // Status changes, the final title, and output or details
                         // that first appear or change by a kilobyte are kept;
@@ -720,9 +729,12 @@ async fn pump(
                         let changed = previous.as_ref().is_none_or(|was| {
                             was.status != status
                                 || terminal
-                                || title.chars().count() >= was.title + 8
+                                || title.chars().count() >= was.title.chars().count() + 8
                                 || (output > 0 && (was.output == 0 || output.abs_diff(was.output) >= 1024))
-                                || (detail > 0 && (was.detail == 0 || detail.abs_diff(was.detail) >= 1024))
+                                || details_of(&payload).any(|(i, (hash, size))| {
+                                    let (seen, seen_size) = was.details[i];
+                                    seen == 0 || (hash != seen && size.abs_diff(seen_size) >= 1024)
+                                })
                         });
                         if changed {
                             if let Some(held) = unrecorded.remove(&call) {
@@ -732,22 +744,34 @@ async fn pump(
                                     }
                                 }
                             }
-                        } else if detail > 0 {
+                        } else if let Some(was) = &previous {
+                            // Only what differs from the record is held; an agent
+                            // that repeats the same arguments adds nothing.
                             let held = unrecorded.entry(call.clone()).or_default();
-                            for key in DETAIL_KEYS {
-                                if let Some(value) = payload.get(key).filter(|v| !v.is_null()) {
-                                    held.insert(key.to_owned(), value.clone());
+                            for (i, (hash, _)) in details_of(&payload) {
+                                let key = DETAIL_KEYS[i];
+                                if hash == was.details[i].0 {
+                                    held.remove(key);
+                                } else {
+                                    held.insert(key.to_owned(), payload[key].clone());
                                 }
+                            }
+                            if held.is_empty() {
+                                unrecorded.remove(&call);
                             }
                         }
                         let trace = match (changed, previous) {
                             (false, Some(was)) => was,
-                            _ => ToolTrace {
-                                status: status.clone(),
-                                title: title.chars().count(),
-                                output,
-                                detail: detail_bytes(&payload),
-                            },
+                            (_, previous) => {
+                                let mut trace = previous.unwrap_or_default();
+                                trace.status = status.clone();
+                                if !title.is_empty() {
+                                    trace.title = title.clone();
+                                }
+                                trace.output = output;
+                                trace.record(&payload);
+                                trace
+                            }
                         };
                         tool_trace.insert(call, trace);
                         if !changed {
@@ -766,15 +790,14 @@ async fn pump(
                         {
                             open.insert(call.clone(), title.clone());
                         }
-                        tool_trace.insert(
-                            call,
-                            ToolTrace {
-                                status: "pending".into(),
-                                title: title.chars().count(),
-                                output: payload["output"].as_str().map_or(0, str::len),
-                                detail: detail_bytes(&payload),
-                            },
-                        );
+                        let mut trace = ToolTrace {
+                            status: "pending".into(),
+                            title: title.clone(),
+                            output: payload["output"].as_str().map_or(0, str::len),
+                            ..ToolTrace::default()
+                        };
+                        trace.record(&payload);
+                        tool_trace.insert(call, trace);
                     }
                     write(kind, payload);
                 }
@@ -816,6 +839,26 @@ async fn pump(
                 // What is asked about must be what the call says now.
                 if let Some(call_id) = call_id {
                     write_unrecorded(&mut unrecorded, &mut tool_trace, Some(call_id));
+                    // The request may describe the call more recently than the stream.
+                    if let Some(trace) = tool_trace.get_mut(call_id) {
+                        let asked = crate::tool_events::tool_payload(call, &live.secrets, None);
+                        let mut newer = serde_json::Map::new();
+                        for (i, (hash, _)) in details_of(&asked) {
+                            if hash != trace.details[i].0 {
+                                newer.insert(DETAIL_KEYS[i].into(), asked[DETAIL_KEYS[i]].clone());
+                            }
+                        }
+                        if let Some(title) = asked["title"].as_str().filter(|t| !t.is_empty() && *t != trace.title) {
+                            newer.insert("title".into(), json!(title));
+                            trace.title = title.to_owned();
+                        }
+                        if !newer.is_empty() {
+                            let mut payload = Value::Object(newer);
+                            trace.record(&payload);
+                            payload["id"] = json!(call_id);
+                            write("tool_call_update", payload);
+                        }
+                    }
                 }
                 if let Some(call_id) = call_id
                     && !tool_trace.contains_key(call_id)

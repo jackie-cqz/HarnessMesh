@@ -233,7 +233,7 @@ function terminalView(t,live){
   if(!text&&!term?.skipped)pre.append(el('span','term-skip',live?'等待输出…':'没有输出'));
   box.append(pre);
   if(term&&(term.exit!==null||term.signal))box.append(el('div',`term-exit ${term.exit===0?'ok':'bad'}`,term.signal?`被信号 ${term.signal} 结束`:`退出码 ${term.exit}`));
-  queueMicrotask(()=>{pre.scrollTop=pre.scrollHeight;});
+  pre.dataset.scroll='term';
   return box;
 }
 // Arguments of a step nothing else describes, as "name: value" lines.
@@ -297,6 +297,21 @@ function stepBody(t,kind,live){
 }
 
 // ---- Building and patching ----
+// A rebuilt step keeps where its output was scrolled to; output read to its
+// end follows new lines, and new output opens at its end.
+// Read before the old node leaves the page, where it has no scroll position.
+function scrollMemo(old){
+  const before=new Map();
+  if(old)for(const n of old.querySelectorAll('[data-scroll]'))before.set(n.dataset.scroll,{top:n.scrollTop,end:n.scrollHeight-n.scrollTop-n.clientHeight<8});
+  return before;
+}
+function carryScroll(before,fresh){
+  for(const n of fresh.querySelectorAll('[data-scroll]')){
+    const was=before.get(n.dataset.scroll);
+    if(was&&!was.end)n.scrollTop=was.top;
+    else queueMicrotask(()=>{n.scrollTop=n.scrollHeight;});
+  }
+}
 // Each child carries a key; a child whose signature changed is rebuilt, the
 // rest stay as they are, so open folds and scroll positions survive.
 function patchChildren(parent,specs){
@@ -306,7 +321,9 @@ function patchChildren(parent,specs){
     let node=byKey.get(spec.key);
     if(!node||(!spec.update&&node.dataset.sig!==spec.sig)){
       const fresh=spec.make();fresh.dataset.key=spec.key;if(spec.sig!==undefined)fresh.dataset.sig=spec.sig;
+      const before=scrollMemo(node);
       if(node)node.replaceWith(fresh);
+      carryScroll(before,fresh);
       node=fresh;
     }
     byKey.delete(spec.key);

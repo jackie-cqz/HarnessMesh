@@ -2683,4 +2683,48 @@ async fn large_and_streamed_tool_calls_stay_readable_and_few() {
         })
         .unwrap();
     assert_eq!(shown, "git push --force origin main");
+    let answered = answer(&owner, asked.session_id, true).await;
+    assert_eq!(answered.session_id, asked.session_id);
+    turn_done(&owner, asked.session_id, 1).await;
+    // A request that names newer arguments than the stream shows them.
+    let asked = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:permission-newer-args"}),
+    )
+    .await;
+    let (_, events) = until(&owner, asked.session_id, |s, _| {
+        s.status == SessionStatus::WaitingPermission
+    })
+    .await;
+    let request = events
+        .iter()
+        .position(|e| e.kind == "permission_request")
+        .unwrap();
+    let call = events[request].payload["tool_call_id"].as_str().unwrap();
+    let shown = events[..request]
+        .iter()
+        .rev()
+        .find_map(|e| {
+            (e.kind.starts_with("tool_call") && e.payload["id"] == call)
+                .then(|| e.payload["args"]["command"].as_str())
+                .flatten()
+        })
+        .unwrap();
+    assert_eq!(shown, "git push --force");
+    answer(&owner, asked.session_id, true).await;
+    turn_done(&owner, asked.session_id, 1).await;
+    // Arguments repeated unchanged at every update add no events, even
+    // when the command runs longer than details are held.
+    let repeated = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:repeated-args"}),
+    )
+    .await;
+    let (_, events) = turn_done(&owner, repeated.session_id, 1).await;
+    let kinds: Vec<&str> = events
+        .iter()
+        .filter(|e| e.kind.starts_with("tool_call") && e.payload["id"] == "repeat")
+        .map(|e| e.payload["status"].as_str().unwrap_or("-"))
+        .collect();
+    assert_eq!(kinds, ["pending", "in_progress", "completed"]);
 }

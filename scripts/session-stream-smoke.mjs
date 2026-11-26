@@ -188,6 +188,15 @@ try{
  // Streamed output is recorded about once a second.
  await live.locator('.term-out',{hasText:'watching for changes'}).waitFor({timeout:10000});
  await step(page,'claude-edit').first().locator('summary').first().click();
+ // Output scrolled back stays where the person left it when the step updates.
+ const kept=await page.evaluate(async()=>{
+  const old=document.createElement('div'),pre=document.createElement('pre');
+  pre.dataset.scroll='term';pre.style.cssText='height:40px;overflow:auto';pre.textContent='line\n'.repeat(200);
+  old.append(pre);document.body.append(old);pre.scrollTop=100;
+  const fresh=old.cloneNode(true),before=scrollMemo(old);old.replaceWith(fresh);carryScroll(before,fresh);
+  await Promise.resolve();const top=fresh.firstChild.scrollTop;fresh.remove();return top;
+ });
+ assert(kept===100,`scrolled output jumped to ${kept}`);
  await page.evaluate(()=>{window.__kept=[...document.querySelectorAll('#conversation-stream .turn')].at(-1)?.querySelector('.msg.user');});
  await page.screenshot({path:join(shots,'stream-running.png')});
  await page.locator('#composer-send').click();
