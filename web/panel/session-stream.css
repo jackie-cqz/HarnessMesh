@@ -59,6 +59,8 @@ summary.step-head:hover .step-label{color:var(--foreground)}
 .step.delegate .step-head>.icon:first-child{color:var(--foreground)}
 .step.delegate .step-body{margin-left:0}
 .delegate-ask{color:var(--muted);border-left:2px solid var(--border);padding-left:10px;white-space:pre-wrap}
+.delegate-note{font-size:12px;color:var(--muted)}
+.delegate-note.bad{color:var(--destructive)}
 
 /* Command output reads like a terminal. */
 .term{border:1px solid var(--border);border-radius:8px;overflow:hidden;min-width:0}

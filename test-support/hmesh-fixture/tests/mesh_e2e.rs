@@ -315,6 +315,30 @@ async fn sessions_span_paired_computers_with_delegation_permissions_and_access_r
         .as_str()
         .unwrap()
         .to_owned();
+    // Straight to node-b's peer API, a lasting option is refused and the
+    // request stays open.
+    let as_a = hmesh_transport::Client::new(
+        &Instance::load(&a.dir).unwrap(),
+        &b.card.endpoint,
+        &b.card.fingerprint,
+        false,
+        false,
+    )
+    .unwrap();
+    for lasting in ["always", "never"] {
+        let refused = as_a
+            .post::<_, Value>(
+                &format!("/hmesh/v1/sessions/{}/permissions/{key}", asked.session_id),
+                &json!({"allow":true,"option_id":lasting}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PermissionDenied, "{refused:?}");
+        assert!(
+            refused.message.contains("only allow or reject once"),
+            "{refused:?}"
+        );
+    }
     let _: SessionRecord = owner_a
         .post(
             &format!("/local/sessions/{}/permissions/{key}", asked.session_id),
@@ -2555,5 +2579,67 @@ async fn tool_calls_keep_their_output_diffs_and_plans_however_the_agent_reports_
         plans
             .iter()
             .all(|p| p["entries"].as_array().unwrap().len() == 3)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn large_and_streamed_tool_calls_stay_readable_and_few() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "solo");
+    let agent = register_named(&a, &root.path().join("project"), "fixture");
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    // Seventy results of 16 KB each are more than one reply can carry; the
+    // events come in pages and every one of them arrives.
+    let big = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:many-big-reads"}),
+    )
+    .await;
+    let (done, events) = turn_done(&owner, big.session_id, 1).await;
+    assert_eq!(done.last_final_text.as_deref(), Some("Read 70 files."));
+    let results = events
+        .iter()
+        .filter(|e| e.kind == "tool_call_update" && e.payload["output"].is_string())
+        .count();
+    assert_eq!(results, 70);
+    let first: SessionEventPage = owner
+        .get(&format!(
+            "/local/sessions/{}/events?after=0&wait=0",
+            big.session_id
+        ))
+        .await
+        .unwrap();
+    assert!(
+        first.events.len() < events.len(),
+        "one page held every event: {}",
+        first.events.len()
+    );
+    // Streamed arguments are recorded as they grow by a kilobyte, not at
+    // every piece, and the last of them still reaches the record.
+    let streamed = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:streamed-args"}),
+    )
+    .await;
+    let (_, events) = turn_done(&owner, streamed.session_id, 1).await;
+    let calls: Vec<&Value> = events
+        .iter()
+        .filter(|e| e.kind.starts_with("tool_call") && e.payload["id"] == "stream-write")
+        .map(|e| &e.payload)
+        .collect();
+    assert!(
+        calls.len() <= 8,
+        "{} events for one streamed call",
+        calls.len()
+    );
+    let last = calls.last().unwrap();
+    assert_eq!(last["status"], "completed");
+    assert!(
+        last["args"]["content"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("line 0000")),
+        "{last}"
     );
 }

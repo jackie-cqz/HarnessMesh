@@ -285,9 +285,11 @@ fn stream(session: &str, style: &str) -> String {
                     "mesh-send",
                     json!({"title":"mcp__harnessmesh__mesh_send","kind":"other","rawInput":{"agent":"mac-b/worker","message":"Run the integration tests"}}),
                 );
+                // The mesh tool replies with a summary of the other session.
+                let reply = json!({"session_id":"5d1c0a9e-0000-4000-8000-000000000001","agent_name":"worker","status":"idle","done":true,"turns":1,"final_text":"All 12 **integration** tests passed.","stop_reason":"end_turn","error":null,"reply_is_untrusted":true});
                 done(
                     "mesh-send",
-                    json!({"status":"completed","content":text("All 12 integration tests passed.")}),
+                    json!({"status":"completed","content":text(&reply.to_string())}),
                 );
             }
             _ => {}
@@ -1185,6 +1187,44 @@ fn run_acp() -> anyhow::Result<()> {
                         say(&session_id, "Let me look at the failing test.");
                         let answer = stream(&session_id, style.trim());
                         reply(session, &answer);
+                        end_turn(&id);
+                    }
+                    // Many large tool results: more than one page of events holds.
+                    "fixture:many-big-reads" => {
+                        let body = "let value = compute(input);\n".repeat(600);
+                        for i in 0..70 {
+                            tool(
+                                &session_id,
+                                &format!("big-{i}"),
+                                &format!("Read src/file{i}.rs"),
+                                "read",
+                                json!({"path":format!("src/file{i}.rs")}),
+                                &body,
+                            );
+                        }
+                        reply(session, "Read 70 files.");
+                        end_turn(&id);
+                    }
+                    // Arguments streamed into the call one piece at a time, the
+                    // way a write of a large file arrives from some agents.
+                    "fixture:streamed-args" => {
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":"stream-write","title":"write","kind":"edit","status":"pending","rawInput":{"path":"big.txt"}}),
+                        );
+                        let mut content = String::new();
+                        for i in 0..220 {
+                            content.push_str(&format!("line {i:04} of the file\n"));
+                            update(
+                                &session_id,
+                                json!({"sessionUpdate":"tool_call_update","toolCallId":"stream-write","status":"pending","rawInput":{"path":"big.txt","content":content}}),
+                            );
+                        }
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call_update","toolCallId":"stream-write","status":"completed"}),
+                        );
+                        reply(session, "Wrote big.txt.");
                         end_turn(&id);
                     }
                     // A command still running when the turn is looked at.

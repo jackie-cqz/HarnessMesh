@@ -60,7 +60,8 @@ function mergeTool(state,p){
     if(typeof p.terminal.append==='string')t.text+=p.terminal.append;
     if(Number.isInteger(p.terminal.exit_code))t.exit=p.terminal.exit_code;
     if(typeof p.terminal.signal==='string'&&p.terminal.signal)t.signal=p.terminal.signal;
-    if(p.terminal.skipped){t.skipped=p.terminal.skipped;t.tail=p.terminal.tail||'';}
+    // A tail after nothing was skipped simply continues the output.
+    if(typeof p.terminal.tail==='string'){if(p.terminal.skipped>0){t.skipped=p.terminal.skipped;t.tail=p.terminal.tail;}else t.text+=p.terminal.tail;}
   }
 }
 
@@ -248,12 +249,27 @@ function argumentList(args){
   add('',args,0);
   return count?list:null;
 }
+// What another agent answered: the mesh tools reply with a summary of the
+// session, whose final text is the answer.
+function delegationReply(output){
+  if(!output)return null;
+  let body=null;
+  try{body=JSON.parse(stripFence(output));}catch{}
+  if(!body||typeof body!=='object'||Array.isArray(body))return{text:stripFence(output)};
+  if(typeof body.final_text==='string'&&body.final_text)return{text:body.final_text};
+  const error=body.error?.message||body.error;
+  if(typeof error==='string'&&error)return{note:error,bad:true};
+  if(body.done===false)return{note:'对方还在处理，稍后会有结果'};
+  return{note:'对方没有给出回答'};
+}
 function stepBody(t,kind,live){
   const parts=[];
   if(kind==='delegate'){
     const ask=argString(stepArgs(t).message);
     if(ask)parts.push(el('div','delegate-ask',ask));
-    if(t.output){const reply=renderMarkdown(stripFence(t.output));reply.classList.add('delegate-reply');parts.push(reply);}
+    const reply=delegationReply(t.output);
+    if(reply?.text){const md=renderMarkdown(reply.text);md.classList.add('delegate-reply');parts.push(md);}
+    else if(reply?.note)parts.push(el('div',`delegate-note ${reply.bad?'bad':''}`.trim(),reply.note));
     return parts;
   }
   const files=new Set((t.diffs||[]).map(d=>d.path));

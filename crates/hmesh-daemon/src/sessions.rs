@@ -470,6 +470,36 @@ impl PendingText {
 }
 const TEXT_FLUSH_BYTES: usize = 512;
 const TEXT_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+/// What is recorded about one tool call so far.
+#[derive(Clone)]
+struct ToolTrace {
+    status: String,
+    /// Characters of the recorded title.
+    title: usize,
+    /// Bytes of the recorded output.
+    output: usize,
+    /// Bytes of the recorded details.
+    detail: usize,
+}
+/// What a tool call's update says beyond its status, title and output.
+const DETAIL_KEYS: [&str; 6] = [
+    "args",
+    "input",
+    "diffs",
+    "diffs_omitted",
+    "locations",
+    "terminal",
+];
+fn detail_bytes(payload: &Value) -> usize {
+    DETAIL_KEYS
+        .iter()
+        .filter_map(|k| payload.get(*k))
+        .filter(|v| !v.is_null())
+        .map(|v| v.to_string().len())
+        .sum()
+}
+/// What one page of events may carry, well within the 1 MiB a reply may be.
+const MAX_PAGE_BYTES: usize = 512 * 1024;
 /// Streamed command output is recorded at most about once a second.
 const TERMINAL_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -491,7 +521,11 @@ async fn pump(
     let mut thought_text = RedactedStream::default();
     // Last recorded status and title length per tool call: adapters stream the
     // title character by character, and each repeat need not become an event.
-    let mut tool_trace: HashMap<String, (String, usize, usize)> = HashMap::new();
+    let mut tool_trace: HashMap<String, ToolTrace> = HashMap::new();
+    // The latest details of updates not recorded on their own; they ride
+    // along with the call's next recorded update, or are written when the
+    // turn ends.
+    let mut unrecorded: HashMap<String, serde_json::Map<String, Value>> = HashMap::new();
     // Command output streamed through `_meta`, recorded in parts.
     let mut terminals = crate::tool_events::TerminalLogs::default();
     let mut tool_inputs = crate::tool_events::ToolInputs::default();
@@ -519,6 +553,14 @@ async fn pump(
                 "user_message",
                 json!({"text":clipped(&live.secrets, text.trim(), MAX_EVENT_TEXT_BYTES),"from":{"replayed":true}}),
             );
+        }
+    };
+    let write_unrecorded = |held: &mut HashMap<String, serde_json::Map<String, Value>>| {
+        let mut calls: Vec<_> = held.drain().collect();
+        calls.sort_by(|a, b| a.0.cmp(&b.0));
+        for (id, mut fields) in calls {
+            fields.insert("id".into(), json!(id));
+            write("tool_call_update", Value::Object(fields));
         }
     };
     let write_terminals = |terminals: &mut crate::tool_events::TerminalLogs,
@@ -631,7 +673,7 @@ async fn pump(
                 if matches!(kind, Some("tool_call" | "tool_call_update")) {
                     terminals.observe(update, &live.secrets);
                 }
-                if let Some((kind, payload)) = normalize(update, &live.secrets, &mut tool_inputs) {
+                if let Some((kind, mut payload)) = normalize(update, &live.secrets, &mut tool_inputs) {
                     if kind == "tool_call_update" {
                         let call = payload["id"].as_str().unwrap_or_default().to_owned();
                         let status = payload["status"].as_str().unwrap_or("").to_owned();
@@ -646,26 +688,45 @@ async fn pump(
                             }
                         }
                         let output = payload["output"].as_str().map_or(0, str::len);
+                        let detail = detail_bytes(&payload);
                         let previous = tool_trace.get(&call).cloned();
-                        // Status changes, details, the final title and output that
-                        // grew by a kilobyte are kept; character-by-character
-                        // title growth and every snapshot of streaming output are not.
-                        let detail = ["args", "diffs", "locations", "terminal"]
-                            .iter()
-                            .any(|k| payload.get(*k).is_some());
-                        let changed = previous.as_ref().is_none_or(|(was, length, shown)| {
-                            *was != status
+                        // Status changes, the final title, and output or details
+                        // that first appear or change by a kilobyte are kept;
+                        // character-by-character growth of a title, of streamed
+                        // arguments and of streamed output is not.
+                        let changed = previous.as_ref().is_none_or(|was| {
+                            was.status != status
                                 || terminal
-                                || detail
-                                || title.chars().count() >= length + 8
-                                || (output > 0 && (*shown == 0 || output.abs_diff(*shown) >= 1024))
+                                || title.chars().count() >= was.title + 8
+                                || (output > 0 && (was.output == 0 || output.abs_diff(was.output) >= 1024))
+                                || (detail > 0 && (was.detail == 0 || detail.abs_diff(was.detail) >= 1024))
                         });
-                        let shown = if changed {
-                            output
-                        } else {
-                            previous.map_or(0, |p| p.2)
+                        if changed {
+                            if let Some(held) = unrecorded.remove(&call) {
+                                for (key, value) in held {
+                                    if payload.get(&key).is_none() {
+                                        payload[&key] = value;
+                                    }
+                                }
+                            }
+                        } else if detail > 0 {
+                            let held = unrecorded.entry(call.clone()).or_default();
+                            for key in DETAIL_KEYS {
+                                if let Some(value) = payload.get(key) {
+                                    held.insert(key.to_owned(), value.clone());
+                                }
+                            }
+                        }
+                        let trace = match (changed, previous) {
+                            (false, Some(was)) => was,
+                            _ => ToolTrace {
+                                status: status.clone(),
+                                title: title.chars().count(),
+                                output,
+                                detail: detail_bytes(&payload),
+                            },
                         };
-                        tool_trace.insert(call, (status.clone(), title.chars().count(), shown));
+                        tool_trace.insert(call, trace);
                         if !changed {
                             write_terminals(&mut terminals, crate::tool_events::Drain::Ready);
                             if terminals.has_pending() {
@@ -681,7 +742,15 @@ async fn pump(
                         {
                             open.insert(call.clone(), title.clone());
                         }
-                        tool_trace.insert(call, ("pending".into(), title.chars().count(), 0));
+                        tool_trace.insert(
+                            call,
+                            ToolTrace {
+                                status: "pending".into(),
+                                title: title.chars().count(),
+                                output: payload["output"].as_str().map_or(0, str::len),
+                                detail: detail_bytes(&payload),
+                            },
+                        );
                     }
                     write(kind, payload);
                 }
@@ -773,6 +842,7 @@ async fn pump(
                 if end_turn {
                     write_terminals(&mut terminals, crate::tool_events::Drain::End);
                     terminal_at = None;
+                    write_unrecorded(&mut unrecorded);
                 }
                 // The barrier after a reload: what came before it was the
                 // replay, what comes after it is new.
@@ -812,6 +882,7 @@ async fn pump(
     pending_text.push("agent_thought_chunk", &thought_text.finish());
     flush_text(&write, &mut pending_text);
     write_terminals(&mut terminals, crate::tool_events::Drain::End);
+    write_unrecorded(&mut unrecorded);
     // The process is gone; a later prompt starts a new one.
     if let Ok(mut live_map) = s.sessions.live.lock()
         && live_map.get(&id).is_some_and(|l| Arc::ptr_eq(l, &live))
@@ -2382,11 +2453,21 @@ async fn wait_events(
     let first = s.store.session(id)?;
     loop {
         let session = s.store.session(id)?;
-        let events = if status_only {
+        let mut events = if status_only {
             vec![]
         } else {
             s.store.session_events(id, after, MAX_PAGE_EVENTS)?
         };
+        // Large events fill a page sooner; the caller asks again from `next`.
+        let mut used = 0;
+        let fit = events
+            .iter()
+            .take_while(|e| {
+                used += e.payload.to_string().len() + 256;
+                used <= MAX_PAGE_BYTES
+            })
+            .count();
+        events.truncate(fit.max(1));
         let changed = session.status != first.status || session.updated_at != first.updated_at;
         // A turn-end wait returns at once once nothing more will happen without
         // a new message; a session waiting for approval keeps the caller waiting.

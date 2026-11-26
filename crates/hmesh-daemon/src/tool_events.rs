@@ -159,6 +159,10 @@ pub fn tool_payload(update: &Value, secrets: &[String], known_input: Option<&Val
     let raw_input = update.get("rawInput").filter(|v| !v.is_null());
     let input_json = raw_input.map(|v| v.to_string());
     let arguments = raw_input.or(known_input);
+    let finished = matches!(
+        update.get("status").and_then(Value::as_str),
+        Some("completed" | "failed" | "cancelled")
+    );
     let items: &[Value] = update
         .get("content")
         .and_then(Value::as_array)
@@ -176,7 +180,8 @@ pub fn tool_payload(update: &Value, secrets: &[String], known_input: Option<&Val
                     let repeat = serde_json::from_str::<Value>(t)
                         .ok()
                         .is_some_and(|v| Some(&v) == arguments);
-                    let writing = arguments.is_none() && t.trim_start().starts_with('{');
+                    let writing =
+                        arguments.is_none() && !finished && t.trim_start().starts_with('{');
                     if !repeat && !writing {
                         texts.push(t.to_owned());
                     }
@@ -352,6 +357,11 @@ impl TerminalLogs {
                 log.add(&rest);
             }
             let finished = log.exit.is_some() || when == Drain::End;
+            // Output that ended before anything was dropped is one piece again.
+            if finished && log.skipped == 0 && !log.tail.is_empty() {
+                let tail = std::mem::take(&mut log.tail);
+                log.pending.push_str(&tail);
+            }
             let ready = finished || when == Drain::Timer || log.pending.len() >= TERMINAL_FLUSH;
             let mut terminal = Map::new();
             if ready && !log.pending.is_empty() {
@@ -630,5 +640,35 @@ mod tests {
         inputs.payload(&json!({"toolCallId": "c", "status": "pending", "rawInput": {"command": "cat package.json"}}), &[]);
         let output = inputs.payload(&json!({"toolCallId": "c", "status": "completed", "content": text("{\"name\": \"demo\"}")}), &[]);
         assert_eq!(output["output"], "{\"name\": \"demo\"}");
+    }
+
+    #[test]
+    fn output_just_past_the_head_arrives_whole() {
+        // Between the head and head + tail nothing is dropped: every byte is
+        // recorded as appends, with no gap to show.
+        let mut logs = TerminalLogs::default();
+        let line = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n";
+        let total = line.repeat(36 * 1024 / line.len());
+        let mut events = vec![];
+        for chunk in total.as_bytes().chunks(4096) {
+            let data = std::str::from_utf8(chunk).unwrap();
+            logs.observe(
+                &json!({"toolCallId": "c", "_meta": {"terminal_output": {"data": data}}}),
+                &[],
+            );
+            events.extend(logs.drain(Drain::Ready));
+        }
+        logs.observe(
+            &json!({"toolCallId": "c", "_meta": {"terminal_exit": {"exit_code": 0}}}),
+            &[],
+        );
+        events.extend(logs.drain(Drain::Ready));
+        let mut seen = String::new();
+        for e in &events {
+            seen.push_str(e["terminal"]["append"].as_str().unwrap_or(""));
+            assert!(e["terminal"].get("skipped").is_none(), "{e}");
+        }
+        assert_eq!(seen, total);
+        assert_eq!(events.last().unwrap()["terminal"]["exit_code"], 0);
     }
 }

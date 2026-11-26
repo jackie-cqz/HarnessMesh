@@ -7,6 +7,9 @@ const mdFence=/^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/;
 const mdRule=/^ {0,3}([-*_])(?: *\1){2,} *$/;
 const mdHeading=/^ {0,3}(#{1,6})(?: +(.*?))?(?: +#+)? *$/;
 const mdTableRule=/^ *\|? *:?-+:? *(\| *:?-+:? *)*\|? *$/;
+// Past this nesting the rest is shown as plain text, so no reply can
+// exhaust the stack.
+const mdMaxDepth=16;
 
 function renderMarkdown(source){
   const root=el('div','md');
@@ -28,7 +31,8 @@ function mdCells(line){
   cells.push(cell.trim());
   return cells;
 }
-function mdBlocks(lines,parent){
+function mdBlocks(lines,parent,depth=0){
+  if(depth>mdMaxDepth){const p=el('p');p.textContent=lines.join('\n');parent.append(p);return;}
   let i=0;
   while(i<lines.length){
     const line=lines[i];
@@ -46,10 +50,10 @@ function mdBlocks(lines,parent){
     if(/^ {0,3}>/.test(line)){
       const quoted=[];
       while(i<lines.length&&lines[i].trim()&&(/^ {0,3}>/.test(lines[i])||!mdStartsBlock(lines[i])))quoted.push(lines[i++].replace(/^ {0,3}> ?/,''));
-      const box=el('blockquote');mdBlocks(quoted,box);parent.append(box);continue;
+      const box=el('blockquote');mdBlocks(quoted,box,depth+1);parent.append(box);continue;
     }
     if(line.includes('|')&&i+1<lines.length&&mdTableRule.test(lines[i+1])&&lines[i+1].includes('-')){i=mdTable(lines,i,parent);continue;}
-    if(mdListItem.test(line)&&line.match(mdListItem)[3]!==undefined){i=mdList(lines,i,parent);continue;}
+    if(mdListItem.test(line)&&line.match(mdListItem)[3]!==undefined){i=mdList(lines,i,parent,depth);continue;}
     const text=[];
     while(i<lines.length&&lines[i].trim()&&!(text.length&&mdStartsBlock(lines[i])))text.push(lines[i++].replace(/^ +/,''));
     const p=el('p');mdInline(text.join('\n'),p);parent.append(p);
@@ -82,7 +86,7 @@ function mdTable(lines,i,parent){
   table.append(thead,tbody);wrap.append(table);parent.append(wrap);
   return i;
 }
-function mdList(lines,i,parent){
+function mdList(lines,i,parent,depth){
   const first=lines[i].match(mdListItem),indent=first[1].length,ordered=/\d/.test(first[2]);
   const list=el(ordered?'ol':'ul');
   if(ordered&&parseInt(first[2],10)!==1)list.start=parseInt(first[2],10);
@@ -108,7 +112,7 @@ function mdList(lines,i,parent){
     const li=el('li');
     const task=body[0].match(/^\[([ xX])\] +(.*)$/);
     if(task){li.classList.add('task');li.append(el('span',`md-check ${task[1]===' '?'':'done'}`,task[1]===' '?'☐':'☑'));body[0]=task[2];}
-    mdBlocks(body,li);
+    mdBlocks(body,li,depth+1);
     list.append(li);
     if(i<lines.length&&!lines[i].trim()){
       const next=lines.slice(i).find(l=>l.trim());
@@ -157,7 +161,8 @@ function mdLinkAt(text,i){
   const target=text.slice(end+2,close).trim().replace(/\s+("[^"]*"|'[^']*')$/,'').replace(/^<(.*)>$/,'$1');
   return{label:text.slice(i+1,end),url:target,end:close+1};
 }
-function mdInline(text,parent,inLink=false){
+function mdInline(text,parent,inLink=false,depth=0){
+  if(depth>mdMaxDepth){parent.append(document.createTextNode(text));return;}
   let buffer='';
   const flush=()=>{if(buffer){parent.append(document.createTextNode(buffer));buffer='';}};
   for(let i=0;i<text.length;){
@@ -172,11 +177,11 @@ function mdInline(text,parent,inLink=false){
     const pair=text.slice(i,i+2);
     if((pair==='**'||pair==='__'||pair==='~~')&&!/\s/.test(text[i+2]||' ')){
       const end=mdClose(text,pair,i+2);
-      if(end>0){flush();const node=el(pair==='~~'?'del':'strong');mdInline(text.slice(i+2,end),node,inLink);parent.append(node);i=end+2;continue;}
+      if(end>0){flush();const node=el(pair==='~~'?'del':'strong');mdInline(text.slice(i+2,end),node,inLink,depth+1);parent.append(node);i=end+2;continue;}
     }
     if((c==='*'||c==='_')&&text[i+1]!==c&&!/\s/.test(text[i+1]||' ')&&!(c==='_'&&/[\p{L}\p{N}]/u.test(text[i-1]||''))){
       const end=mdClose(text,c,i+1);
-      if(end>0){flush();const node=el('em');mdInline(text.slice(i+1,end),node,inLink);parent.append(node);i=end+1;continue;}
+      if(end>0){flush();const node=el('em');mdInline(text.slice(i+1,end),node,inLink,depth+1);parent.append(node);i=end+1;continue;}
     }
     if(!inLink&&c==='['){
       const link=mdLinkAt(text,i);

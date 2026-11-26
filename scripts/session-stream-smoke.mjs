@@ -123,6 +123,10 @@ try{
  assert(/^编辑 lib\.rs/.test(await label('claude-edit')),`edit: ${await label('claude-edit')}`);
  const delegate=stream(page).locator('.step.delegate[data-tool="mesh-send"]');
  assert(await delegate.count()===1&&(await delegate.innerText()).includes('mac-b/worker'),'delegation is not its own card');
+ await delegate.locator(':scope > summary').click();
+ const delegated=await delegate.innerText();
+ assert(delegated.includes('Run the integration tests')&&delegated.includes('All 12 integration tests passed.')&&!delegated.includes('{"'),`delegation reply: ${delegated}`);
+ assert(await delegate.locator('.delegate-reply strong',{hasText:'integration'}).count()===1,'the other agent\'s answer is not Markdown');
 
  stage='C2 diffs';
  const edit=step(page,'claude-edit').first();
@@ -163,6 +167,9 @@ try{
   return{label:box.querySelector('.step .step-label')?.textContent,output:box.querySelector('.step .step-output')?.textContent,plans:box.querySelectorAll('.plan').length,done:box.querySelectorAll('.plan .plan-entry.completed').length,answer:box.querySelector('.msg.answer')?.textContent};
  });
  assert(legacy.label==='读取 a.txt docs'&&legacy.output==='hello'&&legacy.plans===1&&legacy.done===1&&legacy.answer==='done',`earlier events: ${JSON.stringify(legacy)}`);
+ stage='replies nested too deep stay readable';
+ const deep=await page.evaluate(()=>['>'.repeat(8000)+' quoted','- '.repeat(4000)+'item','*'.repeat(9000)+'x','['.repeat(5000)+'x'].map(text=>{try{return renderMarkdown(text).textContent.length>0;}catch(e){return String(e);}}));
+ assert(deep.every(r=>r===true),`deep Markdown: ${JSON.stringify(deep)}`);
 
  stage='running steps stay open; updates keep the page';
  await openSession(page,'mac-a（本机）','helper','fixture:stream-running');
