@@ -52,7 +52,7 @@ function renderRuntime(){
   const box=$('#runtime-summary');box.dataset.mode=r?.mode||'read_only';box.dataset.alert=String(!r||r.mode!=='full'||!!r.upgrade?.required);
   if(!r){box.replaceChildren(el('strong','','运行能力暂不可读取 · 只读模式'),el('p','form-note','可以查看已有状态和关闭本次面板。恢复连接后刷新，不会自动升级或启动模型。'));}
   else{
-    box.replaceChildren(el('strong','',r.mode==='full'?'运行版本与能力':r.mode==='compatible'?'兼容模式 · 基础任务管理':'只读模式 · 现有 Daemon 保持运行'),meta([['CLI',`${r.cli_version} / schema ${r.cli_schema_version}`],['Daemon',r.daemon?.running?`${r.daemon.version||"版本未报告"} / PID ${r.daemon.pid} / schema ${r.daemon.schema_version}`:'当前不可达'],['当前能力',canWrite()?'任务预检、审批与核验可用':'只读观察；提交、审批与其他写操作已停用']]));
+    box.replaceChildren(el('strong','',r.mode==='full'?'运行版本与能力':r.mode==='compatible'?'兼容模式 · 基础任务管理':(r.daemon?.running?'只读模式 · 现有 Daemon 保持运行':'只读模式 · Daemon 不可达')),meta([['CLI',`${r.cli_version} / schema ${r.cli_schema_version}`],['Daemon',r.daemon?.running?`${r.daemon.version||"版本未报告"} / PID ${r.daemon.pid} / schema ${r.daemon.schema_version}`:'当前不可达'],['当前能力',canWrite()?'任务预检、审批与核验可用':'只读观察；提交、审批与其他写操作已停用']]));
     if(r.upgrade?.required){const details=el('details'),summary=el('summary','','查看显式升级步骤'),list=el('ol');for(const step of r.upgrade.steps||[])list.append(el('li','',step));details.append(summary,list,el('p','form-note','不会自动停止、迁移或重启现有 Daemon。'));box.append(details);}
   }
   for(const id of ['new-task','new-agent'])$('#'+id).disabled=!canWrite();
@@ -210,8 +210,11 @@ async function refresh() {
     const [snapshot,runtime]=await Promise.all([api('/overview'),api('/runtime').then(unwrap).catch(()=>null)]);state.snapshot=snapshot;state.runtime=runtime;if(typeof noteInboxOverviewError==='function')noteInboxOverviewError(null);const node=data('node',{});$('#access-gate').hidden=true;$('#app').hidden=false;
     $('#local-name').textContent=node.node?.display_name||'Daemon 不可读取';$('#local-network').textContent=node.network==='tailscale'?'Tailnet 直连':node.network==='direct'?(node.networks?.every_interface&&(node.networks.trusted||[]).some(t=>t.tailnet)?'局域网直连 · Tailscale':'局域网直连'):node.network?'仅本机回环':'Daemon 不可达';
     const names={node:'本机 Daemon',peers:'配对节点',agents:'Agent',retired:'退役 Agent',tasks:'任务',services:'服务',connections:'连接',tunnels:'隧道'};
-    const failures=Object.entries(names).filter(([key])=>state.snapshot[key]?.error).map(([key,name])=>`${name}: ${state.snapshot[key].error.code}`);
-    $('#alerts').replaceChildren(...(failures.length?[el('div','alert',`部分状态暂不可读取。${failures.join('；')}`)]:[]));
+    const failures=Object.entries(names).filter(([key])=>state.snapshot[key]?.error);
+    const down=failures.length>0&&failures.every(([key])=>state.snapshot[key].error.code==='PEER_UNREACHABLE');
+    $('#alerts').replaceChildren(...(failures.length?[el('div','alert',down
+      ?'本机 Daemon 没有响应：部分状态来自上次读取，提交、审批和其他写操作已停用；恢复连接后会自动刷新。'
+      :`部分状态暂不可读取。${failures.map(([key,name])=>`${name}: ${state.snapshot[key].error.code}`).join('；')}`)]:[]));
     $('#sync-state').textContent=failures.length?'部分数据不可用':'已同步 · 10 秒刷新';$('#last-observed').textContent=`最后观察 ${fullTime(state.snapshot.observed_at)}`;render();
     if($('#task-dialog').open&&state.selected)await Promise.all([readDetail(state.detailVersion),loadEvents(state.detailVersion)]);
   }catch(e){if(typeof noteInboxOverviewError==='function')noteInboxOverviewError(e);$('#sync-state').textContent='连接中断';$('#alerts').replaceChildren(el('div','alert',`读取失败：${e.message}。页面可能保留上次观察结果，未自动重试任何操作。`));}

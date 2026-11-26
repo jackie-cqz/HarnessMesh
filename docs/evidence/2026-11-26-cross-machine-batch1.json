@@ -1,0 +1,37 @@
+{
+  "checkpoint": "cross-machine-batch1",
+  "date": "2026-11-26",
+  "scope": "two loopback Nodes on one Mac, real Pi through pi-acp, owner-driven cross-computer session UX",
+  "environment": {
+    "nodes": "mac-a (127.0.0.1:44001) and mac-b (127.0.0.1:44002), paired with fingerprints",
+    "agents": "pi-a on mac-a and pi-b on mac-b, pi 0.83.0 through pi-acp 0.0.35, own login",
+    "model": "test-gateway-claude/deepseek-v4.1-flash-1017 via local gateway"
+  },
+  "results": [
+    {"check": "pair request and approval", "result": "pass", "detail": "both sides approved; peers listed with access auto/confirm"},
+    {"check": "remote session from A", "result": "pass", "detail": "A opened mac-b/pi-b; turn completed in ~7 s; A target showed pi-b · mac-b"},
+    {"check": "execution and visibility on B", "result": "pass", "detail": "same session id on B, origin mac-a, pi process cwd /private/tmp/hmesh-pair/proj-b; B panel showed 由 mac-a 打开 and 项目：proj-b"},
+    {"check": "remote session approval (confirm)", "result": "pass", "detail": "A showed 等待批准; B approved with the shared session id; A then showed 已批准，开始执行 and the answer"},
+    {"check": "shared project", "result": "pass", "detail": "B shared a dedicated folder proj-shared; A's project picker listed it; the B-side agent wrote PONG2 into /tmp/hmesh-pair/proj-shared/shared2.txt"},
+    {"check": "unshare", "result": "pass", "detail": "after unsharing, A's view of B's shared projects became empty within the 10 s refresh"},
+    {"check": "agent-to-agent mesh_send", "result": "pass", "detail": "A's local pi-a called harnessmesh_mesh_send; B created child session with origin kind agent and chain to A's session; B's agent replied B-VIA-MESH and A returned it"},
+    {"check": "peer daemon stops mid-turn", "result": "pass with UX notes", "detail": "A session became idle and the turn was marked interrupted; the conversation note used the raw English connection error and stayed after reconnection (fixed)"},
+    {"check": "pairing revoked mid-session", "result": "pass with UX notes", "detail": "A session closed with 配对已撤销，会话关闭; the note showed the raw transport error (now mapped)"}
+  ],
+  "fixes": [
+    "connection failures in the conversation are shown in Chinese and the note is cleared when polling succeeds again"
+  ],
+  "remaining": [
+    "the sync indicator can still say 已同步 while a paired computer is unreachable",
+    "a remote session waiting for approval shows the state mainly as a header badge; the conversation itself stays empty",
+    "tool-level approval (允许一次/拒绝) still needs Claude Code or Codex; Pi never asks",
+    "real Tailnet/network failure and discovery/passcode pairing were not tested here (loopback only)"
+  ],
+  "verification": {
+    "fmt": "pass",
+    "clippy_strict": "pass",
+    "workspace_tests": "pass",
+    "panel_js": "node --check pass",
+    "page_errors": "none"
+  }
+}

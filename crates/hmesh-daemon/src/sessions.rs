@@ -35,6 +35,10 @@ pub const MAX_WAIT_SECONDS: u64 = 10;
 /// Agent processes of idle sessions are stopped after this long; the next
 /// prompt starts them again and reloads the conversation when supported.
 const IDLE_PROCESS_SECONDS: u64 = 600;
+/// How long a requested stop may wait for the agent before its process is
+/// ended: some adapters keep the ACP pipe open after their child agent died,
+/// and a session must not stay busy forever.
+const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 const MAX_PAGE_EVENTS: usize = 500;
 const MAX_FINAL_TEXT: usize = 32 * 1024;
 
@@ -683,6 +687,7 @@ async fn discard(s: &AppState, id: Uuid, live: &Arc<Live>) {
     {
         map.remove(&id);
     }
+    hmesh_runtime::mcp_bridge::remove(&s.instance.dir, id);
     live.conn.shutdown().await;
 }
 
@@ -736,7 +741,8 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         .unwrap_or_else(|| config.project.root.clone());
     let mut launch = config.clone();
     launch.project.root = cwd.clone();
-    let (command, secrets) = hmesh_runtime::agent_launch(
+    let mcp = mcp_server(s, record.session_id);
+    let (mut command, secrets) = hmesh_runtime::agent_launch(
         &launch,
         &s.instance.dir,
         record.agent_id,
@@ -751,6 +757,21 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         Some(model) => Some((model, true)),
         None => config.adapter.model.clone().map(|model| (model, false)),
     };
+    // pi-acp accepts the ACP MCP servers but never forwards them to pi. When
+    // the agent uses its own Pi configuration and the MCP adapter is installed,
+    // hand the session's servers to pi through the adapter's --mcp-config flag.
+    // A custom model service runs an isolated profile without the adapter.
+    if card.harness == HarnessKind::Pi
+        && !mcp.is_empty()
+        && service.as_ref().is_none_or(|v| v.mode == MODE_AGENT_LOGIN)
+        && std::env::var_os("PI_ACP_PI_COMMAND").is_none()
+        && hmesh_runtime::mcp_bridge::supported("pi").await
+        && let Ok(bridge) =
+            hmesh_runtime::mcp_bridge::install(&s.instance.dir, record.session_id, &mcp, "pi")
+    {
+        command.env("PI_ACP_PI_COMMAND", &bridge.command);
+        command.env("PI_ACP_MCP_CONFIG", &bridge.config);
+    }
     let (conn, messages) = AcpConnection::start(command).await?;
     if record.history_pending && acp::SessionRestore::advertised(&conn.initialize).is_none() {
         conn.shutdown().await;
@@ -759,7 +780,6 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
             "this agent cannot continue its earlier sessions",
         ));
     }
-    let mcp = mcp_server(s, record.session_id);
     let restore = record
         .agent_session_id
         .as_ref()
@@ -1282,8 +1302,16 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
             finish(&s, Some(&stop), final_text, error)
         }
         Err(error) => {
+            // The process is gone: its unfinished tools will never report.
             if let Ok(mut open) = live.open_tools.lock() {
-                open.clear();
+                for (call, title) in open.drain() {
+                    let _ = record_event(
+                        &s,
+                        id,
+                        "tool_call_update",
+                        json!({"id":call,"title":title,"status":"failed"}),
+                    );
+                }
             }
             finish(&s, None, None, Some(redact(&live.secrets, &error.message)))
         }
@@ -1367,6 +1395,32 @@ fn cancel(s: &AppState, id: Uuid) -> hmesh_core::Result<SessionRecord> {
                 "status",
                 json!({"status":"cancelling","message":"cancel requested"}),
             )?;
+            // The agent may be gone in a way that leaves its ACP connection
+            // open. End this session's process if the turn is still busy
+            // after a short grace, so the owner can continue.
+            let state = s.clone();
+            let watched = live.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(CANCEL_GRACE).await;
+                let Ok(now) = state.store.session(id) else {
+                    return;
+                };
+                if !now.status.is_busy()
+                    || !state
+                        .sessions
+                        .live(id)
+                        .is_some_and(|live| Arc::ptr_eq(&live, &watched))
+                {
+                    return;
+                }
+                let _ = record_event(
+                    &state,
+                    id,
+                    "status",
+                    json!({"status":"cancelling","message":"the agent did not stop in time; its process was ended"}),
+                );
+                discard(&state, id, &watched).await;
+            });
         }
     }
     s.store.session(id)

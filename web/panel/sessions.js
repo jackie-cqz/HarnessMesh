@@ -28,7 +28,16 @@ const sessionNotes=[
   [/^Retry finished, resuming\./,'重试结束，继续'],
   [/^New version available:/,'Agent 有新版本可用'],
   [/^the agent ended the turn without an answer/,'Agent 这一轮没有回答：检查它的登录和模型服务（可能是限流或密钥问题）'],
+  [/agent process exited/,'Agent 进程已退出，这一轮中断'],
+  [/^the agent did not stop in time/,'停止超时，已结束 Agent 进程'],
 ];
+function connectionProblem(message){
+  const text=String(message||'');
+  if(/could not reach that computer/.test(text))return '连不上这台电脑：确认它开着 HarnessMesh，并且两台电脑的网络互通。';
+  if(/RPC transport failed/.test(text))return '连接中断，恢复后会自动重试。';
+  if(/RPC deadline exceeded/.test(text))return '对方电脑没有及时响应。';
+  return text;
+}
 function noteText(message){
   const refused=/^the agent did not accept the setting (\S+) = "?([^":]*)"?/.exec(message||'');
   if(refused)return `Agent 没接受设置 ${refused[1]} = ${refused[2]}，保持它自己的选择`;
@@ -201,7 +210,7 @@ function renderHero(){
   box.hidden=!settingsSupported()||!target;
   const heroNote=$('#hero-note');
   if(heroNote)heroNote.textContent=target?.agent.harness==='pi'
-    ?'Pi 的工具调用会直接执行，不在 HarnessMesh 里请求审批；会话里也不能调用其他 Agent。'
+    ?'Pi 的工具调用会直接执行，不在 HarnessMesh 里请求审批；本机装了 pi-mcp-adapter 时，会话里可以调用其他 Agent。'
     :'发出后 Agent 会调用模型；它要动文件或执行命令时，会在这里问你。';
   renderSettings(box,target?.agent.config_options,values,!canWrite(),(id,value)=>{conv.heroConfig[id]=value;renderHero();},JSON.stringify([conv.target,target?.agent.config_options,values,canWrite()]));
   $('#hero-send').disabled=!target||!canWrite();
@@ -294,7 +303,7 @@ async function follow(generation){
       const inboxEpoch=typeof inboxObservationToken==='function'?inboxObservationToken():null;
       const page=unwrap(await api(`/sessions/${conv.selected}/events?after=${conv.cursor}&wait=${document.hidden?0:10}`));
       if(generation!==conv.generation)return;
-      failures=0;conv.record={...conv.record,...page.session};conv.cursor=page.next;syncListRow(conv.record);
+      failures=0;$('#conversation-note').hidden=true;conv.record={...conv.record,...page.session};conv.cursor=page.next;syncListRow(conv.record);
       if(typeof noteInboxSession==='function')noteInboxSession(conv.record,Date.now()/1000,inboxEpoch);
       if(page.events.length)conv.events.push(...page.events);
       if(page.events.some(e=>e.kind==='commands_updated'||e.kind==='config_changed'))refreshOpenCommands();
@@ -302,7 +311,7 @@ async function follow(generation){
       if(document.hidden)await new Promise(r=>setTimeout(r,3000));
     }catch(e){
       if(generation!==conv.generation)return;
-      failures++;$('#conversation-note').textContent=`读取会话失败：${e.message}`;$('#conversation-note').hidden=false;
+      failures++;$('#conversation-note').textContent=`读取会话失败：${connectionProblem(e.message)}`;$('#conversation-note').hidden=false;
       await new Promise(r=>setTimeout(r,Math.min(15000,1500*failures)));
     }
   }
@@ -346,7 +355,7 @@ function renderConversation(){
   meta.append(el('span','',originText({...s,_remote:conv.remote})),el('span','',approverText({...s,_remote:conv.remote})),el('span','',`第 ${s.turns||0} 轮`));
   const projectName=typeof sessionProjectName==='function'?sessionProjectName({...s,_remote:conv.remote}):null;
   if(projectName)meta.append(el('span','',`项目：${projectName}`));
-  if(harnessFor({...s,_remote:conv.remote})==='pi'){const note=el('span','', 'Pi：工具不经审批');note.title='pi-acp 不会把 HarnessMesh 的 MCP 服务转给 Pi，所以 Pi 会话里也不能调用其他 Agent。';meta.append(note);}
+  if(harnessFor({...s,_remote:conv.remote})==='pi'){const note=el('span','', 'Pi：工具不经审批');note.title='HarnessMesh 会把本次会话的 MCP 服务桥接给 Pi（需要本机安装 pi-mcp-adapter）；没装时不能调用其他 Agent。';meta.append(note);}
   if(s.origin?.chain?.length)meta.append(el('span','conversation-chain',`调用链：${s.origin.chain.map(l=>shortNode(l.node_id)).join(' → ')} → ${shortNode(s.node_id)}`));
   col.append(meta);
   const requests=new Map();let text=null,thought=null;
@@ -379,6 +388,7 @@ function renderConversation(){
     }else if(e.kind==='turn_end'){
       const reason={cancelled:'本轮已停止',max_tokens:'达到输出上限',max_turn_requests:'达到步数上限',refusal:'Agent 拒绝了这一轮'}[p.stop_reason];
       if(reason||!['end_turn'].includes(p.stop_reason))col.append(el('div','event-note center',reason||`本轮结束（${p.stop_reason}）`));
+      if(p.stop_reason==='cancelled'&&harnessFor({...s,_remote:conv.remote})==='pi')col.append(el('div','event-note center','重新载入对话后，Agent 可能重试这条被取消的命令'));
     }else if(e.kind==='error'){const n=el('div','event-note bad');n.append(icon('x-circle','sm'),el('span','',noteText(p.message)||'出错了'));col.append(n);}
     // A status without a message only moves the session along.
     else if(e.kind==='status'){if(!p.message)continue;const t=noteText(p.message);if(t!==null)col.append(el('div','event-note center',t||sessionLabels[p.status]||p.status));}
@@ -388,6 +398,7 @@ function renderConversation(){
     }
   }
   const open=openPermissions();
+  if(s.status==='pending_approval')col.append(el('div','event-note center',conv.remote?`等待 ${shortNode(s.node_id)} 批准后才能继续`:'等待在这里批准后才能继续'));
   if(s.status==='running'&&!open.size)col.append(el('div','working','正在处理…'));
   stream.replaceChildren(col);
   if(atBottom)stream.scrollTop=stream.scrollHeight;
@@ -730,5 +741,9 @@ $('#hero-input').addEventListener('input',e=>{
 });
 $('#hero-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey))submitNew(e);});
 $('#composer').addEventListener('submit',sendMessage);
-$('#composer-input').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)&&conv.record?.status==='idle')sendMessage(e);});
+$('#composer-input').addEventListener('keydown',e=>{
+  if(e.key!=='Enter'||!(e.metaKey||e.ctrlKey))return;
+  if(conv.record?.status==='idle')sendMessage(e);
+  else toast('这一轮还在执行，结束后再发送；内容可以先写在这里');
+});
 setInterval(()=>{if(!document.hidden)loadSessions();},10000);
