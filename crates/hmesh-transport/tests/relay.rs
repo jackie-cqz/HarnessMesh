@@ -963,6 +963,9 @@ async fn a_connection_through_a_relay_left_unused_is_closed() {
     let started = Instant::now();
     until("closed once unused", || open.load(Ordering::SeqCst) == 0).await;
     assert!(started.elapsed() >= idle / 2, "{:?}", started.elapsed());
+    // The laptop hears of it through the relay a moment later; a call made
+    // before that would still go out on the closed connection.
+    until("the laptop sees it closed", || dialer.kept() == 0).await;
     let counted: usize = client
         .post("/count", &serde_json::json!({}))
         .await
