@@ -141,6 +141,39 @@ function renderServices() {
   const connections=[...data('connections').map(r=>({...r,_kind:'连接'})),...data('tunnels').map(r=>({...r,_kind:'隧道'}))].filter(s=>$('#show-inactive').checked||isActive(s));
   $('#connection-list').replaceChildren(...(connections.length?connections.map(c=>{const row=el('div','connection-row'),name=el('div');name.append(el('strong','',c.name||`${c._kind} ${short(c.id)}`),el('div','mono',c.id));row.append(name,el('div','mono',c.status?.endpoint||c.project_id||c._kind),badge(c.status?.state));return row;}):[empty('没有有效的转发连接或隧道')]));
 }
+const peerAccessLabels = {auto: '自动开始', confirm: '本机确认'};
+function peerAccessRow(peer) {
+  const row = el('div', 'peer-access-row');
+  const status = el('div', 'peer-access-status');
+  status.append(el('span', 'muted', '发到本机的请求'), el('strong', 'peer-access-mode', peerAccessLabels[peer.access]));
+  const mode = peer.access === 'auto' ? 'confirm' : 'auto';
+  const change = button('设为' + peerAccessLabels[mode], 'button secondary', () => changePeerAccess(peer, mode));
+  change.disabled = !canWrite();
+  row.append(status, change);
+  return row;
+}
+async function changePeerAccess(peer, mode) {
+  const release = await claimAction();
+  try {
+    const {display_name: name, node_id: id} = peer.card;
+    const description = mode === 'auto'
+      ? '这台电脑发到本机的新任务和新会话会自动开始。Agent 委派的会话会自动处理工具审批，显式要求审批的任务仍需批准。'
+      : '这台电脑发到本机的新任务和新会话会在「工作待办」等待本机确认。';
+    if (!await confirmAction('将 ' + name + ' 设为' + peerAccessLabels[mode] + '？', description)) return;
+    const saved = unwrap(await api('/peers/' + id + '/access', {
+      method: 'POST', body: JSON.stringify({access: mode}),
+    }));
+    const current = data('peers').find(item => item.card.node_id === id);
+    if (current) current.access = saved.access;
+    if (state.view === 'nodes') renderNodes();
+    toast(name + ' 已设为' + peerAccessLabels[saved.access] + '。');
+    await refresh();
+  } catch (e) {
+    toast('访问模式未确认：' + e.message + '。请刷新后检查当前设置。');
+  } finally {
+    release();
+  }
+}
 function renderNodes() {
   if(typeof renderPairing==='function')renderPairing();
   const pairing=typeof pairingReady==='function'&&pairingReady();
@@ -167,6 +200,7 @@ function renderNodes() {
     const actions=el('div','paired-actions');actions.append(details);
     if(!calls)actions.append(view);
     card.append(top,inventory);
+    if(peer.status==='trusted'&&Object.hasOwn(peerAccessLabels,peer.access))card.append(peerAccessRow(peer));
     if(!calls&&peer.status==='trusted'&&typeof peerReachRows==='function')card.append(...peerReachRows(peer));
     if(!calls&&peer.status==='trusted'&&typeof peerAddressRow==='function'&&addressesReady())card.append(peerAddressRow(peer));
     card.append(actions);

@@ -1437,6 +1437,8 @@ footer{margin-top:28px}
 .paired-inventory .entity-meta{display:flex;flex-wrap:wrap;gap:4px 8px;margin:0;align-items:baseline}
 .paired-inventory .entity-meta dd{font:600 14px var(--mono);margin:0 14px 0 0}
 .paired-inventory>p{margin:4px 0 0;font-size:12px}
+.peer-access-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 12px;margin:0 0 10px;font-size:12px}
+.peer-access-status{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px}
 .paired-actions{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;border-top:1px solid var(--border);padding-top:10px}
 .paired-record{min-width:0;font-size:11px;color:var(--muted)}
 .paired-record p{margin:4px 0 0;overflow-wrap:anywhere}

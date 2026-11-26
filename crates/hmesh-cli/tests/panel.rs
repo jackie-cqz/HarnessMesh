@@ -125,6 +125,65 @@ async fn adapter_install_requires_owner_origin_and_an_allowlisted_package() {
     stop_panel(&http, &ready).await;
     assert!(panel.wait().await.unwrap().success());
 }
+
+#[tokio::test]
+async fn peer_access_requires_owner_origin_and_typed_input() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut panel, ready) = start_panel(root.path()).await;
+    let (origin, token) = ready["url"]
+        .as_str()
+        .unwrap()
+        .split_once("/#access=")
+        .unwrap();
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let path = format!("{origin}/api/peers/{}/access", uuid::Uuid::new_v4());
+    let post = |body: Value| http.post(&path).json(&body);
+    let owner_post = |body: Value| post(body).bearer_auth(token).header("origin", origin);
+    let setting = json!({"access":"confirm"});
+    assert_eq!(
+        post(setting.clone())
+            .header("origin", origin)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        post(setting.clone())
+            .bearer_auth(token)
+            .header("origin", "https://other.test")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    for invalid in [
+        json!({"access":"invalid"}),
+        json!({"access":"auto","peer_id":uuid::Uuid::new_v4()}),
+    ] {
+        let response = owner_post(invalid).send().await.unwrap();
+        assert_eq!(response.status(), 400);
+        assert_eq!(
+            response.json::<Value>().await.unwrap()["error"]["code"],
+            "INVALID_INPUT"
+        );
+    }
+    let response = owner_post(setting).send().await.unwrap();
+    assert_eq!(response.status(), 502);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["error"]["code"],
+        "INVALID_INPUT"
+    );
+    stop_panel(&http, &ready).await;
+    assert!(panel.wait().await.unwrap().success());
+}
+
 #[tokio::test]
 async fn panel_launch_and_stop_own_only_the_daemon_started_here() {
     let root = tempfile::tempdir().unwrap();
