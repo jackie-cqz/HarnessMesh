@@ -12,12 +12,12 @@
     "pi": {
       "package": "@earendil-works/pi-coding-agent",
       "version": "0.84.2",
-      "configured_shim": "C:/Users/jackie/AppData/Roaming/npm/pi.cmd",
-      "actual_entry": "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
+      "configured_shim": "C:/Users/you/AppData/Roaming/npm/pi.cmd",
+      "actual_entry": "C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
       "entry_sha256": "840d1e8e689ed9e4937bcb00b9a810e02a8567d9afb10a47097f11ca93ea1521",
       "program": "C:\\Program Files\\nodejs\\node.exe",
       "argument_template": [
-        "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
+        "C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
         "--mode",
         "rpc",
         "--offline",
@@ -42,10 +42,10 @@
     "opencode": {
       "package": "opencode-ai",
       "version": "1.18.20",
-      "configured_shim": "C:/Users/jackie/AppData/Roaming/npm/opencode.cmd",
-      "actual_entry": "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
+      "configured_shim": "C:/Users/you/AppData/Roaming/npm/opencode.cmd",
+      "actual_entry": "C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
       "entry_sha256": "f2a2d233656b2bece64415169926d62bc335bfdfdda0842b763bf766a708b14e",
-      "program": "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
+      "program": "C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
       "argument_template": [
         "run",
         "--pure",
@@ -65,12 +65,12 @@
     "dsh": {
       "package": "@deepseek-ai/dsh",
       "version": "0.2.0-rc.2",
-      "configured_shim": "C:/Users/jackie/AppData/Roaming/npm/dsh.cmd",
-      "actual_entry": "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
+      "configured_shim": "C:/Users/you/AppData/Roaming/npm/dsh.cmd",
+      "actual_entry": "C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
       "entry_sha256": "1a03dee18683483ff6a1b27b2a1e650230da6bcca9a0f55f7d81b3308c3f307f",
       "program": "C:\\Program Files\\nodejs\\node.exe",
       "argument_template": [
-        "C:\\Users\\jackie\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
+        "C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
         "--profile",
         "headless",
         "--patch",

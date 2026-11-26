@@ -9,20 +9,20 @@ use serde_json::json;
 #[test]
 fn status_normalizes_candidates_without_importing_identity_or_trust() {
     let status = parse_status(&serde_json::to_vec(&json!({
-        "BackendState":"Running", "Self":{"HostName":"windows", "TailscaleIPs":["100.99.145.22"], "Online":true},
+        "BackendState":"Running", "Self":{"HostName":"windows", "TailscaleIPs":["100.80.10.11"], "Online":true},
         "Peer": {
             "ignored-key": {"HostName":"mac", "DNSName":"mac.example.ts.net.", "OS":"macOS", "Online":true,
-                "TailscaleIPs":["100.69.246.117", "fd7a:115c:a1e0::1234", "192.168.0.1"], "FutureField":1},
+                "TailscaleIPs":["100.80.20.12", "fd7a:115c:a1e0::1234", "192.168.0.1"], "FutureField":1},
             "offline": {"TailscaleIPs":["100.64.0.2"]},
             "missing-fields": {"HostName":"no-address"}
         }, "UnknownFutureTopLevel": true
     })).unwrap()).unwrap();
     status
-        .require_local_ip("100.99.145.22".parse().unwrap())
+        .require_local_ip("100.80.10.11".parse().unwrap())
         .unwrap();
     assert!(
         status
-            .require_local_ip("100.69.246.117".parse().unwrap())
+            .require_local_ip("100.80.20.12".parse().unwrap())
             .is_err()
     );
     assert_eq!(status.candidates.len(), 2);

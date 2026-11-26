@@ -70,12 +70,12 @@ node .\scripts\start-tailnet.mjs
 
 最简单的是用面板：Mac 打开面板「配对节点」→「配对新电脑」，复制「这台电脑的配对码」发给自己；Windows 在同一个弹窗里粘贴它、点「发出配对申请」，弹窗显示 6 位校验码；Mac 的「配对节点」页（或「工作待办」）出现这条申请，输入校验码后点「批准」。Windows 几秒内自动完成，两边就都配好了。申请 5 分钟内有效，过期重新申请。
 
-只用命令行时，先在 Mac 本机取配对码（`pair show` 的 `pair_code`，形如 `hmesh://100.69.246.117:39880/<Mac指纹>`），Windows 请求 Mac：
+只用命令行时，先在 Mac 本机取配对码（`pair show` 的 `pair_code`，形如 `hmesh://100.80.20.12:39880/<Mac指纹>`），Windows 请求 Mac：
 
 ```powershell
 $hmesh = '.\target\debug\hmesh.exe'
 $node = '.\.hmesh-v0\tailnet-win32\node'
-& $hmesh --data-dir $node pair request --code hmesh://100.69.246.117:39880/<Mac指纹>
+& $hmesh --data-dir $node pair request --code hmesh://100.80.20.12:39880/<Mac指纹>
 ```
 
 Mac 核对 Windows 的完整指纹后批准，Windows 不需要再批准：

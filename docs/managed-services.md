@@ -1,6 +1,6 @@
 # 受管 HTTP 服务、SSH 隧道与联调（SSH 检查点）
 
-Daemon 现在负责独立资源的租约、进程树、健康状态和有限重启。服务、SSH 控制隧道和 HTTP connection 均由本机 owner 创建；模型的五个 MCP 工具没有获得这些管理权限。完整 V0.1/V0.2 门禁保持独立，当前范围是 Windows ↔ Orion/Linux 的 HTTP/SSH 检查点。
+Daemon 现在负责独立资源的租约、进程树、健康状态和有限重启。服务、SSH 控制隧道和 HTTP connection 均由本机 owner 创建；模型的五个 MCP 工具没有获得这些管理权限。完整 V0.1/V0.2 门禁保持独立，当前范围是 Windows ↔ Linux 的 HTTP/SSH 检查点。
 
 ## 使用顺序
 
@@ -32,7 +32,7 @@ CLI 同时支持 `--json`。管理列表只展示资源状态，不返回启动�
     "executable": "/absolute/path/to/node",
     "cwd": "/absolute/registered/backend",
     "args": ["/absolute/registered/backend/server.mjs"],
-    "env": {"PORT": "8011", "DATA_FILE": "/absolute/private/todos.json", "NODE_LABEL": "Orion"}
+    "env": {"PORT": "8011", "DATA_FILE": "/absolute/private/todos.json", "NODE_LABEL": "Linux"}
   }
 }
 ```
@@ -47,12 +47,12 @@ Windows 的 executable/cwd 使用实际绝对 Windows 路径。cwd 必须等于�
 {
   "id": "33333333-3333-4333-8333-333333333333",
   "project_id": "backend",
-  "name": "orion-control",
+  "name": "linux-control",
   "ssh_executable": "C:/Windows/System32/OpenSSH/ssh.exe",
-  "hostname": "orion.example",
+  "hostname": "linux.example",
   "user": "developer",
   "port": 22,
-  "identity_file": "C:/Users/you/.ssh/id_orion",
+  "identity_file": "C:/Users/you/.ssh/id_linux",
   "known_hosts_file": "C:/Users/you/.ssh/known_hosts",
   "forwards": [{"direction": "local", "bind_port": 39181, "target_port": 39181}],
   "lease_seconds": 1800
@@ -77,7 +77,7 @@ Windows 的 executable/cwd 使用实际绝对 Windows 路径。cwd 必须等于�
 
 `local_port: 0` 可分配临时端口。有效期取本地申请与远端服务到期时间中较早者。每个请求使用当前 peer 信任和服务白名单，返回缓冲数据前再次检查授权。每个本地 connection 最多八个并发请求，HTTP 请求/响应各最多 256 KiB；无代理环境、自动重定向或网络错误自动重放。仅转发 method、path/query、content-type 和正文；不会携带浏览器 Cookie、Authorization 或任意 header。WebSocket、SSE、通用 TCP 和需额外 header 的应用另行实现。
 
-服务 HTTP 操作预算 `request_timeout_seconds` 默认为 10 秒，owner 可设为 1..30 秒。Mesh 调用预算在其上增加 5 秒，独立契约 GET 测试再留出调用余量；应用前端和测试客户端需要配置更大的预算。示例为服务 30 秒、Mesh 35 秒、前端/客户端 45 秒。Orion 的共享存储 fsync 曾测到 8.3/10.2 秒，原固定 5 秒代理使写请求返回 503，失败记录保留；延长明确预算不会重放原写请求。回归测试覆盖 1 秒超时、3 秒成功以及每次写入只发生一次。
+服务 HTTP 操作预算 `request_timeout_seconds` 默认为 10 秒，owner 可设为 1..30 秒。Mesh 调用预算在其上增加 5 秒，独立契约 GET 测试再留出调用余量；应用前端和测试客户端需要配置更大的预算。示例为服务 30 秒、Mesh 35 秒、前端/客户端 45 秒。Linux 的共享存储 fsync 曾测到 8.3/10.2 秒，原固定 5 秒代理使写请求返回 503，失败记录保留；延长明确预算不会重放原写请求。回归测试覆盖 1 秒超时、3 秒成功以及每次写入只发生一次。
 
 隧道暂时失联时 endpoint 保留到租约结束，调用失败且不会重放；恢复 SSH 后下一次新请求重新认证。明确撤销/到期关闭 endpoint，不能通过 reconnect 复活旧租约。已经发出的写请求若失联，其业务结果可能未知，调用方须查询业务状态。
 
@@ -88,7 +88,7 @@ JSON 配置对应 `hmesh_core::managed::IntegrationSpec`：id、connection_id、
 ```json
 "tests": [
   {"name": "health-fields", "path": "/api/health", "expected_status": 200,
-   "equals": {"/status": "ok", "/service": "orion-todo-api", "/node": "Orion"}}
+   "equals": {"/status": "ok", "/service": "linux-todo-api", "/node": "Linux"}}
 ]
 ```
 
@@ -112,4 +112,4 @@ equals 的键为 JSON Pointer，值为精确预期。当前测试计划为确定
 
 依次执行 build、build-status；通过后执行 prepare -RunRealHarness、status、services、integrate -RunRealHarness、status、collect、cut-tunnel、check-tunnel、revoke、cleanup。prepare 会调用真实 Pi/DSH，integrate 最多调用两次真实修复。只读 status 可重复执行；提交动作已有 UUID 时拒绝重新提交。完整诊断在被忽略的 `.hmesh-v0/`，公开报告需人工筛选后保存脱敏证据。
 
-prepare 默认 `-ModelNetwork direct`，只影响新建隔离 Agent 的模型请求环境；需要原代理时显式指定 `original-proxy`。当前 Orion 实测官方 API 直连可用、原代理请求超时，未修改用户代理或个人认证。已完成的验收与恢复步骤在 [结构化证据](evidence/latest-managed-services.json) 中，最后的真实 DSH 客户端按原字节导出为 [contract-check.mjs](../examples/managed-http/contract-check.mjs)。collect 包含真实 CRUD、后端/客户端测试与受管重启后的持久化检查，会写入独立测试数据。
+prepare 默认 `-ModelNetwork direct`，只影响新建隔离 Agent 的模型请求环境；需要原代理时显式指定 `original-proxy`。当前 Linux 实测官方 API 直连可用、原代理请求超时，未修改用户代理或个人认证。已完成的验收与恢复步骤在 [结构化证据](evidence/latest-managed-services.json) 中，最后的真实 DSH 客户端按原字节导出为 [contract-check.mjs](../examples/managed-http/contract-check.mjs)。collect 包含真实 CRUD、后端/客户端测试与受管重启后的持久化检查，会写入独立测试数据。

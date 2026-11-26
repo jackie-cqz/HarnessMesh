@@ -114,7 +114,7 @@ test('proxies /api/* to upstream preserving method, path and body', async (t) =>
       const json = { 'content-type': 'application/json' };
       if (req.method === 'GET' && req.url === '/api/health') {
         res.writeHead(200, json);
-        res.end(JSON.stringify({ status: 'ok', service: 'orion-todo-api', node: 'Orion' }));
+        res.end(JSON.stringify({ status: 'ok', service: 'linux-todo-api', node: 'Linux' }));
       } else if (req.method === 'GET' && req.url === '/api/todos') {
         res.writeHead(200, json);
         res.end(
@@ -153,7 +153,7 @@ test('proxies /api/* to upstream preserving method, path and body', async (t) =>
   const health = await rawRequest(port, { path: '/api/health' });
   assert.equal(health.status, 200);
   assert.match(health.headers['content-type'], /application\/json/);
-  assert.deepEqual(JSON.parse(health.body), { status: 'ok', service: 'orion-todo-api', node: 'Orion' });
+  assert.deepEqual(JSON.parse(health.body), { status: 'ok', service: 'linux-todo-api', node: 'Linux' });
 
   const list = await rawRequest(port, { path: '/api/todos' });
   assert.equal(list.status, 200);

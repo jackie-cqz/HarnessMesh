@@ -5,9 +5,9 @@
   "environment": {
     "platform": "macOS arm64",
     "harness": "pi 0.83.0 through pi-acp 0.0.35",
-    "model": "test-gateway-claude/deepseek-v4.1-flash-1017",
+    "model": "a DeepSeek Flash model served by a local gateway",
     "endpoint": "local gateway http://127.0.0.1:15804",
-    "pi_config": "owner's own ~/.pi/agent (pi-lens, pi-subagents, pi-mcp-adapter, pi-web-access, pi-multiagent, zstack extension)"
+    "pi_config": "owner's own ~/.pi/agent (pi-lens, pi-subagents, pi-mcp-adapter, pi-web-access, pi-multiagent and a private extension)"
   },
   "before": {
     "first_visible": "startup banner at 4s; answer at 7s",

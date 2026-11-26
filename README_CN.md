@@ -2,6 +2,8 @@
 
 [English](README.md) | **简体中文**
 
+> **早期实验阶段（0.0.x）。** 主要在 Mac 真机上测过，Linux 和 Windows 只测了一部分。请只配对你自己的电脑；详见[状态](#状态)和 [SECURITY.md](SECURITY.md)。
+
 在一个地方使用你所有电脑上的编程 Agent。HarnessMesh 通过 [Agent Client Protocol](https://agentclientprotocol.com)（ACP）连接 OpenCode、Claude Code、Codex、Pi 和 DeepSeek Harness 等 Agent：在本机的网页面板里，不管 Agent 在哪台电脑上，都能直接和它对话；Agent 之间也能通过内置的 MCP 服务器跨电脑互相派活。
 
 ![在 studio 上开的会话：backend 找到 bug，请 laptop 上的 reviewer 审查修复，再按它的建议改好](docs/images/session.png)
@@ -241,3 +243,7 @@ npm run test:panel   # 以及 test:sessions-panel、test:pairing-panel 等
 ## 状态
 
 版本 0.0.2。在 macOS 上开发，CI 覆盖 macOS、Windows 和 Linux。面板界面是中文。运行包是未签名的开发版，没有安装器，也不会自动更新。
+
+## 许可证
+
+Apache License 2.0，见 [LICENSE](LICENSE)。来自其他项目的代码和图标的声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。报告漏洞请看 [SECURITY.md](SECURITY.md)。

@@ -236,13 +236,13 @@ fn agent_references_resolve_by_node_and_name_id_or_unique_name() {
     nodes.push(MeshNode {
         reachable: false,
         error: Some("timeout".into()),
-        ..node("orion", false, &[])
+        ..node("linux", false, &[])
     });
     assert!(
-        resolve(&nodes, "orion/pi")
+        resolve(&nodes, "linux/pi")
             .unwrap_err()
             .message
-            .contains("unreachable nodes: orion")
+            .contains("unreachable nodes: linux")
     );
     // Duplicate names on one node fall back to the agent ID in the reference.
     let twins = node("box", false, &["pi", "pi"]);

@@ -13,7 +13,7 @@ fn peer_addresses_take_host_names_but_cards_keep_literal_ips() {
         "https://STUDIO.local:38880",
         "https://192.168.1.20:38880",
         "https://[fd7a:115c:a1e0::1]:38880",
-        "https://100.99.145.22:38880/",
+        "https://100.80.10.11:38880/",
     ] {
         validate_peer_address(good).unwrap_or_else(|e| panic!("{good}: {e}"));
     }
@@ -186,14 +186,14 @@ fn tailnet_identity_has_exact_ip_san_without_rekeying_existing_instances() {
     let mut config = NodeConfig::default();
     config.node.network = "tailscale".into();
     config.node.expose_to_tailnet = true;
-    config.node.listen_address = "100.99.145.22".parse().unwrap();
+    config.node.listen_address = "100.80.10.11".parse().unwrap();
     let instance = Instance::init(&root.path().join("tailnet"), config).unwrap();
     validate_card(&instance.card).unwrap();
     let der = certificate_der(&instance.card.certificate_pem).unwrap();
     let (_, certificate) = x509_parser::parse_x509_certificate(der.as_ref()).unwrap();
     let san = certificate.subject_alternative_name().unwrap().unwrap();
     assert!(san.value.general_names.iter().any(|name| matches!(name,
-        x509_parser::extensions::GeneralName::IPAddress(bytes) if *bytes == [100, 99, 145, 22])));
+        x509_parser::extensions::GeneralName::IPAddress(bytes) if *bytes == [100, 80, 10, 11])));
     let again = Instance::init(&instance.dir, NodeConfig::default()).unwrap();
     assert_eq!(again.card.fingerprint, instance.card.fingerprint);
     assert_eq!(again.config.node.network, "tailscale");
@@ -204,7 +204,7 @@ fn an_outbound_identity_already_names_its_tailnet_ip_for_a_later_switch() {
     let root = tempfile::tempdir().unwrap();
     let mut config = NodeConfig::default();
     config.node.network = "tailscale".into();
-    config.node.tailnet_address = Some("100.99.145.22".parse().unwrap());
+    config.node.tailnet_address = Some("100.80.10.11".parse().unwrap());
     let instance = Instance::init(&root.path().join("outbound"), config).unwrap();
     validate_card(&instance.card).unwrap();
     assert!(endpoint_is_loopback(&instance.card.endpoint));
@@ -212,27 +212,27 @@ fn an_outbound_identity_already_names_its_tailnet_ip_for_a_later_switch() {
     let (_, certificate) = x509_parser::parse_x509_certificate(der.as_ref()).unwrap();
     let san = certificate.subject_alternative_name().unwrap().unwrap();
     assert!(san.value.general_names.iter().any(|name| matches!(name,
-        x509_parser::extensions::GeneralName::IPAddress(bytes) if *bytes == [100, 99, 145, 22])));
+        x509_parser::extensions::GeneralName::IPAddress(bytes) if *bytes == [100, 80, 10, 11])));
     assert!(endpoint_is_loopback("https://localhost:39880"));
-    assert!(!endpoint_is_loopback("https://100.99.145.22:39880"));
+    assert!(!endpoint_is_loopback("https://100.80.10.11:39880"));
 }
 
 #[test]
 fn a_full_tailnet_node_does_not_call_peers_that_only_connect_out() {
     let only_mcp_peer = "https://127.0.0.1:39880";
-    let full_peer = "https://100.99.145.23:39880";
+    let full_peer = "https://100.80.10.13:39880";
     // Full Tailnet node: calls full peers, never an only-MCP one.
     let mut full = NodeConfig::default();
     full.node.network = "tailscale".into();
     full.node.expose_to_tailnet = true;
-    full.node.listen_address = "100.99.145.22".parse().unwrap();
+    full.node.listen_address = "100.80.10.11".parse().unwrap();
     assert!(can_call(&full, full_peer));
     assert!(!can_call(&full, only_mcp_peer));
     assert!(!can_call(&full, "https://localhost:39880"));
     // An only-MCP node calls out to full peers.
     let mut outbound = NodeConfig::default();
     outbound.node.network = "tailscale".into();
-    outbound.node.tailnet_address = Some("100.99.145.22".parse().unwrap());
+    outbound.node.tailnet_address = Some("100.80.10.11".parse().unwrap());
     assert!(can_call(&outbound, full_peer));
     // A loopback node (one computer) calls loopback peers as before.
     assert!(can_call(&NodeConfig::default(), only_mcp_peer));

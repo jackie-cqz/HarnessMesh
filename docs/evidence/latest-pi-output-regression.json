@@ -21,8 +21,8 @@
       "exit": 0,
       "output": "✔ factory returns an http.Server without listening (7.705967ms)\n✔ health reports the service and the default node label (517.448743ms)\n✔ health honours a custom node label (1693.100156ms)\n✔ empty store lists no todos (1046.902281ms)\n✔ create, list and complete a real todo over HTTP (3220.564567ms)\n✔ rejects invalid create payloads with 400 and stores nothing (4169.240445ms)\n✔ accepts a 200-character title but not 201 characters (837.221453ms)\n✔ rejects invalid completed payloads with 400 (3787.532162ms)\n✔ unknown todos and unknown routes return 404 JSON (1810.770804ms)\n✔ request bodies larger than 64 KiB are rejected with 413 (461.798608ms)\n✔ todos survive a server restart and are persisted atomically (1508.337714ms)\n✔ concurrent creates are all persisted without lost writes (2157.423797ms)\n✔ a corrupt data file is reported safely and never overwritten (2097.375109ms)\n✔ a valid-looking but malformed store is treated as corrupt (1937.277472ms)\nℹ tests 14\nℹ suites 0\nℹ pass 14\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 25474.039404\n"
     },
-    "transport": "Windows -> SSH -> Orion HTTPS/mTLS -> Pi",
-    "machine": "Orion Linux x86_64",
+    "transport": "Windows -> SSH -> Linux HTTPS/mTLS -> Pi",
+    "machine": "Linux x86_64",
     "generated_server_artifacts_sha256": {
       "README.md": "9cd01466541d2a8f140843960cc23d3da3ce9d75864e7a12dabd08d0a696e77f",
       "server.test.mjs": "657af35ccb35d47e4b9c37534f4e3ce58318dc18066f8154375fcd80855f8787",
@@ -40,7 +40,7 @@
     "origin_node_id": "542d4e55-667d-4704-8413-a5cf88c200f3",
     "private_events_sha256": "2c205d49b0848b01188921df949f547eae9fb8e2e2c63ce9efc58be641a1cd66",
     "executing_binary_sha256": {
-      "orion": "14418f1c6303876388f85fa829ff6d314dd8641d4cb323d3a6dcad86f4ca7953",
+      "linux": "14418f1c6303876388f85fa829ff6d314dd8641d4cb323d3a6dcad86f4ca7953",
       "windows": "6b2a50de745600339649c1e83f115f7239e36d1d4cee823e83b2842930ac66e3"
     },
     "verified_before_submission": "SUCCEEDED",
@@ -100,12 +100,12 @@
       "phase": "persistence-after-backend-restart",
       "health": {
         "status": "ok",
-        "service": "orion-todo-api",
-        "node": "Orion"
+        "service": "linux-todo-api",
+        "node": "Linux"
       },
       "todo": {
         "id": "041b7b5d-1e1f-42b5-97fc-1d3cc3624e33",
-        "title": "浏览器验收：Windows → SSH → Orion",
+        "title": "浏览器验收：Windows → SSH → Linux",
         "completed": true,
         "created_at": "2026-10-28T15:40:08.135Z"
       },
@@ -131,8 +131,8 @@
       "phase": "real-cross-machine-http",
       "health": {
         "status": "ok",
-        "service": "orion-todo-api",
-        "node": "Orion"
+        "service": "linux-todo-api",
+        "node": "Linux"
       },
       "todo": {
         "id": "f1b600e3-70cf-4c92-8f11-dc551903ab06",
@@ -205,7 +205,7 @@
     },
     "original_server_tests_passed": 10,
     "original_client_test_output": "✔ serves declared static assets only (23.9853ms)\n✔ rejects traversal, hidden files and unrelated files (5.7386ms)\n✔ proxies /api/* to upstream preserving method, path and body (9.5364ms)\n✔ returns safe JSON 502 when upstream is unavailable (3.8124ms)\nℹ tests 4\nℹ suites 0\nℹ pass 4\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 112.825\n",
-    "original_server_test_output": "✔ GET /api/health reports the default service and node label (334.228692ms)\n✔ health honours a custom node label (266.547188ms)\n✔ empty list returns { todos: [] } (211.287428ms)\n✔ create, list and complete a todo over real HTTP (2839.994895ms)\n✔ invalid create and patch payloads are rejected with safe JSON errors (4040.058405ms)\n✔ oversized request bodies return 413 (607.336537ms)\n✔ unknown routes and unknown IDs return 404 (3294.66261ms)\n✔ todos persist as JSON across a server restart (2621.064382ms)\n✔ concurrent creates do not lose writes (341.201904ms)\n[orion-todo-api] refusing to use corrupt data file: data file is not valid JSON\n[orion-todo-api] refusing to use corrupt data file: data file is not valid JSON\n✔ a corrupt data file is never silently overwritten (804.902712ms)\nℹ tests 10\nℹ suites 0\nℹ pass 10\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 15596.864281\n",
+    "original_server_test_output": "✔ GET /api/health reports the default service and node label (334.228692ms)\n✔ health honours a custom node label (266.547188ms)\n✔ empty list returns { todos: [] } (211.287428ms)\n✔ create, list and complete a todo over real HTTP (2839.994895ms)\n✔ invalid create and patch payloads are rejected with safe JSON errors (4040.058405ms)\n✔ oversized request bodies return 413 (607.336537ms)\n✔ unknown routes and unknown IDs return 404 (3294.66261ms)\n✔ todos persist as JSON across a server restart (2621.064382ms)\n✔ concurrent creates do not lose writes (341.201904ms)\n[linux-todo-api] refusing to use corrupt data file: data file is not valid JSON\n[linux-todo-api] refusing to use corrupt data file: data file is not valid JSON\n✔ a corrupt data file is never silently overwritten (804.902712ms)\nℹ tests 10\nℹ suites 0\nℹ pass 10\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 15596.864281\n",
     "original_client_tests_passed": 4,
     "regenerated_backend_replaced_running_application": false
   },
@@ -216,8 +216,8 @@
     "application_left_running": true,
     "final_health": {
       "status": "ok",
-      "service": "orion-todo-api",
-      "node": "Orion"
+      "service": "linux-todo-api",
+      "node": "Linux"
     },
     "authoring_daemons_and_mesh_tunnel_stopped": true
   },
@@ -242,6 +242,6 @@
     ],
     "remote_helper": "scripts/pi-output-retest.py",
     "script": "scripts/retest-pi-output.ps1",
-    "requires": "Previously prepared Orion Todo session, explicit real model authorization, and restarted authoring Mesh"
+    "requires": "Previously prepared Linux Todo session, explicit real model authorization, and restarted authoring Mesh"
   }
 }

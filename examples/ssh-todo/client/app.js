@@ -59,13 +59,13 @@ async function checkHealth() {
       headers: { Accept: 'application/json' },
     });
     if (data && data.status === 'ok') {
-      const service = typeof data.service === 'string' ? data.service : 'orion-todo-api';
-      setConnection('online', `Orion 在线 · ${service}`);
+      const service = typeof data.service === 'string' ? data.service : 'linux-todo-api';
+      setConnection('online', `Linux 在线 · ${service}`);
     } else {
-      setConnection('offline', 'Orion 离线');
+      setConnection('offline', 'Linux 离线');
     }
   } catch {
-    setConnection('offline', 'Orion 离线');
+    setConnection('offline', 'Linux 离线');
   }
 }
 

@@ -57,7 +57,7 @@ fn old_node_config_gets_bounded_pending_approval_expiry() {
 fn tailnet_listeners_require_explicit_opt_in_and_exact_node_ip() {
     let mut config = NodeConfig::default();
     config.validate().unwrap();
-    config.node.listen_address = "100.99.145.22".parse().unwrap();
+    config.node.listen_address = "100.80.10.11".parse().unwrap();
     assert!(config.validate().is_err());
     config.node.network = "tailscale".into();
     assert!(config.validate().is_err());
@@ -85,11 +85,11 @@ fn tailnet_listeners_require_explicit_opt_in_and_exact_node_ip() {
 fn a_computer_that_only_connects_out_listens_on_loopback_and_names_its_tailnet_ip() {
     let mut config = NodeConfig::default();
     config.node.network = "tailscale".into();
-    config.node.tailnet_address = Some("100.99.145.22".parse().unwrap());
+    config.node.tailnet_address = Some("100.80.10.11".parse().unwrap());
     config.validate().unwrap();
     assert!(config.outbound_only());
     // It never listens on the Tailnet, and the address must be a Tailnet one.
-    config.node.listen_address = "100.99.145.22".parse().unwrap();
+    config.node.listen_address = "100.80.10.11".parse().unwrap();
     assert!(config.validate().is_err());
     config.node.listen_address = "127.0.0.1".parse().unwrap();
     config.node.tailnet_address = Some("192.168.1.1".parse().unwrap());
@@ -98,15 +98,15 @@ fn a_computer_that_only_connects_out_listens_on_loopback_and_names_its_tailnet_i
     assert!(config.validate().is_err());
     // A loopback node has no Tailnet address.
     config.node.network = "loopback".into();
-    config.node.tailnet_address = Some("100.99.145.22".parse().unwrap());
+    config.node.tailnet_address = Some("100.80.10.11".parse().unwrap());
     assert!(config.validate().is_err());
     // A full node may name the address it listens on, and no other.
     config.node.network = "tailscale".into();
     config.node.expose_to_tailnet = true;
-    config.node.listen_address = "100.99.145.22".parse().unwrap();
+    config.node.listen_address = "100.80.10.11".parse().unwrap();
     config.validate().unwrap();
     assert!(!config.outbound_only());
-    config.node.tailnet_address = Some("100.99.145.23".parse().unwrap());
+    config.node.tailnet_address = Some("100.80.10.13".parse().unwrap());
     assert!(config.validate().is_err());
 }
 
@@ -162,7 +162,7 @@ fn a_direct_computer_listens_on_one_address_and_names_who_may_connect_when_publi
     let mut tailnet = NodeConfig::default();
     tailnet.node.network = "tailscale".into();
     tailnet.node.expose_to_tailnet = true;
-    tailnet.node.listen_address = "100.99.145.22".parse().unwrap();
+    tailnet.node.listen_address = "100.80.10.11".parse().unwrap();
     tailnet.node.allowed_sources = Some(vec!["10.0.0.0/8".parse().unwrap()]);
     assert!(tailnet.validate().is_err());
     // The setting survives being written out and read back.

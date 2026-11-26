@@ -2,7 +2,7 @@
 
 2026-11-26 添加项目改成先选文件夹：面板服务弹出这台电脑自带的文件夹选择框（macOS osascript、Windows PowerShell、Linux zenity/kdialog，可用 `HMESH_FOLDER_PICKER` 替换；同一时间只开一个，10 分钟或浏览器不再等待、面板停止时结束），选好后用新的 owner 接口 `/local/history/folder` 列出本机每个 agent 在那里的会话，可直接加成项目或点会话接着聊。macOS 15.8.3 实机确认选择框出现在最前面；Windows、Linux 只验证了命令拼装和输出解析。单测、面板 API 测试、fixture 端到端、面板冒烟和 10 个反例检查通过，见 [本机面板说明](local-panel.md) 和 [安全说明](security.md)。
 
-2026-11-26 Pi 真实会话体验验收与修复：用本机 Pi 0.83.0 + pi-acp 0.0.35 + 本机网关的 `deepseek-v4.1-flash-1017` 跑完首消息、读/写工具、审批、模型切换、取消、重启续聊、旧会话列表、错误呈现和用量九项。发现并修掉 HarnessMesh 侧七处：pi 启动横幅混入对话和 `final_text`（改按 `_meta.piAcp.startupInfo` 与横幅结构过滤）、重试文案被当成回答（改记 status 提示）、空回答回合被记成成功（改记 error 与 `last_error`）、取消后工具停在等待（取消回合给未完成工具补终态）、旧会话列表超时（面板/守护进程期限对齐 35/25 秒，失败回退上次列表）、工具标题逐字增长和逐 token 正文产生大量事件（工具按状态/结果/长度变化保留，正文按 512 字节或 150 毫秒合并）、新会话设置下拉可能一直禁用（重建键加入写权限）。面板同时写明 Pi 的工具调用不经过 HarnessMesh 审批、会话内不能调用其他 Agent。随后补上 Pi 的 MCP 桥：检测到本机 `pi-mcp-adapter` 时，用每会话的 `--mcp-config` 把 `hmesh mcp` 交给 Pi（自定义模型服务的隔离 profile 不启用），真机确认模型能发现并调用 `harnessmesh_mesh_send`，用户原有的 figma 等服务仍可用；面板同时提示「取消后重新载入可能重试被取消的命令」。仍保留的上游边界：pi-acp 自己不转发 MCP；取消后重跑需要 pi 在 abort 时补 toolResult；供应商 429 仍由 agent 自己重试。fmt、严格 Clippy 与 workspace 测试通过，面板无 JS 错误；证据见 [Pi 会话记录](evidence/2026-11-26-pi-session-ux.json)，说明见 [本机面板](local-panel.md)。
+2026-11-26 Pi 真实会话体验验收与修复：用本机 Pi 0.83.0 + pi-acp 0.0.35 + 本机网关上的 DeepSeek Flash 模型 跑完首消息、读/写工具、审批、模型切换、取消、重启续聊、旧会话列表、错误呈现和用量九项。发现并修掉 HarnessMesh 侧七处：pi 启动横幅混入对话和 `final_text`（改按 `_meta.piAcp.startupInfo` 与横幅结构过滤）、重试文案被当成回答（改记 status 提示）、空回答回合被记成成功（改记 error 与 `last_error`）、取消后工具停在等待（取消回合给未完成工具补终态）、旧会话列表超时（面板/守护进程期限对齐 35/25 秒，失败回退上次列表）、工具标题逐字增长和逐 token 正文产生大量事件（工具按状态/结果/长度变化保留，正文按 512 字节或 150 毫秒合并）、新会话设置下拉可能一直禁用（重建键加入写权限）。面板同时写明 Pi 的工具调用不经过 HarnessMesh 审批、会话内不能调用其他 Agent。随后补上 Pi 的 MCP 桥：检测到本机 `pi-mcp-adapter` 时，用每会话的 `--mcp-config` 把 `hmesh mcp` 交给 Pi（自定义模型服务的隔离 profile 不启用），真机确认模型能发现并调用 `harnessmesh_mesh_send`，用户原有的 figma 等服务仍可用；面板同时提示「取消后重新载入可能重试被取消的命令」。仍保留的上游边界：pi-acp 自己不转发 MCP；取消后重跑需要 pi 在 abort 时补 toolResult；供应商 429 仍由 agent 自己重试。fmt、严格 Clippy 与 workspace 测试通过，面板无 JS 错误；证据见 [Pi 会话记录](evidence/2026-11-26-pi-session-ux.json)，说明见 [本机面板](local-panel.md)。
 
 2026-11-25 项目和 Agent 已有的会话：schema 10 增加项目表和会话标记。会话可以在本机任意已添加的项目里运行；面板按「电脑 → 项目 → 会话」分组，展开项目时用 ACP `session/list` 现读 agent 自己已有的会话，点开用 `session/load` 回放并接着聊（只保留第一次回放）；项目可共享给配对电脑（只给 ID 和名字，每次启动 agent 前检查仍在共享）；会话可改名、置顶、隐藏和搜索。fixture 端到端测试、面板冒烟和真 claude-agent-acp（伪造记录、不登录、不调模型）检查通过，见 [本机面板说明](local-panel.md) 和 [安全说明](security.md)。
 
@@ -34,15 +34,15 @@
 
 2026-10-28：SPEC 1.3 的 **V0 L01-L05 / E2E-00 在当前 Windows x64 电脑通过**。实现语言为 Rust，测试脚本为 PowerShell 7。没有使用第二台电脑、Tailscale、Codex、MCP、Hub 或服务代理。本结论不替代后续 V0.1 的跨设备/跨 OS 门禁。
 
-后续 SSH 检查点已完成：Windows→Orion/Linux、Pi 1.4.0、`deepseek-v4-flash` 的真实任务、mTLS/审批、write/read、独立 JSON/hash、去重与事件补读通过，测试进程已停止，原认证文件未变。见 `docs/ssh-first-smoke.md` 和 `docs/evidence/latest-ssh-smoke.json`。本机适配后 fmt/Clippy/32 项测试通过，Linux CLI 本机构建通过；整个锁文件 232 个公开依赖的审计仍为零命中。下方 V0 证据与 30 项测试数量保留为该原始版本的历史记录，完整 V0.1 尚未完成。
+后续 SSH 检查点已完成：Windows→Linux、Pi 1.4.0、`deepseek-v4-flash` 的真实任务、mTLS/审批、write/read、独立 JSON/hash、去重与事件补读通过，测试进程已停止，原认证文件未变。见 `docs/ssh-first-smoke.md` 和 `docs/evidence/latest-ssh-smoke.json`。本机适配后 fmt/Clippy/32 项测试通过，Linux CLI 本机构建通过；整个锁文件 232 个公开依赖的审计仍为零命中。下方 V0 证据与 30 项测试数量保留为该原始版本的历史记录，完整 V0.1 尚未完成。
 
-SSH 应用检查点也已验收：`examples/ssh-todo` 的 Orion Pi/Flash 服务端与 Windows DSH/Pro 客户端，通过服务端 10 项、客户端 4 项测试、独立跨机 HTTP、浏览器新增/完成/刷新，以及真实后端重启后的数据保留。代码生成 Daemon/Mesh 隧道已停止，应用服务保留供试用。DSH 任务成功；Pi 写出完整文件但触发输出保护，任务仍为 FAILED，产物独立验收通过。显式累计输出额度选项及边界回归加入后，Rust fmt/Clippy/33 项测试与两端构建通过。见 [示例说明](../examples/ssh-todo/README.md)、[实际证据](evidence/latest-todo-integration.json) 及 SPEC 1.5 第 7.11 节；没有完成受管 Service/Gateway 或 Tailscale。
+SSH 应用检查点也已验收：`examples/ssh-todo` 的 Linux Pi/Flash 服务端与 Windows DSH/Pro 客户端，通过服务端 10 项、客户端 4 项测试、独立跨机 HTTP、浏览器新增/完成/刷新，以及真实后端重启后的数据保留。代码生成 Daemon/Mesh 隧道已停止，应用服务保留供试用。DSH 任务成功；Pi 写出完整文件但触发输出保护，任务仍为 FAILED，产物独立验收通过。显式累计输出额度选项及边界回归加入后，Rust fmt/Clippy/33 项测试与两端构建通过。见 [示例说明](../examples/ssh-todo/README.md)、[实际证据](evidence/latest-todo-integration.json) 及 SPEC 1.5 第 7.11 节；没有完成受管 Service/Gateway 或 Tailscale。
 
 ## 验收映射
 
-2026-10-29 SSH/MCP 检查点：两个方向的 Pi/DSH 真实任务、执行中断开 SSH、发起端正常重启、事件补读和相同请求去重均已通过。新增 hmesh-mcp 和 schema 3 委派绑定，真实 Pi 1.4.0 原生 MCP 发现并提交 Windows DSH，子任务先无 attempt 等待独立批准，父子任务最终均 SUCCEEDED，nonce/hash 核验一致。最终 Windows 46 项、Orion/Linux 45 项 Rust 测试通过。配置见 [MCP](mcp.md)，过程偏差与完整证据见 [双向与 MCP 验收](ssh-bidirectional-mcp.md)。Tailscale、Codex、受管服务和完整 V0.1 仍未完成。
+2026-10-29 SSH/MCP 检查点：两个方向的 Pi/DSH 真实任务、执行中断开 SSH、发起端正常重启、事件补读和相同请求去重均已通过。新增 hmesh-mcp 和 schema 3 委派绑定，真实 Pi 1.4.0 原生 MCP 发现并提交 Windows DSH，子任务先无 attempt 等待独立批准，父子任务最终均 SUCCEEDED，nonce/hash 核验一致。最终 Windows 46 项、Linux 45 项 Rust 测试通过。配置见 [MCP](mcp.md)，过程偏差与完整证据见 [双向与 MCP 验收](ssh-bidirectional-mcp.md)。Tailscale、Codex、受管服务和完整 V0.1 仍未完成。
 
-2026-10-29 大输出回归：已分离原生消息和内部事件限额，长正文脱敏后分段、事件按字节分页，`task watch` 补读到最后一页才退出。新的 Orion Pi/Flash 任务 `c2c13fd7-eae0-42e4-8945-99c6784129ba` 为 SUCCEEDED，实测最大原生消息 375,131 字节，累计 8,758,986 字节；新生成服务端 14 项测试通过，原应用 10+4 项测试与 HTTP/持久化复测通过。见 [独立回归报告](evidence/latest-pi-output-regression.json) 和 [ADR 0003](adr/0003-native-output-limits.md)。历史失败记录保持不变，最终 Rust 测试数量记录在该新报告中。
+2026-10-29 大输出回归：已分离原生消息和内部事件限额，长正文脱敏后分段、事件按字节分页，`task watch` 补读到最后一页才退出。新的 Linux Pi/Flash 任务 `c2c13fd7-eae0-42e4-8945-99c6784129ba` 为 SUCCEEDED，实测最大原生消息 375,131 字节，累计 8,758,986 字节；新生成服务端 14 项测试通过，原应用 10+4 项测试与 HTTP/持久化复测通过。见 [独立回归报告](evidence/latest-pi-output-regression.json) 和 [ADR 0003](adr/0003-native-output-limits.md)。历史失败记录保持不变，最终 Rust 测试数量记录在该新报告中。
 
 | 工作包 | 已交付内容 | 证据 |
 |---|---|---|
