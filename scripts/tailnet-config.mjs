@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 // hmesh knows, each with the command it looks for and the name `hmesh setup`
 // gives it. Only agents with a command of their own are registered here.
 function known(catalog, harness) {
+  if (!Array.isArray(catalog?.agents)) throw new Error('Pass the agent catalog (hmesh --json agent catalog)');
   return catalog.agents.find(agent => agent.kind === harness && agent.command);
 }
 

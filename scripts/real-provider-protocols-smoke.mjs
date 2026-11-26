@@ -113,13 +113,13 @@ try {
   await cli(['init','--name','provider-test','--port','0']);
   daemon=spawn(binary,[...flags,'daemon','start'],{env,cwd:project,stdio:'ignore',windowsHide:true});
   await until(()=>cli(['daemon','status']).catch(()=>false));
-  const installed=(await cli(['agent','detect'])).installed;
+  const installed=(await cli(['agent','detect'])).installed, catalog=await cli(['agent','catalog']);
   for (const harness of harnesses) {
     const agent=installed.find(a=>a.harness===harness);assert(agent,harness+' must be installed on PATH');
     for (const [index,protocol] of Object.keys(protocols).entries()) {
       const name=harness+'-'+index, model='fixture-'+index, key=randomUUID();
       const cfg=join(root,name+'.toml');
-      await writeFile(cfg,agentConfig({node:name,harness,executable:agent.executable,project,projectId:'provider-test'}));
+      await writeFile(cfg,agentConfig({node:name,harness,executable:agent.executable,project,projectId:'provider-test',catalog}));
       const card=await cli(['agent','register','--config',cfg]);
       assert.equal(card.probe.protocol_probe,'acp_initialize_passed');
       const route={agent:card.agent_id,harness,protocol,model,key,prompts:0,listed:false,problem:null};

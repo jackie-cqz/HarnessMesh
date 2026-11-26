@@ -70,7 +70,9 @@ try {
   if (!isAbsolute(project)) throw new Error('--project must be an absolute directory');
   // Discover available agents without installing anything.
   const detected = JSON.parse(run(binary, [...hargs, 'agent', 'detect']));
-  const catalog = JSON.parse(run(binary, [...hargs, 'agent', 'catalog']));
+  let catalog;
+  try { catalog = JSON.parse(run(binary, [...hargs, 'agent', 'catalog'])); }
+  catch { throw new Error(`${binary} has no agent catalog; it is older than these scripts. Build it again (drop --skip-build) and retry`); }
   const agents = selectAgents(detected.installed, flags.get('--agents'), catalog);
   if (!agents.length) console.log(`No ACP agent found on PATH. Install one yourself, e.g. ${detected.not_found.map(a => a.install).filter(Boolean).join(' | ')}`);
   const init = ['init', '--name', nodeName, '--port', port, '--network', 'tailscale'];

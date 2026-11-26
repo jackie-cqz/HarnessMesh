@@ -44,4 +44,6 @@ test('an agent added to the catalog is registered like the others', () => {
   // Not in this hmesh's catalog: refused, not guessed.
   assert.throws(() => selectAgents(found, 'example-agent', catalog), /Unknown agent type/);
   assert.throws(() => agentName('mac-a', 'acp', catalog), /Unsupported agent type/);
+  // Forgetting the catalog says so instead of failing on undefined.
+  assert.throws(() => agentConfig({ node: 'mac-a', harness: 'dsh', executable: '/x', project: '/tmp/p' }), /Pass the agent catalog/);
 });

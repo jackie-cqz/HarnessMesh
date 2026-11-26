@@ -132,7 +132,7 @@ async function check() {
     assert(installed, 'Install the official @deepseek-ai/dsh on PATH and build hmesh first');
     const config = join(fixture.root,'agent.toml');
     await writeFile(config, agentConfig({node:'smoke', harness:'dsh', executable:installed.executable,
-      project:fixture.project, projectId:'dsh-smoke'}));
+      project:fixture.project, projectId:'dsh-smoke', catalog:await cli('agent','catalog')}));
     const agent = await cli('agent','register','--config',config);
     assert.equal(agent.probe.protocol_probe, 'acp_initialize_passed');
     const {session_id:id} = await cli('session','open','--agent',agent.agent_id);
