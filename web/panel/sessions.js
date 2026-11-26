@@ -4,7 +4,7 @@
 // screen with an agent picker. Agent and peer text is always set as text.
 const sessionLabels={pending_approval:'等待批准',idle:'空闲',running:'进行中',waiting_permission:'等待授权',closed:'已关闭'};
 const sessionTone={pending_approval:'warn',idle:'good',running:'live',waiting_permission:'warn',closed:''};
-const conv={list:null,nodes:[],selected:null,cursor:0,events:[],record:null,remote:false,generation:0,busy:false,listLoading:false,target:null,openTools:new Set(),openThoughts:new Set(),heroConfig:{},heroProject:null,settingBusy:false};
+const conv={list:null,nodes:[],selected:null,cursor:0,events:[],record:null,remote:false,generation:0,busy:false,listLoading:false,target:null,open:new Map(),heroConfig:{},heroProject:null,settingBusy:false};
 
 // Daemon notes are English; show them in the panel's language (null hides them).
 const sessionNotes=[
@@ -294,7 +294,7 @@ async function changeSetting(id,value){
 // ---- Conversation ----
 function selectSession(s){
   resetSessionCommands();
-  conv.selected=s.session_id;conv.remote=!!s._remote;conv.record=s;conv.cursor=0;conv.events=[];conv.generation++;conv.openTools.clear();conv.openThoughts.clear();
+  conv.selected=s.session_id;conv.remote=!!s._remote;conv.record=s;conv.cursor=0;conv.events=[];conv.generation++;conv.open.clear();
   renderSessionList();renderConversation();follow(conv.generation);
 }
 async function follow(generation){
@@ -327,8 +327,65 @@ function openPermissions(){
   }
   return open;
 }
-function toolIcon(kind){return {execute:'terminal',read:'file-text',search:'search',edit:'pencil',delete:'pencil',move:'pencil'}[kind]||'wrench';}
-const toolStates={pending:'等待',in_progress:'进行中',completed:'完成',failed:'失败',cancelled:'已取消'};
+// The agent's own options, in the order a person reads them: say no, then yes.
+const permissionKinds=[['reject_once','拒绝','button secondary'],['reject_always','始终拒绝','button secondary'],['allow_always','始终允许','button secondary'],['allow_once','允许一次','button']];
+const permissionNames=Object.fromEntries(permissionKinds.map(([kind,name])=>[kind,name]));
+function permissionButtons(p,remote){
+  const offered=(Array.isArray(p.options)?p.options:[]).filter(o=>permissionNames[o.kind]);
+  // Another computer only ever answers once; lasting choices are made on the agent's computer.
+  const usable=offered.filter(o=>!remote||o.kind.endsWith('_once'));
+  if(!usable.length)return [button('拒绝','button secondary',()=>answerPermission(p.key,{allow:false})),button('允许一次','button',()=>answerPermission(p.key,{allow:true}))];
+  const buttons=[];
+  for(const [kind,,cls] of permissionKinds){
+    const same=usable.filter(o=>o.kind===kind);
+    for(const option of same){
+      const name=same.length>1&&option.name?option.name:permissionNames[kind];
+      const allow=kind.startsWith('allow');
+      const body=!remote&&option.option_id?{allow,option_id:option.option_id}:{allow};
+      const b=button(name,cls,()=>answerPermission(p.key,body));
+      if(option.name)b.title=option.name;
+      buttons.push(b);
+    }
+  }
+  return buttons;
+}
+function resolvedText(p,request,tool){
+  const who=p.by==='auto'?'（自动）':p.by==='origin'?'（打开者）':'';
+  const parts=[`${p.allow?'已允许':'已拒绝'}${who}`];
+  const kind=p.option?.kind;
+  if(kind&&kind.endsWith('_always'))parts.push(permissionNames[kind]);
+  const what=tool?stepLabel(tool).textContent:request?.title;
+  if(what)parts.push(what);
+  return parts.join(' · ');
+}
+function eventNotes(e,s,requests,tools){
+  const p=e.payload||{};
+  if(e.kind==='permission_resolved'){const r=requests.get(p.key);return{icon:'shield-alert',text:resolvedText(p,r,r?.tool_call_id?tools.get(String(r.tool_call_id)):null)};}
+  if(e.kind==='turn_end'){
+    const notes=[];
+    const reason={cancelled:'本轮已停止',timeout:'超过时间预算',max_tokens:'达到输出上限',max_turn_requests:'达到步数上限',refusal:'Agent 拒绝了这一轮'}[p.stop_reason];
+    if(reason||p.stop_reason!=='end_turn')notes.push({tone:'center',text:reason||`本轮结束（${p.stop_reason}）`});
+    if(p.stop_reason==='cancelled'&&harnessFor({...s,_remote:conv.remote})==='pi')notes.push({tone:'center',text:'重新载入对话后，Agent 可能重试这条被取消的命令'});
+    return notes;
+  }
+  if(e.kind==='error')return{tone:'bad',icon:'x-circle',text:noteText(p.message)||'出错了'};
+  // A status without a message only moves the session along.
+  if(e.kind==='status'){if(!p.message)return null;const t=noteText(p.message);return t===null?null:{tone:'center',text:t||sessionLabels[p.status]||p.status};}
+  if(e.kind==='config_changed'){
+    const option=(s.config_options||[]).find(o=>o.id===p.config_id);
+    return{tone:'center',text:`已切换${settingNames[option?.category]||p.name||p.config_id}：${p.value_name??p.value}`};
+  }
+  return null;
+}
+function userSpec(e){
+  const p=e.payload||{},mine=!p.from?.label&&(!p.from?.node_id||p.from.node_id===localNodeId());
+  return{key:'user',sig:String(e.seq),make:()=>{
+    const m=el('div','msg user');
+    if(!mine)m.append(el('div','msg-from',p.from?.label||nodeLabel(p.from.node_id)));
+    m.append(el('div','msg-text',p.text||''));return m;
+  }};
+}
+function leaf(key,node){return{key,sig:node.textContent,make:()=>node};}
 function renderHeader(s){
   if(!s){const crumb=el('div','crumb');crumb.append(icon('square-pen','sm'),el('strong','','新会话'));$('#conversation-header').replaceChildren(crumb);return;}
   const crumb=el('div','crumb');crumb.append(el('span','',shortNode(s.node_id)),icon('chevron-right','sm'),el('strong','',s.agent_name));
@@ -353,63 +410,34 @@ function renderConversation(){
   if(!s){renderHero();return;}
   $('#conversation-note').hidden=true;
   const stream=$('#conversation-stream'),atBottom=stream.scrollHeight-stream.scrollTop-stream.clientHeight<80;
-  const col=el('div','chat-col'),meta=el('div','chat-meta');meta.id='conversation-meta';
+  const meta=el('div','chat-meta');meta.id='conversation-meta';
   meta.append(el('span','',originText({...s,_remote:conv.remote})),el('span','',approverText({...s,_remote:conv.remote})),el('span','',`第 ${s.turns||0} 轮`));
   const projectName=typeof sessionProjectName==='function'?sessionProjectName({...s,_remote:conv.remote}):null;
   if(projectName)meta.append(el('span','',`项目：${projectName}`));
   if(harnessFor({...s,_remote:conv.remote})==='pi'){const note=el('span','', 'Pi：工具不经审批');note.title='HarnessMesh 会把本次会话的 MCP 服务桥接给 Pi（需要本机安装 pi-mcp-adapter）；没装时不能调用其他 Agent。';meta.append(note);}
   if(s.origin?.chain?.length)meta.append(el('span','conversation-chain',`调用链：${s.origin.chain.map(l=>shortNode(l.node_id)).join(' → ')} → ${shortNode(s.node_id)}`));
-  col.append(meta);
-  const requests=new Map();let text=null,thought=null;
-  for(const e of conv.events){
-    const p=e.payload||{};
-    if(e.kind==='agent_message_chunk'){if(!text){text=el('div','msg agent');text.append(el('div','msg-text',''));col.append(text);}thought=null;text.lastChild.textContent+=p.text||'';continue;}
-    if(e.kind==='agent_thought_chunk'){
-      if(!thought){const key=e.seq;thought=el('details','thought');thought.open=conv.openThoughts.has(key);const sum=el('summary');sum.append(icon('lightbulb','sm'),el('span','','思考'));thought.append(sum,el('div','msg-text',''));const box=thought;box.addEventListener('toggle',()=>box.open?conv.openThoughts.add(key):conv.openThoughts.delete(key));col.append(box);}
-      thought.lastChild.textContent+=p.text||'';continue;
-    }
-    text=null;thought=null;
-    if(e.kind==='user_message'){
-      const m=el('div','msg user'),mine=!p.from?.label&&(!p.from?.node_id||p.from.node_id===localNodeId());
-      if(!mine)m.append(el('div','msg-from',p.from?.label||nodeLabel(p.from.node_id)));
-      m.append(el('div','msg-text',p.text||''));col.append(m);
-    }else if(e.kind==='tool_call'||e.kind==='tool_call_update'){
-      const id=String(p.id);let row=col.querySelector(`[data-tool="${CSS.escape(id)}"]`);
-      if(!row){row=el('details','tool');row.dataset.tool=id;row.open=conv.openTools.has(id);row.addEventListener('toggle',()=>row.open?conv.openTools.add(id):conv.openTools.delete(id));col.append(row);}
-      for(const k of ['title','kind','status','input','output'])if(p[k]!==undefined&&p[k]!==null)row.dataset[k]=p[k];
-      const status=row.dataset.status||'pending',sum=el('summary'),body=el('div','tool-body');
-      sum.append(icon(toolIcon(row.dataset.kind)),el('span','tool-name',row.dataset.title||row.dataset.kind||'工具'),el('span',`tool-state ${status}`,toolStates[status]||status),icon('chevron-down','sm'));
-      if(row.dataset.input)body.append(el('span','','输入'),el('pre','',row.dataset.input));
-      if(row.dataset.output)body.append(el('span','','结果'),el('pre','',row.dataset.output));
-      row.replaceChildren(sum,...(body.childElementCount?[body]:[]));
-    }else if(e.kind==='plan'){
-      const box=el('div','plan');for(const entry of p.entries||[]){const r=el('div',`plan-entry ${entry.status||''}`);r.append(icon(entry.status==='completed'?'check':'circle','sm'),el('span','',entry.content));box.append(r);}col.append(box);
-    }else if(e.kind==='permission_request'){requests.set(p.key,p);}
-    else if(e.kind==='permission_resolved'){
-      const r=requests.get(p.key),note=el('div','event-note');note.append(icon('shield-alert','sm'),el('span','',`${p.allow?'已允许':'已拒绝'}${p.by==='auto'?'（自动）':p.by==='origin'?'（打开者）':''}${r?.title?` · ${r.title}`:''}`));col.append(note);
-    }else if(e.kind==='turn_end'){
-      const reason={cancelled:'本轮已停止',timeout:'超过时间预算',max_tokens:'达到输出上限',max_turn_requests:'达到步数上限',refusal:'Agent 拒绝了这一轮'}[p.stop_reason];
-      if(reason||!['end_turn'].includes(p.stop_reason))col.append(el('div','event-note center',reason||`本轮结束（${p.stop_reason}）`));
-      if(p.stop_reason==='cancelled'&&harnessFor({...s,_remote:conv.remote})==='pi')col.append(el('div','event-note center','重新载入对话后，Agent 可能重试这条被取消的命令'));
-    }else if(e.kind==='error'){const n=el('div','event-note bad');n.append(icon('x-circle','sm'),el('span','',noteText(p.message)||'出错了'));col.append(n);}
-    // A status without a message only moves the session along.
-    else if(e.kind==='status'){if(!p.message)continue;const t=noteText(p.message);if(t!==null)col.append(el('div','event-note center',t||sessionLabels[p.status]||p.status));}
-    else if(e.kind==='config_changed'){
-      const option=(s.config_options||[]).find(o=>o.id===p.config_id);
-      col.append(el('div','event-note center',`已切换${settingNames[option?.category]||p.name||p.config_id}：${p.value_name??p.value}`));
-    }
-  }
-  const open=openPermissions();
-  if(s.status==='pending_approval')col.append(el('div','event-note center',conv.remote?`等待 ${shortNode(s.node_id)} 批准后才能继续`:'等待在这里批准后才能继续'));
-  if(s.status==='running'&&!open.size)col.append(el('div','working','正在处理…'));
-  stream.replaceChildren(col);
+  const model=streamModel(conv.events),open=openPermissions(),requests=new Map();
+  for(const e of conv.events)if(e.kind==='permission_request')requests.set(e.payload?.key,e.payload);
+  const waiting=new Set([...open.values()].map(p=>p.tool_call_id).filter(Boolean).map(String));
+  const live=s.status==='running'||s.status==='waiting_permission';
+  const tail=[];
+  if(s.status==='pending_approval')tail.push(leaf('pending',el('div','event-note center',conv.remote?`等待 ${shortNode(s.node_id)} 批准后才能继续`:'等待在这里批准后才能继续')));
+  if(s.status==='running'&&!open.size)tail.push(leaf('working',el('div','working','正在处理…')));
+  renderStream(stream,model,{key:`${conv.selected}:${conv.generation}`,live,open:conv.open,waiting,
+    note:e=>eventNotes(e,s,requests,model.tools),user:userSpec,head:[leaf('meta',meta)],tail});
   if(atBottom)stream.scrollTop=stream.scrollHeight;
   // Open permission requests sit above the composer.
   const who={...s,_remote:conv.remote};
   $('#permission-dock').replaceChildren(...[...open.values()].map(p=>{
-    const card=el('div','permission'),head=el('div','permission-head');head.append(icon('shield-alert'),el('span','',`${s.agent_name} 想要执行这个操作`));
-    card.append(head,el('div','permission-title',p.title||p.kind||'工具调用'));
-    if(mayAnswer(who)&&canWrite()){const row=el('div','permission-actions');row.append(button('拒绝','button secondary',()=>answerPermission(p.key,false)),button('允许一次','button',()=>answerPermission(p.key,true)));card.append(row);}
+    const card=el('div','permission'),head=el('div','permission-head');head.append(icon('shield-alert'),el('span','',`${s.agent_name} 请求授权`));
+    const tool=p.tool_call_id?model.tools.get(String(p.tool_call_id)):null;
+    card.append(head);
+    if(tool)card.append(permissionStep(tool));
+    else card.append(el('div','permission-title',p.title||p.kind||'工具调用'));
+    if(mayAnswer(who)&&canWrite()){
+      const row=el('div','permission-actions');row.append(...permissionButtons(p,conv.remote));card.append(row);
+      if(conv.remote&&(p.options||[]).some(o=>o.kind?.endsWith('_always')))card.append(el('div','permission-who',`「始终允许」这类长期授权只能在 ${shortNode(s.node_id)} 上选`));
+    }
     else card.append(el('div','permission-who',approverText(who)));
     return card;
   }));
@@ -435,8 +463,8 @@ async function sessionAction(name){
     loadSessions();
   } catch(e){toast(`操作失败：${e.message||e.code}`);}
 }
-async function answerPermission(key,allow){
-  try{await api(`/sessions/${conv.selected}/permissions/${encodeURIComponent(key)}`,{method:'POST',body:JSON.stringify({allow})});}
+async function answerPermission(key,answer){
+  try{await api(`/sessions/${conv.selected}/permissions/${encodeURIComponent(key)}`,{method:'POST',body:JSON.stringify(answer)});}
   catch(e){toast(`回答失败：${e.message||e.code}`);}
 }
 async function sendMessage(event){

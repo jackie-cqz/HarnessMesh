@@ -237,6 +237,33 @@ pub async fn run(
         .route("/api/pairs/passcode", post(pair_with_passcode))
         .route("/api/pairs/{id}/{action}", post(pair_action))
         .route(
+            "/assets/markdown.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/markdown.js"),
+                )
+            }),
+        )
+        .route(
+            "/assets/session-stream.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/session-stream.js"),
+                )
+            }),
+        )
+        .route(
+            "/assets/session-stream.css",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+                    include_str!("../../../web/panel/session-stream.css"),
+                )
+            }),
+        )
+        .route(
             "/assets/sessions.js",
             get(|| async {
                 (
@@ -1305,6 +1332,9 @@ async fn session_prompt(
 #[serde(deny_unknown_fields)]
 struct PermissionForm {
     allow: bool,
+    /// One of the options the agent offered; the daemon checks it.
+    #[serde(default)]
+    option_id: Option<String>,
 }
 async fn session_permission(
     State(s): State<Panel>,
@@ -1314,12 +1344,16 @@ async fn session_permission(
     if key.is_empty() || key.len() > 32 || !key.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return error(StatusCode::BAD_REQUEST, "INVALID_PERMISSION_KEY");
     }
+    let mut answer = json!({"allow":body.allow});
+    if let Some(option) = body.option_id {
+        if option.is_empty() || option.len() > 256 {
+            return error(StatusCode::BAD_REQUEST, "INVALID_PERMISSION_OPTION");
+        }
+        answer["option_id"] = json!(option);
+    }
     session_reply(
         s.client
-            .post::<_, Value>(
-                &format!("/local/sessions/{id}/permissions/{key}"),
-                &json!({"allow":body.allow}),
-            )
+            .post::<_, Value>(&format!("/local/sessions/{id}/permissions/{key}"), &answer)
             .await,
     )
 }

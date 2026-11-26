@@ -88,7 +88,7 @@ fn stream(session: &str, style: &str) -> String {
     };
     let styles: Vec<&str> = if style == "all" {
         vec![
-            "claude", "codex", "opencode", "pi", "dsh", "minimax", "kimi",
+            "claude", "codex", "opencode", "pi", "dsh", "minimax", "kimi", "mesh",
         ]
     } else {
         vec![style]
@@ -265,6 +265,17 @@ fn stream(session: &str, style: &str) -> String {
                 done(
                     "kimi-grep",
                     json!({"status":"completed","content":text("src/main.rs:12: // TODO: handle overflow")}),
+                );
+            }
+            // Any agent handing work to another one through HarnessMesh's MCP server.
+            "mesh" => {
+                call(
+                    "mesh-send",
+                    json!({"title":"mcp__harnessmesh__mesh_send","kind":"other","rawInput":{"agent":"mac-b/worker","message":"Run the integration tests"}}),
+                );
+                done(
+                    "mesh-send",
+                    json!({"status":"completed","content":text("All 12 integration tests passed.")}),
                 );
             }
             _ => {}

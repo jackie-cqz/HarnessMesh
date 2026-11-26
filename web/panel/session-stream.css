@@ -1,0 +1,134 @@
+/* The conversation stream: turns, folded work, steps by kind, Markdown. */
+.chat-col>.turn{display:flex;flex-direction:column;gap:12px;margin-top:6px}
+.chat-col>.turn+.turn{margin-top:18px}
+.msg.user .msg-text{background:var(--card);border:1px solid var(--border)}
+
+/* The answer reads first; the work that led to it stays quiet. */
+.msg.answer{font-size:14.5px;line-height:1.7}
+.msg.narration{font-size:13.5px;color:var(--foreground-soft)}
+.msg-text.md{white-space:normal}
+
+/* Work: one fold per turn, steps one line each along a thin rail. */
+.work{font-size:13px}
+.work>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--muted);min-width:0;width:fit-content;max-width:100%}
+.work>summary::-webkit-details-marker{display:none}
+.work>summary:hover{color:var(--foreground)}
+.work-title{font-weight:500;color:var(--foreground-soft);flex:none}
+.work-parts{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.work-bad{color:var(--destructive);flex:none}
+.work-time{flex:none}
+.work>summary .chevron,.step>summary .chevron{flex:none;color:var(--muted);transition:transform .15s}
+.work[open]>summary .chevron,.step[open]>summary .chevron{transform:rotate(180deg)}
+.work[open]{position:relative}
+.work[open]>summary{margin-bottom:6px}
+.work[open]::before{content:"";position:absolute;left:6px;top:26px;bottom:2px;border-left:1px solid var(--border)}
+.work>:not(summary){margin-left:20px}
+.work>:not(summary)+:not(summary){margin-top:4px}
+.work>.msg,.work>.thought,.work>.plan,.work>.event-note,.work>.step.delegate{margin-top:8px}
+.work[open]+.work-failed{display:none}
+.work-failed{display:flex;flex-direction:column;gap:6px}
+
+.step{font-size:13px;min-width:0}
+.step-head{display:flex;align-items:center;gap:8px;min-width:0;padding:3px 0;color:var(--foreground)}
+summary.step-head{list-style:none;cursor:pointer}
+summary.step-head::-webkit-details-marker{display:none}
+summary.step-head:hover .step-label{color:var(--foreground)}
+.step-head>.icon:first-child{flex:none;color:var(--muted)}
+.step.failed .step-head>.icon:first-child{color:var(--destructive)}
+.step-label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--foreground-soft)}
+.step-verb{color:var(--muted)}
+.step-target{color:var(--foreground);font-weight:500}
+.step-target.code{font:500 12px/1.5 var(--mono)}
+.step-target.plain{font-weight:400}
+.step-dim{color:var(--muted);font-size:12px}
+.step-meta{flex:none;display:inline-flex;gap:6px;font:12px/1.5 var(--mono)}
+.step-meta .add{color:var(--emerald)}
+.step-meta .del,.step-meta .bad{color:var(--destructive)}
+.step-state{flex:none;font-size:12px;color:var(--muted)}
+.step-state.in_progress,.step-state.pending,.step-state.waiting{color:var(--amber-strong)}
+.step-state.failed{color:var(--destructive)}
+.step-body{margin:4px 0 8px 22px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.step-output{margin:0;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font:12px/1.55 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto;color:var(--foreground-soft)}
+.step-args{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 12px;font-size:12px}
+.step-arg{display:contents}
+.step-arg-key{color:var(--muted)}
+.step-arg-value{font-family:var(--mono);word-break:break-word;white-space:pre-wrap}
+
+/* Another agent doing part of the work is its own card. */
+.step.delegate{border:1px solid var(--border);border-radius:10px;padding:4px 10px}
+.step.delegate .step-head>.icon:first-child{color:var(--foreground)}
+.step.delegate .step-body{margin-left:0}
+.delegate-ask{color:var(--muted);border-left:2px solid var(--border);padding-left:10px;white-space:pre-wrap}
+
+/* Command output reads like a terminal. */
+.term{border:1px solid var(--border);border-radius:8px;overflow:hidden;min-width:0}
+.term-out{margin:0;padding:8px 10px;font:12px/1.55 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto;color:var(--foreground)}
+.term-skip{color:var(--muted);font-style:italic}
+.term-exit{padding:4px 10px;border-top:1px solid var(--border);font-size:11px;color:var(--muted)}
+.term-exit.bad{color:var(--destructive)}
+
+/* Diffs: changed lines with a little context. */
+.diff{border:1px solid var(--border);border-radius:8px;overflow:hidden;min-width:0}
+.diff-file{display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid var(--border);font-size:12px}
+.diff-name{font-weight:500}
+.diff-tag{font-size:11px;color:var(--muted)}
+.diff-lines{font:12px/1.55 var(--mono);max-height:320px;overflow:auto}
+.diff-line{display:flex;min-width:0}
+.diff-sign{flex:none;width:22px;text-align:center;color:var(--muted);user-select:none}
+.diff-text{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;padding-right:10px}
+.diff-line.add{background:var(--emerald-tint)}
+.diff-line.add .diff-sign{color:var(--emerald)}
+.diff-line.del{background:var(--destructive-tint)}
+.diff-line.del .diff-sign{color:var(--destructive)}
+.diff-gap{padding:2px 10px;font-size:11px;color:var(--muted)}
+
+/* The plan is one card, replaced as it moves. */
+.work>.plan{border:1px solid var(--border);border-radius:8px;padding:8px 12px}
+.plan-head{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-bottom:2px}
+.plan-count{margin-left:auto;font-family:var(--mono)}
+.plan-entry{line-height:1.6}
+.plan-entry.in_progress{font-weight:500}
+.plan-entry.in_progress svg{color:var(--amber-strong)}
+
+.thought-preview{min-width:0;max-width:420px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--faint)}
+.thought[open] .thought-preview{display:none}
+
+/* Markdown */
+.md>:first-child{margin-top:0}
+.md>:last-child{margin-bottom:0}
+.md p{margin:0 0 .65em}
+.md h1,.md h2,.md h3,.md h4,.md h5,.md h6{margin:1em 0 .45em;line-height:1.35;font-weight:600}
+.md h1{font-size:18px}.md h2{font-size:16px}.md h3{font-size:15px}.md h4,.md h5,.md h6{font-size:14px}
+.md ul,.md ol{margin:0 0 .65em;padding-left:1.5em}
+.md li+li{margin-top:.2em}
+.md li>ul,.md li>ol{margin:.2em 0 0}
+.md li.task{list-style:none;margin-left:-1.2em}
+.md-check{margin-right:6px;color:var(--muted)}
+.md-check.done{color:var(--emerald)}
+.md code{font:12.5px/1.5 var(--mono);padding:0 4px;border:1px solid var(--border);border-radius:4px;word-break:break-word}
+.md a{color:var(--foreground);text-decoration:underline;text-decoration-color:var(--ring);text-underline-offset:2px}
+.md a:hover{text-decoration-color:var(--foreground)}
+.md blockquote{margin:0 0 .65em;padding-left:12px;border-left:2px solid var(--border);color:var(--muted)}
+.md hr{border:0;border-top:1px solid var(--border);margin:1em 0}
+.md-code{margin:0 0 .75em;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.md-code-bar{display:flex;align-items:center;justify-content:space-between;padding:3px 6px 3px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--muted)}
+.md-copy{border:0;background:none;color:var(--muted);font:inherit;padding:2px 6px;border-radius:6px;cursor:pointer}
+.md-copy:hover{color:var(--foreground)}
+.md-code pre{margin:0;padding:10px 12px;overflow-x:auto}
+.md-code code{padding:0;border:0;white-space:pre;word-break:normal}
+.md-table{overflow-x:auto;margin:0 0 .75em}
+.md table{border-collapse:collapse;font-size:13.5px;min-width:50%}
+.md th,.md td{padding:6px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+.md th{font-weight:600;border-bottom-color:var(--ring)}
+.md .align-center{text-align:center}.md .align-right{text-align:right}
+.md-unlinked{color:var(--foreground)}
+
+/* The step a permission request is about. */
+.permission-step{margin:8px 0 10px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.permission-line{display:flex;align-items:center;gap:8px;font-size:13px;min-width:0}
+.permission-line>.icon{flex:none;color:var(--muted)}
+.permission-step .diff-lines{max-height:180px}
+.permission-actions{flex-wrap:wrap}
+
+@media(max-width:700px){.step-body{margin-left:0}.thought-preview{display:none}}
+@media(prefers-reduced-motion:reduce){.work>summary .chevron,.step>summary .chevron{transition:none}}
