@@ -123,8 +123,9 @@ try{
  stage='add a project: pick a folder in this computer\'s own dialog';
  const dialog=page.locator('#project-dialog'),preview=dialog.locator('#project-preview'),primary=dialog.locator('#project-add');
  const pickButton=dialog.getByRole('button',{name:'选择文件夹…'}),lookButton=dialog.getByRole('button',{name:'查看',exact:true}),pathBox=page.locator('#project-path');
- const agentGroup=name=>preview.locator('.preview-agent').filter({has:page.locator('.preview-agent-head b',{hasText:new RegExp('^'+name+'$')})});
- const previewRow=(name,title)=>agentGroup(name).locator('.preview-session').filter({hasText:title});
+ const agentTab=name=>preview.locator('.preview-agent-tab').filter({hasText:new RegExp('^'+name+'(?:\\d+)?$')});
+ const selectAgent=async name=>{const tab=agentTab(name).first();await tab.waitFor({timeout:30000});if(await tab.getAttribute('aria-selected')!=='true')await tab.click();};
+ const previewRow=(name,title)=>preview.locator('.preview-open').filter({hasText:title});
  const openDialog=async()=>{await page.locator('#session-list .add-project').click();await dialog.waitFor();};
  await openDialog();
  assert(await pickButton.isVisible(),'the folder dialog is not offered');
@@ -141,10 +142,19 @@ try{
  await preview.waitFor();await until(()=>picks()===2,20,'the folder dialog was not opened again');
  await preview.locator('.preview-name b').filter({hasText:/^blog$/}).waitFor();
  assert(await preview.locator('.preview-head .folder-path').innerText()===blog,'the preview does not show the folder\'s full path');
+ await selectAgent('helper');
  const outline=previewRow('helper','整理博客的目录结构');await outline.waitFor({timeout:30000});
  assert((await outline.innerText()).includes('接着聊')&&(await outline.innerText()).includes('1天前'),'a session in the preview lacks its time or what clicking does: '+await outline.innerText());
- assert(await agentGroup('helper').locator('.preview-session').count()===2,'the preview does not list the agent\'s sessions in this folder');
- assert((await agentGroup('reviewer').innerText()).includes('不提供会话记录'),'an agent without session records is not named');
+ assert(await preview.locator('.preview-session').count()===2,'the preview does not list the chosen agent\'s sessions in this folder');
+ assert(await preview.locator('.preview-select-count').innerText()==='已选 2 / 共 2','the preview does not count the selected sessions');
+ await preview.getByRole('button',{name:'全不选'}).click();
+ assert(await preview.locator('.preview-select-count').innerText()==='已选 0 / 共 2','全不选 did not clear the selection');
+ await preview.locator('.preview-only input').check();
+ await preview.getByText('没有选中的会话').waitFor();
+ await preview.getByRole('button',{name:'全选'}).click();
+ assert(await preview.locator('.preview-select-count').innerText()==='已选 2 / 共 2','全选 did not restore the selection');
+ await selectAgent('reviewer');
+ assert((await preview.innerText()).includes('不提供会话记录'),'an agent without session records is not named');
  assert(await primary.innerText()==='添加为项目','the preview does not offer to add the folder');
  await noInternals(page,'folder preview');
  await primary.click();await dialog.waitFor({state:'hidden'});
@@ -170,6 +180,7 @@ try{
  await openDialog();
  await pathBox.fill(shop);await pathBox.press('Enter');
  await primary.filter({hasText:'打开项目'}).waitFor({timeout:30000});
+ await selectAgent('helper');
  await previewRow('helper','检查一下构建脚本').waitFor({timeout:30000});
  const echoed=previewRow('helper','fixture:echo 第一次打招呼');
  assert((await echoed.innerText()).includes('打开')&&!(await echoed.innerText()).includes('接着聊'),'a session already continued here is offered again: '+await echoed.innerText());
@@ -185,8 +196,10 @@ try{
  // A folder without sessions, added by its path.
  await openDialog();
  await pathBox.fill(site);await lookButton.click();
- await agentGroup('helper').filter({hasText:'这里没有会话'}).waitFor({timeout:30000});
- assert((await agentGroup('reviewer').innerText()).includes('不提供会话记录'),'an agent without session records is not named');
+ await selectAgent('helper');
+ await preview.getByText('这个 Agent 在这个文件夹里没有会话').waitFor({timeout:30000});
+ await selectAgent('reviewer');
+ assert((await preview.innerText()).includes('不提供会话记录'),'an agent without session records is not named');
  await primary.click();await dialog.waitFor({state:'hidden'});
  await projectBlock(page,'site').waitFor();
 
@@ -400,9 +413,11 @@ try{
   await dialog.locator('#project-history summary').click();
   // One folder's sessions: one agent lists them, one keeps no records.
   await pickButton.click();
+  await selectAgent('helper');
   await previewRow('helper','给笔记加上标签').waitFor({timeout:30000});
   assert((await previewRow('helper','把读书笔记按主题归类').innerText()).includes('打开'),'a continued session is offered again');
-  assert((await agentGroup('reviewer').innerText()).includes('不提供会话记录'),'an agent without session records is not named');
+  await selectAgent('reviewer');
+  assert((await preview.innerText()).includes('不提供会话记录'),'an agent without session records is not named');
   await shot(page,`add-project-preview-${mode}.png`);await fits('preview');
   await noInternals(page,`${mode} folder preview`);
   await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
