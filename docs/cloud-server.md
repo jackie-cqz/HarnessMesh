@@ -1,13 +1,14 @@
 # 两台电脑都在 NAT 后面：经一台云服务器连
 
-> **这一页没有实测。** 内容按官方资料整理（见文末「依据」，2026-11-26 查阅，对照的是 Tailscale v1.104.7、Headscale v0.29.7 的文档和源码），还没有在真实的 ECS 上从头走过一遍。写着「没证实」的地方，是官方资料没写清、或者各方说法不一致。照着做遇到出入时，以官方文档为准。
+> **这一页没有实测。** 内容按官方资料整理（见文末「依据」，2026-11-26 查阅，对照的是 Tailscale v1.104.7、Headscale v0.29.7 的文档和源码），还没有在真实的 ECS 上从头走过一遍。写着「没证实」的地方，是官方资料没写清、或者各方说法不一致。照着做遇到出入时，以官方文档为准。做法三（HarnessMesh 自带的中继）按的是本仓库的代码和测试，只在一台电脑上模拟过（中继和两台电脑都在本机），同样没在真实的 ECS 上跑过。
 
-一台电脑在家、一台在公司，都在 NAT 后面；或者公司 Wi-Fi 开了客户端隔离，同一层楼的两台也互相连不到。HarnessMesh 自己不打洞，也还没有内置中继，这时要在中间放一台有公网 IP 的云服务器搭桥。下面都叫它 ECS，别家的云服务器也一样。
+一台电脑在家、一台在公司，都在 NAT 后面；或者公司 Wi-Fi 开了客户端隔离，同一层楼的两台也互相连不到。HarnessMesh 自己不打洞，这时要在中间放一台有公网 IP 的云服务器搭桥。下面都叫它 ECS，别家的云服务器也一样。
 
 - **已经在用 Tailscale**：用做法一，在 ECS 上自建 Tailscale 中继（DERP）。能打洞时两台照旧直连，打不通才经过 ECS。
 - **不想用 Tailscale**：用做法二，让 ECS 当 WireGuard 中心。两台电脑都连到 ECS，所有流量经 ECS 转发。
+- **Tailscale 和 WireGuard 都不想装**：用做法三，在 ECS 上跑 HarnessMesh 自带的中继（`hmesh relay serve`）。要被找到的电脑一直往外连着它；两台都在 NAT 后面时，所有流量经 ECS 转发。
 
-两种做法 HarnessMesh 都不用改，ECS 上也不装 HarnessMesh。电脑之间照旧是 TLS 1.3 双向认证、固定证书指纹：ECS 看不到会话内容，也冒充不了任何一台电脑。
+做法一、二 HarnessMesh 都不用改，ECS 上也不装 HarnessMesh；做法三在 ECS 上只放一个 `hmesh` 程序跑中继。三种做法里电脑之间照旧是 TLS 1.3 双向认证、固定证书指纹：ECS 看不到会话内容，也冒充不了任何一台电脑。
 
 ## 先看需不需要
 
@@ -20,20 +21,21 @@
 
 Tailscale 官方的中继地图里没有中国大陆的节点，最近的是香港（2026-11-26 查的默认地图）。在大陆经官方中继要绕到境外，通常更慢（按距离推断，没测过），这是自建中继最常见的理由。
 
-## 两种做法怎么选
+## 三种做法怎么选
 
-| | 做法一：自建 Tailscale 中继（DERP） | 做法二：ECS 当 WireGuard 中心 |
-|---|---|---|
-| ECS 上跑什么 | `derper`，建议再装一个 Tailscale 用来核对客户端；可选再加 Headscale | WireGuard，打开 IP 转发 |
-| 每台电脑装什么 | Tailscale，登录同一个 tailnet | WireGuard 和一份配置 |
-| 流量是否都经过 ECS | 不是。能打洞就直连，打不通才经过 ECS | 是，全部经过 |
-| HarnessMesh 用哪种网络 | Tailscale 模式，照常 `--network tailscale` | 直连模式 `--network direct`，监听 WireGuard 的 10.x 地址 |
-| ECS 安全组要放行 | TCP：DERP 端口（本文用 8443）；UDP 3478（STUN）；ICMP | UDP 51820（或你选的端口） |
-| 证书和域名 | 只用 IP 时，derper 自签一张证书，把指纹写进 DERP 地图 | 都不需要 |
-| 日常维护 | derper 要跟着 Tailscale 更新重新编译；自签证书一年到期 | 加一台电脑要改 ECS 的配置 |
-| 适合 | 已经在用 Tailscale，想尽量直连、少走 ECS | 不想要 Tailscale 账号；就两三台电脑，配置不常变 |
+| | 做法一：自建 Tailscale 中继（DERP） | 做法二：ECS 当 WireGuard 中心 | 做法三：内置中继（`hmesh relay`） |
+|---|---|---|---|
+| ECS 上跑什么 | `derper`，建议再装一个 Tailscale 用来核对客户端；可选再加 Headscale | WireGuard，打开 IP 转发 | `hmesh relay serve`，一个程序，不要 daemon |
+| 每台电脑装什么 | Tailscale，登录同一个 tailnet | WireGuard 和一份配置 | 什么都不用加装；要被找到的电脑 `hmesh relay use` 一次 |
+| 流量是否都经过 ECS | 不是。能打洞就直连，打不通才经过 ECS | 是，全部经过 | 先试名片上的直连地址，连不上才经过 ECS（上次连上的那条下次先试）；两台都在 NAT 后面时就是全部经过 |
+| HarnessMesh 用哪种网络 | Tailscale 模式，照常 `--network tailscale` | 直连模式 `--network direct`，监听 WireGuard 的 10.x 地址 | 照常用原来的模式；中继是地址列表里多出来的一条路 |
+| ECS 安全组要放行 | TCP：DERP 端口（本文用 8443）；UDP 3478（STUN）；ICMP | UDP 51820（或你选的端口） | TCP 一个端口（本文用 7443） |
+| 证书和域名 | 只用 IP 时，derper 自签一张证书，把指纹写进 DERP 地图 | 都不需要 | 都不需要：中继自签证书，指纹写在中继码里 |
+| 日常维护 | derper 要跟着 Tailscale 更新重新编译；自签证书一年到期 | 加一台电脑要改 ECS 的配置 | 换 HarnessMesh 版本时一起换 ECS 上的 `hmesh`；加电脑不用改 ECS |
+| 验证情况 | 按官方资料整理，没实测 | 按官方资料整理，没实测 | 只在一台电脑上模拟过，没在真实 ECS 上跑过 |
+| 适合 | 已经在用 Tailscale，想尽量直连、少走 ECS | 不想要 Tailscale 账号；就两三台电脑，配置不常变 | 不想装 Tailscale 也不想配 WireGuard；只要 HarnessMesh 的电脑互相找得到 |
 
-不管哪种做法，ECS 安全组都**不要**放行 HarnessMesh 的 39880 端口：它的流量走在 Tailscale 或 WireGuard 的隧道里，ECS 上也没有 HarnessMesh 在监听。
+不管哪种做法，ECS 安全组都**不要**放行 HarnessMesh 的 39880 端口：做法一、二里它的流量走在 Tailscale 或 WireGuard 的隧道里；做法三里两台电脑都是往外连 ECS 的中继端口。ECS 上也没有 HarnessMesh 在监听 39880。
 
 ## 做法一：自建 Tailscale 中继（DERP）
 
@@ -406,6 +408,128 @@ hmesh peers list      # 在 A 上：B 的 node_connectivity 是 online
 
 Windows 的防火墙默认不回 ping，B 是 Windows 时 ping 不通不一定是隧道坏了，以 `hmesh peers list` 为准。
 
+## 做法三：内置中继（`hmesh relay`）
+
+> **只在一台电脑上模拟过**：中继和两台电脑都在同一台机器上，中继监听 127.0.0.1；另外在中继和 A 之间放过一个每个包都延迟、来回 150 毫秒的本机代理，A 的面板电脑列表用的接口（`/local/peers`）照样在时限内显示 B 在线、列出它的 Agent。没有在真实的 ECS、云安全组和运营商 NAT 下走过一遍。
+
+```mermaid
+flowchart LR
+  B["B：公司的台式机"] -->|"一直连着<br/>TLS 1.3，TCP 7443"| E["ECS：hmesh relay serve<br/>公网 203.0.113.10"]
+  A["A：家里的笔记本"] -->|"要找 B 时连过来<br/>TLS 1.3，TCP 7443"| E
+```
+
+不想装 Tailscale，也不想配 WireGuard 时，可以让 ECS 直接跑 HarnessMesh 自带的中继。要被找到的电脑（公司的台式机 B）一直往外连着 ECS；另一台（家里的笔记本 A）要找 B 时连到 ECS，请它把自己接到 B。ECS 只转发字节：A 和 B 之间照旧是 TLS 1.3 双向认证、两边固定对方的证书指纹，ECS 看不到内容，也冒充不了任何一台。
+
+A 经中继拨号是在 daemon 进程里直接拨的，不在本机开任何端口，本机别的程序借不到这条路。一次接通要走好几个来回（到 ECS 的 TCP 和 TLS、请 ECS 接到 B、A 和 B 之间的 TLS），所以接通后的连接留 60 秒给下一次调用（同一台电脑经同一个中继最多留 4 条）：第一次调用慢一些，之后每次大约一个来回。
+
+### 要准备什么
+
+- 一台有公网 IP 的 Linux ECS，安全组放行一个 TCP 端口（本文用 7443）。
+- ECS 上一份和电脑上同一版本的 `hmesh`（编译好拷过去即可，放在 `/usr/local/bin/hmesh`；ECS 上不需要 daemon，也不需要数据目录）。
+- 两台电脑照常装好 HarnessMesh。B 要接受连入，用完整安装（共享 Agent）；A 可以只装 MCP。
+
+### 1. 在 ECS 上跑中继
+
+用 systemd 常驻（示例）：
+
+```ini
+# /etc/systemd/system/hmesh-relay.service
+[Unit]
+Description=HarnessMesh relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/hmesh relay serve --listen 0.0.0.0:7443 --dir /var/lib/hmesh-relay --public-address 203.0.113.10:7443
+# 标准输出只有中继码（里面有令牌），丢掉它，不让它进 journal；日志写在标准错误
+StandardOutput=null
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`203.0.113.10` 换成 ECS 的公网 IP，下同。ECS 的公网 IP 一般不在网卡上，所以要写 `--public-address`；不写时中继码里是 ECS 自己网卡上的地址。
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now hmesh-relay
+sudo hmesh relay show --dir /var/lib/hmesh-relay
+```
+
+第一次运行时，中继在 `--dir` 里生成自己的密钥、自签证书和一个随机令牌（目录只有 root 能读）。`hmesh relay show` 打印出的 `relay_code` 就是中继码：
+
+```text
+hmesh-relay://203.0.113.10:7443/<中继证书指纹>/<令牌>
+```
+
+中继码里有令牌，**别外传**：拿到它的人就能用这台中继。也别把它写进命令行参数，下面都是在提示时粘贴，令牌不进 shell 历史，也不出现在进程列表里。
+
+`journalctl -u hmesh-relay` 里只有监听地址、中继证书指纹和「有几台电脑连着」这类信息，没有令牌。
+
+### 2. 放行端口
+
+安全组入方向只放行 TCP 7443（以及你登录用的 SSH）。不用放行 HarnessMesh 的 39880：两台电脑都是往外连 ECS，ECS 上也没有 HarnessMesh 在监听 39880。
+
+### 3. B：一直连着中继
+
+```sh
+hmesh relay use         # 提示 Relay code 时粘贴上一步的中继码，回车
+hmesh relay list        # connected 变成 true 就连上了
+```
+
+也可以把中继码存在只有自己能读的文件里，`hmesh relay use < relay-code.txt`。daemon 在跑就立刻生效，断了会自己重连（1 秒起，最多隔 60 秒）。B 到了没认过的网络（直连端口对谁都不开）也照样连着中继。B 已经配对的电脑会随它的地址列表拿到这个中继。
+
+### 4. A：第一次配对用中继配对码
+
+在 B 上运行 `hmesh pair show`（它同时打开 10 分钟的配对窗口），输出里多一项 `relay_pair_codes`：
+
+```text
+hmesh-relay://203.0.113.10:7443/<中继证书指纹>/<令牌>/<B 的指纹>
+```
+
+它也带着令牌，同样只在提示时粘贴。在 A 上：
+
+```sh
+hmesh pair request --code     # 提示时粘贴 B 的中继配对码
+```
+
+或者在 A 的面板「配对新电脑 → 粘贴对方的码」里粘贴同一行。B 照常在「配对节点」里核对校验码、批准。配对窗口关着时，经中继来的配对申请一律被拒。之后 A 调用 B、开会话都经中继；A 的电脑卡片上写「上次连上：…，经 中继」。
+
+### 5. 确认连通
+
+```sh
+# A 上
+hmesh peers list        # B 的 node_connectivity 是 online，routes.last_good 是 hmesh-relay://203.0.113.10:7443
+hmesh agents --peer <B 的节点 ID>
+```
+
+连不上时，面板会说「中继没有接通它」：看 ECS 上中继在不在跑（`systemctl status hmesh-relay`）、B 的 `hmesh relay list` 是不是 connected、安全组有没有放行 7443。
+
+### 中继的限制
+
+中继在公网上，谁都能连它的端口，所以它对还没拿出令牌的连接很小气：
+
+| 限制 | 数值 |
+|---|---|
+| TLS 握手加第一句话 | 5 秒内说完，否则断开 |
+| 还没说完第一句话的连接 | 同一个来源（IPv4 按地址，IPv6 按 /64）最多 16 条，全中继最多 256 条；全满时，占得最多的来源让出最早的一条给占得少的来源 |
+| 同一个来源新建连接 | 一次最多 32 条，之后每秒 8 条，超出的在 TLS 之前就关掉 |
+| 同时登记的电脑 | 最多 256 台，同一个来源最多 16 台 |
+| 同时转发的连接 | 最多 512 对，同一台电脑叫的最多 32 对，同一个来源叫的最多 64 对 |
+| B 同时处理经中继进来的连接 | 最多 64 条，满了让中继马上回叫的一方「忙」 |
+| 一对连接没有字节 | 15 分钟后断开 |
+
+令牌不对、说的话不认识，中继一个字不回就断开。一台中继只有一个令牌，按来源和按证书的份额才是挡住「拿着令牌的人占满中继」的那一道；他换很多来源地址时仍能多占几份。公司出口 NAT 后面的很多台电脑共用一个公网 IP，会一起受同一个来源的份额限制。
+
+### 令牌泄露了
+
+```sh
+sudo hmesh relay show --dir /var/lib/hmesh-relay --rotate-token
+```
+
+运行中的中继几秒内换成新令牌，用旧令牌的连接全部断开。在 B 上用新中继码再 `hmesh relay use` 一次（替换旧的，同样在提示时粘贴）。只能经这台中继找到 B 的电脑（比如只装 MCP 的 A）拿不到新地址，要用 B 新打印的中继配对码再配对一次。
+
 ## 注意事项
 
 ### 备案：优先用 IP 加自选端口
@@ -417,10 +541,11 @@ Windows 的防火墙默认不回 ping，B 是 Windows 时 ping 不通不一定�
 - 另一篇 ECS 排查文档写着：网站不管通过 IP 还是域名对外提供服务，没备案都不允许开通网站访问。
 - 中国香港和海外地域的服务器不用 ICP 备案。网站能在大陆访问的，要做公安联网备案。
 
-本文的两种做法都不是网站，也不用域名：
+本文的三种做法都不是网站，也不用域名：
 
 - WireGuard 走 UDP，根本不是 HTTP，不沾备案。
 - DERP 是 HTTPS 起步、再在 TLS 里换成自己的协议。用 IP 加 8443 这类自选端口，是最不容易碰上拦截的做法；但拦截会不会碰到这种流量，**没证实**。
+- 内置中继一连上就是 TLS 1.3，里面是 HarnessMesh 自己的一行行命令，不走 HTTP；同样用 IP 加 7443 这类自选端口。拦截会不会碰到它，**没证实**。
 - Headscale 官方建议用域名加 443，在大陆就要先备案。
 
 ### DERP 只用 IP 时的证书
@@ -437,35 +562,37 @@ Windows 的防火墙默认不回 ping，B 是 Windows 时 ping 不通不一定�
 
 ### 安全组、NAT 和系统防火墙
 
-| | 做法一 | 做法二 |
-|---|---|---|
-| ECS 安全组入方向 | TCP 8443、UDP 3478、ICMP | UDP 51820 |
-| 不要放行 | 39880，以及用不到的 80、443 | 39880 |
-| 电脑这边 | 不用开端口，Tailscale 自己处理 | 不用开端口；B 本机防火墙允许 hmesh 连入 |
+| | 做法一 | 做法二 | 做法三 |
+|---|---|---|---|
+| ECS 安全组入方向 | TCP 8443、UDP 3478、ICMP | UDP 51820 | TCP 7443 |
+| 不要放行 | 39880，以及用不到的 80、443 | 39880 | 39880 |
+| 电脑这边 | 不用开端口，Tailscale 自己处理 | 不用开端口；B 本机防火墙允许 hmesh 连入 | 不用开端口，两台都往外连 ECS |
 
 - ECS 系统里开着 ufw、firewalld 时，规则要和安全组一致。
+- 内置中继按来源 IP 限制还没拿出令牌的连接（见做法三「中继的限制」），前面也不要加负载均衡或反向代理：那样所有连接看起来都来自同一个地址，会一起被限住。
 - 官方说 DERP 不能放在 NAT 或负载均衡后面，因为它要看来源地址认设备。ECS 的公网 IP 一般不直接配在实例网卡上，而是由云平台映射过来；这算不算官方说的 NAT、会不会影响 DERP，**没证实**。前面不要再加 SLB 一类的负载均衡。
-- 公网 IP 别变：DERP 地图和 WireGuard 的 `Endpoint` 里写的都是它。阿里云说固定公网 IP 会因为把带宽改成 0、节省停机模式、释放实例被回收，不适合长期保留；长期用可以把它转成弹性公网 IP（EIP）。
+- 公网 IP 别变：DERP 地图、WireGuard 的 `Endpoint` 和中继码里写的都是它。阿里云说固定公网 IP 会因为把带宽改成 0、节省停机模式、释放实例被回收，不适合长期保留；长期用可以把它转成弹性公网 IP（EIP）。
 
 ### 流量费
 
 阿里云的固定公网 IP 只收出方向流量的钱，入方向不收。经 ECS 转发的每个字节，从 A 进来不收，转给 B 出去收一次。
 
-- 做法一只在打不通时才经过 ECS；做法二全部经过。
+- 做法一只在打不通时才经过 ECS；做法二全部经过；做法三在直连地址都连不上时经过，两台都在 NAT 后面时就是全部经过。
 - HarnessMesh 平时传的是会话文字和事件，量应该不大（推断，没统计过）。受管 HTTP 服务和大的产物会多一些。
 - 「按使用流量」计费时设一个带宽峰值；「按固定带宽」时，带宽值就是出网的上限。
 - 做法一一定要限制谁能用这台 DERP，不然别人能拿它转流量，费用算你的。用 Tailscale 官方控制服务器时开 `-verify-clients`，它查不到设备就拒绝；用 Headscale 时开 `-verify-client-url`，并且同时加 `-verify-client-url-fail-open=false`，否则 Headscale 连不上时谁都能用。
+- 做法三的中继只让拿着令牌的电脑登记和叫人，也只把连接接到在它上面登记了的电脑，别人不能拿它上网或转别的流量。中继码泄露了就换令牌（见做法三「令牌泄露了」）。
 
 ### ECS 能看到什么
 
-| | 做法一：DERP | 做法二：WireGuard 中心 |
-|---|---|---|
-| 能看到 | 哪两台设备在通信、什么时候、多少字节，以及它们的公网 IP | 同左，再加上 10.66 的内网地址和端口（比如连的是 39880） |
-| 看不到 | 内容：DERP 只转发 Tailscale 加密过的包 | HarnessMesh 的内容：WireGuard 这一层在 ECS 上解开了，里面还有 HarnessMesh 自己的 TLS 1.3 |
-| 冒充得了吗 | 冒充不了。HarnessMesh 两边固定了证书指纹 | 同左 |
-| 能做的坏事 | 不转发，让连接断掉；ECS 上为 `--verify-clients` 装的 Tailscale 也是 tailnet 里的一台设备，访问控制没限制它时，能连到 B 的 39880（没配对什么都做不了） | 不转发；ECS 本身也在 10.66 网里，能连到 B 的 39880（没配对什么都做不了），也能连到电脑上别的监听所有网卡的服务（SSH、文件共享之类） |
+| | 做法一：DERP | 做法二：WireGuard 中心 | 做法三：内置中继 |
+|---|---|---|---|
+| 能看到 | 哪两台设备在通信、什么时候、多少字节，以及它们的公网 IP | 同左，再加上 10.66 的内网地址和端口（比如连的是 39880） | 哪两台电脑（按证书指纹）在通话、什么时候、多久、各方向多少字节，以及它们的公网 IP |
+| 看不到 | 内容：DERP 只转发 Tailscale 加密过的包 | HarnessMesh 的内容：WireGuard 这一层在 ECS 上解开了，里面还有 HarnessMesh 自己的 TLS 1.3 | 内容、Agent 名单、请求路径：都在两台电脑之间的 TLS 1.3 里 |
+| 冒充得了吗 | 冒充不了。HarnessMesh 两边固定了证书指纹 | 同左 | 同左：被叫的电脑要出示配对时固定的那张证书，对不上一个字节都不发 |
+| 能做的坏事 | 不转发，让连接断掉；ECS 上为 `--verify-clients` 装的 Tailscale 也是 tailnet 里的一台设备，访问控制没限制它时，能连到 B 的 39880（没配对什么都做不了） | 不转发；ECS 本身也在 10.66 网里，能连到 B 的 39880（没配对什么都做不了），也能连到电脑上别的监听所有网卡的服务（SSH、文件共享之类） | 不转发、断开连接；经中继接到 B 的 HarnessMesh（没配对什么都做不了；B 的配对窗口开着时能递一份配对申请，要 B 的主人批准）。到不了 B 上别的服务 |
 
-ECS 被人拿下，做法一里对方进了你的 tailnet，做法二里对方进了你的 10.66 网。做法二里 B 加 `--allow-from 10.66.0.2/32` 能把 ECS 挡在 HarnessMesh 外面。做法一里想用 Tailscale 访问控制限制 ECS 时要小心：derper 的说明要求，用 `--verify-clients` 时所有客户端都要在访问控制里对 ECS 上的 tailscaled 可见；怎么收紧才不碍事，没证实。电脑上别的服务要自己看着。
+ECS 被人拿下，做法一里对方进了你的 tailnet，做法二里对方进了你的 10.66 网，做法三里对方拿到了中继的私钥和令牌，能做的仍是上表最后一列那些，进不了两台电脑之间的 TLS；把 ECS 收拾干净后，在 `--dir` 换一个空目录重新生成中继，B 用新中继码 `hmesh relay use`，A 用新的中继配对码再配对一次。做法二里 B 加 `--allow-from 10.66.0.2/32` 能把 ECS 挡在 HarnessMesh 外面。做法一里想用 Tailscale 访问控制限制 ECS 时要小心：derper 的说明要求，用 `--verify-clients` 时所有客户端都要在访问控制里对 ECS 上的 tailscaled 可见；怎么收紧才不碍事，没证实。电脑上别的服务要自己看着。
 
 ## 依据
 
@@ -517,3 +644,4 @@ HarnessMesh：
 - `--network`、`--listen`、`--allow-from`：`hmesh setup --help`，以及 [MCP 说明](mcp.md#用-hmesh-setup-安装)；只装 MCP 时没写 `--network`、登录了 Tailscale 就用 Tailscale 模式：`crates/hmesh-cli/src/setup.rs`
 - `hmesh peers list` 的 `node_connectivity`：`crates/hmesh-daemon/src/lib.rs`
 - 配对步骤：[README](../README_CN.md#配对电脑)
+- 内置中继的协议、限制、令牌放在哪：[安全说明](security.md)，代码在 `crates/hmesh-transport/src/relay.rs`（`Limits`）；本机模拟它的测试：`crates/hmesh-cli/tests/relay.rs`、`crates/hmesh-transport/tests/relay.rs`
