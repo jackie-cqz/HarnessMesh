@@ -10,8 +10,10 @@ const HISTORY_TTL: Duration = Duration::from_secs(30);
 /// Pages and sessions read per agent and folder.
 const MAX_LIST_PAGES: usize = 20;
 const MAX_LISTED: usize = 1000;
-/// Starting the agent and reading its list, together.
-const LIST_TIMEOUT: Duration = Duration::from_secs(45);
+/// Starting the agent and reading its list, together. Kept under the panel's
+/// longer history deadline so the owner gets this reason instead of a raw RPC
+/// timeout; agents that scan many local sessions can take most of it.
+const LIST_TIMEOUT: Duration = Duration::from_secs(25);
 
 type CacheKey = (Uuid, Option<PathBuf>);
 #[derive(Default)]
@@ -273,14 +275,28 @@ async fn agent_history(
     refresh: bool,
 ) -> AgentHistory {
     let key = (card.agent_id, cwd.map(FilePath::to_path_buf));
+    let cached = s
+        .sessions
+        .history
+        .entries
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&key).cloned());
     if !refresh
-        && let Ok(cache) = s.sessions.history.entries.lock()
-        && let Some((at, history)) = cache.get(&key)
+        && let Some((at, history)) = &cached
         && at.elapsed() < HISTORY_TTL
     {
         return history.clone();
     }
     let history = read_history(s, card, config, cwd).await;
+    // A failed refresh must not erase what the owner saw a moment ago: keep
+    // showing the last good list (the panel's refresh button still works).
+    if history.state == HistoryState::Failed
+        && let Some((_, previous)) = &cached
+        && previous.state == HistoryState::Listed
+    {
+        return previous.clone();
+    }
     if let Ok(mut cache) = s.sessions.history.entries.lock() {
         cache.retain(|_, (at, _)| at.elapsed() < HISTORY_TTL);
         cache.insert(key, (Instant::now(), history.clone()));

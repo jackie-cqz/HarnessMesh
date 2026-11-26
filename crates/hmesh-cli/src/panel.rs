@@ -1028,14 +1028,14 @@ async fn project_history(
     Query(form): Query<HistoryForm>,
 ) -> Response {
     match project_path(&id, &format!("/history?refresh={}", form.refresh)) {
-        Some(path) => session_reply(s.client.get::<Value>(&path).await),
+        Some(path) => session_reply(s.client.get_with_timeout::<Value>(&path, 35).await),
         None => invalid_project(),
     }
 }
 async fn history_folders(State(s): State<Panel>, Query(form): Query<HistoryForm>) -> Response {
     session_reply(
         s.client
-            .get::<Value>(&format!("/local/history?refresh={}", form.refresh))
+            .get_with_timeout::<Value>(&format!("/local/history?refresh={}", form.refresh), 35)
             .await,
     )
 }
