@@ -14,7 +14,8 @@
     "test:pairing-address": "node scripts/pairing-address-smoke.mjs",
     "test:real-agent-commands": "node scripts/real-agent-commands-smoke.mjs",
     "test:real-dsh": "node scripts/real-dsh-smoke.mjs",
-    "test:provider-protocols": "node scripts/real-provider-protocols-smoke.mjs"
+    "test:provider-protocols": "node scripts/real-provider-protocols-smoke.mjs",
+    "screenshots:readme": "node scripts/readme-screenshots.mjs"
   },
   "devDependencies": {"playwright": "1.62.1"}
 }

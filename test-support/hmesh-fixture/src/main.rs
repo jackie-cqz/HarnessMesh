@@ -333,11 +333,19 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            model: "fixture-small".into(),
-            mode: "ask".into(),
+            model: models().swap_remove(0),
+            // `--mode ask|code` starts sessions in that mode.
+            mode: flag("--mode").unwrap_or_else(|| "ask".into()),
             effort: "low".into(),
         }
     }
+}
+/// `--models a,b` offers these models instead of the fixture's own.
+fn models() -> Vec<String> {
+    flag("--models")
+        .map(|list| list.split(',').map(str::to_owned).collect::<Vec<_>>())
+        .filter(|list| list.iter().all(|m| !m.is_empty()))
+        .unwrap_or_else(|| vec!["fixture-small".into(), "fixture-large".into()])
 }
 impl Settings {
     /// ACP `configOptions`; the large model adds a reasoning-effort setting.
@@ -356,11 +364,11 @@ impl Settings {
             .into_iter()
             .flat_map(|models| models.keys().map(|id| format!("hmesh/{id}")))
             .collect();
-        let choices: Vec<&str> = if custom.is_empty() {
-            vec!["fixture-small", "fixture-large"]
-        } else {
-            custom.iter().map(String::as_str).collect()
-        };
+        let own = models();
+        let choices: Vec<&str> = if custom.is_empty() { &own } else { &custom }
+            .iter()
+            .map(String::as_str)
+            .collect();
         let mut options = vec![
             select("model", "Model", "model", &self.model, &choices),
             select("mode", "Mode", "mode", &self.mode, &["ask", "code"]),
@@ -533,6 +541,15 @@ fn restore(id: &str) -> Option<Vec<(String, String)>> {
 
 /// Call `mesh_send` on the first MCP server the client gave this session.
 fn delegate(server: &Value, agent: &str, message: &str) -> Result<String, String> {
+    let text = mesh_send(server, agent, message)?;
+    let value: Value = serde_json::from_str(&text).map_err(|_| text.clone())?;
+    Ok(value["final_text"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("status {}", value["status"])))
+}
+/// What `mesh_send` replies: a summary of the other session, as JSON text.
+fn mesh_send(server: &Value, agent: &str, message: &str) -> Result<String, String> {
     let command = server["command"].as_str().ok_or("no MCP server command")?;
     let args: Vec<String> = server["args"]
         .as_array()
@@ -596,11 +613,83 @@ fn delegate(server: &Value, agent: &str, message: &str) -> Result<String, String
     if result["isError"] == json!(true) {
         return Err(text);
     }
-    let value: Value = serde_json::from_str(&text).map_err(|_| text.clone())?;
-    Ok(value["final_text"]
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("status {}", value["status"])))
+    Ok(text)
+}
+
+/// Permission requests a script is waiting on, by request id.
+type Asked = std::sync::Arc<std::sync::Mutex<HashMap<String, mpsc::Sender<Option<String>>>>>;
+/// `--script FILE`: a scripted conversation, for the README screenshots.
+/// `{"turns":[{"when":"…","steps":[…]}]}`; the first turn whose `when`
+/// occurs in the prompt plays (an empty `when` matches any prompt). A step is
+/// one of:
+/// - `{"update":{…}}` an ACP session update, sent as it is;
+/// - `{"pause_ms":N}`;
+/// - `{"ask":{"toolCall":{…},"options":[…]},"answers":{"<optionId>":[steps]}}`
+///   asks for permission and plays the steps of the option chosen (`reject`
+///   when the request was cancelled or the option has no steps);
+/// - `{"delegate":{"toolCallId":"…","title":"…","agent":"…","message":"…"}}`
+///   really calls `mesh_send`, reported as a tool call whose output is the reply.
+fn load_script() -> anyhow::Result<Option<Value>> {
+    let Some(path) = flag("--script") else {
+        return Ok(None);
+    };
+    let script: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    anyhow::ensure!(script["turns"].is_array(), "{path} has no turns");
+    Ok(Some(script))
+}
+fn scripted_turn(script: &Value, prompt: &str) -> Option<Vec<Value>> {
+    script["turns"]
+        .as_array()?
+        .iter()
+        .find(|turn| prompt.contains(turn["when"].as_str().unwrap_or("")))
+        .map(|turn| turn["steps"].as_array().cloned().unwrap_or_default())
+}
+fn play(session: &str, steps: &[Value], server: Option<&Value>, asked: &Asked) {
+    for step in steps {
+        if let Some(fields) = step.get("update") {
+            update(session, fields.clone());
+        } else if let Some(ms) = step["pause_ms"].as_u64() {
+            std::thread::sleep(Duration::from_millis(ms));
+        } else if let Some(request) = step.get("ask") {
+            let key = format!(
+                "script-{}",
+                request["toolCall"]["toolCallId"].as_str().unwrap_or("ask")
+            );
+            let (answer, chosen) = mpsc::channel();
+            asked.lock().unwrap().insert(key.clone(), answer);
+            let mut params = request.clone();
+            params["sessionId"] = json!(session);
+            send(
+                json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":params}),
+            );
+            let chosen = chosen.recv().ok().flatten();
+            let answers = &step["answers"];
+            let branch = chosen
+                .as_deref()
+                .and_then(|option| answers[option].as_array())
+                .or_else(|| answers["reject"].as_array());
+            play(session, branch.map_or(&[], Vec::as_slice), server, asked);
+        } else if let Some(call) = step.get("delegate") {
+            let (agent, message) = (
+                call["agent"].as_str().unwrap_or(""),
+                call["message"].as_str().unwrap_or(""),
+            );
+            let id = call["toolCallId"].as_str().unwrap_or("delegate");
+            update(
+                session,
+                json!({"sessionUpdate":"tool_call","toolCallId":id,"title":call["title"],"kind":"other","status":"in_progress","rawInput":{"agent":agent,"message":message}}),
+            );
+            let (status, text) = match server.map(|s| mesh_send(s, agent, message)) {
+                Some(Ok(reply)) => ("completed", reply),
+                Some(Err(error)) => ("failed", error),
+                None => ("failed", "no MCP server was provided".into()),
+            };
+            update(
+                session,
+                json!({"sessionUpdate":"tool_call_update","toolCallId":id,"status":status,"content":[{"type":"content","content":{"type":"text","text":text}}]}),
+            );
+        }
+    }
 }
 
 enum Event {
@@ -683,6 +772,8 @@ fn run_acp() -> anyhow::Result<()> {
     let mut sessions: HashMap<String, Session> = HashMap::new();
     let mut waiting: HashMap<String, Value> = HashMap::new();
     let mut permissions: HashMap<String, Pending> = HashMap::new();
+    let script = load_script()?;
+    let asked: Asked = Default::default();
     let mut next = 0u64;
     for event in inbox {
         let line = match event {
@@ -706,6 +797,11 @@ fn run_acp() -> anyhow::Result<()> {
         let params = &frame["params"];
         // Responses to our permission requests.
         if method.is_empty() {
+            if let Some(answer) = id.as_str().and_then(|k| asked.lock().unwrap().remove(k)) {
+                let chosen = frame.pointer("/result/outcome/optionId");
+                let _ = answer.send(chosen.and_then(Value::as_str).map(str::to_owned));
+                continue;
+            }
             if let Some(pending) = id.as_str().and_then(|k| permissions.remove(k)) {
                 let chosen = frame
                     .pointer("/result/outcome/optionId")
@@ -945,6 +1041,16 @@ fn run_acp() -> anyhow::Result<()> {
                 session.history.push(("user".into(), prompt.clone()));
                 let turn = session.history.iter().filter(|(r, _)| r == "user").count();
                 let cwd = session.cwd.clone();
+                if let Some(steps) = script.as_ref().and_then(|s| scripted_turn(s, &prompt)) {
+                    let server = session.mcp_servers.first().cloned();
+                    let (asked, prompt_id, session_key) =
+                        (asked.clone(), id.clone(), session_id.clone());
+                    std::thread::spawn(move || {
+                        play(&session_key, &steps, server.as_ref(), &asked);
+                        end_turn(&prompt_id);
+                    });
+                    continue;
+                }
                 let reply = |session: &mut Session, text: &str| {
                     say(&session_id, text);
                     session.history.push(("agent".into(), text.into()));

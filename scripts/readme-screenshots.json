@@ -1,0 +1,108 @@
+{
+  "about": "The demo conversation in the README screenshots, played by hmesh-fixture --script. Each turn plays when its `when` occurs in the prompt; the updates are ACP session updates. No model is called.",
+  "turns": [
+    {
+      "when": "登录接口偶尔返回 500",
+      "steps": [
+        {"update": {"sessionUpdate": "plan", "entries": [
+          {"content": "看错误日志，定位 500", "priority": "medium", "status": "in_progress"},
+          {"content": "修复并补测试", "priority": "medium", "status": "pending"},
+          {"content": "请 laptop 上的 reviewer 审查", "priority": "medium", "status": "pending"}]}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read logs/api-error.log", "kind": "read", "status": "pending", "locations": [{"path": "logs/api-error.log"}], "rawInput": {"file_path": "logs/api-error.log"}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "TypeError: Cannot read properties of null (reading 'userId')\n    at refreshSession (src/auth/session.ts:3)\n— 14 次，都发生在两个请求同时刷新令牌时"}}]}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "t2", "title": "Read src/auth/session.ts", "kind": "read", "status": "pending", "locations": [{"path": "src/auth/session.ts", "line": 1}], "rawInput": {"file_path": "src/auth/session.ts"}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t2", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "export async function refreshSession(token: string) {\n  const session = await redis.get(`session:${token}`);\n  const next = issueToken(session.userId);\n  await redis.del(`session:${token}`);\n  return next;\n}"}}]}},
+        {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "找到了：两个请求同时用同一个刷新令牌时，后到的那个读到已被删除的会话，拿到 null 后抛错，变成 500。"}}},
+        {"update": {"sessionUpdate": "plan", "entries": [
+          {"content": "看错误日志，定位 500", "priority": "medium", "status": "completed"},
+          {"content": "修复并补测试", "priority": "medium", "status": "in_progress"},
+          {"content": "请 laptop 上的 reviewer 审查", "priority": "medium", "status": "pending"}]}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "t3", "title": "Edit src/auth/session.ts", "kind": "edit", "status": "pending", "locations": [{"path": "src/auth/session.ts", "line": 2}], "rawInput": {"file_path": "src/auth/session.ts"}, "content": [{"type": "diff", "path": "src/auth/session.ts",
+          "oldText": "export async function refreshSession(token: string) {\n  const session = await redis.get(`session:${token}`);\n  const next = issueToken(session.userId);\n  await redis.del(`session:${token}`);\n  return next;\n}",
+          "newText": "export async function refreshSession(token: string) {\n  while (true) {\n    const session = await redis.get(`session:${token}`);\n    if (!session) return currentToken(token);\n    const next = issueToken(session.userId);\n    if (await redis.compareAndSwap(`session:${token}`, session, next)) return next;\n  }\n}"}]}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t3", "status": "completed"}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "t4", "title": "Run npm test -- auth", "kind": "execute", "status": "in_progress", "rawInput": {"command": "npm test -- auth"}, "content": [{"type": "terminal", "terminalId": "t4"}], "_meta": {"terminal_info": {"terminal_id": "t4"}}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t4", "_meta": {"terminal_output": {"terminal_id": "t4", "data": "PASS  test/auth/session.test.ts\n  ✓ 并发刷新只生成一个新令牌 (38 ms)\n  ✓ 旧令牌在宽限期内仍可换到新令牌 (12 ms)\n\nTests:       12 passed, 12 total\n"}}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t4", "status": "completed", "_meta": {"terminal_exit": {"terminal_id": "t4", "exit_code": 0, "signal": null}}}},
+        {"update": {"sessionUpdate": "plan", "entries": [
+          {"content": "看错误日志，定位 500", "priority": "medium", "status": "completed"},
+          {"content": "修复并补测试", "priority": "medium", "status": "completed"},
+          {"content": "请 laptop 上的 reviewer 审查", "priority": "medium", "status": "in_progress"}]}},
+        {"delegate": {"toolCallId": "t5", "title": "mcp__harnessmesh__mesh_send", "agent": "laptop/reviewer", "message": "请审查 src/auth/session.ts 的改动：并发刷新令牌时改用原子的比较并替换。重点看重试和过期边界。"}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "t6", "title": "Edit src/auth/session.ts", "kind": "edit", "status": "pending", "locations": [{"path": "src/auth/session.ts", "line": 2}], "rawInput": {"file_path": "src/auth/session.ts"}, "content": [{"type": "diff", "path": "src/auth/session.ts",
+          "oldText": "  while (true) {\n    const session = await redis.get(`session:${token}`);\n    if (!session) return currentToken(token);\n    const next = issueToken(session.userId);\n    if (await redis.compareAndSwap(`session:${token}`, session, next)) return next;\n  }\n}",
+          "newText": "  for (let attempt = 0; attempt < 3; attempt++) {\n    const session = await redis.get(`session:${token}`);\n    if (!session) return currentToken(token);\n    const next = issueToken(session.userId);\n    if (await redis.compareAndSwap(`session:${token}`, session, next)) return next;\n  }\n  throw new HttpError(409, '令牌刷新冲突，请重试');\n}"}]}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t6", "status": "completed"}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "t7", "title": "Run npm test -- auth", "kind": "execute", "status": "in_progress", "rawInput": {"command": "npm test -- auth"}, "content": [{"type": "terminal", "terminalId": "t7"}], "_meta": {"terminal_info": {"terminal_id": "t7"}}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t7", "_meta": {"terminal_output": {"terminal_id": "t7", "data": "PASS  test/auth/session.test.ts\n  ✓ 并发刷新只生成一个新令牌 (36 ms)\n  ✓ 旧令牌在宽限期内仍可换到新令牌 (11 ms)\n  ✓ 刷新冲突超过 3 次返回 409 (9 ms)\n\nTests:       13 passed, 13 total\n"}}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "t7", "status": "completed", "_meta": {"terminal_exit": {"terminal_id": "t7", "exit_code": 0, "signal": null}}}},
+        {"update": {"sessionUpdate": "plan", "entries": [
+          {"content": "看错误日志，定位 500", "priority": "medium", "status": "completed"},
+          {"content": "修复并补测试", "priority": "medium", "status": "completed"},
+          {"content": "请 laptop 上的 reviewer 审查", "priority": "medium", "status": "completed"}]}},
+        {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "改好了，reviewer 也看过：\n\n- **原因**：并发刷新令牌时读到已删除的会话。\n- **修复**：改成原子的比较并替换，补了并发测试。\n- 按 reviewer 的建议给重试加了上限（3 次），13 个测试全部通过。"}}},
+        {"update": {"sessionUpdate": "usage_update", "used": 21400, "size": 200000, "cost": {"amount": 0.11, "currency": "USD"}}}
+      ]
+    },
+    {
+      "when": "请审查 src/auth/session.ts",
+      "steps": [
+        {"update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "看一下改动和对应的测试。"}}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "r1", "title": "Run git diff -- src/auth/session.ts", "kind": "execute", "status": "in_progress", "rawInput": {"command": "git diff -- src/auth/session.ts"}, "content": [{"type": "terminal", "terminalId": "r1"}], "_meta": {"terminal_info": {"terminal_id": "r1"}}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "r1", "_meta": {"terminal_output": {"terminal_id": "r1", "data": "@@ -1,6 +1,8 @@\n export async function refreshSession(token: string) {\n-  const session = await redis.get(`session:${token}`);\n-  const next = issueToken(session.userId);\n-  await redis.del(`session:${token}`);\n-  return next;\n+  while (true) {\n+    const session = await redis.get(`session:${token}`);\n+    if (!session) return currentToken(token);\n+    const next = issueToken(session.userId);\n+    if (await redis.compareAndSwap(`session:${token}`, session, next)) return next;\n+  }\n }\n"}}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "r1", "status": "completed", "_meta": {"terminal_exit": {"terminal_id": "r1", "exit_code": 0, "signal": null}}}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "r2", "title": "Read test/auth/session.test.ts", "kind": "read", "status": "pending", "locations": [{"path": "test/auth/session.test.ts"}], "rawInput": {"file_path": "test/auth/session.test.ts"}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "r2", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "it('并发刷新只生成一个新令牌', async () => { … })\nit('旧令牌在宽限期内仍可换到新令牌', async () => { … })"}}]}},
+        {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "看过了，比较并替换的逻辑没问题，并发测试也覆盖到了。一个建议：令牌被换掉时现在会无限重试，最好加个上限（比如 3 次），超过就返回 409。"}}}
+      ]
+    },
+    {
+      "when": "把首页的加载动画换成骨架屏",
+      "steps": [
+        {"update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "首页现在用的是转圈的加载动画，换成骨架屏需要一个组件，先看看项目里有没有现成的。"}}},
+        {"update": {"sessionUpdate": "plan", "entries": [
+          {"content": "找到首页的加载状态", "priority": "medium", "status": "completed"},
+          {"content": "安装骨架屏组件", "priority": "medium", "status": "in_progress"},
+          {"content": "替换加载动画并截图对比", "priority": "medium", "status": "pending"}]}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "f1", "title": "Read src/pages/Home.tsx", "kind": "read", "status": "pending", "locations": [{"path": "src/pages/Home.tsx", "line": 31}], "rawInput": {"file_path": "src/pages/Home.tsx"}}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "f1", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "{loading && <Spinner />}  // 第 31 行"}}]}},
+        {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "首页第 31 行用的是 `<Spinner />`。项目里没有骨架屏组件，我需要安装 react-loading-skeleton。"}}},
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "f2", "title": "Run npm install react-loading-skeleton", "kind": "execute", "status": "pending", "rawInput": {"command": "npm install react-loading-skeleton"}}},
+        {"ask": {"toolCall": {"toolCallId": "f2", "title": "Run npm install react-loading-skeleton", "kind": "execute", "rawInput": {"command": "npm install react-loading-skeleton"}}, "options": [
+          {"optionId": "allow", "name": "Allow once", "kind": "allow_once"},
+          {"optionId": "always", "name": "Always allow npm install", "kind": "allow_always"},
+          {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]},
+         "answers": {
+          "allow": [
+            {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "f2", "status": "in_progress", "content": [{"type": "terminal", "terminalId": "f2"}], "_meta": {"terminal_info": {"terminal_id": "f2"}, "terminal_output": {"terminal_id": "f2", "data": "added 1 package in 2s\n"}}}},
+            {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "f2", "status": "completed", "_meta": {"terminal_exit": {"terminal_id": "f2", "exit_code": 0, "signal": null}}}},
+            {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "装好了，接下来替换首页的加载状态。"}}}],
+          "reject": [
+            {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "f2", "status": "failed"}},
+            {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "好的，不装新依赖，我用 CSS 自己画一个骨架屏。"}}}]}}
+      ]
+    },
+    {
+      "when": "给 /health 加上版本号和构建时间",
+      "steps": [
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "h1", "title": "Edit src/routes/health.ts", "kind": "edit", "status": "pending", "locations": [{"path": "src/routes/health.ts", "line": 4}], "rawInput": {"file_path": "src/routes/health.ts"}, "content": [{"type": "diff", "path": "src/routes/health.ts", "oldText": "  return { status: 'ok' };", "newText": "  return { status: 'ok', version: BUILD.version, builtAt: BUILD.time };"}]}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "h1", "status": "completed"}},
+        {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "加好了：`/health` 现在返回 `version` 和 `builtAt`，构建时由 CI 写入。"}}}
+      ]
+    },
+    {
+      "when": "把设置页的保存按钮改成主色",
+      "steps": [
+        {"update": {"sessionUpdate": "tool_call", "toolCallId": "s1", "title": "Edit src/pages/Settings.tsx", "kind": "edit", "status": "pending", "locations": [{"path": "src/pages/Settings.tsx", "line": 88}], "rawInput": {"file_path": "src/pages/Settings.tsx"}, "content": [{"type": "diff", "path": "src/pages/Settings.tsx", "oldText": "<Button onClick={save}>保存</Button>", "newText": "<Button variant=\"primary\" onClick={save}>保存</Button>"}]}},
+        {"update": {"sessionUpdate": "tool_call_update", "toolCallId": "s1", "status": "completed"}},
+        {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "保存按钮改成了主色，其他按钮没动。"}}}
+      ]
+    },
+    {
+      "when": "",
+      "steps": [
+        {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "好的，已经处理。"}}}
+      ]
+    }
+  ]
+}
