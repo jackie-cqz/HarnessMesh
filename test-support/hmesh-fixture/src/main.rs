@@ -1255,12 +1255,17 @@ fn run_acp() -> anyhow::Result<()> {
                     }
                     // The whole output again at every update, growing a line at
                     // a time, the way some agents report a running command.
-                    "fixture:snapshot-output" => {
+                    // `-long`: past the recorded output's limit from the start.
+                    "fixture:snapshot-output" | "fixture:snapshot-output-long" => {
                         update(
                             &session_id,
                             json!({"sessionUpdate":"tool_call","toolCallId":"ticks","title":"bash","kind":"execute","status":"in_progress","rawInput":{"command":"./tick"}}),
                         );
-                        let mut output = String::new();
+                        let mut output = if prompt.ends_with("-long") {
+                            "compiling a dependency of the project\n".repeat(600)
+                        } else {
+                            String::new()
+                        };
                         for i in 0..3 {
                             output.push_str(&format!("tick {i:03} ok\n"));
                             update(

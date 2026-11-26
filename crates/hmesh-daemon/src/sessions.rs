@@ -477,6 +477,9 @@ struct ToolTrace {
     title: String,
     /// Bytes of the recorded output.
     output: usize,
+    /// Hash of the recorded output: past its limit output keeps one length
+    /// while its tail moves on.
+    output_hash: u64,
     /// Hash and size of each recorded detail, by `DETAIL_KEYS`; 0 when none.
     details: [(u64, usize); DETAIL_KEYS.len()],
 }
@@ -496,16 +499,19 @@ const DETAIL_KEYS: [&str; 6] = [
     "locations",
     "terminal",
 ];
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish().max(1)
+}
 /// The details a payload carries, by index into `DETAIL_KEYS`, as a hash of
 /// their text (never 0) and its size.
 fn details_of(payload: &Value) -> impl Iterator<Item = (usize, (u64, usize))> + '_ {
-    use std::hash::{Hash, Hasher};
     DETAIL_KEYS.iter().enumerate().filter_map(|(i, key)| {
         let value = payload.get(*key).filter(|v| !v.is_null())?;
         let text = value.to_string();
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        text.hash(&mut hasher);
-        Some((i, (hasher.finish().max(1), text.len())))
+        Some((i, (text_hash(&text), text.len())))
     })
 }
 /// What one page of events may carry, well within the 1 MiB a reply may be.
@@ -594,6 +600,7 @@ async fn pump(
                 trace.record(&payload);
                 if let Some(output) = payload["output"].as_str() {
                     trace.output = output.len();
+                    trace.output_hash = text_hash(output);
                 }
             }
             write("tool_call_update", payload);
@@ -762,7 +769,9 @@ async fn pump(
                             // Output that grew too little to record now (an agent
                             // sending the whole output again each time) still
                             // shows within about a second.
-                            if output > 0 && output != was.output {
+                            if output > 0
+                                && payload["output"].as_str().map(text_hash) != Some(was.output_hash)
+                            {
                                 held.insert("output".into(), payload["output"].clone());
                             }
                             if held.is_empty() {
@@ -778,6 +787,9 @@ async fn pump(
                                     trace.title = title.clone();
                                 }
                                 trace.output = output;
+                                if let Some(text) = payload["output"].as_str() {
+                                    trace.output_hash = text_hash(text);
+                                }
                                 trace.record(&payload);
                                 trace
                             }
@@ -803,6 +815,7 @@ async fn pump(
                             status: "pending".into(),
                             title: title.clone(),
                             output: payload["output"].as_str().map_or(0, str::len),
+                            output_hash: payload["output"].as_str().map_or(0, text_hash),
                             ..ToolTrace::default()
                         };
                         trace.record(&payload);
