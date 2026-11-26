@@ -795,6 +795,197 @@ async fn earlier_sessions_are_listed_per_folder_and_continue_with_their_history(
     daemon.stop().await;
 }
 
+/// A folder picked in the panel shows each local agent's sessions there
+/// before it is a project: only that folder's, each once, the ones already
+/// continued linked, and which agents cannot list.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_shows_each_agents_sessions_before_it_is_added() {
+    unsafe { std::env::set_var("HMESH_MCP_COMMAND", env!("CARGO_BIN_EXE_hmesh-fixture")) };
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "node-a");
+    let state = root.path().join("fixture-state");
+    let state_arg = state.to_str().unwrap();
+    let app = real(&root.path().join("work/app"));
+    let other = real(&root.path().join("work/other"));
+    seed(
+        &state,
+        "app-older",
+        &app,
+        &[("user", "Old question"), ("agent", "Old answer.")],
+    );
+    seed(
+        &state,
+        "app-newer",
+        &app,
+        &[("user", "Newer question"), ("agent", "Newer answer.")],
+    );
+    seed(
+        &state,
+        "elsewhere",
+        &other,
+        &[("user", "Somewhere else"), ("agent", "Yes.")],
+    );
+    // Two agents of one kind share their sessions; one cannot list at all;
+    // one ignores the folder it is asked about and lists every session.
+    let loose_state = root.path().join("loose-state");
+    seed(
+        &loose_state,
+        "loose-here",
+        &app,
+        &[("user", "Here too"), ("agent", "Yes.")],
+    );
+    seed(
+        &loose_state,
+        "loose-elsewhere",
+        &other,
+        &[("user", "Not here"), ("agent", "No.")],
+    );
+    register(
+        &a,
+        &root.path().join("home/loose"),
+        "loose",
+        &[
+            "--state-dir",
+            loose_state.to_str().unwrap(),
+            "--list-everywhere",
+        ],
+    );
+    let first = register(
+        &a,
+        &root.path().join("home/first"),
+        "first",
+        &["--state-dir", state_arg],
+    );
+    register(
+        &a,
+        &root.path().join("home/second"),
+        "second",
+        &["--state-dir", state_arg],
+    );
+    register(
+        &a,
+        &root.path().join("home/quiet"),
+        "quiet",
+        &["--state-dir", state_arg, "--no-list"],
+    );
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    let folder = |path: &Path| {
+        let owner = &owner;
+        let query = format!("/local/history/folder?path={}&refresh=true", encode(path));
+        async move { owner.get::<FolderHistory>(&query).await }
+    };
+
+    let view = folder(&app).await.unwrap();
+    assert_eq!(view.path, app);
+    assert_eq!(view.name, "app");
+    assert_eq!(view.project_id, None);
+    let names: Vec<&str> = view.agents.iter().map(|a| a.agent_name.as_str()).collect();
+    assert_eq!(names, ["first", "loose", "quiet", "second"]);
+    let by = |name: &str| view.agents.iter().find(|a| a.agent_name == name).unwrap();
+    assert_eq!(by("first").state, HistoryState::Listed);
+    let mut ids: Vec<&str> = by("first")
+        .sessions
+        .iter()
+        .map(|s| s.agent_session_id.as_str())
+        .collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        ["app-newer", "app-older"],
+        "only this folder's sessions"
+    );
+    assert!(
+        by("second").sessions.is_empty(),
+        "the same sessions are shown once"
+    );
+    // Only this folder's, also from an agent that lists everything.
+    let loose: Vec<&str> = by("loose")
+        .sessions
+        .iter()
+        .map(|s| s.agent_session_id.as_str())
+        .collect();
+    assert_eq!(loose, ["loose-here"]);
+    assert_eq!(by("quiet").state, HistoryState::Unsupported);
+    assert!(by("quiet").sessions.is_empty());
+
+    // The same folder through a link resolves to the same view.
+    #[cfg(unix)]
+    {
+        let link = root.path().join("app-link");
+        std::os::unix::fs::symlink(&app, &link).unwrap();
+        let linked = folder(&link).await.unwrap();
+        assert_eq!(linked.path, app);
+        assert_eq!(
+            linked
+                .agents
+                .iter()
+                .map(|a| a.sessions.len())
+                .sum::<usize>(),
+            3
+        );
+    }
+
+    // Only an existing folder given in full.
+    for bad in [
+        PathBuf::from("work/app"),
+        root.path().join("missing"),
+        state.join("app-older.json"),
+    ] {
+        let refused = folder(&bad).await.unwrap_err();
+        assert_eq!(
+            refused.code,
+            ErrorCode::InvalidInput,
+            "{bad:?}: {refused:?}"
+        );
+    }
+
+    // Once added and one session continued, the view says so.
+    let project: Project = owner
+        .post("/local/projects", &json!({"path":app}))
+        .await
+        .unwrap();
+    let continued: SessionRecord = owner
+        .post(
+            "/local/sessions",
+            &json!({"agent_id":first,"project_id":project.project_id,"resume":"app-older"}),
+        )
+        .await
+        .unwrap();
+    until(&owner, continued.session_id, |s, _| {
+        s.status == SessionStatus::Idle
+    })
+    .await;
+    let view = folder(&app).await.unwrap();
+    assert_eq!(
+        view.project_id.as_deref(),
+        Some(project.project_id.as_str())
+    );
+    let older = view
+        .agents
+        .iter()
+        .flat_map(|a| &a.sessions)
+        .find(|s| s.agent_session_id == "app-older")
+        .unwrap();
+    assert_eq!(older.session_id, Some(continued.session_id));
+    daemon.stop().await;
+}
+
+/// A path as a query value.
+fn encode(path: &Path) -> String {
+    let mut out = String::new();
+    for byte in path.to_string_lossy().bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
     unsafe { std::env::set_var("HMESH_MCP_COMMAND", env!("CARGO_BIN_EXE_hmesh-fixture")) };
@@ -836,6 +1027,20 @@ async fn shared_projects_reach_a_paired_computer_by_id_never_by_path() {
     daemon_b.ready().await;
     let owner_a = daemon_a.owner();
     let owner_b = daemon_b.owner();
+    // What a folder on node-b holds is for node-b's owner only.
+    {
+        let endpoint = format!("https://127.0.0.1:{}", b.config.node.listen_port);
+        let peer =
+            hmesh_transport::Client::new(&a, &endpoint, &b.card.fingerprint, false, false).unwrap();
+        let refused = peer
+            .get::<Value>(&format!(
+                "/local/history/folder?path={}",
+                root.path().join("b/site").display()
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PermissionDenied, "{refused:?}");
+    }
     let shared: Project = owner_b
         .post("/local/projects", &json!({"path":site}))
         .await

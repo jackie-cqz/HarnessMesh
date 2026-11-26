@@ -2,7 +2,7 @@
 // keep in them, session names/pins/hiding, and a project shared with a paired
 // computer. The only agent is the ACP test fixture; no model is called.
 import {spawn,spawnSync} from 'node:child_process';
-import {mkdtempSync,mkdirSync,writeFileSync,realpathSync,utimesSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,realpathSync,utimesSync,chmodSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {once} from 'node:events';
@@ -15,7 +15,7 @@ const shots=resolve(process.env.SMOKE_SHOTS_DIR||join(root,'shots'));mkdirSync(s
 const binary=resolve('target/debug',process.platform==='win32'?'hmesh.exe':'hmesh');
 const fixture=resolve('target/debug',process.platform==='win32'?'hmesh-fixture.exe':'hmesh-fixture');
 const owned=[],taken=[];let browser;let stage='setup';
-function start(args,stdout='ignore'){const child=spawn(binary,args,{stdio:['ignore',stdout,'ignore'],windowsHide:true});owned.push(child);return child;}
+function start(args,stdout='ignore',env=process.env){const child=spawn(binary,args,{stdio:['ignore',stdout,'ignore'],windowsHide:true,env});owned.push(child);return child;}
 async function node(name){
  const dir=join(root,name),init=spawnSync(binary,['--json','--data-dir',dir,'init','--name',name,'--port','0'],{encoding:'utf8'});
  assert(init.status===0,'CLI init failed');const mesh=new Mesh(binary,dir);start(['--data-dir',dir,'daemon','start']);
@@ -32,12 +32,24 @@ function seed(state,id,cwd,history,ageSeconds){
  const file=join(state,`${id}.json`);writeFileSync(file,JSON.stringify({cwd,history}));
  const at=Date.now()/1000-ageSeconds;utimesSync(file,at,at);
 }
-async function panel(node){
- const child=start(['--json','--data-dir',node.dir,'panel','--port','0'],'pipe');
+async function panel(node,env){
+ const child=start(['--json','--data-dir',node.dir,'panel','--port','0'],'pipe',env);
  const lines=createInterface({input:child.stdout});
  const[line]=await Promise.race([once(lines,'line'),new Promise((_,reject)=>{const t=setTimeout(()=>reject(Error('Panel startup timeout')),20000);t.unref();})]);
  lines.close();return JSON.parse(line).url;
 }
+// This computer's folder dialog, played by a script: it answers with the
+// folder the test chose (nothing is a cancel), and waits while asked to.
+const picking=join(root,'picker');mkdirSync(picking);
+const pickerScript=join(picking,'pick.sh'),pickAnswer=join(picking,'answer'),pickHold=join(picking,'hold'),pickCalls=join(picking,'calls');
+writeFileSync(pickerScript,['#!/bin/sh',`echo "start=$1" >> ${JSON.stringify(pickCalls)}`,`while [ -e ${JSON.stringify(pickHold)} ]; do sleep 0.1; done`,`cat ${JSON.stringify(pickAnswer)} 2>/dev/null`,''].join('\n'));
+chmodSync(pickerScript,0o755);
+const answer=folder=>writeFileSync(pickAnswer,folder?folder+'\n':'');
+const picks=()=>{try{return readFileSync(pickCalls,'utf8').split('\n').filter(Boolean).length;}catch{return 0;}};
+const hold=on=>on?writeFileSync(pickHold,''):rmSync(pickHold,{force:true});
+// A panel that finds no folder dialog of its own: no stand-in and, on Linux,
+// no desktop session to show one in.
+const noPicker=Object.fromEntries(Object.entries(process.env).filter(([k])=>!['HMESH_FOLDER_PICKER','DISPLAY','WAYLAND_DISPLAY'].includes(k)));
 const settle=page=>page.waitForTimeout(400);
 const stream=page=>page.locator('#conversation-stream');
 const projectBlock=(page,name)=>page.locator('#session-list .project').filter({has:page.locator('.project-name',{hasText:new RegExp('^'+name+'$')})});
@@ -86,7 +98,7 @@ try{
  register(a,'reviewer','shop-app',shop,['--state-dir',join(root,'reviewer-state'),'--no-list']);
  const pairing=a.mesh.call(['pair','request','--peer',b.card.endpoint,'--expect-fingerprint',b.card.fingerprint]);
  b.mesh.call(['pair','approve',pairing.request_id,'--expect-fingerprint',a.card.fingerprint]);a.mesh.call(['pair','approve',pairing.request_id,'--expect-fingerprint',b.card.fingerprint]);
- const urlA=await panel(a),urlB=await panel(b);
+ const urlA=await panel(a,{...process.env,HMESH_FOLDER_PICKER:pickerScript}),urlB=await panel(b,noPicker);
  browser=await chromium.launch({headless:true,...(process.env.HMESH_CHROME?{executablePath:process.env.HMESH_CHROME}:{})});
  const problems=[];let allowRefusal=false;
  async function open(url,name){
@@ -108,24 +120,84 @@ try{
  await stream(page).getByText(/Echo #\d+: 第一次打招呼/).waitFor({timeout:30000});
  await waitIdle(page);
 
- stage='add projects from the agents\' history and by path';
- await page.locator('#session-list .add-project').click();
- const dialog=page.locator('#project-dialog');await dialog.waitFor();
- const blogRow=dialog.locator('.folder-row').filter({hasText:blog}),shopRow=dialog.locator('.folder-row').filter({hasText:shop});
- await blogRow.waitFor({timeout:30000});
- assert((await blogRow.innerText()).includes('2 个会话')&&(await blogRow.innerText()).includes('helper'),'the folder from the agent\'s history lacks its sessions or agent: '+await blogRow.innerText());
- assert((await dialog.locator('.folder-row').filter({hasText:notes}).innerText()).includes('2 个会话'),'the second folder is not counted');
- assert((await shopRow.innerText()).includes('已添加')&&await shopRow.locator('input').isDisabled(),'the agent\'s own folder is offered again');
+ stage='add a project: pick a folder in this computer\'s own dialog';
+ const dialog=page.locator('#project-dialog'),preview=dialog.locator('#project-preview'),primary=dialog.locator('#project-add');
+ const pickButton=dialog.getByRole('button',{name:'选择文件夹…'}),lookButton=dialog.getByRole('button',{name:'查看',exact:true}),pathBox=page.locator('#project-path');
+ const agentGroup=name=>preview.locator('.preview-agent').filter({has:page.locator('.preview-agent-head b',{hasText:new RegExp('^'+name+'$')})});
+ const previewRow=(name,title)=>agentGroup(name).locator('.preview-session').filter({hasText:title});
+ const openDialog=async()=>{await page.locator('#session-list .add-project').click();await dialog.waitFor();};
+ await openDialog();
+ assert(await pickButton.isVisible(),'the folder dialog is not offered');
+ assert(!await dialog.locator('#project-history').evaluate(d=>d.open),'the agents\' folders are not tucked away');
+ assert(await dialog.locator('#project-folders > *').count()===0,'the agents\' folders are read before anyone asks for them');
  await noInternals(page,'add-project dialog');
- allowRefusal=true;
- await page.locator('#project-path').fill(shop);await page.locator('#project-add').click();
- await page.locator('#project-message.error').filter({hasText:'这个文件夹已经是项目「shop-app」了'}).waitFor();
- await page.locator('#project-path').fill('relative/folder');await page.locator('#project-add').click();
+ // Cancelling the folder dialog leaves this one where it was.
+ answer('');await pickButton.click();
+ await until(()=>picks()===1,20,'the button did not open the folder dialog');
+ await dialog.locator('#project-waiting').waitFor({state:'hidden'});await pickButton.waitFor();
+ assert(await preview.isHidden()&&!await page.locator('#project-message').innerText(),'cancelling the folder dialog changed this one');
+ // A folder picked: what each agent has there.
+ answer(blog);await pickButton.click();
+ await preview.waitFor();await until(()=>picks()===2,20,'the folder dialog was not opened again');
+ await preview.locator('.preview-name b').filter({hasText:/^blog$/}).waitFor();
+ assert(await preview.locator('.preview-head .folder-path').innerText()===blog,'the preview does not show the folder\'s full path');
+ const outline=previewRow('helper','整理博客的目录结构');await outline.waitFor({timeout:30000});
+ assert((await outline.innerText()).includes('接着聊')&&(await outline.innerText()).includes('1天前'),'a session in the preview lacks its time or what clicking does: '+await outline.innerText());
+ assert(await agentGroup('helper').locator('.preview-session').count()===2,'the preview does not list the agent\'s sessions in this folder');
+ assert((await agentGroup('reviewer').innerText()).includes('不提供会话记录'),'an agent without session records is not named');
+ assert(await primary.innerText()==='添加为项目','the preview does not offer to add the folder');
+ await noInternals(page,'folder preview');
+ await primary.click();await dialog.waitFor({state:'hidden'});
+ const blogBlock=projectBlock(page,'blog');await blogBlock.waitFor();
+ assert(await blogBlock.locator('.project-toggle').getAttribute('aria-expanded')==='true','an added project is not expanded in the sidebar');
+ await blogBlock.locator('.session-row.earlier').filter({hasText:'整理博客的目录结构'}).waitFor();
+
+ stage='look at a folder by its path';
+ await openDialog();
+ await pathBox.fill('relative/folder');await lookButton.click();
  await page.locator('#project-message.error').filter({hasText:'请填写文件夹的完整路径'}).waitFor();
+ assert(await preview.isHidden(),'a relative path left the first step');
+ allowRefusal=true;
+ const missing=join(root,'no-such-folder');
+ await pathBox.fill(missing);await lookButton.click();
+ await page.locator('#project-message.error').filter({hasText:'这台电脑上没有这个文件夹'}).waitFor({timeout:30000});
  allowRefusal=false;
- await blogRow.locator('input').check();await page.locator('#project-path').fill(site);
- await page.locator('#project-add').click();await dialog.waitFor({state:'hidden'});
- await projectBlock(page,'blog').waitFor();await projectBlock(page,'site').waitFor();
+ assert(await preview.isHidden()&&await pathBox.inputValue()===missing,'a refused path does not stay in the path box');
+ await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
+ // A folder that is a project already opens that project.
+ const shopToggle=projectBlock(page,'shop-app').locator('.project-toggle');
+ if(await shopToggle.getAttribute('aria-expanded')==='true')await shopToggle.click();
+ await openDialog();
+ await pathBox.fill(shop);await pathBox.press('Enter');
+ await primary.filter({hasText:'打开项目'}).waitFor({timeout:30000});
+ await previewRow('helper','检查一下构建脚本').waitFor({timeout:30000});
+ const echoed=previewRow('helper','fixture:echo 第一次打招呼');
+ assert((await echoed.innerText()).includes('打开')&&!(await echoed.innerText()).includes('接着聊'),'a session already continued here is offered again: '+await echoed.innerText());
+ assert((await preview.locator('.preview-name').innerText()).includes('已是项目'),'the preview does not say the folder is a project');
+ await noInternals(page,'preview of a project');
+ await primary.click();await dialog.waitFor({state:'hidden'});
+ await until(async()=>await shopToggle.getAttribute('aria-expanded')==='true',10,'打开项目 did not expand the project');
+ // A session continued here already opens as it is.
+ await openDialog();
+ await pathBox.fill(shop);await lookButton.click();
+ await echoed.waitFor({timeout:30000});await echoed.click();await dialog.waitFor({state:'hidden'});
+ await stream(page).getByText(/Echo #\d+: 第一次打招呼/).waitFor({timeout:30000});
+ // A folder without sessions, added by its path.
+ await openDialog();
+ await pathBox.fill(site);await lookButton.click();
+ await agentGroup('helper').filter({hasText:'这里没有会话'}).waitFor({timeout:30000});
+ assert((await agentGroup('reviewer').innerText()).includes('不提供会话记录'),'an agent without session records is not named');
+ await primary.click();await dialog.waitFor({state:'hidden'});
+ await projectBlock(page,'site').waitFor();
+
+ stage='without a folder dialog the path box is the way in';
+ const without=await page.evaluate(()=>{
+  const caps=state.runtime.capabilities,had=caps.folder_picker;caps.folder_picker=false;
+  document.querySelector('#session-list .add-project').click();
+  const seen={pick:document.querySelector('#project-pick').checkVisibility(),label:document.querySelector('#project-path-label').textContent,focus:document.activeElement?.id};
+  document.querySelector('#project-dialog').close();caps.folder_picker=had;return seen;
+ });
+ assert(!without.pick&&without.label==='文件夹的完整路径'&&without.focus==='project-path','without a folder dialog the dialog still offers one: '+JSON.stringify(without));
 
  stage='a session in an added project';
  await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
@@ -148,7 +220,7 @@ try{
  await shopEarlier.waitFor({timeout:30000});
  assert(await projectBlock(page,'shop-app').locator('.session-row.earlier').filter({hasText:'fixture:echo'}).count()===0,'a session HarnessMesh already has is listed again as an earlier one');
  await projectBlock(page,'shop-app').locator('.side-note').filter({hasText:'reviewer 不提供之前的会话'}).waitFor();
- const blogBlock=projectBlock(page,'blog'),blogEarlier=blogBlock.locator('.session-row.earlier').filter({hasText:'整理博客的目录结构'});
+ const blogEarlier=blogBlock.locator('.session-row.earlier').filter({hasText:'整理博客的目录结构'});
  if(await blogBlock.locator('.project-toggle').getAttribute('aria-expanded')!=='true')await blogBlock.locator('.project-toggle').click();
  await blogEarlier.waitFor({timeout:30000});
  assert((await blogEarlier.innerText()).includes('helper'),'the earlier session does not name its agent');
@@ -226,26 +298,52 @@ try{
  await page.locator('#show-hidden').uncheck();
  assert((await projectNames(page)).join('|')==='shop-app|网站|blog','an unhidden project did not come back in place');
 
+ stage='continue a session from the agents\' folders';
+ await openDialog();
+ await dialog.locator('#project-history summary').click();
+ const notesFolder=dialog.locator('#project-folders .folder-row').filter({hasText:notes});
+ await notesFolder.waitFor({timeout:30000});
+ assert((await notesFolder.innerText()).includes('2 个会话')&&(await notesFolder.innerText()).includes('helper'),'a folder from the agents\' history lacks its sessions or agent: '+await notesFolder.innerText());
+ assert((await dialog.locator('#project-folders .folder-row').filter({hasText:blog}).innerText()).includes('已添加'),'an added folder is not marked');
+ assert(await dialog.locator('#project-folders input').count()===0,'the agents\' folders are still a checklist');
+ await noInternals(page,'the agents\' folders');
+ await notesFolder.click();
+ const topics=previewRow('helper','把读书笔记按主题归类');await topics.waitFor({timeout:30000});
+ assert((await topics.innerText()).includes('接着聊'),'a session in the preview does not say it continues');
+ // Rows are buttons: the keyboard continues one too.
+ await topics.focus();await page.keyboard.press('Enter');
+ await dialog.waitFor({state:'hidden',timeout:30000});
+ await stream(page).locator('.msg.user').filter({hasText:'把读书笔记按主题归类'}).waitFor({timeout:30000});
+ await stream(page).locator('.msg.agent').filter({hasText:'已经分成五个主题。'}).waitFor();
+ await stream(page).getByText('已接上 Agent 里已有的会话，上面是之前的记录。').waitFor({timeout:30000});
+ await waitIdle(page);
+ const notesBlock=projectBlock(page,'notes');
+ await rowsIn(notesBlock).filter({hasText:'把读书笔记按主题归类'}).waitFor();
+ assert(await notesBlock.locator('.project-toggle').getAttribute('aria-expanded')==='true','the project of a continued session is not expanded');
+ assert(await notesBlock.locator('.session-row.earlier').filter({hasText:'把读书笔记按主题归类'}).count()===0,'the continued session is still offered as an earlier one');
+
  stage='remove an added project: its sessions move to 其他';
- const scratch=folder('scratch');
- await page.locator('#session-list .add-project').click();await dialog.waitFor();
- await page.locator('#project-path').fill(scratch);await page.locator('#project-add').click();await dialog.waitFor({state:'hidden'});
- await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
- await picker.selectOption({label:'scratch'});
- await page.locator('#hero-input').fill('fixture:echo 临时试一下');await page.locator('#hero-send').click();
- await stream(page).getByText(/Echo #\d+: 临时试一下/).waitFor({timeout:30000});await waitIdle(page);
- await rowsIn(projectBlock(page,'scratch')).filter({hasText:'临时试一下'}).waitFor();
  await projectMenu(page,'shop-app');
  assert(await page.locator('.side-menu').getByRole('menuitem',{name:'移除'}).count()===0,'an agent\'s own folder offers to be removed');
  await page.keyboard.press('Escape');
- await projectMenu(page,'scratch');await page.locator('.side-menu').getByRole('menuitem',{name:'移除'}).click();
+ await projectMenu(page,'notes');await page.locator('.side-menu').getByRole('menuitem',{name:'移除'}).click();
  await page.getByRole('button',{name:'确认',exact:true}).click();
- await until(async()=>(await projectBlock(page,'scratch').count())===0,10,'a removed project is still listed');
- await page.locator('#session-list .project.other .session-row').filter({hasText:'临时试一下'}).waitFor();
+ await until(async()=>(await projectBlock(page,'notes').count())===0,10,'a removed project is still listed');
+ await page.locator('#session-list .project.other .session-row').filter({hasText:'把读书笔记按主题归类'}).waitFor();
  assert((await projectNames(page)).join('|')==='shop-app|网站|blog','removing a project changed the others');
 
  stage='a paired computer opens a session in the shared project';
  const pageB=await open(urlB,'mac-b');
+ // mac-b's panel has no stand-in for the folder dialog. On Linux without a
+ // desktop session it finds none, so only the path box is offered; macOS
+ // and Windows always have their own dialog.
+ if(process.platform==='linux'){
+  await pageB.waitForFunction(()=>state.runtime?.capabilities?.projects===true);
+  assert(await pageB.evaluate(()=>state.runtime.capabilities.folder_picker)===false,'a panel without a folder dialog offers one');
+  await pageB.locator('#session-list .add-project').click();await pageB.locator('#project-dialog').waitFor();
+  assert(!await pageB.locator('#project-pick').isVisible()&&await pageB.locator('#project-path-label').innerText()==='文件夹的完整路径','without a folder dialog the add-project dialog still offers one');
+  await pageB.keyboard.press('Escape');await pageB.locator('#project-dialog').waitFor({state:'hidden'});
+ }
  await pageB.locator('#new-session').click();await pageB.locator('#conversation-empty').waitFor();
  await pageB.locator('#hero-agents .agent-chip').filter({hasText:'helper'}).click();
  const pickerB=pageB.locator('#hero-project select');await pickerB.waitFor({timeout:30000});
@@ -284,11 +382,29 @@ try{
   await shot(page,`continued-session-${mode}.png`,{fullPage:narrow});
   if(narrow)assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),'the continued session overflows a phone-sized window');
   if(narrow)await toggle.click();
-  await page.locator('#session-list .add-project').click();await dialog.waitFor();
-  await dialog.locator('.folder-row').filter({hasText:notes}).waitFor({timeout:30000});
-  await dialog.locator('.folder-empty.loading').waitFor({state:'detached',timeout:30000});
-  await shot(page,`add-project-${mode}.png`);
-  if(narrow){const box=await dialog.boundingBox();assert(box.x>=0&&box.x+box.width<=390,'the add-project dialog overflows a phone-sized window');}
+  const fits=async what=>{if(!narrow)return;const box=await dialog.boundingBox();assert(box.x>=0&&box.x+box.width<=390,`the add-project dialog overflows a phone-sized window (${what})`);};
+  await openDialog();
+  await shot(page,`add-project-${mode}.png`);await fits('first step');
+  // Waiting on this computer's own folder dialog.
+  hold(true);answer(notes);
+  await pickButton.click();await dialog.locator('#project-waiting').waitFor();
+  await shot(page,`add-project-waiting-${mode}.png`);await fits('waiting');
+  await dialog.getByRole('button',{name:'取消',exact:true}).click();
+  await pickButton.waitFor();hold(false);
+  assert(await preview.isHidden()&&!await page.locator('#project-message').innerText(),'stopping the wait changed the dialog');
+  // The folders the agents have used, asked for.
+  await dialog.locator('#project-history summary').click();
+  await dialog.locator('#project-folders .folder-row').filter({hasText:notes}).waitFor({timeout:30000});
+  await dialog.locator('#project-folders .folder-empty.loading').waitFor({state:'detached',timeout:30000});
+  await shot(page,`add-project-folders-${mode}.png`);await fits('agents\' folders');
+  await dialog.locator('#project-history summary').click();
+  // One folder's sessions: one agent lists them, one keeps no records.
+  await pickButton.click();
+  await previewRow('helper','给笔记加上标签').waitFor({timeout:30000});
+  assert((await previewRow('helper','把读书笔记按主题归类').innerText()).includes('打开'),'a continued session is offered again');
+  assert((await agentGroup('reviewer').innerText()).includes('不提供会话记录'),'an agent without session records is not named');
+  await shot(page,`add-project-preview-${mode}.png`);await fits('preview');
+  await noInternals(page,`${mode} folder preview`);
   await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
   if(narrow)await toggle.click();
   await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
@@ -298,7 +414,7 @@ try{
   await noInternals(page,`${mode} screens`);
  }
  assert(problems.length===0,`browser errors: ${problems.join(' | ')}`);
- console.log(JSON.stringify({ok:true,model_calls:0,checks:['projects-in-sidebar','add-from-history-and-path','continue-earlier-session','search-rename-pin-hide','project-rename-move-share','paired-computer-uses-shared-project','no-internals'],screenshots:taken}));
+ console.log(JSON.stringify({ok:true,model_calls:0,checks:['projects-in-sidebar','pick-folder-preview-add','preview-by-path-and-history','continue-from-preview','open-existing-project','no-folder-dialog-path-only','continue-earlier-session','search-rename-pin-hide','project-rename-move-share','paired-computer-uses-shared-project','no-internals'],folder_dialog_hidden_checked:process.platform==='linux'?'real-panel-and-page':'page-only',screenshots:taken}));
  for(const path of taken)console.log(path);
 }catch(e){console.error(`projects panel smoke failed at ${stage}: ${e.stack||e} diagnostics=${root}`);process.exitCode=1;}
 finally{await browser?.close();for(const child of owned.reverse()){try{child.kill('SIGTERM');}catch{}}}

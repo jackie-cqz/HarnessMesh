@@ -856,3 +856,322 @@ async fn panel_requires_launch_access_and_same_origin_before_mutating_a_task() {
     );
     assert_eq!(store.attempt_count(task.task_id).unwrap(), 0);
 }
+
+/// The panel shows this computer's own folder dialog (here a stand-in
+/// program), one at a time, and reads what a folder holds before it is added.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn the_folder_dialog_is_this_computers_own_one_at_a_time() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("node");
+    let folder = std::fs::canonicalize(root.path())
+        .unwrap()
+        .join("my project");
+    std::fs::create_dir_all(&folder).unwrap();
+    let mode = root.path().join("pick-mode");
+    let picker = root.path().join("pick.sh");
+    std::fs::write(
+        &picker,
+        "#!/bin/sh\necho $$ > \"$PICK_PID\"\ncase \"$(cat \"$PICK_MODE\")\" in\n  echo) printf '%s\\n' \"$1\";;\n  cancel) ;;\n  slow) sleep 3; printf '%s/\\n' \"$PICK_DIR\";;\n  hang) exec sleep 60;;\n  *) printf '%s/\\n' \"$PICK_DIR\";;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&picker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(&mode, "pick").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hmesh"))
+        .arg("--data-dir")
+        .arg(&data)
+        .args(["--json", "panel", "--start-daemon", "--port", "0"])
+        .env("HMESH_FOLDER_PICKER", &picker)
+        .env("PICK_MODE", &mode)
+        .env("PICK_DIR", &folder)
+        .env("PICK_PID", root.path().join("pick-pid"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let line = tokio::time::timeout(Duration::from_secs(25), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let ready: Value = serde_json::from_str(&line).unwrap();
+    let (origin, token) = ready["url"]
+        .as_str()
+        .unwrap()
+        .split_once("/#access=")
+        .unwrap();
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .unwrap();
+    let pick = |body: Value| {
+        http.post(format!("{origin}/api/folders/pick"))
+            .bearer_auth(token)
+            .header("origin", origin)
+            .json(&body)
+    };
+    let runtime: Value = http
+        .get(format!("{origin}/api/runtime"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime["data"]["capabilities"]["folder_picker"], true,
+        "{runtime}"
+    );
+
+    // Only the panel's own page may open it.
+    let anonymous = http
+        .post(format!("{origin}/api/folders/pick"))
+        .header("origin", origin)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+    let foreign = http
+        .post(format!("{origin}/api/folders/pick"))
+        .bearer_auth(token)
+        .header("origin", "http://evil.example")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), 403);
+
+    // The folder chosen, without the trailing slash; a cancel; the start.
+    let chosen: Value = pick(json!({})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(chosen["data"]["path"], folder.to_str().unwrap(), "{chosen}");
+    std::fs::write(&mode, "cancel").unwrap();
+    let cancelled: Value = pick(json!({})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(cancelled["data"]["cancelled"], true, "{cancelled}");
+    std::fs::write(&mode, "echo").unwrap();
+    let started: Value = pick(json!({"start":folder}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        started["data"]["path"],
+        folder.to_str().unwrap(),
+        "{started}"
+    );
+    // A start that is not an existing folder is not passed on: the
+    // stand-in gets no argument and answers nothing, i.e. cancelled.
+    let ignored: Value = pick(json!({"start":"relative/folder"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ignored["data"]["cancelled"], true, "{ignored}");
+
+    // One dialog at a time.
+    std::fs::write(&mode, "slow").unwrap();
+    let first = tokio::spawn(pick(json!({})).send());
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let busy = pick(json!({})).send().await.unwrap();
+    assert_eq!(busy.status(), 409);
+    let busy: Value = busy.json().await.unwrap();
+    assert_eq!(busy["error"]["code"], "FOLDER_PICKER_BUSY");
+    let first: Value = first.await.unwrap().unwrap().json().await.unwrap();
+    assert_eq!(first["data"]["path"], folder.to_str().unwrap());
+    // A browser that stops waiting closes the dialog; the next one opens.
+    let gave_up = pick(json!({}))
+        .timeout(Duration::from_millis(500))
+        .send()
+        .await;
+    assert!(gave_up.is_err());
+    // `kill -0` also finds a zombie: gone means killed and waited for by the
+    // panel, which is still running.
+    let alive = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let gone = std::fs::read_to_string(root.path().join("pick-pid")).unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        while alive(&gone) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "the dialog the browser gave up on still runs"
+    );
+    std::fs::write(&mode, "pick").unwrap();
+    let again: Value = pick(json!({})).send().await.unwrap().json().await.unwrap();
+    assert_eq!(again["data"]["path"], folder.to_str().unwrap(), "{again}");
+
+    // What the folder holds: no agents here, not a project yet.
+    let history: Value = http
+        .get(format!("{origin}/api/folders/history"))
+        .query(&[("path", folder.to_str().unwrap())])
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        history["data"]["path"],
+        folder.to_str().unwrap(),
+        "{history}"
+    );
+    assert_eq!(history["data"]["name"], "my project");
+    assert_eq!(history["data"]["project_id"], Value::Null);
+    assert_eq!(history["data"]["agents"], json!([]));
+    for bad in ["relative/folder", "/no/such/folder"] {
+        let refused = http
+            .get(format!("{origin}/api/folders/history"))
+            .query(&[("path", bad)])
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 502, "{bad}");
+    }
+    // Stopping the panel closes a dialog that is still open, and the panel
+    // (with the daemon it started) stops promptly.
+    std::fs::write(&mode, "hang").unwrap();
+    std::fs::remove_file(root.path().join("pick-pid")).unwrap();
+    let open = tokio::spawn(pick(json!({})).send());
+    let pid_file = root.path().join("pick-pid");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let hung = std::fs::read_to_string(&pid_file).unwrap();
+    assert!(alive(&hung));
+    stop_panel(&http, &ready).await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    assert!(!alive(&hung), "the dialog outlived the panel");
+    let answer = open.await.unwrap().unwrap();
+    assert_eq!(answer.status(), 503);
+    let answer: Value = answer.json().await.unwrap();
+    assert_eq!(answer["error"]["code"], "PANEL_STOPPING");
+}
+
+/// Ctrl+C or a stop signal to the panel also closes an open folder dialog.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_signal_closes_an_open_folder_dialog() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let picker = root.path().join("hang.sh");
+    let pid_file = root.path().join("pick-pid");
+    std::fs::write(
+        &picker,
+        "#!/bin/sh\necho $$ > \"$PICK_PID\"\nexec sleep 60\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&picker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hmesh"))
+        .arg("--data-dir")
+        .arg(root.path().join("node"))
+        .args(["--json", "panel", "--start-daemon", "--port", "0"])
+        .env("HMESH_FOLDER_PICKER", &picker)
+        .env("PICK_PID", &pid_file)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let line = tokio::time::timeout(Duration::from_secs(25), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let ready: Value = serde_json::from_str(&line).unwrap();
+    let (origin, token) = ready["url"]
+        .as_str()
+        .unwrap()
+        .split_once("/#access=")
+        .unwrap();
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    let open = tokio::spawn(
+        http.post(format!("{origin}/api/folders/pick"))
+            .bearer_auth(token)
+            .header("origin", origin)
+            .json(&json!({}))
+            .send(),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let alive = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let hung = std::fs::read_to_string(&pid_file).unwrap();
+    assert!(alive(&hung));
+    let panel = child.id().unwrap().to_string();
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-TERM", &panel])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    assert!(!alive(&hung), "the dialog outlived the panel");
+    let answer = open.await.unwrap().unwrap();
+    assert_eq!(answer.status(), 503);
+    let answer: Value = answer.json().await.unwrap();
+    assert_eq!(answer["error"]["code"], "PANEL_STOPPING");
+    // The daemon this panel started stopped with it.
+    let daemon = ready["owned_daemon_pid"].as_u64().unwrap().to_string();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while alive(&daemon) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the daemon the panel started still runs");
+}

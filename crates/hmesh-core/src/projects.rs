@@ -120,6 +120,21 @@ pub struct ProjectHistory {
     pub observed_at: i64,
 }
 
+/// Every local agent's sessions in one folder, before or after it is a
+/// project: what adding that folder would bring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderHistory {
+    /// The folder as this computer resolves it.
+    pub path: PathBuf,
+    pub name: String,
+    /// Already a project here.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub agents: Vec<AgentHistory>,
+    pub observed_at: i64,
+}
+
 /// A folder that appears in agents' histories, for adding it as a project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
