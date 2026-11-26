@@ -193,6 +193,34 @@ pub async fn run(
             }),
         )
         .route(
+            "/assets/brand.svg",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/svg+xml")],
+                    include_str!("../../../web/panel/brand.svg"),
+                )
+            }),
+        )
+        .route("/assets/agent-icons/{name}", get(agent_icon))
+        .route(
+            "/favicon.ico",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "image/x-icon")],
+                    include_bytes!("../../../web/panel/favicon.ico").as_slice(),
+                )
+            }),
+        )
+        .route(
+            "/assets/theme.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../../../web/panel/theme.js"),
+                )
+            }),
+        )
+        .route(
             "/assets/panel.js",
             get(|| async {
                 (
@@ -935,6 +963,31 @@ async fn installable_agents() -> Json<Value> {
         .map(|entry| entry.offer())
         .collect();
     Json(json!({"data":entries}))
+}
+
+// Serve only bundled artwork, including when the computer is offline.
+async fn agent_icon(Path(name): Path<String>) -> Response {
+    macro_rules! artwork {
+        ($file:literal) => {
+            include_bytes!(concat!("../../../web/panel/agent-icons/", $file))
+        };
+    }
+    let bytes: &'static [u8] = match name.as_str() {
+        "pi.svg" => artwork!("pi.svg"),
+        "opencode.svg" => artwork!("opencode.svg"),
+        "opencode-dark.svg" => artwork!("opencode-dark.svg"),
+        "dsh.svg" => artwork!("dsh.svg"),
+        "codex.png" => artwork!("codex.png"),
+        "codex-dark.png" => artwork!("codex-dark.png"),
+        "claude-code.png" => artwork!("claude-code.png"),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let mime = if name.ends_with(".svg") {
+        "image/svg+xml"
+    } else {
+        "image/png"
+    };
+    ([(header::CONTENT_TYPE, mime)], bytes).into_response()
 }
 
 /// The catalog as the onboarding dialog lists it, loaded before onboarding.js.
