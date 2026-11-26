@@ -74,13 +74,16 @@ async fn peer_card(
 /// and ask each for its own list, now and every few minutes: a computer that
 /// only connects out learns where the others are only by asking. Computers
 /// that are off are tried again later, as are ones too old to take the card;
-/// one too old to know address lists is not told again. Nothing waits on this.
+/// one too old to know address lists is not told again. A card that names a
+/// new address (a computer on every interface moved) and a newer list are
+/// told again. Nothing waits on this.
 pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
-    let mut told = std::collections::HashSet::new();
-    let mut told_addresses = std::collections::HashSet::new();
+    let mut told = Told::default();
+    let mut told_addresses = Told::default();
     loop {
         if let Ok(peers) = state.store.peers() {
             let revision = state.addresses().revision;
+            let endpoint = state.card().endpoint;
             for peer in peers.into_iter().filter(|p| p.status == "trusted") {
                 // No address this computer can call: a computer that only
                 // connects out, seen from one that takes connections.
@@ -91,13 +94,11 @@ pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
                     continue;
                 }
                 let id = peer.card.node_id;
-                if !told.contains(&id) && peer_told(&state, &client).await {
-                    told.insert(id);
+                if told.needs(id, &endpoint) && peer_told(&state, &client).await {
+                    told.record(id, endpoint.clone());
                 }
-                if !told_addresses.contains(&(id, revision))
-                    && addresses::push(&state, &client).await
-                {
-                    told_addresses.insert((id, revision));
+                if told_addresses.needs(id, &revision) && addresses::push(&state, &client).await {
+                    told_addresses.record(id, revision);
                 }
             }
         }
@@ -108,10 +109,27 @@ pub async fn announce(state: AppState, mut stop: watch::Receiver<bool>) {
         }
     }
 }
+/// What each paired computer was last told (a card's address, an address
+/// list's revision): told again whenever this computer's is something else,
+/// so moving back to an earlier address is told too.
+struct Told<T>(HashMap<Uuid, T>);
+impl<T> Default for Told<T> {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+impl<T: PartialEq> Told<T> {
+    fn needs(&self, peer: Uuid, value: &T) -> bool {
+        self.0.get(&peer) != Some(value)
+    }
+    fn record(&mut self, peer: Uuid, value: T) {
+        self.0.insert(peer, value);
+    }
+}
 pub(crate) async fn peer_told(state: &AppState, client: &Client) -> bool {
     tokio::time::timeout(
         Duration::from_secs(5),
-        client.post::<_, Value>("/hmesh/v1/peers/card", &state.instance.card),
+        client.post::<_, Value>("/hmesh/v1/peers/card", &state.card()),
     )
     .await
     .is_ok_and(|r| r.is_ok())
@@ -292,6 +310,21 @@ pub(crate) async fn check(s: &AppState, record: &PairRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A computer that moves from A to B and back to A tells its peers each
+    /// time, not only the first time it is at an address.
+    #[test]
+    fn a_card_is_told_again_whenever_it_names_another_address() {
+        let peer = Uuid::new_v4();
+        let mut told = Told::default();
+        assert!(told.needs(peer, &"https://192.168.1.20:39880".to_owned()));
+        told.record(peer, "https://192.168.1.20:39880".to_owned());
+        assert!(!told.needs(peer, &"https://192.168.1.20:39880".to_owned()));
+        assert!(told.needs(peer, &"https://10.0.0.5:39880".to_owned()));
+        told.record(peer, "https://10.0.0.5:39880".to_owned());
+        assert!(told.needs(peer, &"https://192.168.1.20:39880".to_owned()));
+        assert!(told.needs(Uuid::new_v4(), &"https://10.0.0.5:39880".to_owned()));
+    }
     use hmesh_transport::serve;
     use tokio::net::TcpListener;
 

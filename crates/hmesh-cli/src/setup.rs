@@ -3,14 +3,18 @@
 //! - **Only MCP**: this computer's own agents (Claude Code, Codex, ...) call
 //!   agents on paired computers through `hmesh mcp`. The daemon listens on
 //!   loopback only and accepts no connection from other computers.
-//! - **Full**: it also listens on its Tailnet IP and registers the ACP agents
-//!   installed here, so paired computers can use them.
+//! - **Full**: it also listens for paired computers (on its Tailnet IP, or
+//!   on a direct network on every interface, open only to the networks it
+//!   trusts) and registers the ACP agents installed here, so paired
+//!   computers can use them.
 //!
 //! Besides the node itself it only adds what the owner agrees to: a login
 //! item for the daemon and HarnessMesh's entry in each MCP client. Nothing is
 //! downloaded or installed, and no model is called.
 use anyhow::{Context, Result, bail};
-use hmesh_core::{AgentCard, AgentConfig, HarnessKind, NodeConfig};
+use hmesh_core::{
+    AgentCard, AgentConfig, HarnessKind, IpNet, LocalNetwork, NodeConfig, TrustedNetwork,
+};
 use hmesh_security::{Instance, atomic_write};
 use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
 use serde_json::{Value, json};
@@ -49,8 +53,14 @@ pub struct Options {
     pub tailnet_address: Option<IpAddr>,
     /// `tailscale` or `direct`; `None` picks Tailscale when it is here.
     pub network: Option<String>,
-    /// Direct network: the address of this computer others connect to.
+    /// Direct network: trust the network this address is on (a loopback
+    /// one listens there alone: tests, demos).
     pub listen: Option<IpAddr>,
+    /// Direct network: also trust these subnets.
+    pub trust: Vec<IpNet>,
+    /// Direct network: also take connections over Tailscale (`None` asks
+    /// when Tailscale runs here; nobody to ask means yes).
+    pub with_tailscale: Option<bool>,
     /// Direct network: who may connect (default: private networks).
     pub allow_from: Option<Vec<hmesh_core::IpNet>>,
     pub project: Option<PathBuf>,
@@ -107,10 +117,12 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
     let allow_from = options
         .allow_from
         .clone()
-        .or_else(|| match (&existing, place) {
+        .or_else(|| match (&existing, &place) {
             // Kept across a new address too (the fix for a DHCP change): a
             // narrowed range is never widened without being asked.
-            (Some(config), Place::Direct(Some(_))) if config.node.network == "direct" => {
+            (Some(config), Place::Direct(Some(_)) | Place::Networks(_))
+                if config.node.network == "direct" =>
+            {
                 config.node.allowed_sources.clone()
             }
             _ => None,
@@ -119,23 +131,48 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
         allow_from,
         ..options
     };
-    match place {
+    let accepted = match &options.allow_from {
+        Some(sources) => sources
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        None => "private networks only".into(),
+    };
+    match &place {
         Place::Tailnet(address) => {
             report.step(true, format!("This computer is {address} on the Tailnet"))
         }
+        Place::Networks(trusted) if trusted.is_empty() => report.step(
+            false,
+            "Listens on every network interface, but trusts no network yet, so no other computer can connect: trust one with `hmesh networks trust <subnet>` (`hmesh networks list` shows them) or in the panel (配对节点 → 信任这个网络)",
+        ),
+        Place::Networks(trusted) => {
+            report.step(
+                true,
+                format!(
+                    "Listens on every network interface; other computers connect over the networks it trusts ({}), from {accepted}. On any other network nobody can connect",
+                    trusted.iter().map(describe_network).collect::<Vec<_>>().join(", ")
+                ),
+            );
+            let subnet_only: Vec<String> = trusted
+                .iter()
+                .filter(|t| t.subnet_only())
+                .map(|t| t.subnet.to_string())
+                .collect();
+            if !subnet_only.is_empty() {
+                report.step(
+                    false,
+                    format!(
+                        "Trusted by subnet only ({}): no gateway hardware address was seen, so any other network with the same subnet counts as trusted too. Trust it again there with `hmesh networks trust <subnet>` once its gateway can be seen",
+                        subnet_only.join(", ")
+                    ),
+                );
+            }
+        }
         Place::Direct(Some(address)) => report.step(
             true,
-            format!(
-                "Other computers on this network connect to {address}; it accepts them from {}",
-                match &options.allow_from {
-                    Some(sources) => sources
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    None => "private networks only".into(),
-                }
-            ),
+            format!("Other computers on this network connect to {address}; it accepts them from {accepted}"),
         ),
         Place::Direct(None) => report.step(
             true,
@@ -145,7 +182,7 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
 
     // The node: create it, or switch an existing one between the two ways
     // and networks. Peers know it by its certificate, so pairings stay.
-    let target = node_config(mode, &options, place, hostname.as_deref());
+    let target = node_config(mode, &options, &place, hostname.as_deref());
     // Only MCP accepts no connections, so it has no sources to keep.
     if let Some(sources) = existing
         .as_ref()
@@ -165,6 +202,23 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
         );
     }
     target.validate()?;
+    if let Some(networks) = existing
+        .as_ref()
+        .and_then(|config| config.node.trusted_networks.as_ref())
+        .filter(|networks| !networks.is_empty() && target.node.trusted_networks.is_none())
+    {
+        report.step(
+            false,
+            format!(
+                "The networks it trusted ({}) are not kept: run setup with --full --network direct again to trust networks",
+                networks
+                    .iter()
+                    .map(describe_network)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
     let mut restart = false;
     if dir.join("node.toml").exists() {
         let mut instance = Instance::load(dir)?;
@@ -255,14 +309,14 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
         &mut report,
     )?;
 
-    if matches!(place, Place::Direct(_)) {
+    if matches!(place, Place::Direct(_) | Place::Networks(_)) {
         direct_notes(mode, &mut report);
     }
-    let next = match (mode, place) {
+    let next = match (mode, &place) {
         (Mode::McpOnly, _) => {
             "Next: run `hmesh panel`, open 配对节点 → 配对新电脑 and paste another computer's pairing code. This computer only connects out, so pairing starts here."
         }
-        (Mode::Full, Place::Direct(_)) => {
+        (Mode::Full, Place::Direct(_) | Place::Networks(_)) => {
             "Next: run `hmesh panel` and open 配对节点 → 配对新电脑: for 10 minutes, other computers can pair with the code it shows (`hmesh pair show` does the same)."
         }
         (Mode::Full, _) => {
@@ -272,13 +326,24 @@ pub async fn run(dir: &Path, options: Options, json_output: bool) -> Result<Valu
     if !json_output {
         println!("{next}");
     }
+    // The running daemon's card: on every interface it names the address
+    // on a trusted network it found, not the configured `::`.
+    let node = match client.get::<Value>("/local/status").await {
+        Ok(status) if status["node"].is_object() => status["node"].clone(),
+        _ => json!(instance.card),
+    };
     Ok(json!({
         "mode": mode.name(),
         "data_dir": dir,
-        "node": instance.card,
+        "node": node,
         "network": instance.config.node.network,
-        "tailnet_address": match place { Place::Tailnet(address) => Some(address), Place::Direct(_) => None },
-        "listen_address": match place { Place::Direct(address) => address, Place::Tailnet(address) => (mode == Mode::Full).then_some(address) },
+        "tailnet_address": match place { Place::Tailnet(address) => Some(address), _ => None },
+        "listen_address": match &place {
+            Place::Direct(address) => *address,
+            Place::Networks(_) => Some(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)),
+            Place::Tailnet(address) => (mode == Mode::Full).then_some(*address),
+        },
+        "trusted_networks": instance.config.node.trusted_networks,
         "outbound_only": mode == Mode::McpOnly,
         "startup": startup,
         "registered_agents": registered,
@@ -326,13 +391,16 @@ fn confirm(question: &str) -> Result<bool> {
 }
 
 /// Where paired computers find this one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Place {
     /// On a Tailnet, at this computer's Tailnet IP.
     Tailnet(IpAddr),
     /// On a network this computer is on (a LAN, ZeroTier, WireGuard, ...):
-    /// the address others connect to, or none when it only connects out.
+    /// the one address others connect to (loopback: tests, demos), or none
+    /// when it only connects out.
     Direct(Option<IpAddr>),
+    /// A direct network, on every interface: open to these networks only.
+    Networks(Vec<TrustedNetwork>),
 }
 
 /// The network to set this computer up for: as asked, or Tailscale when it
@@ -423,20 +491,210 @@ async fn find_place(
         }
         return Ok((Place::Direct(None), host_name()));
     }
-    // A direct node that listened before keeps its address, while this
-    // computer still has it.
-    let listen = options.listen.or_else(|| {
-        existing
-            .filter(|config| config.node.network == "direct" && config.node.expose_to_tailnet)
-            .map(|config| config.node.listen_address)
-            .filter(|address| {
-                address.is_loopback() || local_addresses().iter().any(|(_, ip)| ip == address)
-            })
-    });
     Ok((
-        Place::Direct(Some(choose_address(listen, interactive)?)),
+        choose_networks(options, interactive, existing).await?,
         host_name(),
     ))
+}
+
+/// A full computer on a direct network listens on every interface, open to
+/// the networks it trusts: the one `--listen` names an address of, those
+/// `--trust` names, the ones it trusted before (one that listened on one
+/// address before trusts that address's network now), or, set up for the
+/// first time, the ones the owner picks (the network with the default route
+/// offered first; nobody to ask, none). Tailscale is added when it runs here
+/// and the owner agrees (or with --with-tailscale). Only a
+/// loopback address listens there alone (one computer: tests, demos).
+async fn choose_networks(
+    options: &Options,
+    interactive: bool,
+    existing: Option<&NodeConfig>,
+) -> Result<Place> {
+    let observed = hmesh_transport::netinfo::observe(options.tailscale_executable.as_deref()).await;
+    let listed = || {
+        observed
+            .iter()
+            .map(|n| format!("{} ({})", n.address, n.interface))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let kept =
+        existing.filter(|config| config.node.network == "direct" && config.node.expose_to_tailnet);
+    let before = kept
+        .filter(|config| config.every_interface())
+        .and_then(|config| config.node.trusted_networks.clone());
+    let mut trusted = before.clone().unwrap_or_default();
+    let alone = |address: IpAddr| -> Result<Place> {
+        if !options.trust.is_empty() || options.with_tailscale == Some(true) {
+            bail!(
+                "--trust and --with-tailscale listen on every interface; a loopback --listen listens there alone"
+            );
+        }
+        Ok(Place::Direct(Some(address)))
+    };
+    if let Some(address) = options.listen {
+        match observed.iter().find(|n| n.address == address) {
+            Some(network) => add(&mut trusted, trusted_entry(network)),
+            None if address.is_loopback() => return alone(address),
+            None => bail!(
+                "{address} is not an address of this computer; its addresses are: {}",
+                listed()
+            ),
+        }
+    } else if let Some(config) = kept.filter(|config| !config.every_interface()) {
+        // Set up before for one address: the network that address is on.
+        let address = config.node.listen_address;
+        match observed.iter().find(|n| n.address == address) {
+            Some(network) => add(&mut trusted, trusted_entry(network)),
+            None if address.is_loopback() && options.trust.is_empty() => return alone(address),
+            // That address is gone (a new lease): as for a new computer
+            // (asked; with nobody to ask, nothing).
+            None if options.trust.is_empty() => {
+                for entry in pick_networks(&observed, interactive)? {
+                    add(&mut trusted, entry);
+                }
+            }
+            None => {}
+        }
+    } else if before.is_none() && options.trust.is_empty() {
+        for entry in pick_networks(&observed, interactive)? {
+            add(&mut trusted, entry);
+        }
+    }
+    for subnet in &options.trust {
+        let subnet = subnet.trunc();
+        let entry = observed
+            .iter()
+            .find(|n| !n.tailnet && n.subnet.trunc() == subnet)
+            .map(trusted_entry)
+            .unwrap_or(TrustedNetwork {
+                subnet,
+                gateway: None,
+                name: None,
+                tailnet: false,
+            });
+        add(&mut trusted, entry);
+    }
+    let tailscale_here = observed.iter().any(|n| n.tailnet);
+    let with_tailscale = match options.with_tailscale {
+        Some(choice) => choice,
+        // Asked once, when it first listens on every interface; with
+        // nobody to ask, not without --with-tailscale.
+        None if before.is_none() && tailscale_here && interactive => {
+            confirm("Tailscale runs here. Also accept connections from computers on your Tailnet?")?
+        }
+        None => trusted.iter().any(|t| t.tailnet),
+    };
+    trusted.retain(|t| !t.tailnet);
+    if with_tailscale {
+        trusted.push(TrustedNetwork::tailnet());
+    }
+    Ok(Place::Networks(trusted))
+}
+/// The entry that trusts `network`, behind the gateway seen now.
+fn trusted_entry(network: &LocalNetwork) -> TrustedNetwork {
+    if network.tailnet {
+        return TrustedNetwork::tailnet();
+    }
+    TrustedNetwork {
+        subnet: network.subnet.trunc(),
+        gateway: network.gateway_mac.clone(),
+        name: None,
+        tailnet: false,
+    }
+}
+fn add(trusted: &mut Vec<TrustedNetwork>, entry: TrustedNetwork) {
+    if !trusted.iter().any(|t| {
+        t.tailnet == entry.tailnet
+            && t.subnet.trunc() == entry.subnet.trunc()
+            && t.gateway == entry.gateway
+    }) {
+        trusted.push(entry);
+    }
+}
+fn describe_network(network: &TrustedNetwork) -> String {
+    if network.tailnet {
+        return "Tailscale".into();
+    }
+    let only = if network.subnet_only() {
+        ", by subnet only"
+    } else {
+        ""
+    };
+    match &network.name {
+        Some(name) => format!("{} ({name}{only})", network.subnet),
+        None if network.subnet_only() => format!("{} (by subnet only)", network.subnet),
+        None => network.subnet.to_string(),
+    }
+}
+/// The network offered first: the one with the default route, or the only one.
+fn default_network(lans: &[&LocalNetwork]) -> Option<usize> {
+    lans.iter()
+        .position(|n| n.gateway.is_some())
+        .or((lans.len() == 1).then_some(0))
+}
+/// The networks to trust on a computer set up for the first time, asked
+/// (the one with the default route offered first). With nobody to ask, none.
+fn pick_networks(observed: &[LocalNetwork], interactive: bool) -> Result<Vec<TrustedNetwork>> {
+    let lans: Vec<&LocalNetwork> = observed.iter().filter(|n| !n.tailnet).collect();
+    let default = default_network(&lans);
+    // Nobody to ask: nothing is trusted that was not named (--trust, --listen).
+    if !interactive || lans.is_empty() {
+        return Ok(vec![]);
+    }
+    if let [only] = lans.as_slice() {
+        return Ok(
+            if confirm(&format!(
+                "Trust the network this computer is on, {} ({}), so computers on it can connect?",
+                only.subnet, only.interface
+            ))? {
+                vec![trusted_entry(only)]
+            } else {
+                vec![]
+            },
+        );
+    }
+    eprintln!(
+        "Which networks do you trust? Computers on them can connect to this one; on any other network nobody can."
+    );
+    for (index, network) in lans.iter().enumerate() {
+        eprintln!(
+            "  {}) {}   {} ({}){}",
+            index + 1,
+            network.subnet,
+            network.address,
+            network.interface,
+            if Some(index) == default {
+                "   default route"
+            } else {
+                ""
+            }
+        );
+    }
+    let hint = default.map_or("none".to_owned(), |i| (i + 1).to_string());
+    loop {
+        let answer = ask(&format!("Numbers, separated by spaces [{hint}]: "))?;
+        if answer.is_empty() {
+            return Ok(default
+                .map(|i| trusted_entry(lans[i]))
+                .into_iter()
+                .collect());
+        }
+        let picked: Option<Vec<TrustedNetwork>> = answer
+            .split([' ', ','])
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                part.parse::<usize>()
+                    .ok()
+                    .and_then(|n| lans.get(n.wrapping_sub(1)))
+                    .map(|n| trusted_entry(n))
+            })
+            .collect();
+        match picked {
+            Some(picked) => return Ok(picked),
+            None => eprintln!("Type numbers from the list."),
+        }
+    }
 }
 
 fn ask_tailscale() -> Result<bool> {
@@ -450,65 +708,6 @@ fn ask_tailscale() -> Result<bool> {
             "1" | "" => return Ok(true),
             "2" => return Ok(false),
             _ => eprintln!("Type 1 or 2."),
-        }
-    }
-}
-
-/// This computer's addresses other computers could connect to: not
-/// loopback, link-local or unspecified. IPv4 first.
-fn local_addresses() -> Vec<(String, IpAddr)> {
-    let mut found: Vec<(String, IpAddr)> = if_addrs::get_if_addrs()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|interface| (interface.name.clone(), interface.ip()))
-        .filter(|(_, ip)| hmesh_security::peer_address(*ip) && !ip.is_loopback())
-        .collect();
-    found.sort_by_key(|(name, ip)| (ip.is_ipv6(), name.clone(), *ip));
-    found.dedup_by_key(|(_, ip)| *ip);
-    found
-}
-
-/// The address a direct node listens on: `--listen` if it is one of this
-/// computer's, the only candidate, or the one the owner picks.
-fn choose_address(listen: Option<IpAddr>, interactive: bool) -> Result<IpAddr> {
-    let found = local_addresses();
-    let list = || {
-        found
-            .iter()
-            .map(|(name, ip)| format!("{ip} ({name})"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    if let Some(address) = listen {
-        // Loopback stands in for a network on one computer (tests, demos).
-        if address.is_loopback() || found.iter().any(|(_, ip)| *ip == address) {
-            return Ok(address);
-        }
-        bail!(
-            "{address} is not an address of this computer; its addresses are: {}",
-            list()
-        );
-    }
-    match found.as_slice() {
-        [] => bail!("this computer has no network address other computers could connect to"),
-        [(_, only)] => Ok(*only),
-        _ if !interactive => bail!(
-            "this computer has several addresses; pick the one other computers connect to with --listen: {}",
-            list()
-        ),
-        _ => {
-            eprintln!("Which address do other computers connect to?");
-            for (index, (name, ip)) in found.iter().enumerate() {
-                eprintln!("  {}) {ip}   {name}", index + 1);
-            }
-            loop {
-                if let Ok(choice) = ask("> ")?.parse::<usize>()
-                    && let Some((_, ip)) = found.get(choice.wrapping_sub(1))
-                {
-                    return Ok(*ip);
-                }
-                eprintln!("Type a number from the list.");
-            }
         }
     }
 }
@@ -535,7 +734,7 @@ fn direct_notes(mode: Mode, report: &mut Report) {
     if mode == Mode::Full && matches!(std::env::consts::OS, "macos" | "windows") {
         report.step(
             false,
-            "Your firewall may ask whether hmesh may accept connections: allow it (on Windows, for private networks)",
+            "Your firewall may ask whether hmesh may accept connections: allow it (on Windows, tick private networks only, not public ones)",
         );
     }
     if std::env::consts::OS == "macos" {
@@ -550,7 +749,7 @@ fn direct_notes(mode: Mode, report: &mut Report) {
 pub fn node_config(
     mode: Mode,
     options: &Options,
-    place: Place,
+    place: &Place,
     hostname: Option<&str>,
 ) -> NodeConfig {
     let mut config = NodeConfig::default();
@@ -565,16 +764,27 @@ pub fn node_config(
     match place {
         Place::Tailnet(address) => {
             config.node.network = "tailscale".into();
-            config.node.tailnet_address = Some(address);
+            config.node.tailnet_address = Some(*address);
             let full = mode == Mode::Full;
-            config.node.listen_address = if full { address } else { loopback };
+            config.node.listen_address = if full { *address } else { loopback };
             config.node.expose_to_tailnet = full;
+        }
+        Place::Networks(trusted) if mode == Mode::Full => {
+            config.node.network = "direct".into();
+            config.node.listen_address = IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED);
+            config.node.expose_to_tailnet = true;
+            config.node.allowed_sources = options.allow_from.clone();
+            config.node.trusted_networks = Some(trusted.clone());
+        }
+        Place::Networks(_) => {
+            config.node.network = "direct".into();
+            config.node.listen_address = loopback;
         }
         Place::Direct(address) => {
             config.node.network = "direct".into();
             match (mode, address) {
                 (Mode::Full, Some(address)) => {
-                    config.node.listen_address = address;
+                    config.node.listen_address = *address;
                     config.node.expose_to_tailnet = true;
                     config.node.allowed_sources = options.allow_from.clone();
                 }
@@ -618,6 +828,7 @@ pub fn switch(config: &mut NodeConfig, target: &NodeConfig) -> Result<bool> {
     config.node.expose_to_tailnet = target.node.expose_to_tailnet;
     config.node.tailnet_address = target.node.tailnet_address;
     config.node.allowed_sources = target.node.allowed_sources.clone();
+    config.node.trusted_networks = target.node.trusted_networks.clone();
     if target.node.tailscale_executable.is_some() {
         config.node.tailscale_executable = target.node.tailscale_executable.clone();
     }
@@ -905,6 +1116,8 @@ mod tests {
             tailnet_address: None,
             network: None,
             listen: None,
+            trust: vec![],
+            with_tailscale: None,
             allow_from: None,
             project: None,
             agents: None,
@@ -915,12 +1128,12 @@ mod tests {
     #[test]
     fn both_ways_name_the_tailnet_ip_and_only_full_listens_on_it() {
         let ip: IpAddr = "100.64.0.7".parse().unwrap();
-        let only = node_config(Mode::McpOnly, &options(), Place::Tailnet(ip), None);
+        let only = node_config(Mode::McpOnly, &options(), &Place::Tailnet(ip), None);
         only.validate().unwrap();
         assert!(only.outbound_only());
         assert!(only.node.listen_address.is_loopback());
         assert_eq!(only.node.tailnet_address, Some(ip));
-        let full = node_config(Mode::Full, &options(), Place::Tailnet(ip), None);
+        let full = node_config(Mode::Full, &options(), &Place::Tailnet(ip), None);
         full.validate().unwrap();
         assert!(!full.outbound_only());
         assert_eq!(full.node.listen_address, ip);
@@ -931,25 +1144,38 @@ mod tests {
         let lan: IpAddr = "192.168.1.20".parse().unwrap();
         let mut options = options();
         options.allow_from = Some(vec!["192.168.1.0/24".parse().unwrap()]);
-        let full = node_config(Mode::Full, &options, Place::Direct(Some(lan)), None);
+        let full = node_config(Mode::Full, &options, &Place::Direct(Some(lan)), None);
         full.validate().unwrap();
         assert_eq!(full.node.network, "direct");
         assert_eq!(full.node.listen_address, lan);
         assert!(full.listens_for_peers());
         assert_eq!(full.allowed_sources(), options.allow_from.clone().unwrap());
         assert_eq!(full.node.tailnet_address, None);
-        let only = node_config(Mode::McpOnly, &options, Place::Direct(None), None);
+        let only = node_config(Mode::McpOnly, &options, &Place::Direct(None), None);
         only.validate().unwrap();
         assert!(only.outbound_only());
         assert!(only.node.listen_address.is_loopback());
         assert_eq!(only.node.allowed_sources, None);
+        // Every interface, open to the trusted networks; with the sources.
+        let trusted = vec![TrustedNetwork::tailnet()];
+        let every = node_config(
+            Mode::Full,
+            &options,
+            &Place::Networks(trusted.clone()),
+            None,
+        );
+        every.validate().unwrap();
+        assert!(every.every_interface());
+        assert!(every.node.listen_address.is_unspecified());
+        assert_eq!(every.node.trusted_networks, Some(trusted));
+        assert_eq!(every.allowed_sources(), options.allow_from.clone().unwrap());
     }
 
     #[test]
     fn switching_moves_a_node_between_ways_and_networks_and_keeps_its_name_and_port() {
         let ip: IpAddr = "100.64.0.7".parse().unwrap();
         let lan: IpAddr = "192.168.1.20".parse().unwrap();
-        let at = |mode, place| node_config(mode, &options(), place, None);
+        let at = |mode, place: Place| node_config(mode, &options(), &place, None);
         let mut config = at(Mode::McpOnly, Place::Tailnet(ip));
         config.node.listen_port = 41000;
         assert!(!switch(&mut config, &at(Mode::McpOnly, Place::Tailnet(ip))).unwrap());
@@ -963,12 +1189,44 @@ mod tests {
         assert_eq!(config.node.network, "direct");
         assert_eq!(config.node.listen_address, lan);
         assert_eq!(config.node.tailnet_address, None);
+        // To every interface, and back to one address.
+        assert!(switch(&mut config, &at(Mode::Full, Place::Networks(vec![]))).unwrap());
+        assert!(config.every_interface());
+        assert_eq!(config.node.trusted_networks, Some(vec![]));
+        assert!(switch(&mut config, &at(Mode::Full, Place::Direct(Some(lan)))).unwrap());
+        assert_eq!(config.node.trusted_networks, None);
         assert!(switch(&mut config, &at(Mode::McpOnly, Place::Direct(None))).unwrap());
         assert!(config.outbound_only());
         assert_eq!(config.node.listen_port, 41000);
         assert_eq!(config.node.name, "studio");
         let mut local = NodeConfig::default();
         assert!(switch(&mut local, &at(Mode::Full, Place::Tailnet(ip))).is_err());
+    }
+
+    /// Offered first: the network with the default route, else the only one.
+    #[test]
+    fn the_network_offered_first_has_the_default_route() {
+        let lan = |address: &str, gateway: Option<&str>| LocalNetwork {
+            interface: "en0".into(),
+            address: address.parse().unwrap(),
+            subnet: format!("{address}/24").parse::<IpNet>().unwrap().trunc(),
+            gateway: gateway.map(|g| g.parse().unwrap()),
+            gateway_mac: None,
+            tailnet: false,
+        };
+        let plain = lan("10.0.0.5", None);
+        let routed = lan("192.168.1.20", Some("192.168.1.1"));
+        assert_eq!(default_network(&[&plain, &routed]), Some(1));
+        assert_eq!(default_network(&[&plain]), Some(0));
+        assert_eq!(default_network(&[&plain, &plain]), None);
+        assert_eq!(default_network(&[]), None);
+        // Nobody to ask: nothing, whatever is offered.
+        assert!(
+            pick_networks(std::slice::from_ref(&routed), false)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(pick_networks(&[], true).unwrap().is_empty());
     }
 
     #[test]

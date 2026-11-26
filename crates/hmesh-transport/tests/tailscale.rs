@@ -83,6 +83,46 @@ async fn cli_failure_is_actionable_without_echoing_private_output() {
     assert!(error.to_string().contains("Tailscale status failed"));
 }
 
+/// Asked about this device only (`--peers=false`): a large tailnet's full
+/// status could run past the size or time allowed, and nothing about the
+/// other devices is needed to know this one's addresses.
+#[cfg(unix)]
+#[tokio::test]
+async fn this_devices_own_status_leaves_the_other_devices_out() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let cli = root.path().join("tailscale");
+    std::fs::write(
+        &cli,
+        concat!(
+            "#!/bin/sh\n",
+            "[ \"$*\" = 'status --json --peers=false' ] || exit 3\n",
+            "printf '%s' '{\"BackendState\":\"Running\",",
+            "\"Self\":{\"Online\":false,\"TailscaleIPs\":[\"100.101.102.103\"]}}'\n",
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let provider = CliTailscale::discover(Some(&cli)).unwrap();
+    // Another test starting a process just as the script was written can
+    // keep it busy for a moment.
+    let mut status = provider.own_status().await;
+    for _ in 0..3 {
+        if status.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        status = provider.own_status().await;
+    }
+    let status = status.expect("this device's status");
+    assert_eq!(status.backend_state, "Running");
+    assert_eq!(
+        status.self_node.ips,
+        ["100.101.102.103".parse::<std::net::IpAddr>().unwrap()]
+    );
+    assert!(status.candidates.is_empty());
+}
+
 #[test]
 fn source_scopes_follow_the_network_and_endpoints_are_literal_unicast_addresses() {
     let ip = |address: &str| address.parse::<std::net::IpAddr>().unwrap();

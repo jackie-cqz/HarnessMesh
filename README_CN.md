@@ -98,7 +98,7 @@ cargo build --release --locked -p hmesh-cli
 
 `--connect claude,codex` 或 `--connect none` 预先回答第二个问题，`--startup` 或 `--no-startup` 回答第一个。没人可问时（没有终端，或者用了 `--json`），没预先回答的一律当作不要。重复运行不会改动已经装好的部分。以后把一台电脑从 `--mcp-only` 换成 `--full`，或者换一种网络，它的身份和已有的配对都保留。
 
-**不用 Tailscale。** 在同一个网络里的电脑可以直连：`hmesh setup --full --network direct` 会问别的电脑用本机哪个地址来连（也可以直接写 `--listen 192.168.1.20`），默认只接受私有网段的连接，要放行别的网段就用 `--allow-from`。只装 MCP 的电脑完全不需要 Tailscale：setup 找不到它时，就用本机自己的网络。直连网络里，只有在你打开这台电脑的「配对新电脑」（或者运行 `hmesh pair show`）之后的 10 分钟内，它才接受配对申请。
+**不用 Tailscale。** 在同一个网络里的电脑可以直连：`hmesh setup --full --network direct` 在所有网卡上监听，但只对你认过的网络开门：它列出本机所在的网络让你选（有默认路由的那个排在前面），`--listen 192.168.1.20` 表示认这个地址所在的网络，`--trust 10.0.0.0/24` 再认一个，Tailscale 在运行时经你同意也认你的 Tailnet。没人可问时只认这些参数写明的，Tailscale 要 `--with-tailscale`。读不到路由器硬件地址的网络只按网段认，setup、`hmesh networks` 和面板都会注明。从别的网络进来的连接在 TLS 之前就被断开。默认只接受私有网段的连接，要放行别的网段就用 `--allow-from`。局域网地址变了，配对的电脑几秒内就知道，不用重跑 setup；到了没认过的网络，用 `hmesh networks trust <子网>`（或面板里的「信任这个网络」）认下它。只装 MCP 的电脑完全不需要 Tailscale：setup 找不到它时，就用本机自己的网络。直连网络里，只有在你打开这台电脑的「配对新电脑」（或者运行 `hmesh pair show`）之后的 10 分钟内，它才接受配对申请。
 
 `hmesh agent detect` 会列出可用的 ACP 命令。可直接使用已装好的命令，也可以在执行端的面板中安装推荐版本的 Codex 或 Claude Code 适配器。
 

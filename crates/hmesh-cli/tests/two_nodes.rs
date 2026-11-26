@@ -1217,7 +1217,8 @@ fn join(a_dir: &Path, b_dir: &Path, address: &str) {
 /// wait runs out).
 async fn peer_until(dir: &Path, ready: impl Fn(&Value) -> bool) -> Value {
     let mut peer = Value::Null;
-    for _ in 0..40 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
         peer = cli(dir, &["peers", "list"])[0].clone();
         if ready(&peer) {
             break;
@@ -1399,4 +1400,357 @@ async fn a_peer_is_reached_at_an_address_set_by_hand_and_never_at_another_comput
         &["peers", "address", "studio", "https://user@host:1"],
     );
     assert!(refused.contains("credentials"), "{refused}");
+}
+
+/// What this computer sees as its networks while a daemon runs with
+/// `HMESH_TEST_NETWORKS` (debug builds only): loopback stands in for a LAN.
+fn networks_file(path: &Path, networks: Value) -> std::path::PathBuf {
+    let text = serde_json::to_vec_pretty(&networks).expect("JSON");
+    // Written whole and renamed into place: the daemon rereads it every few
+    // seconds and must never see half of it.
+    let partial = path.with_extension("partial");
+    std::fs::write(&partial, text).expect("networks file");
+    std::fs::rename(&partial, path).expect("networks file");
+    path.to_owned()
+}
+fn ipv6_loopback() -> Value {
+    json!({"interface": "lo0", "address": "::1", "subnet": "::1/128"})
+}
+fn daemon_seeing(dir: &Path, networks: &Path) -> Daemon {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hmesh"));
+    command
+        .arg("--data-dir")
+        .arg(dir)
+        .args(["daemon", "start"])
+        .env("HMESH_TEST_NETWORKS", networks)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    Daemon(command.spawn().expect("daemon process"))
+}
+fn has_ipv6_loopback() -> bool {
+    let present = std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).is_ok();
+    if !present {
+        eprintln!("skipped: this computer has no IPv6 loopback");
+    }
+    present
+}
+fn port_of(endpoint: &str) -> String {
+    endpoint.rsplit(':').next().expect("port").to_owned()
+}
+/// Whether a TCP connection to `address` is closed by the other side at
+/// once, before any TLS: a daemon serving TLS there waits for the client's
+/// first message instead.
+async fn closed_before_tls(address: &str) -> bool {
+    use tokio::io::AsyncReadExt;
+    let mut stream = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("TCP connection");
+    let mut byte = [0u8; 1];
+    match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte)).await {
+        Ok(Ok(0)) | Ok(Err(_)) => true,
+        Ok(Ok(_)) => panic!("{address} sent bytes before the client said anything"),
+        Err(_) => false,
+    }
+}
+
+/// Listening on every interface, a computer opens its port only to the
+/// networks it trusts. On one it has not trusted yet, another computer's
+/// connection is dropped before TLS, while its owner still reaches it on
+/// loopback; trusting the network opens it at once, without a restart.
+#[tokio::test]
+async fn a_computer_on_every_interface_opens_only_to_networks_it_trusts() {
+    if !has_ipv6_loopback() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("tempdir");
+    let a_dir = root.path().join("laptop");
+    let b_dir = root.path().join("studio");
+    let networks = networks_file(
+        &root.path().join("studio-networks.json"),
+        json!([ipv6_loopback()]),
+    );
+    cli(
+        &b_dir,
+        &[
+            "init",
+            "--name",
+            "tower",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--listen-address",
+            "::",
+        ],
+    );
+    edit_node(&b_dir, |node| {
+        node.insert("host_names".into(), toml::Value::Array(vec![]));
+    });
+    cli(
+        &a_dir,
+        &[
+            "init",
+            "--name",
+            "notebook",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--outbound-only",
+        ],
+    );
+    let _a = daemon(&a_dir);
+    let _b = daemon_seeing(&b_dir, &networks);
+    let a_card = ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+
+    // Its owner reaches it on loopback; it trusts no network yet.
+    let status = cli(&b_dir, &["daemon", "status"]);
+    assert_eq!(status["networks"]["every_interface"], true, "{status}");
+    let port = port_of(status["node"]["endpoint"].as_str().expect("endpoint"));
+    let listed = cli(&b_dir, &["networks", "list"]);
+    assert_eq!(listed["trusted"], json!([]), "{listed}");
+    assert_eq!(listed["current"][0]["subnet"], "::1/128", "{listed}");
+    assert_eq!(listed["current"][0]["trusted"], false, "{listed}");
+    assert_eq!(listed["suggested"]["subnet"], "::1/128", "{listed}");
+
+    // The laptop, on that network, is cut off before TLS.
+    let on_network = format!("[::1]:{port}");
+    assert!(
+        closed_before_tls(&on_network).await,
+        "served an untrusted network"
+    );
+    let mut a = Instance::load(&a_dir).expect("a");
+    a.card = a_card.clone();
+    let endpoint = format!("https://{on_network}");
+    let hello = Client::new(&a, &endpoint, &b_card.fingerprint, true, false)
+        .expect("anonymous")
+        .get::<Value>("/hmesh/v1/hello")
+        .await
+        .unwrap_err();
+    assert_eq!(hello.code, ErrorCode::PeerUnreachable, "{hello:?}");
+
+    // Trusted now: the same daemon serves it, and its card names it.
+    let trusted = cli(&b_dir, &["networks", "trust", "::1/128", "--name", "test"]);
+    assert_eq!(trusted["current"][0]["trusted"], true, "{trusted}");
+    assert_eq!(trusted["trusted"][0]["subnet"], "::1/128", "{trusted}");
+    assert_eq!(trusted["trusted"][0]["name"], "test", "{trusted}");
+    assert!(trusted["suggested"].is_null(), "{trusted}");
+    // No gateway seen there: trusted by its subnet alone, and said so.
+    assert_eq!(trusted["current"][0]["subnet_only"], true, "{trusted}");
+    assert_eq!(trusted["trusted"][0]["subnet_only"], true, "{trusted}");
+    assert!(
+        trusted["notes"]
+            .to_string()
+            .contains("::1/128 is trusted by its subnet only"),
+        "{trusted}"
+    );
+    assert_eq!(
+        cli(&b_dir, &["networks", "list"])["notes"],
+        trusted["notes"]
+    );
+    assert!(
+        !closed_before_tls(&on_network).await,
+        "still closed after trusting"
+    );
+    let card = cli(&b_dir, &["node", "show"]);
+    assert_eq!(card["endpoint"], endpoint, "{card}");
+    let config: toml::Table =
+        toml::from_str(&std::fs::read_to_string(b_dir.join("node.toml")).unwrap()).unwrap();
+    assert_eq!(
+        config["node"]["trusted_networks"][0]["subnet"].as_str(),
+        Some("::1/128"),
+        "kept for the next start"
+    );
+
+    // Paired and called, neither computer restarted.
+    join(&a_dir, &b_dir, &on_network);
+    let agents = cli(&a_dir, &["agents", "--peer", &b_card.node_id.to_string()]);
+    assert!(agents.is_array(), "{agents}");
+    let peer = &cli(&a_dir, &["peers", "list"])[0];
+    assert_eq!(peer["card"]["endpoint"], endpoint, "{peer}");
+    assert_eq!(peer["registry_readable"], true, "{peer}");
+
+    // Forgotten: closed again at once, and a connection the laptop keeps
+    // open over that network is closed too.
+    // (HarnessMesh's own client opens a connection per request; this one
+    // keeps its connection, as a long request or another client would.)
+    let kept = reqwest::Client::builder()
+        .use_preconfigured_tls(
+            a.client_config(&b_card.fingerprint, false)
+                .expect("pinned TLS"),
+        )
+        .build()
+        .expect("client");
+    let node = format!("{endpoint}/hmesh/v1/node");
+    let served = kept.get(&node).send().await.expect("served while trusted");
+    assert!(served.status().is_success(), "{}", served.status());
+    served.bytes().await.expect("body");
+    let forgotten = cli(&b_dir, &["networks", "forget", "::1/128"]);
+    assert_eq!(forgotten["trusted"], json!([]), "{forgotten}");
+    assert!(
+        closed_before_tls(&on_network).await,
+        "open after forgetting"
+    );
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let after = kept.get(&node).send().await;
+    assert!(
+        after.is_err(),
+        "a connection kept open was still served: {after:?}"
+    );
+}
+
+/// Two computers on every interface, paired over ::1, that see the networks
+/// their files say (`HMESH_TEST_NETWORKS`). The studio also trusts
+/// 192.0.2.0/24 (`studio_lan`), where rewriting its file moves it.
+struct Moving {
+    a_dir: std::path::PathBuf,
+    b_dir: std::path::PathBuf,
+    b_networks: std::path::PathBuf,
+    b_card: NodeCard,
+    _daemons: (Daemon, Daemon),
+}
+async fn paired_while_moving(root: &Path) -> Moving {
+    let a_dir = root.join("laptop");
+    let b_dir = root.join("studio");
+    let a_networks = networks_file(&root.join("laptop-networks.json"), json!([ipv6_loopback()]));
+    let b_networks = networks_file(&root.join("studio-networks.json"), json!([ipv6_loopback()]));
+    for (dir, name, extra) in [
+        (&b_dir, "workshop", vec!["--trust", "192.0.2.0/24"]),
+        (&a_dir, "tablet", vec![]),
+    ] {
+        let mut args = vec![
+            "init",
+            "--name",
+            name,
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--trust",
+            "::1/128",
+        ];
+        args.extend(extra);
+        cli(dir, &args);
+        edit_node(dir, |node| {
+            node.insert("host_names".into(), toml::Value::Array(vec![]));
+        });
+    }
+    let a = daemon_seeing(&a_dir, &a_networks);
+    let b = daemon_seeing(&b_dir, &b_networks);
+    ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+    let port = port_of(&b_card.endpoint);
+    assert_eq!(b_card.endpoint, format!("https://[::1]:{port}"));
+    join(&a_dir, &b_dir, &format!("[::1]:{port}"));
+    let b_id = b_card.node_id.to_string();
+    assert!(cli(&a_dir, &["agents", "--peer", &b_id]).is_array());
+    Moving {
+        a_dir,
+        b_dir,
+        b_networks,
+        b_card,
+        _daemons: (a, b),
+    }
+}
+/// The studio's network in 192.0.2.0/24.
+fn studio_lan() -> Value {
+    json!({"interface": "en0", "address": "192.0.2.10", "subnet": "192.0.2.0/24",
+           "gateway": "192.0.2.1", "gateway_mac": "02:00:5e:00:53:01"})
+}
+
+/// A computer on every interface whose address changes tells the computers
+/// it is paired with within seconds: its card names the new address, and
+/// its address list has every address on its trusted networks.
+#[tokio::test]
+async fn a_computer_whose_address_changes_tells_its_peers_within_seconds() {
+    if !has_ipv6_loopback() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("tempdir");
+    let Moving {
+        a_dir,
+        b_dir,
+        b_networks,
+        b_card,
+        _daemons,
+    } = paired_while_moving(root.path()).await;
+    let port = port_of(&b_card.endpoint);
+    let b_id = b_card.node_id.to_string();
+
+    // The studio's network gives it another address, first in its list.
+    let moved = format!("https://192.0.2.10:{port}");
+    networks_file(&b_networks, json!([studio_lan(), ipv6_loopback()]));
+    let peer = peer_until(&a_dir, |p| {
+        p["card"]["endpoint"] == moved
+            && p["routes"]["advertised"]
+                .as_array()
+                .is_some_and(|a| a.contains(&json!(b_card.endpoint)))
+    })
+    .await;
+    assert_eq!(peer["card"]["endpoint"], moved, "{peer}");
+    assert_eq!(
+        peer["routes"]["advertised"],
+        json!([moved, b_card.endpoint]),
+        "{peer}"
+    );
+    assert_eq!(cli(&b_dir, &["node", "show"])["endpoint"], moved);
+    // Doctor output is shared to get help: no gateway hardware address in it.
+    let doctor = cli(&b_dir, &["doctor"]);
+    assert!(
+        !doctor.to_string().contains("02:00:5e:00:53:01"),
+        "{doctor}"
+    );
+    assert_eq!(
+        doctor["daemon"]["status"]["networks"]["current"][0]["gateway_mac"], "hidden",
+        "{doctor}"
+    );
+    // Still reached where it answers.
+    assert!(cli(&a_dir, &["agents", "--peer", &b_id]).is_array());
+    let peer = &cli(&a_dir, &["peers", "list"])[0];
+    assert_eq!(peer["routes"]["last_good"], b_card.endpoint, "{peer}");
+}
+
+/// A computer that moves, moves back and moves again (A, B, A once paired)
+/// tells the computers it is paired with every time. The third card names
+/// an address a card was already told with, and is told all the same: the
+/// other computer's card names it again, and its address list is that
+/// address's list again.
+#[tokio::test]
+async fn a_computer_that_moves_back_and_forth_tells_its_peers_each_time() {
+    if !has_ipv6_loopback() {
+        return;
+    }
+    let root = tempfile::tempdir().expect("tempdir");
+    let moving = paired_while_moving(root.path()).await;
+    let first = moving.b_card.endpoint.clone();
+    let moved = format!("https://192.0.2.10:{}", port_of(&first));
+    let there = || {
+        (
+            json!([studio_lan(), ipv6_loopback()]),
+            &moved,
+            json!([moved, first]),
+        )
+    };
+    let back = (json!([ipv6_loopback()]), &first, json!([first]));
+    for (step, (networks, endpoint, advertised)) in [there(), back, there()].into_iter().enumerate()
+    {
+        networks_file(&moving.b_networks, networks);
+        let peer = peer_until(&moving.a_dir, |p| {
+            p["card"]["endpoint"] == *endpoint && p["routes"]["advertised"] == advertised
+        })
+        .await;
+        assert_eq!(peer["card"]["endpoint"], *endpoint, "move {step}: {peer}");
+        assert_eq!(
+            peer["routes"]["advertised"], advertised,
+            "move {step}: {peer}"
+        );
+        assert_eq!(cli(&moving.b_dir, &["node", "show"])["endpoint"], *endpoint);
+    }
 }

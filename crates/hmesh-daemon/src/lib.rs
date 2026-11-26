@@ -5,6 +5,7 @@ mod development;
 mod discovery;
 mod integration;
 mod nearby;
+mod networks;
 mod onboarding;
 mod pairing;
 pub mod passcode;
@@ -31,6 +32,7 @@ use hmesh_security::{
 use hmesh_store::Store;
 use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
 use hmesh_transport::{Client, ConnectionIdentity, RouteMemory};
+pub use networks::{ForgetNetwork, TrustNetwork, view as networks_view, write_trusted};
 pub use onboarding::OnboardingRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -66,6 +68,10 @@ pub struct AppState {
     routes: Arc<RouteMemory>,
     /// Wakes the announcer: a computer was paired, or a way to reach one changed.
     announce_now: Arc<tokio::sync::Notify>,
+    /// This computer's card as it is now (see `card()`).
+    card: Arc<RwLock<NodeCard>>,
+    /// Listening on every interface: the networks it is on and trusts.
+    networks: Arc<networks::Networks>,
 }
 #[derive(Debug)]
 pub struct ApiError(pub MeshError);
@@ -211,7 +217,12 @@ impl AppState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|elapsed| elapsed.as_millis() as i64)
             .unwrap_or_default();
-        let addresses = Arc::new(RwLock::new(addresses::local(&instance, revision)));
+        let addresses = Arc::new(RwLock::new(addresses::local(
+            &instance.config,
+            &instance.card,
+            &[],
+            revision,
+        )));
         let routes_store = store.clone();
         let routes = Arc::new(RouteMemory::persisted(move |fingerprint, origin, at| {
             if let Err(error) = routes_store.remember_route(fingerprint, origin, at) {
@@ -221,7 +232,6 @@ impl AppState {
         Ok(Self {
             managed: services::Manager::default(),
             integration_slots: Arc::new(tokio::sync::Semaphore::new(1)),
-            instance,
             store,
             policy: Arc::new(RwLock::new(policy)),
             handshake_requests: Arc::default(),
@@ -234,6 +244,9 @@ impl AppState {
             addresses,
             routes,
             announce_now: Arc::default(),
+            card: Arc::new(RwLock::new(instance.card.clone())),
+            networks: Arc::new(networks::Networks::new(&instance.config)),
+            instance,
         })
     }
     fn actor(
@@ -513,6 +526,7 @@ pub fn router(state: AppState) -> Router {
         .merge(passcode::routes())
         .merge(nearby::routes())
         .merge(addresses::routes())
+        .merge(networks::routes())
         .route("/hmesh/v1/hello", get(hello))
         .route("/hmesh/v1/pair/challenge", get(challenge))
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
@@ -602,12 +616,29 @@ async fn contract_errors(request: axum::extract::Request, next: middleware::Next
     response
 }
 
+/// What a daemon listens on.
+enum Listeners {
+    /// One listener for everyone: loopback (one computer, or a node that
+    /// only connects out), or one direct address on loopback.
+    One(TcpListener),
+    /// Other computers on a Tailnet IP or one direct address, the owner on a
+    /// separate loopback listener at the same port.
+    Two {
+        owner: TcpListener,
+        peers: TcpListener,
+        scope: hmesh_transport::Scope,
+    },
+    /// Every interface, one port: each connection goes through the fence.
+    Every(TcpListener),
+}
+
 pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let mut instance = Instance::load(dir)?;
     let _lock = instance.lock_daemon()?;
     // Other computers connect on a Tailnet IP, or on a direct network's
     // address; the owner then uses a separate loopback listener. A node that
-    // only connects out listens on loopback for its owner alone.
+    // only connects out listens on loopback for its owner alone. One on
+    // every interface has a single port for both, behind its fence.
     let for_peers = instance.config.listens_for_peers();
     if for_peers && instance.config.node.network == "tailscale" {
         CliTailscale::discover(instance.config.node.tailscale_executable.as_deref())?
@@ -619,41 +650,81 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
         instance.config.node.listen_address,
         instance.config.node.listen_port,
     );
-    let peer_listener = TcpListener::bind(address).await.map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AddrNotAvailable
-            && instance.config.node.network == "direct"
-        {
-            anyhow::anyhow!(
-                "this computer no longer has the address {} it is set up to listen on (network = \"direct\"); run `hmesh setup` to use its current address",
-                address.ip()
-            )
+    let listeners = if instance.config.every_interface() {
+        Listeners::Every(
+            hmesh_transport::bind_every_interface(address)
+                .context("bind node listener on every interface")?,
+        )
+    } else {
+        let peer_listener = TcpListener::bind(address).await.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AddrNotAvailable
+                && instance.config.node.network == "direct"
+            {
+                anyhow::anyhow!(
+                    "this computer no longer has the address {} it is set up to listen on (network = \"direct\"); run `hmesh setup` to use its current address",
+                    address.ip()
+                )
+            } else {
+                anyhow::Error::new(error).context("bind node listener on its configured address")
+            }
+        })?;
+        instance.card.endpoint = format!("https://{}", peer_listener.local_addr()?);
+        if for_peers {
+            let owner = TcpListener::bind((
+                std::net::Ipv4Addr::LOCALHOST,
+                peer_listener.local_addr()?.port(),
+            ))
+            .await
+            .context("bind separate loopback owner listener (same port)")?;
+            Listeners::Two {
+                owner,
+                peers: peer_listener,
+                scope: if instance.config.node.network == "tailscale" {
+                    hmesh_transport::Scope::Tailnet
+                } else {
+                    hmesh_transport::Scope::Sources(Arc::new(instance.config.allowed_sources()))
+                },
+            }
         } else {
-            anyhow::Error::new(error).context("bind node listener on its configured address")
+            Listeners::One(peer_listener)
         }
-    })?;
-    instance.card.endpoint = format!("https://{}", peer_listener.local_addr()?);
-    let scope = if instance.config.node.network == "tailscale" {
-        hmesh_transport::Scope::Tailnet
-    } else {
-        hmesh_transport::Scope::Sources(Arc::new(instance.config.allowed_sources()))
     };
-    let (listener, peer_listener) = if for_peers {
-        let owner = TcpListener::bind((
-            std::net::Ipv4Addr::LOCALHOST,
-            peer_listener.local_addr()?.port(),
-        ))
-        .await
-        .context("bind separate loopback owner listener (same port)")?;
-        (owner, Some(peer_listener))
-    } else {
-        (peer_listener, None)
-    };
-    let instance = Arc::new(instance);
     let store = Store::open(&instance.dir.join("state.sqlite3"))?;
-    store.set_node(&instance.card)?;
+    if let Listeners::Every(listener) = &listeners {
+        // Until a trusted network gives it an address: the one its card
+        // named last time, at this port, or its owner's loopback.
+        let previous = store
+            .node(instance.card.node_id)?
+            .and_then(|card| hmesh_security::validate_endpoint(&card.endpoint).ok())
+            .and_then(|url| {
+                url.host_str()?
+                    .trim_matches(['[', ']'])
+                    .parse::<IpAddr>()
+                    .ok()
+            })
+            .filter(|ip| !ip.is_loopback());
+        instance.card.endpoint = format!(
+            "https://{}",
+            SocketAddr::new(
+                previous.unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+                listener.local_addr()?.port()
+            )
+        );
+    }
+    let instance = Arc::new(instance);
     let recovered = store.recover_interrupted()?;
     let (shutdown, receiver) = watch::channel(false);
     let state = AppState::load(instance.clone(), store.clone(), shutdown.clone())?;
+    if let Listeners::Every(listener) = &listeners {
+        state.networks.set_port(listener.local_addr()?.port());
+        state.apply_networks(
+            hmesh_transport::netinfo::observe(state.tailscale()).await,
+            None,
+            true,
+        );
+    }
+    let card = state.card();
+    store.set_node(&card)?;
     let legacy = state.current_policy();
     if !legacy.grant.is_empty() {
         tracing::warn!(
@@ -665,7 +736,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     pairing::resume(&state)?;
     atomic_write(
         &instance.dir.join("daemon.json"),
-        &serde_json::to_vec(&instance.card)?,
+        &serde_json::to_vec(&card)?,
     )?;
     let signal_shutdown = shutdown.clone();
     let signal = tokio::spawn(async move {
@@ -673,7 +744,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
             let _ = signal_shutdown.send(true);
         }
     });
-    tracing::info!(node_id=%instance.card.node_id, endpoint=%instance.card.endpoint, recovered, "daemon listening");
+    tracing::info!(node_id=%card.node_id, endpoint=%card.endpoint, every_interface=instance.config.every_interface(), recovered, "daemon listening");
     let tls_instance = instance.clone();
     let execution_state = state.clone();
     let relay = state.relay.clone();
@@ -692,6 +763,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let session_manager = tokio::spawn(sessions::run(state.clone(), shutdown.subscribe()));
     let announce = tokio::spawn(pairing::announce(state.clone(), shutdown.subscribe()));
     let nearby = tokio::spawn(nearby::run(state.clone(), shutdown.subscribe()));
+    let networks = tokio::spawn(networks::watch(state.clone(), shutdown.subscribe()));
     let expiry_store = state.store.clone();
     let ttl = instance.config.security.pending_approval_ttl_seconds;
     let mut expiry_stop = shutdown.subscribe();
@@ -704,30 +776,49 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let state_for_cleanup = state.clone();
     let tls: hmesh_transport::TlsConfigProvider =
         Arc::new(move || tls_instance.server_config(&store.peers()?));
-    let owner = hmesh_transport::serve(listener, router(state.clone()), tls.clone(), receiver);
-    let result = if let Some(listener) = peer_listener {
-        let peer = hmesh_transport::serve_peers(
-            listener,
-            tailnet_router(state),
-            tls,
-            shutdown.subscribe(),
+    let result = match listeners {
+        Listeners::One(listener) => {
+            hmesh_transport::serve(listener, router(state), tls, receiver).await
+        }
+        Listeners::Two {
+            owner,
+            peers,
             scope,
-        );
-        tokio::try_join!(
-            async {
-                let result = owner.await;
-                let _ = shutdown.send(true);
-                result
-            },
-            async {
-                let result = peer.await;
-                let _ = shutdown.send(true);
-                result
-            }
-        )
-        .map(|_| ())
-    } else {
-        owner.await
+        } => {
+            let owner = hmesh_transport::serve(owner, router(state.clone()), tls.clone(), receiver);
+            let peer = hmesh_transport::serve_peers(
+                peers,
+                tailnet_router(state),
+                tls,
+                shutdown.subscribe(),
+                scope,
+            );
+            tokio::try_join!(
+                async {
+                    let result = owner.await;
+                    let _ = shutdown.send(true);
+                    result
+                },
+                async {
+                    let result = peer.await;
+                    let _ = shutdown.send(true);
+                    result
+                }
+            )
+            .map(|_| ())
+        }
+        Listeners::Every(listener) => {
+            let fence = state.networks.fence.clone();
+            hmesh_transport::serve_every_interface(
+                listener,
+                router(state.clone()),
+                tailnet_router(state),
+                tls,
+                receiver,
+                fence,
+            )
+            .await
+        }
     };
     let _ = shutdown.send(true);
     let _ = runtime.await;
@@ -736,6 +827,7 @@ pub async fn run(dir: &FilePath) -> anyhow::Result<()> {
     let _ = session_manager.await;
     announce.abort();
     let _ = nearby.await;
+    let _ = networks.await;
     let _ = expiry.await;
     services::recover(&state_for_cleanup)?;
     signal.abort();
@@ -748,7 +840,7 @@ async fn hello(
     Extension(c): Extension<ConnectionIdentity>,
 ) -> ApiResult<NodeCard> {
     s.handshake_limit(c.address.ip())?;
-    Ok(Json(s.instance.card.clone()))
+    Ok(Json(s.card()))
 }
 async fn challenge(
     State(s): State<AppState>,
@@ -780,7 +872,7 @@ async fn node(
     headers: HeaderMap,
 ) -> ApiResult<NodeCard> {
     s.actor(&headers, &c)?;
-    Ok(Json(s.instance.card.clone()))
+    Ok(Json(s.card()))
 }
 async fn agents(
     State(s): State<AppState>,
@@ -810,11 +902,11 @@ async fn status(
 ) -> ApiResult<Value> {
     s.owner(&headers, &c)?;
     Ok(Json(
-        json!({"node":s.instance.card,"protocol":PROTOCOL,"network":s.instance.config.node.network,
+        json!({"node":s.card(),"protocol":PROTOCOL,"network":s.instance.config.node.network,
         "tailscale":match (s.instance.config.node.network.as_str(), s.instance.config.outbound_only()) {("tailscale", true) => "not_checked", ("tailscale", false) => "verified_at_startup", _ => "not_required"},
         "allowed_sources":(s.instance.config.node.network == "direct" && !s.instance.config.outbound_only()).then(|| s.instance.config.allowed_sources()),
         "pairing_window":s.pairing_window(),
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1","pairing-nearby-v1","peer-addresses-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only(),"addresses":s.addresses().addresses}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1","pairing-nearby-v1","peer-addresses-v1","trusted-networks-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.card()),"outbound_only":s.instance.config.outbound_only(),"addresses":s.addresses().addresses,"networks":s.networks_view()}),
     ))
 }
 async fn stop(
@@ -952,7 +1044,7 @@ async fn outgoing_pair(
             "pair challenge belongs to a different node",
         )));
     }
-    let submission = s.instance.pair_submission(challenge).map_err(internal)?;
+    let submission = s.pair_submission(challenge)?;
     let response: PairRecord = client.post("/hmesh/v1/pair/requests", &submission).await?;
     if response.request_id != submission.request_id {
         return Err(ApiError(MeshError::new(
@@ -2373,9 +2465,13 @@ pub fn local_client(instance: &Instance) -> anyhow::Result<Client> {
     }
     // A daemon listening for other computers also listens on loopback, on
     // the same port, for its owner. Judged by the running daemon's card, not
-    // this configuration: setup may have just switched it to only MCP.
+    // this configuration: setup may have just switched it to only MCP. On
+    // every interface the owner always comes in at 127.0.0.1: a card naming
+    // ::1 there means a test made ::1 stand in for a network, fenced.
     let url = hmesh_security::validate_endpoint(&card.endpoint)?;
-    let endpoint = if hmesh_security::endpoint_is_loopback(&card.endpoint) {
+    let endpoint = if hmesh_security::endpoint_is_loopback(&card.endpoint)
+        && !instance.config.every_interface()
+    {
         card.endpoint
     } else {
         format!(

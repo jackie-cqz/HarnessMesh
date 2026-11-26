@@ -17,6 +17,8 @@ struct Home {
     home: PathBuf,
     bin: PathBuf,
     node: PathBuf,
+    /// The networks this computer seems to be on (`HMESH_TEST_NETWORKS`).
+    networks: Option<PathBuf>,
 }
 impl Home {
     fn new() -> Self {
@@ -39,6 +41,7 @@ impl Home {
             home,
             bin,
             node,
+            networks: None,
         }
     }
     fn hmesh(&self, args: &[&str], input: Option<&str>) -> Output {
@@ -49,6 +52,11 @@ impl Home {
             .env("HOME", &self.home)
             .env_remove("CODEX_HOME")
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
+            .envs(
+                self.networks
+                    .iter()
+                    .map(|path| ("HMESH_TEST_NETWORKS", path)),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -597,5 +605,211 @@ fn a_new_address_keeps_the_narrowed_sources() {
             .as_array()
             .map(|a| a.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>()),
         Some(vec!["192.0.2.0/24"])
+    );
+}
+
+impl Home {
+    /// From now on, this computer seems to be on `networks` (debug builds
+    /// read them instead of the real interfaces), the daemon setup starts too.
+    fn sees(&mut self, networks: Value) {
+        let path = self.home.join("networks.json");
+        std::fs::write(&path, serde_json::to_vec(&networks).unwrap()).unwrap();
+        self.networks = Some(path);
+    }
+}
+fn ipv6_loopback_present() -> bool {
+    let present = std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).is_ok();
+    if !present {
+        eprintln!("skipped: this computer has no IPv6 loopback");
+    }
+    present
+}
+
+/// Set up again, a direct computer that listened on one address now
+/// listens on every interface and trusts the network that address is on:
+/// same identity, so its pairings stay. Its owner still reaches it.
+#[test]
+fn setup_again_moves_a_one_address_computer_to_every_interface_on_its_network() {
+    if !ipv6_loopback_present() {
+        return;
+    }
+    let mut home = Home::new();
+    // Set up before this version: one address (::1 stands in for a LAN one).
+    let output = home.hmesh(
+        &[
+            "--json",
+            "init",
+            "--name",
+            "probe",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--listen-address",
+            "::1",
+        ],
+        None,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let before: Value = serde_json::from_slice(&output.stdout).unwrap();
+    home.sees(json!([
+        {"interface": "lo0", "address": "::1", "subnet": "::1/128"}
+    ]));
+    let summary = home.setup_with(&["--full", "--without-tailscale"]);
+    assert_eq!(summary["network"], "direct", "{summary}");
+    assert_eq!(summary["listen_address"], "::", "{summary}");
+    assert_eq!(summary["node"]["fingerprint"], before["fingerprint"]);
+    let config = home.config();
+    assert_eq!(config["node"]["listen_address"].as_str(), Some("::"));
+    assert_eq!(config["node"]["expose_to_tailnet"].as_bool(), Some(true));
+    let trusted = config["node"]["trusted_networks"].as_array().unwrap();
+    assert_eq!(trusted.len(), 1, "{trusted:?}");
+    assert_eq!(trusted[0]["subnet"].as_str(), Some("::1/128"));
+    assert!(trusted[0].get("tailnet").is_none());
+    let status = home.hmesh(&["--json", "daemon", "status"], None);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["networks"]["every_interface"], true, "{status}");
+    assert_eq!(
+        status["networks"]["current"][0]["trusted"], true,
+        "{status}"
+    );
+    assert_eq!(status["pairing_window"]["required"], true);
+    // Run again: nothing to move, the trusted network stays.
+    let again = home.setup_with(&["--full", "--without-tailscale"]);
+    assert_eq!(again["listen_address"], "::", "{again}");
+    assert_eq!(
+        home.config()["node"]["trusted_networks"],
+        config["node"]["trusted_networks"]
+    );
+}
+
+/// A new full computer on a direct network listens on every interface. With
+/// nobody to ask, it trusts only what it is told: no network and no
+/// Tailscale by itself, then the network `--listen` names, a subnet by
+/// `--trust`, Tailscale by `--with-tailscale`. A network trusted without its
+/// gateway (none seen) is said to be trusted by its subnet only.
+#[test]
+fn a_new_direct_computer_trusts_only_what_it_is_told_when_nobody_is_asked() {
+    let mut home = Home::new();
+    home.sees(json!([
+        {"interface": "en0", "address": "192.0.2.10", "subnet": "192.0.2.0/24",
+         "gateway": "192.0.2.1", "gateway_mac": "02:00:5e:00:53:01"},
+        {"interface": "en5", "address": "198.51.100.7", "subnet": "198.51.100.0/24"},
+        {"interface": "tailscale0", "address": "100.101.102.103",
+         "subnet": "100.101.102.103/32", "tailnet": true}
+    ]));
+    let trusted = |home: &Home| -> Vec<(String, Option<String>)> {
+        home.config()["node"]["trusted_networks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| {
+                (
+                    t["subnet"].as_str().unwrap().to_owned(),
+                    t.get("gateway").and_then(|g| g.as_str()).map(str::to_owned),
+                )
+            })
+            .collect()
+    };
+    let summary = home.setup_with(&["--full", "--network", "direct"]);
+    assert_eq!(summary["listen_address"], "::", "{summary}");
+    assert!(trusted(&home).is_empty(), "{summary}");
+    let steps = summary["steps"].to_string();
+    assert!(steps.contains("trusts no network yet"), "{steps}");
+    assert!(steps.contains("hmesh networks trust"), "{steps}");
+    if cfg!(any(target_os = "macos", target_os = "windows")) {
+        assert!(steps.contains("private networks"), "{steps}");
+    }
+    let status = home.hmesh(&["--json", "daemon", "status"], None);
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["networks"]["every_interface"], true, "{status}");
+
+    // Named by one of its addresses: trusted behind the gateway seen there.
+    let home_network = (
+        "192.0.2.0/24".to_owned(),
+        Some("02:00:5e:00:53:01".to_owned()),
+    );
+    let listed = home.setup_with(&["--full", "--listen", "192.0.2.10"]);
+    assert_eq!(trusted(&home), std::slice::from_ref(&home_network));
+    assert!(
+        listed["steps"].to_string().contains("192.0.2.0/24"),
+        "{listed}"
+    );
+    assert!(
+        !listed["steps"].to_string().contains("subnet only"),
+        "{listed}"
+    );
+    assert_eq!(
+        listed["node"]["endpoint"]
+            .as_str()
+            .map(|e| e.starts_with("https://192.0.2.10:")),
+        Some(true),
+        "{listed}"
+    );
+    // A subnet by hand, a network whose gateway is not seen, and Tailscale.
+    let more = home.setup_with(&[
+        "--full",
+        "--trust",
+        "10.20.0.0/16",
+        "--listen",
+        "198.51.100.7",
+        "--with-tailscale",
+    ]);
+    assert_eq!(
+        trusted(&home),
+        [
+            home_network,
+            ("198.51.100.0/24".to_owned(), None),
+            ("10.20.0.0/16".to_owned(), None),
+            ("100.64.0.0/10".to_owned(), None)
+        ]
+    );
+    let steps = more["steps"].to_string();
+    assert!(steps.contains("Tailscale"), "{steps}");
+    assert!(
+        steps.contains("by subnet only") && steps.contains("198.51.100.0/24"),
+        "{steps}"
+    );
+    assert!(steps.contains("same subnet"), "{steps}");
+}
+
+/// Set up again where the address it listened on is gone, with nobody to
+/// ask: every interface, trusting nothing until told.
+#[test]
+fn setup_again_without_its_old_address_trusts_nothing_by_itself() {
+    let mut home = Home::new();
+    let output = home.hmesh(
+        &[
+            "--json",
+            "init",
+            "--name",
+            "probe",
+            "--port",
+            "0",
+            "--network",
+            "direct",
+            "--listen-address",
+            "192.0.2.10",
+            "--allow-from",
+            "192.0.2.0/24",
+        ],
+        None,
+    );
+    assert!(output.status.success());
+    home.sees(json!([
+        {"interface": "en0", "address": "198.51.100.7", "subnet": "198.51.100.0/24",
+         "gateway": "198.51.100.1", "gateway_mac": "02:00:5e:00:53:02"}
+    ]));
+    home.setup_with(&["--full"]);
+    let config = home.config();
+    assert_eq!(config["node"]["listen_address"].as_str(), Some("::"));
+    assert_eq!(
+        config["node"]["trusted_networks"].as_array().map(Vec::len),
+        Some(0),
+        "{config:?}"
     );
 }

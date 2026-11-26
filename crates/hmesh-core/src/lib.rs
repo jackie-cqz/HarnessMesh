@@ -1,7 +1,11 @@
 //! Harness-independent contracts. No network, process or credential access.
 mod network;
 pub use ipnet::IpNet;
-pub use network::{default_allowed_sources, is_private_address, is_tailnet_ip};
+pub use network::{
+    LocalNetwork, MAX_NETWORK_NAME_BYTES, MAX_TRUSTED_NETWORKS, TrustedNetwork,
+    default_allowed_sources, forget_network, is_private_address, is_tailnet_ip,
+    normalize_hardware_address, recognize, trust_network,
+};
 pub mod development;
 mod git_version;
 pub mod managed;
@@ -692,6 +696,12 @@ pub struct NodeOptions {
     /// other computers; `[]` means none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_names: Option<Vec<String>>,
+    /// Direct network, listening on every interface (`listen_address` is
+    /// `0.0.0.0` or `::`): the networks other computers may connect over.
+    /// A connection that arrives on any other network is dropped before
+    /// TLS. `[]` trusts none yet: nobody can connect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trusted_networks: Option<Vec<TrustedNetwork>>,
 }
 impl Default for NodeOptions {
     fn default() -> Self {
@@ -705,6 +715,7 @@ impl Default for NodeOptions {
             tailnet_address: None,
             allowed_sources: None,
             host_names: None,
+            trusted_networks: None,
         }
     }
 }
@@ -771,6 +782,14 @@ impl NodeConfig {
             && self.node.expose_to_tailnet
             && !self.node.listen_address.is_loopback()
     }
+    /// Listens on every interface of a direct network and opens its port
+    /// only to the networks in `trusted_networks`.
+    pub fn every_interface(&self) -> bool {
+        self.node.network == "direct"
+            && self.node.expose_to_tailnet
+            && self.node.listen_address.is_unspecified()
+            && self.node.trusted_networks.is_some()
+    }
     /// The sources a direct node accepts connections from.
     pub fn allowed_sources(&self) -> Vec<IpNet> {
         self.node
@@ -798,7 +817,12 @@ impl NodeConfig {
         }
         let listen = self.node.listen_address;
         let valid_network = match self.node.network.as_str() {
-            _ if self.node.network != "direct" && self.node.allowed_sources.is_some() => false,
+            _ if self.node.network != "direct"
+                && (self.node.allowed_sources.is_some()
+                    || self.node.trusted_networks.is_some()) =>
+            {
+                false
+            }
             "loopback" if self.node.tailnet_address.is_some() => false,
             "loopback" => self.node.listen_address.is_loopback() && !self.node.expose_to_tailnet,
             "tailscale" if self.node.expose_to_tailnet => {
@@ -815,11 +839,20 @@ impl NodeConfig {
                     && self.node.tailnet_address.is_some_and(is_tailnet_ip)
             }
             "direct" if self.node.tailnet_address.is_some() => false,
+            // Every interface, opened to the trusted networks only.
+            "direct" if self.node.expose_to_tailnet && listen.is_unspecified() => {
+                self.node.trusted_networks.is_some()
+                    && self
+                        .node
+                        .allowed_sources
+                        .as_ref()
+                        .is_none_or(|sources| !sources.is_empty())
+            }
             // One literal address of this computer. A public one must say who
             // may connect; private, overlay and loopback ones default to
             // those ranges.
             "direct" if self.node.expose_to_tailnet => {
-                !listen.is_unspecified()
+                self.node.trusted_networks.is_none()
                     && !listen.is_multicast()
                     && listen != IpAddr::V4(Ipv4Addr::BROADCAST)
                     && match &self.node.allowed_sources {
@@ -828,13 +861,27 @@ impl NodeConfig {
                     }
             }
             // Only connects out, over whatever network reaches its peers.
-            "direct" => listen.is_loopback() && self.node.allowed_sources.is_none(),
+            "direct" => {
+                listen.is_loopback()
+                    && self.node.allowed_sources.is_none()
+                    && self.node.trusted_networks.is_none()
+            }
             _ => false,
         };
         if !valid_network {
             return Err(MeshError::input(
-                "use loopback; tailscale listening on one literal Tailnet IP; tailscale or direct that only connects out (loopback listener; tailscale also sets tailnet_address); or direct listening on one literal address of this computer (a public one needs allowed_sources); wildcard listeners are forbidden",
+                "use loopback; tailscale listening on one literal Tailnet IP; tailscale or direct that only connects out (loopback listener; tailscale also sets tailnet_address); direct listening on one literal address of this computer (a public one needs allowed_sources); or direct listening on every interface (0.0.0.0 or ::) with trusted_networks; an unspecified address is for that last one only",
             ));
+        }
+        if let Some(networks) = &self.node.trusted_networks {
+            if networks.len() > MAX_TRUSTED_NETWORKS {
+                return Err(MeshError::input(format!(
+                    "trusted_networks has at most {MAX_TRUSTED_NETWORKS} networks"
+                )));
+            }
+            if let Some(problem) = networks.iter().find_map(TrustedNetwork::problem) {
+                return Err(MeshError::input(problem));
+            }
         }
         if self.node.host_names.as_ref().is_some_and(|names| {
             names.len() >= MAX_PEER_ADDRESSES || !names.iter().all(|n| valid_host_name(n))

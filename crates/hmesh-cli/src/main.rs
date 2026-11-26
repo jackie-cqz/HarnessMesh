@@ -93,8 +93,9 @@ enum Commands {
         /// WireGuard: any network this computer is on).
         #[arg(long, default_value = "loopback", value_parser = ["loopback", "tailscale", "direct"])]
         network: String,
-        /// The address other computers connect to (required for a direct
-        /// node that accepts connections).
+        /// The address other computers connect to (a direct node that
+        /// accepts connections names this or --trust). 0.0.0.0 or :: listens
+        /// on every interface, open only to the --trust networks.
         #[arg(long)]
         listen_address: Option<std::net::IpAddr>,
         #[arg(long)]
@@ -112,6 +113,11 @@ enum Commands {
         /// loopback networks; required for a public address.
         #[arg(long, value_delimiter = ',')]
         allow_from: Option<Vec<hmesh_core::IpNet>>,
+        /// Direct network: listen on every interface and open the port to
+        /// this subnet (repeat for more). The gateway is not recorded: the
+        /// subnet is trusted wherever it is (`hmesh networks trust` records it).
+        #[arg(long)]
+        trust: Vec<hmesh_core::IpNet>,
     },
     /// Set this computer up: only MCP (its own agents call agents on other
     /// computers; it accepts no connections), or full (it also shares its
@@ -148,10 +154,21 @@ enum Commands {
         /// it is signed in here.
         #[arg(long, value_parser = ["tailscale", "direct"])]
         network: Option<String>,
-        /// Direct, full: this computer's address that others connect to;
-        /// asked (or the only one) when omitted.
+        /// Direct, full: trust the network this address of this computer is
+        /// on (it listens on every interface, open to trusted networks). A
+        /// loopback address listens there alone (tests, demos).
         #[arg(long)]
         listen: Option<std::net::IpAddr>,
+        /// Direct, full: also trust this subnet (repeat for more).
+        #[arg(long)]
+        trust: Vec<hmesh_core::IpNet>,
+        /// Direct, full: also take connections from computers on this
+        /// computer's Tailnet, when Tailscale runs here (asked otherwise).
+        #[arg(long, conflicts_with = "without_tailscale")]
+        with_tailscale: bool,
+        /// Direct, full: do not take connections over Tailscale.
+        #[arg(long)]
+        without_tailscale: bool,
         /// Direct, full: who may connect (CIDR, comma-separated). Default:
         /// private networks; required for a public address.
         #[arg(long, value_delimiter = ',')]
@@ -186,6 +203,12 @@ enum Commands {
     Peers {
         #[command(subcommand)]
         command: PeersCommand,
+    },
+    /// The networks this computer is on, and the ones it opens its port to
+    /// (direct network, listening on every interface).
+    Networks {
+        #[command(subcommand)]
+        command: NetworksCommand,
     },
     Agent {
         #[command(subcommand)]
@@ -446,6 +469,25 @@ enum PeersCommand {
         /// Remove the addresses set here.
         #[arg(long)]
         clear: bool,
+    },
+}
+#[derive(Subcommand)]
+enum NetworksCommand {
+    /// The networks this computer is on now, and which it trusts.
+    List,
+    /// Open the port to a network this computer is on now, by its subnet
+    /// (as `hmesh networks list` shows it); its gateway is recorded too.
+    Trust {
+        subnet: hmesh_core::IpNet,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Close the port to a trusted network again.
+    Forget {
+        subnet: hmesh_core::IpNet,
+        /// Only the entry behind this gateway hardware address.
+        #[arg(long)]
+        gateway: Option<String>,
     },
 }
 #[derive(Subcommand)]
@@ -885,6 +927,9 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         tailnet_address,
         network,
         listen,
+        trust,
+        with_tailscale,
+        without_tailscale,
         allow_from,
         project,
         agents,
@@ -910,6 +955,12 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             tailnet_address,
             network,
             listen,
+            trust,
+            with_tailscale: match (with_tailscale, without_tailscale) {
+                (true, _) => Some(true),
+                (_, true) => Some(false),
+                _ => None,
+            },
             allow_from,
             project,
             agents,
@@ -927,6 +978,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         outbound_only,
         tailnet_address,
         allow_from,
+        trust,
     } = cli.command
     {
         let mut config = NodeConfig::default();
@@ -940,14 +992,38 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         if allow_from.is_some() && (network != "direct" || outbound_only) {
             anyhow::bail!("--allow-from is for a direct node that accepts connections");
         }
+        if !trust.is_empty() && (network != "direct" || outbound_only) {
+            anyhow::bail!("--trust is for a direct node that accepts connections");
+        }
         if network == "direct" {
             // Only connects out: loopback for its owner, nothing else.
             if !outbound_only {
-                config.node.listen_address = listen_address.context(
-                    "a direct node needs --listen-address: the address of this computer that other computers connect to (or --outbound-only)",
-                )?;
+                config.node.listen_address = match listen_address {
+                    Some(address) => address,
+                    None if !trust.is_empty() => std::net::Ipv6Addr::UNSPECIFIED.into(),
+                    None => anyhow::bail!(
+                        "a direct node needs --listen-address (the address of this computer that other computers connect to, or :: for every interface) or --trust (or --outbound-only)"
+                    ),
+                };
                 config.node.expose_to_tailnet = true;
                 config.node.allowed_sources = allow_from;
+                if config.node.listen_address.is_unspecified() {
+                    config.node.trusted_networks = Some(
+                        trust
+                            .into_iter()
+                            .map(|subnet| hmesh_core::TrustedNetwork {
+                                subnet: subnet.trunc(),
+                                gateway: None,
+                                name: None,
+                                tailnet: false,
+                            })
+                            .collect(),
+                    );
+                } else if !trust.is_empty() {
+                    anyhow::bail!(
+                        "--trust listens on every interface: leave out --listen-address or make it :: or 0.0.0.0"
+                    );
+                }
             }
         } else if outbound_only {
             // Listen for the owner only; the Tailnet IP goes into the
@@ -1073,11 +1149,24 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         let daemon = match local_client(&instance) {
             Ok(client) => Some(match client.get::<Value>("/local/status").await {
                 Ok(mut status) => {
-                    // Doctor output is shared to get help: never the passcode.
+                    // Doctor output is shared to get help: never the passcode,
+                    // nor the hardware address of a network's gateway.
                     if let Some(passcode) = status.pointer_mut("/pairing_window/passcode")
                         && passcode.is_string()
                     {
                         *passcode = json!("hidden");
+                    }
+                    for (list, field) in [("current", "gateway_mac"), ("trusted", "gateway")] {
+                        for network in status
+                            .pointer_mut(&format!("/networks/{list}"))
+                            .and_then(Value::as_array_mut)
+                            .into_iter()
+                            .flatten()
+                        {
+                            if network[field].is_string() {
+                                network[field] = json!("hidden");
+                            }
+                        }
                     }
                     json!({"state":"reachable", "status":status})
                 }
@@ -1188,6 +1277,9 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             }
         }
         return Ok(Some(value));
+    }
+    if let Commands::Networks { command } = cli.command {
+        return Ok(Some(networks(&instance, command).await?));
     }
     let client = local_client(&instance)?;
     let value: Value = match cli.command {
@@ -2033,6 +2125,62 @@ fn setting_value(value: &str) -> Value {
         "false" => Value::Bool(false),
         other => Value::String(other.to_owned()),
     }
+}
+/// `hmesh networks`: through the daemon when it runs (it opens or closes
+/// its port at once); otherwise read from this computer and written to
+/// node.toml, for the daemon's next start.
+async fn networks(instance: &Instance, command: NetworksCommand) -> Result<Value> {
+    if let Some(client) = hmesh_daemon::running(&instance.dir).await {
+        return Ok(match command {
+            NetworksCommand::List => client.get("/local/networks").await?,
+            NetworksCommand::Trust { subnet, name } => {
+                client
+                    .post(
+                        "/local/networks/trust",
+                        &hmesh_daemon::TrustNetwork { subnet, name },
+                    )
+                    .await?
+            }
+            NetworksCommand::Forget { subnet, gateway } => {
+                client
+                    .post(
+                        "/local/networks/forget",
+                        &hmesh_daemon::ForgetNetwork { subnet, gateway },
+                    )
+                    .await?
+            }
+        });
+    }
+    let every = instance.config.every_interface();
+    let observed =
+        hmesh_transport::netinfo::observe(instance.config.node.tailscale_executable.as_deref())
+            .await;
+    let mut trusted = instance
+        .config
+        .node
+        .trusted_networks
+        .clone()
+        .unwrap_or_default();
+    if !matches!(command, NetworksCommand::List) && !every {
+        anyhow::bail!(
+            "this computer does not listen on every interface (listen_address = {}): it has no trusted networks; run `hmesh setup --full --network direct` to listen on every interface",
+            instance.config.node.listen_address
+        );
+    }
+    match command {
+        NetworksCommand::List => {}
+        NetworksCommand::Trust { subnet, name } => {
+            trust_network(&mut trusted, &observed, subnet, name).map_err(anyhow::Error::msg)?;
+            hmesh_daemon::write_trusted(&instance.dir, &trusted)?;
+        }
+        NetworksCommand::Forget { subnet, gateway } => {
+            if forget_network(&mut trusted, subnet, gateway.as_deref()) == 0 {
+                anyhow::bail!("this computer does not trust {}", subnet.trunc());
+            }
+            hmesh_daemon::write_trusted(&instance.dir, &trusted)?;
+        }
+    }
+    Ok(hmesh_daemon::networks_view(every, &trusted, &observed))
 }
 /// The one paired computer with this node ID or display name.
 fn one_peer<'a>(peers: &'a [PeerView], peer: &str) -> Result<&'a PeerView> {

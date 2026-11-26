@@ -14,17 +14,25 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// This computer's address list as paired computers get it: its card's
-/// address, then `https://<name>:<port>` for each host name. A computer that
-/// only connects out has none. `revision` tells newer lists from older.
-pub fn local(instance: &Instance, revision: i64) -> PeerAddresses {
+/// address, then its other addresses on trusted networks (`also`; a
+/// computer on every interface), then `https://<name>:<port>` for each host
+/// name. A computer that only connects out has none. `revision` tells
+/// newer lists from older.
+pub fn local(
+    config: &NodeConfig,
+    card: &NodeCard,
+    also: &[String],
+    revision: i64,
+) -> PeerAddresses {
     let mut wanted = Vec::new();
-    if !instance.config.outbound_only() {
-        wanted.push(instance.card.endpoint.clone());
-        if let Some(port) = hmesh_security::validate_endpoint(&instance.card.endpoint)
+    if !config.outbound_only() {
+        wanted.push(card.endpoint.clone());
+        wanted.extend(also.iter().cloned());
+        if let Some(port) = hmesh_security::validate_endpoint(&card.endpoint)
             .ok()
             .and_then(|url| url.port_or_known_default())
         {
-            for name in host_names(&instance.config) {
+            for name in host_names(config) {
                 wanted.push(format!("https://{name}:{port}"));
             }
         }
@@ -39,7 +47,7 @@ pub fn local(instance: &Instance, revision: i64) -> PeerAddresses {
         }
     }
     PeerAddresses {
-        node_id: instance.card.node_id,
+        node_id: card.node_id,
         revision,
         addresses,
     }
@@ -119,7 +127,8 @@ impl AppState {
     }
     /// Where this computer tries `peer`, in order: where it answered last,
     /// its card's address, the ones set here by hand, the ones it told this
-    /// computer. Only addresses this computer can call (see `can_call`).
+    /// computer. Only addresses this computer can call (see `can_call`),
+    /// and loopback ones a test made stand in for one of its networks.
     pub(crate) fn peer_candidates(&self, peer: &Peer) -> Vec<String> {
         let routes = self
             .store
@@ -133,7 +142,8 @@ impl AppState {
             .chain(routes.manual)
             .chain(routes.advertised)
         {
-            if hmesh_security::can_call(&self.instance.config, &address)
+            if (hmesh_security::can_call(&self.instance.config, &address)
+                || self.networks.names_own_network(&address))
                 && !candidates.contains(&address)
             {
                 candidates.push(address);
@@ -327,7 +337,7 @@ mod tests {
         config.node.host_names = Some(vec!["studio.local".into(), "localhost".into()]);
         let mut instance = Instance::init(&root.path().join("studio"), config).unwrap();
         instance.card.endpoint = "https://127.0.0.1:38880".into();
-        let list = local(&instance, 7);
+        let list = local(&instance.config, &instance.card, &[], 7);
         assert_eq!(list.node_id, instance.card.node_id);
         assert_eq!(list.revision, 7);
         assert_eq!(
@@ -341,14 +351,47 @@ mod tests {
         // On loopback, no name by default.
         let plain = Instance::init(&root.path().join("plain"), NodeConfig::default()).unwrap();
         assert_eq!(
-            local(&plain, 1).addresses,
+            local(&plain.config, &plain.card, &[], 1).addresses,
             std::slice::from_ref(&plain.card.endpoint)
         );
         // Only connects out: nothing to tell.
         let mut config = NodeConfig::default();
         config.node.network = "direct".into();
         let outbound = Instance::init(&root.path().join("outbound"), config).unwrap();
-        assert!(local(&outbound, 1).addresses.is_empty());
+        assert!(
+            local(&outbound.config, &outbound.card, &[], 1)
+                .addresses
+                .is_empty()
+        );
+        // On every interface: its other addresses on trusted networks too.
+        let mut config = NodeConfig::default();
+        config.node.network = "direct".into();
+        config.node.expose_to_tailnet = true;
+        config.node.listen_address = "::".parse().unwrap();
+        config.node.trusted_networks = Some(vec![]);
+        config.node.host_names = Some(vec!["studio.local".into()]);
+        let every = Instance::init(&root.path().join("every"), config).unwrap();
+        let mut card = every.card.clone();
+        card.endpoint = "https://192.168.1.20:38880".into();
+        assert_eq!(
+            local(
+                &every.config,
+                &card,
+                &[
+                    "https://192.168.1.20:38880".into(),
+                    "https://[fd12::5]:38880".into(),
+                    "https://100.101.102.103:38880".into()
+                ],
+                2
+            )
+            .addresses,
+            [
+                "https://192.168.1.20:38880",
+                "https://[fd12::5]:38880",
+                "https://100.101.102.103:38880",
+                "https://studio.local:38880"
+            ]
+        );
     }
 
     /// An older computer has no address lists: it answers (its unknown

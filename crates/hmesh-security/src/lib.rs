@@ -102,6 +102,7 @@ impl Instance {
         // address (see PinnedServer), but it names where the node listens.
         if matches!(config.node.network.as_str(), "tailscale" | "direct")
             && !config.node.listen_address.is_loopback()
+            && !config.node.listen_address.is_unspecified()
         {
             names.push(config.node.listen_address.to_string());
         }
@@ -173,9 +174,17 @@ impl Instance {
         if token.len() != 64 || !token.bytes().all(|c| c.is_ascii_hexdigit()) {
             bail!("invalid local API credential");
         }
+        // A listener on every interface has no one address of its own: its
+        // card names one once the daemon sees which networks it is on, and
+        // until then its owner's loopback.
+        let listen = if config.node.listen_address.is_unspecified() {
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        } else {
+            config.node.listen_address
+        };
         let endpoint = format!(
             "https://{}",
-            std::net::SocketAddr::new(config.node.listen_address, config.node.listen_port)
+            std::net::SocketAddr::new(listen, config.node.listen_port)
         );
         let card = NodeCard {
             version: PROTOCOL.into(),
@@ -212,10 +221,23 @@ impl Instance {
         Ok(lock)
     }
     pub fn pair_submission(&self, challenge: PairChallenge) -> Result<PairSubmission> {
+        self.pair_submission_as(&self.card, challenge)
+    }
+    /// A pair request signed with this computer's key for `card`, its
+    /// current card (a computer on every interface names the address it has
+    /// now). The card must be this computer's own.
+    pub fn pair_submission_as(
+        &self,
+        card: &NodeCard,
+        challenge: PairChallenge,
+    ) -> Result<PairSubmission> {
+        if card.node_id != self.card.node_id || card.fingerprint != self.card.fingerprint {
+            bail!("a pair request carries this computer's own card");
+        }
         let mut submission = PairSubmission {
             request_id: Uuid::new_v4(),
             challenge,
-            card: self.card.clone(),
+            card: card.clone(),
             signature: String::new(),
         };
         let key = signature::Ed25519KeyPair::from_pkcs8(&self.key_der)

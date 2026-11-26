@@ -40,6 +40,47 @@ function noticePairs(pairs){
  }
 }
 
+// Listening on every interface: the port is open only to networks this
+// computer trusts. On one it has not trusted yet, say so and offer to trust it.
+const networkState={busy:false,message:''};
+function networksReady(){return state.runtime?.capabilities?.trusted_networks===true;}
+function networkLabel(local){
+ if(local.network==='tailscale')return 'Tailnet';
+ if(local.network!=='direct')return '本机回环';
+ return local.networks?.every_interface&&(local.networks.trusted||[]).some(t=>t.tailnet)?'局域网直连 · Tailscale':'局域网直连';
+}
+function networkNotice(local){
+ const networks=local.networks;if(!networksReady()||!networks?.every_interface)return null;
+ const box=el('div','pair-network'),suggested=networks.suggested;
+ if(suggested){
+  box.classList.add('untrusted');
+  const trust=button(networkState.busy?'正在信任…':'信任这个网络','button small',()=>trustNetwork(suggested.subnet));
+  trust.type='button';trust.id='trust-network';trust.disabled=networkState.busy||!canWrite();
+  box.append(el('p','pair-network-text','这台电脑现在的网络还没认过：别的电脑连不进来。'),el('span','pair-network-detail mono',`${suggested.subnet} · ${suggested.interface}`),trust);
+  // No gateway hardware address seen here: trusting it would go by the subnet alone.
+  if(suggested.subnet_only)box.append(el('p','pair-network-note muted','读不到这个网络路由器的硬件地址：信任后只按网段认，同网段的别的网络也会被当成认过。'));
+ }else{
+  const current=(networks.current||[]).filter(n=>n.trusted&&!n.tailnet);
+  const subnetOnly=current.find(n=>n.subnet_only),unverified=current.find(n=>n.gateway_unverified);
+  if(subnetOnly)box.append(el('p','pair-network-text muted',`${subnetOnly.subnet} 只按网段认：同网段的别的网络也会被当成认过。`));
+  else if(unverified)box.append(el('p','pair-network-text muted',`${unverified.subnet} 的路由器现在核对不了，暂时只按网段认。`));
+  else return null;
+ }
+ if(networkState.message){const message=el('p','form-note pair-message',networkState.message);message.setAttribute('role','status');box.append(message);}
+ return box;
+}
+async function trustNetwork(subnet){
+ if(networkState.busy)return;
+ Object.assign(networkState,{busy:true,message:''});renderPairing();
+ try{
+  unwrap(await api('/networks/trust',{method:'POST',body:JSON.stringify({subnet})}));
+  toast('已信任这个网络：同一网络里配对的电脑现在能连进来。');
+  await refresh();
+ }catch(error){
+  networkState.message=error?.code==='INVALID_INPUT'?'这台电脑已经不在这个网络上了。刷新后再试。':pairProblem(error);
+ }finally{networkState.busy=false;renderPairing();}
+}
+
 function renderPairing(){
  const box=$('#pairing');if(!box)return;
  if(!pairingReady()){box.replaceChildren();return;}
@@ -51,8 +92,9 @@ function renderPairing(){
  const local=data('node',{}),identity=el('div','pair-identity'),identityName=el('div');
  identityName.append(el('span','muted','这台电脑'),el('strong','',local.node?.display_name||'节点状态暂不可读取'));
  identity.append(icon('monitor'),identityName);
- if(local.network)identity.append(el('span','badge',local.network==='tailscale'?'Tailnet':local.network==='direct'?'局域网直连':'本机回环'));
+ if(local.network)identity.append(el('span','badge',networkLabel(local)));
  bar.append(identity,add);
+ const notice=networkNotice(local);
  const cards=[];
  for(const p of pairs){
   if(p.direction==='incoming'&&pairOpen(p))cards.push(incomingPairCard(p));
@@ -61,7 +103,7 @@ function renderPairing(){
  }
  const section=el('section','pair-requests'),heading=el('h2','','配对申请'),list=el('div','card-grid entity-list');
  list.append(...cards);section.append(heading,list);
- box.replaceChildren(bar,...(cards.length?[section]:[]));
+ box.replaceChildren(bar,...(notice?[notice]:[]),...(cards.length?[section]:[]));
  for(const input of box.querySelectorAll('.pair-check')){input.value=pairingState.typed.get(input.dataset.request)||'';if(input.dataset.request===focused)input.focus();}
 }
 function pairMessage(p){const m=el('p','form-note pair-message',pairingState.messages.get(p.request_id)||'');m.setAttribute('role','status');m.hidden=!m.textContent;return m;}
