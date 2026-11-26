@@ -891,9 +891,13 @@ impl Routed {
     }
     /// Why a try at route `index` stopped, as said: through a relay, that
     /// the relay did not put it through (wherever on the way it stopped),
-    /// unless the computer that answered there is another one.
+    /// unless the computer that answered there is another one, or turned
+    /// this one down.
     fn why(&self, index: usize, why: &'static str) -> &'static str {
-        if matches!(self.routes[index].target, Target::Relay(_)) && why != ANOTHER {
+        if matches!(self.routes[index].target, Target::Relay(_))
+            && why != ANOTHER
+            && why != TURNED_DOWN
+        {
             NOT_RELAYED
         } else {
             why
@@ -1181,10 +1185,14 @@ const NOT_HEARD: &str = "it was not heard on the local network either";
 /// computer is not holding a connection to it, or its token is no longer
 /// the relay's.
 pub(crate) const NOT_RELAYED: &str = "was not put through by its relay";
+/// Reached through its relay, it turned this computer down: it is not
+/// paired with this one (any more), and is not pairing now.
+pub(crate) const TURNED_DOWN: &str =
+    "turned this computer down: it is not paired with it, and is not pairing now";
 /// The reasons a call to a paired computer failed, read from its error
 /// message: `refused`, `silent`, `unresolved`, `another_computer`,
-/// `no_route`, `unreached`, `tls`, `not_heard`, `relay`, each once, in that
-/// order.
+/// `no_route`, `unreached`, `tls`, `not_heard`, `relay`, `not_accepted`,
+/// each once, in that order.
 /// Fixed words, so a panel can say each in its own language.
 pub fn unreachable_reasons(message: &str) -> Vec<&'static str> {
     [
@@ -1197,6 +1205,7 @@ pub fn unreachable_reasons(message: &str) -> Vec<&'static str> {
         (TLS, "tls"),
         (NOT_HEARD, "not_heard"),
         (NOT_RELAYED, "relay"),
+        (TURNED_DOWN, "not_accepted"),
     ]
     .into_iter()
     .filter(|(phrase, _)| message.contains(phrase))

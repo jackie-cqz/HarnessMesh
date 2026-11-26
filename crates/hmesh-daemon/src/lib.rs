@@ -88,6 +88,10 @@ pub struct AppState {
     /// Dials other computers through their relays, and keeps those
     /// connections a while for the next call.
     relay_dialer: Arc<RelayDialer>,
+    /// Until when a computer not paired with this one is still answered
+    /// through a relay after pairing closed: one that asked to pair through
+    /// it checks on its request until then (see `takes_relayed_pairing`).
+    relayed_pairing_until: Arc<std::sync::atomic::AtomicI64>,
 }
 #[derive(Debug)]
 pub struct ApiError(pub MeshError);
@@ -257,6 +261,7 @@ impl AppState {
             relay_dialer: RelayDialer::new(instance.clone(), shutdown.subscribe()),
             relays: Arc::new(watch::channel(relays).0),
             relays_held: Arc::default(),
+            relayed_pairing_until: Arc::default(),
             shutdown,
             sessions: Arc::default(),
             addresses: Arc::default(),
@@ -372,6 +377,18 @@ impl AppState {
         drop(window);
         self.nearby.changed.notify_one();
         Ok(self.pairing_closes_at().unwrap_or_default())
+    }
+    /// Whether a computer this one is not paired with is taken through a
+    /// relay now, for pairing: while the pairing window is open, and for a
+    /// short while after a request to pair came through a relay, so its
+    /// computer learns the answer (it asks every few seconds until a minute
+    /// after the request expires).
+    pub(crate) fn takes_relayed_pairing(&self) -> bool {
+        self.pairing_closes_at().is_some()
+            || now()
+                <= self
+                    .relayed_pairing_until
+                    .load(std::sync::atomic::Ordering::Relaxed)
     }
     /// When the pairing window closes, if it is open.
     fn pairing_closes_at(&self) -> Option<i64> {
@@ -893,7 +910,16 @@ async fn incoming_pair(
     if body.card.node_id == s.instance.card.node_id {
         return Err(ApiError(MeshError::input("cannot pair a node with itself")));
     }
-    Ok(Json(s.store.accept_pair(&body)?))
+    let record = s.store.accept_pair(&body)?;
+    if hmesh_transport::relay::is_relayed(c.address.ip()) {
+        // Its computer asks after it through the relay until a minute after
+        // it expires; a minute more, for the last of those.
+        s.relayed_pairing_until.fetch_max(
+            record.expires_at + 2 * 60,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+    Ok(Json(record))
 }
 async fn node(
     State(s): State<AppState>,
@@ -1111,7 +1137,21 @@ async fn outgoing_pair(
             Client::new(&s.instance, &target.endpoint, &expected, true, false).map_err(internal)?
         }
     };
-    let card: NodeCard = client.get("/hmesh/v1/hello").await?;
+    let card: NodeCard = match client.get("/hmesh/v1/hello").await {
+        // Through its relay, a computer not pairing turns this one down
+        // before anything is said.
+        Err(error)
+            if relayed.is_some()
+                && hmesh_transport::unreachable_reasons(&error.message)
+                    .contains(&"not_accepted") =>
+        {
+            return Err(ApiError(MeshError::new(
+                ErrorCode::PermissionDenied,
+                "pairing is closed on that computer: open 配对新电脑 in its panel (or run `hmesh pair show` there), then pair within 10 minutes",
+            )));
+        }
+        answered => answered?,
+    };
     validate_card(&card).map_err(internal)?;
     if card.fingerprint != expected || card.node_id == s.instance.card.node_id {
         return Err(ApiError(MeshError::new(

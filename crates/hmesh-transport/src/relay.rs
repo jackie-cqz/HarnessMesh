@@ -14,24 +14,27 @@
 //! `LINE_BYTES` long, TLS and the line together within `LINE_TIME`:
 //!
 //! - `LISTEN <token>`: this computer may be put through to (`OK`). The relay
-//!   then says `CONNECT <id>` on this connection for each computer asking
-//!   for it; the computer answers each with a new connection, or with
-//!   `BUSY <id>` when it is serving all it can. It says `PING` every 30
+//!   then says `CONNECT <id> <fingerprint>` on this connection for each
+//!   computer asking for it (its certificate's fingerprint, as the relay
+//!   saw it); the computer answers each with a new connection, with
+//!   `BUSY <id>` when it is serving all it can (or all that computer may
+//!   have), or with `CLOSED <id>` when it does not take that computer at
+//!   all (not paired with it, and not pairing). It says `PING` every 30
 //!   seconds and the relay `PONG`.
 //! - `ACCEPT <token> <id>`: a new connection from that computer, for
 //!   `CONNECT <id>` (`OK`); from here on it carries the asking computer's
 //!   bytes. Only the computer that `CONNECT <id>` was for may accept it.
 //! - `DIAL <token> <fingerprint>`: put this connection through to that
 //!   computer: `OK` once it has accepted, or `ERR <reason>` (`offline`,
-//!   `busy`, `timeout`; `full` when the relay holds all the computers it
-//!   may).
+//!   `busy`, `closed`, `timeout`; `full` when the relay holds all the
+//!   computers it may).
 //!
 //! A wrong token, or anything else, closes the connection at once, without
 //! a word. Limits: `Limits`. Until a connection has said its first line it
 //! costs nothing to open (no token, not even TLS), so those are counted by
-//! source address (an IPv6 one by its /64): each source opens only a few at
-//! once, and at a bounded rate.
-use crate::client::{ANOTHER, NOT_RELAYED, reason};
+//! source address (an IPv6 one by its /64, and the /48 around it too): each
+//! source opens only a few at once, and at a bounded rate.
+use crate::client::{ANOTHER, NOT_RELAYED, TURNED_DOWN, reason};
 use hmesh_core::{RelayAddress, RelayHost};
 use hmesh_security::{
     Instance, fingerprint, peer_address, relay::RelayIdentity, relay::same_secret,
@@ -80,6 +83,12 @@ const BACKOFF_MOST: Duration = Duration::from_secs(60);
 /// Connections put through a relay that a computer serves at once (as
 /// many as a listener takes from other computers).
 pub const SERVED_AT_ONCE: usize = 64;
+/// Of those, for one computer it is paired with (by its certificate), so
+/// one paired computer cannot use up the places of the others.
+pub const SERVED_PER_CALLER: usize = 16;
+/// Of those, for all the computers it is not paired with together, and
+/// only while it is pairing.
+pub const SERVED_STRANGERS: usize = 16;
 
 /// The source address a connection put through a relay is served as: not
 /// loopback (never this computer's owner), the same for every relayed
@@ -96,8 +105,9 @@ pub enum Line {
     Listen { token: String },
     Accept { token: String, id: u64 },
     Dial { token: String, fingerprint: String },
-    Connect { id: u64 },
+    Connect { id: u64, fingerprint: String },
     Busy { id: u64 },
+    Closed { id: u64 },
     Ok,
     Err(String),
     Ping,
@@ -110,8 +120,9 @@ impl std::fmt::Display for Line {
             Self::Listen { token } => write!(f, "LISTEN {token}"),
             Self::Accept { token, id } => write!(f, "ACCEPT {token} {id}"),
             Self::Dial { token, fingerprint } => write!(f, "DIAL {token} {fingerprint}"),
-            Self::Connect { id } => write!(f, "CONNECT {id}"),
+            Self::Connect { id, fingerprint } => write!(f, "CONNECT {id} {fingerprint}"),
             Self::Busy { id } => write!(f, "BUSY {id}"),
+            Self::Closed { id } => write!(f, "CLOSED {id}"),
             Self::Ok => f.write_str("OK"),
             Self::Err(reason) => write!(f, "ERR {reason}"),
             Self::Ping => f.write_str("PING"),
@@ -165,7 +176,7 @@ pub fn parse(line: &str) -> Result<Line, LineError> {
     let command = words.next().unwrap_or_default();
     let args: Vec<&str> = words.collect();
     let known = [
-        "LISTEN", "ACCEPT", "DIAL", "CONNECT", "BUSY", "OK", "ERR", "PING", "PONG",
+        "LISTEN", "ACCEPT", "DIAL", "CONNECT", "BUSY", "CLOSED", "OK", "ERR", "PING", "PONG",
     ];
     if !known.contains(&command) {
         return Err(LineError::Unknown);
@@ -182,8 +193,12 @@ pub fn parse(line: &str) -> Result<Line, LineError> {
             token: hex64(token)?,
             fingerprint: hex64(fingerprint)?,
         },
-        ("CONNECT", [id]) => Line::Connect { id: number(id)? },
+        ("CONNECT", [id, fingerprint]) => Line::Connect {
+            id: number(id)?,
+            fingerprint: hex64(fingerprint)?,
+        },
         ("BUSY", [id]) => Line::Busy { id: number(id)? },
+        ("CLOSED", [id]) => Line::Closed { id: number(id)? },
         ("OK", []) => Line::Ok,
         ("ERR", [reason])
             if (1..=32).contains(&reason.len())
@@ -276,8 +291,12 @@ pub struct Limits {
     /// Connections that have not said their first line yet.
     pub unauthenticated: usize,
     /// Of those, from one source address. When all of them are taken, one
-    /// from the source with the most goes to make room.
+    /// from the source with the most goes to make room; failing that, the
+    /// oldest one that has had `YIELD_AFTER`.
     pub unauthenticated_per_source: usize,
+    /// Of those, from one IPv6 /48 (a site can have 65536 /64s, each a
+    /// source of its own). IPv4 addresses are not grouped.
+    pub unauthenticated_per_network: usize,
     /// How long a connection has for TLS and its first line.
     pub first_line: Duration,
     /// New connections from one source address.
@@ -294,6 +313,7 @@ impl Default for Limits {
             idle: Duration::from_secs(15 * 60),
             unauthenticated: 256,
             unauthenticated_per_source: 16,
+            unauthenticated_per_network: 32,
             first_line: LINE_TIME,
             rate: Rate {
                 burst: 32,
@@ -318,6 +338,17 @@ pub fn source_of(ip: IpAddr) -> IpAddr {
             IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
         }
         v4 => v4,
+    }
+}
+/// The IPv6 /48 an address is in (what one site is often given), counted
+/// as a whole as well; none for IPv4.
+pub fn network_of(ip: IpAddr) -> Option<IpAddr> {
+    match ip.to_canonical() {
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            Some(IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0)))
+        }
+        IpAddr::V4(_) => None,
     }
 }
 /// What each source has left of its `Rate`.
@@ -358,15 +389,22 @@ impl Sources {
     }
 }
 
+/// How long a connection must have had for TLS and its first line before
+/// it is closed to make room when every place is taken and no source holds
+/// more than another: one on a long link still has time for both.
+pub const YIELD_AFTER: Duration = Duration::from_secs(1);
 /// The connections that have not said their first line yet, by source:
-/// each source holds at most so many, and when every place is taken the
-/// oldest of the source holding the most is closed to make room for a
-/// source holding fewer.
+/// each source (and each IPv6 /48) holds at most so many. When every place
+/// is taken, the oldest of the source holding the most is closed to make
+/// room for a source holding fewer; when none holds more, the oldest of
+/// all, once it has had `YIELD_AFTER`.
 pub struct Doorway {
     total: usize,
     per_source: usize,
+    per_network: usize,
     held: usize,
-    by_source: HashMap<IpAddr, VecDeque<(u64, oneshot::Sender<()>)>>,
+    by_source: HashMap<IpAddr, VecDeque<(u64, Instant, oneshot::Sender<()>)>>,
+    by_network: HashMap<IpAddr, usize>,
     next: u64,
 }
 /// A place in the doorway: `closed` resolves when it was taken away to
@@ -377,40 +415,59 @@ pub struct Place {
     pub closed: oneshot::Receiver<()>,
 }
 impl Doorway {
-    pub fn new(total: usize, per_source: usize) -> Self {
+    pub fn new(total: usize, per_source: usize, per_network: usize) -> Self {
         Self {
             total,
             per_source,
+            per_network,
             held: 0,
             by_source: HashMap::new(),
+            by_network: HashMap::new(),
             next: 0,
         }
     }
-    /// A place for a connection from `ip`, if there is one.
+    /// A place for a connection from `ip` now, if there is one.
     pub fn enter(&mut self, ip: IpAddr) -> Option<Place> {
+        self.enter_at(ip, Instant::now())
+    }
+    /// A place for a connection from `ip` at `now`, if there is one.
+    pub fn enter_at(&mut self, ip: IpAddr, now: Instant) -> Option<Place> {
         let source = source_of(ip);
+        let network = network_of(source);
         let mine = self.by_source.get(&source).map_or(0, VecDeque::len);
         if mine >= self.per_source {
             return None;
         }
+        if network.is_some_and(|n| {
+            self.by_network
+                .get(&n)
+                .is_some_and(|c| *c >= self.per_network)
+        }) {
+            return None;
+        }
         if self.held >= self.total {
             // The source holding the most gives up its oldest, if it holds
-            // more than this one would.
+            // more than this one would; otherwise the oldest of all, once
+            // it has had its time.
             let (most, count) = self
                 .by_source
                 .iter()
                 .map(|(source, held)| (*source, held.len()))
                 .max_by_key(|(_, count)| *count)?;
-            if count <= mine + 1 {
-                return None;
-            }
-            if let Some(waiting) = self.by_source.get_mut(&most) {
-                waiting.pop_front();
-                self.held -= 1;
-                if waiting.is_empty() {
-                    self.by_source.remove(&most);
+            let giving = if count > mine + 1 {
+                most
+            } else {
+                let (oldest, since) = self
+                    .by_source
+                    .iter()
+                    .filter_map(|(source, held)| held.front().map(|(_, at, _)| (*source, *at)))
+                    .min_by_key(|(_, at)| *at)?;
+                if now.saturating_duration_since(since) < YIELD_AFTER {
+                    return None;
                 }
-            }
+                oldest
+            };
+            self.give_up_oldest(giving);
         }
         let (close, closed) = oneshot::channel();
         self.next += 1;
@@ -418,19 +475,45 @@ impl Doorway {
         self.by_source
             .entry(source)
             .or_default()
-            .push_back((id, close));
+            .push_back((id, now, close));
+        if let Some(network) = network {
+            *self.by_network.entry(network).or_default() += 1;
+        }
         self.held += 1;
         Some(Place { id, source, closed })
+    }
+    /// Close the oldest connection of `source` (dropping its sender ends it).
+    fn give_up_oldest(&mut self, source: IpAddr) {
+        if let Some(waiting) = self.by_source.get_mut(&source)
+            && waiting.pop_front().is_some()
+        {
+            if waiting.is_empty() {
+                self.by_source.remove(&source);
+            }
+            self.left(source);
+        }
     }
     /// The connection said its first line, or ended: its place is free.
     pub fn leave(&mut self, place: &Place) {
         if let Some(waiting) = self.by_source.get_mut(&place.source)
-            && let Some(at) = waiting.iter().position(|(id, _)| *id == place.id)
+            && let Some(at) = waiting.iter().position(|(id, _, _)| *id == place.id)
         {
             waiting.remove(at);
-            self.held -= 1;
             if waiting.is_empty() {
                 self.by_source.remove(&place.source);
+            }
+            self.left(place.source);
+        }
+    }
+    /// One place of `source` is free.
+    fn left(&mut self, source: IpAddr) {
+        self.held -= 1;
+        if let Some(network) = network_of(source)
+            && let Some(count) = self.by_network.get_mut(&network)
+        {
+            *count -= 1;
+            if *count == 0 {
+                self.by_network.remove(&network);
             }
         }
     }
@@ -605,11 +688,13 @@ struct Registered {
     /// again replaces its older connection.
     id: u64,
     source: IpAddr,
-    connect: mpsc::Sender<u64>,
+    /// Each `DIAL` for it: its id, and the computer asking.
+    connect: mpsc::Sender<(u64, String)>,
 }
 struct Waiting {
     target: String,
-    answer: oneshot::Sender<Accepted>,
+    /// Its connection, or why there is none (`closed`); dropped: `busy`.
+    answer: oneshot::Sender<Result<Accepted, &'static str>>,
 }
 /// Serve a relay on `listener` until `shutdown`: `tls` is its identity
 /// (`RelayIdentity::server_config`), `token` lets computers in.
@@ -632,6 +717,7 @@ pub async fn serve(
         doorway: Mutex::new(Doorway::new(
             limits.unauthenticated,
             limits.unauthenticated_per_source,
+            limits.unauthenticated_per_network,
         )),
         sources: Mutex::new(Sources::new(limits.rate)),
         tap: tap_from_env(),
@@ -822,7 +908,9 @@ impl Hub {
             loop {
                 tokio::select! {
                     next = connects.recv() => match next {
-                        Some(id) => if write_line(&mut writer, &Line::Connect { id }).await.is_err() { break },
+                        Some((id, fingerprint)) => {
+                            if write_line(&mut writer, &Line::Connect { id, fingerprint }).await.is_err() { break }
+                        }
                         None => break,
                     },
                     line = hearing.recv() => match line {
@@ -830,13 +918,13 @@ impl Hub {
                             silence.as_mut().reset(tokio::time::Instant::now() + SILENT_CONTROL);
                             if write_line(&mut writer, &Line::Pong).await.is_err() { break }
                         }
-                        // It serves all it can: the computer asking is told so now.
+                        // It serves all it can, or does not take the computer
+                        // asking at all: that computer is told so now.
                         Some(Ok(Line::Busy { id })) => {
-                            if let Ok(mut waiting) = self.waiting.lock()
-                                && waiting.get(&id).is_some_and(|w| w.target == computer)
-                            {
-                                waiting.remove(&id);
-                            }
+                            self.turned_down(&computer, id, "busy");
+                        }
+                        Some(Ok(Line::Closed { id })) => {
+                            self.turned_down(&computer, id, "closed");
                         }
                         _ => break,
                     },
@@ -851,6 +939,20 @@ impl Hub {
             && computers.get(&computer).is_some_and(|r| r.id == id)
         {
             computers.remove(&computer);
+        }
+    }
+    /// The `DIAL` waiting with `id`, turned down by `computer`, the one it
+    /// asked for (no other computer may answer for it).
+    fn turned_down(&self, computer: &str, id: u64, why: &'static str) {
+        let waiting = self.waiting.lock().ok().and_then(|mut waiting| {
+            if waiting.get(&id).is_some_and(|w| w.target == computer) {
+                waiting.remove(&id)
+            } else {
+                None
+            }
+        });
+        if let Some(waiting) = waiting {
+            let _ = waiting.answer.send(Err(why));
         }
     }
     /// Count one more pair asked for by `computer` from `source`, if
@@ -903,11 +1005,12 @@ impl Hub {
         if let Ok(mut waiting) = self.waiting.lock() {
             waiting.insert(id, Waiting { target, answer });
         }
-        // Accepted; turned down (it serves all it can, or its control
-        // connection is backed up); or not in time.
-        let other = if connect.try_send(id).is_ok() {
+        // Accepted; turned down (it serves all it can, it does not take the
+        // computer asking, or its control connection is backed up); or not
+        // in time.
+        let other = if connect.try_send((id, asking.clone())).is_ok() {
             match tokio::time::timeout(ACCEPT_WAIT, answered).await {
-                Ok(Ok(other)) => Ok(other),
+                Ok(Ok(answer)) => answer,
                 Ok(Err(_)) => Err("busy"),
                 Err(_) => Err("timeout"),
             }
@@ -947,12 +1050,13 @@ impl Hub {
             return;
         };
         if write_line(&mut tls, &Line::Ok).await.is_ok() {
-            let _ = waiting.answer.send(tls);
+            let _ = waiting.answer.send(Ok(tls));
         }
     }
 }
 
-type Reached = tokio_rustls::client::TlsStream<TcpStream>;
+/// A connection to a relay, TLS done.
+pub type Reached = tokio_rustls::client::TlsStream<TcpStream>;
 /// A new connection to `relay` as this computer (`tls`: the relay pinned by
 /// its fingerprint, this computer's certificate shown).
 pub async fn reach(
@@ -990,31 +1094,152 @@ async fn said(
     line: &Line,
     wait: Duration,
 ) -> Option<Reached> {
-    let mut stream = reach(relay, tls.clone()).await.ok()?;
-    write_line(&mut stream, line).await.ok()?;
+    answered(relay, tls, line, wait).await.ok()
+}
+/// The same, or the reason in the relay's `ERR <reason>` if it said one.
+async fn answered(
+    relay: &RelayAddress,
+    tls: &Arc<rustls::ClientConfig>,
+    line: &Line,
+    wait: Duration,
+) -> Result<Reached, Option<String>> {
+    let mut stream = reach(relay, tls.clone()).await.map_err(|_| None)?;
+    write_line(&mut stream, line).await.map_err(|_| None)?;
     let answer = tokio::time::timeout(wait, read_line(&mut stream))
         .await
-        .ok()?
-        .ok()?;
-    (parse(&answer).ok()? == Line::Ok).then_some(stream)
+        .map_err(|_| None)?
+        .map_err(|_| None)?;
+    match parse(&answer) {
+        Ok(Line::Ok) => Ok(stream),
+        Ok(Line::Err(reason)) => Err(Some(reason)),
+        _ => Err(None),
+    }
+}
+
+/// What a computer makes of one the relay puts through to it, by the
+/// certificate that computer showed the relay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Caller {
+    /// Paired with it: up to `per_caller` places of its own.
+    Paired,
+    /// Not paired, while it is pairing: the strangers share `strangers`
+    /// places.
+    Stranger,
+    /// Not paired, and not pairing: turned down at once (`CLOSED`).
+    Refused,
+}
+/// The places a computer has for connections put through relays to it,
+/// shared by every relay it holds: so many in all, so many for each
+/// computer it is paired with, and so many for the computers it is not
+/// paired with together. `judge` says which a computer is, when it asks.
+pub struct Seats {
+    slots: Arc<Semaphore>,
+    per_caller: usize,
+    strangers: usize,
+    held: Mutex<HashMap<Option<String>, usize>>,
+    judge: Box<dyn Fn(&str) -> Caller + Send + Sync>,
+}
+/// A place a connection put through a relay holds while it is served.
+pub struct Seat {
+    seats: Arc<Seats>,
+    /// The computer it is for, or none for the strangers' places.
+    key: Option<String>,
+    /// The computer the relay put through (its certificate's fingerprint).
+    caller: String,
+    _slot: OwnedSemaphorePermit,
+}
+/// Why a computer asking was turned down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnedDown {
+    /// No place left, in all or for it (`BUSY`).
+    Busy,
+    /// Not taken at all (`CLOSED`).
+    Closed,
+}
+impl Seats {
+    pub fn new(
+        total: usize,
+        per_caller: usize,
+        strangers: usize,
+        judge: impl Fn(&str) -> Caller + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            slots: Arc::new(Semaphore::new(total)),
+            per_caller,
+            strangers,
+            held: Mutex::default(),
+            judge: Box::new(judge),
+        })
+    }
+    /// A place for a connection from `caller`, if it may have one now.
+    pub fn take(self: &Arc<Self>, caller: &str) -> Result<Seat, TurnedDown> {
+        let (key, most) = match (self.judge)(caller) {
+            Caller::Paired => (Some(caller.to_owned()), self.per_caller),
+            Caller::Stranger => (None, self.strangers),
+            Caller::Refused => return Err(TurnedDown::Closed),
+        };
+        let mut held = self.held.lock().map_err(|_| TurnedDown::Busy)?;
+        if held.get(&key).is_some_and(|count| *count >= most) {
+            return Err(TurnedDown::Busy);
+        }
+        let slot = self
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| TurnedDown::Busy)?;
+        *held.entry(key.clone()).or_default() += 1;
+        Ok(Seat {
+            seats: self.clone(),
+            key,
+            caller: caller.to_owned(),
+            _slot: slot,
+        })
+    }
+    /// Places held now.
+    pub fn held(&self) -> usize {
+        self.held
+            .lock()
+            .map(|held| held.values().sum())
+            .unwrap_or_default()
+    }
+}
+impl Seat {
+    /// The computer the relay put through: a certificate shown inside must
+    /// be this one.
+    pub fn caller(&self) -> &str {
+        &self.caller
+    }
+}
+impl Drop for Seat {
+    fn drop(&mut self) {
+        if let Ok(mut held) = self.seats.held.lock()
+            && let Some(count) = held.get_mut(&self.key)
+        {
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&self.key);
+            }
+        }
+    }
 }
 
 /// What a computer holding a relay is told: whether it holds it now, and
-/// each connection put through to it, with its place among the ones it
-/// serves at once (held while it is served).
+/// each connection put through to it, with its seat (held while it is
+/// served).
 pub type Held = Arc<dyn Fn(bool) + Send + Sync>;
-pub type Arrived = Arc<dyn Fn(Reached, OwnedSemaphorePermit) + Send + Sync>;
+pub type Arrived = Arc<dyn Fn(Reached, Seat) + Send + Sync>;
 /// Hold a control connection to `relay` until `stop`, connecting again
 /// after a second whenever it is lost, and waiting longer (up to a minute)
 /// each time that fails. Each connection put through to this computer is
 /// handed to `arrived`, as it comes: TLS from the computer that asked,
-/// to be served like any other connection from another computer. `slots`
-/// bounds how many it opens and serves at once; past that a computer
-/// asking is turned down (`BUSY`).
+/// to be served like any other connection from another computer. `seats`
+/// bounds how many it opens and serves at once, in all and for each
+/// computer asking; past that the computer asking is turned down (`BUSY`),
+/// and one it does not take at all is too (`CLOSED`).
 pub async fn hold(
     relay: RelayAddress,
     tls: Arc<rustls::ClientConfig>,
-    slots: Arc<Semaphore>,
+    seats: Arc<Seats>,
     arrived: Arrived,
     held: Held,
     mut stop: watch::Receiver<bool>,
@@ -1025,7 +1250,7 @@ pub async fn hold(
             return;
         }
         let registered = tokio::select! {
-            registered = control(&relay, &tls, &slots, &arrived, &held) => registered,
+            registered = control(&relay, &tls, &seats, &arrived, &held) => registered,
             _ = stop.changed() => { held(false); return }
         };
         held(false);
@@ -1045,7 +1270,7 @@ pub async fn hold(
 async fn control(
     relay: &RelayAddress,
     tls: &Arc<rustls::ClientConfig>,
-    slots: &Arc<Semaphore>,
+    seats: &Arc<Seats>,
     arrived: &Arrived,
     held: &Held,
 ) -> bool {
@@ -1078,16 +1303,23 @@ async fn control(
         };
         tokio::select! {
             line = hearing.recv() => match line {
-                Some(Ok(Line::Connect { id })) => {
-                    let Ok(slot) = slots.clone().try_acquire_owned() else {
-                        if write_line(&mut writer, &Line::Busy { id }).await.is_err() { break }
-                        continue;
+                Some(Ok(Line::Connect { id, fingerprint })) => {
+                    let seat = match seats.take(&fingerprint) {
+                        Ok(seat) => seat,
+                        Err(turned) => {
+                            let answer = match turned {
+                                TurnedDown::Busy => Line::Busy { id },
+                                TurnedDown::Closed => Line::Closed { id },
+                            };
+                            if write_line(&mut writer, &answer).await.is_err() { break }
+                            continue;
+                        }
                     };
                     let (relay, tls, arrived) = (relay.clone(), tls.clone(), arrived.clone());
                     tokio::spawn(async move {
                         let accept = Line::Accept { token: relay.token().to_owned(), id };
                         if let Some(stream) = said(&relay, &tls, &accept, LINE_TIME).await {
-                            arrived(stream, slot);
+                            arrived(stream, seat);
                         }
                     });
                 }
@@ -1133,8 +1365,9 @@ impl RelayDialer {
     /// A new connection to the computer with `fingerprint` through `relay`:
     /// TLS to the relay, `DIAL`, TLS with that computer (`inner`, which pins
     /// its certificate), ready for HTTP. Or where it stopped: the relay did
-    /// not put it through (`NOT_RELAYED`), or the computer behind it is not
-    /// the one meant (`ANOTHER`).
+    /// not put it through (`NOT_RELAYED`), the computer turned this one down
+    /// (`TURNED_DOWN`: not paired with it, and not pairing), or the computer
+    /// behind it is not the one meant (`ANOTHER`).
     pub(crate) async fn open(
         &self,
         relay: &RelayAddress,
@@ -1150,9 +1383,12 @@ impl RelayDialer {
             token: relay.token().to_owned(),
             fingerprint: fingerprint.to_owned(),
         };
-        let through = said(relay, &outer, &dial, ACCEPT_WAIT + LINE_TIME)
+        let through = answered(relay, &outer, &dial, ACCEPT_WAIT + LINE_TIME)
             .await
-            .ok_or(NOT_RELAYED)?;
+            .map_err(|why| match why.as_deref() {
+                Some("closed") => TURNED_DOWN,
+                _ => NOT_RELAYED,
+            })?;
         let name = rustls::pki_types::ServerName::try_from("localhost").map_err(|_| NOT_RELAYED)?;
         let tls = TlsConnector::from(inner)
             .connect(name, through)
@@ -1245,10 +1481,11 @@ mod tests {
             },
             Line::Dial {
                 token: token(),
-                fingerprint,
+                fingerprint: fingerprint.clone(),
             },
-            Line::Connect { id: 7 },
+            Line::Connect { id: 7, fingerprint },
             Line::Busy { id: 7 },
+            Line::Closed { id: 7 },
             Line::Ok,
             Line::Err("offline".into()),
             Line::Ping,
@@ -1278,12 +1515,19 @@ mod tests {
             parse(&format!("LISTEN {} extra", token())),
             Err(LineError::Malformed)
         );
-        assert_eq!(parse("CONNECT -1"), Err(LineError::Malformed));
+        let fingerprint = "cd".repeat(32);
         assert_eq!(
-            parse("CONNECT 18446744073709551616"),
+            parse(&format!("CONNECT -1 {fingerprint}")),
             Err(LineError::Malformed)
         );
+        assert_eq!(
+            parse(&format!("CONNECT 18446744073709551616 {fingerprint}")),
+            Err(LineError::Malformed)
+        );
+        assert_eq!(parse("CONNECT 7"), Err(LineError::Malformed));
+        assert_eq!(parse("CONNECT 7 cd"), Err(LineError::Malformed));
         assert_eq!(parse("BUSY"), Err(LineError::Malformed));
+        assert_eq!(parse("CLOSED"), Err(LineError::Malformed));
         assert_eq!(parse("ERR Not-Found"), Err(LineError::Malformed));
         assert_eq!(parse("OK now"), Err(LineError::Malformed));
     }
@@ -1385,23 +1629,27 @@ mod tests {
         let busy: IpAddr = "203.0.113.5".parse().unwrap();
         let other: IpAddr = "198.51.100.7".parse().unwrap();
         let third: IpAddr = "2001:db8:1:2::1".parse().unwrap();
-        let mut doorway = Doorway::new(6, 4);
-        let mut places: Vec<Place> = (0..4).map(|_| doorway.enter(busy).unwrap()).collect();
+        // All at one moment: nobody has had its time yet.
+        let now = Instant::now();
+        let mut doorway = Doorway::new(6, 4, 32);
+        let mut places: Vec<Place> = (0..4)
+            .map(|_| doorway.enter_at(busy, now).unwrap())
+            .collect();
         assert!(
-            doorway.enter(busy).is_none(),
+            doorway.enter_at(busy, now).is_none(),
             "four from one source at most"
         );
         assert!(
             doorway
-                .enter("::ffff:203.0.113.5".parse().unwrap())
+                .enter_at("::ffff:203.0.113.5".parse().unwrap(), now)
                 .is_none(),
             "the same source written as IPv6"
         );
-        places.push(doorway.enter(other).unwrap());
-        places.push(doorway.enter(other).unwrap());
+        places.push(doorway.enter_at(other, now).unwrap());
+        places.push(doorway.enter_at(other, now).unwrap());
         assert_eq!(doorway.held(), 6);
         // Full: the busy source's oldest place goes to the third source.
-        let third_place = doorway.enter(third).unwrap();
+        let third_place = doorway.enter_at(third, now).unwrap();
         assert!(
             matches!(
                 places[0].closed.try_recv(),
@@ -1415,16 +1663,175 @@ mod tests {
         ));
         assert_eq!(doorway.held(), 6);
         // `other` holds 2 and the most anyone holds is 3: not more than it
-        // would, so nobody makes room.
-        assert!(doorway.enter(other).is_none());
+        // would, and nobody has had its time, so nobody makes room.
+        assert!(doorway.enter_at(other, now).is_none());
         // Leaving frees a place; leaving twice frees nothing more.
         doorway.leave(&third_place);
         doorway.leave(&third_place);
         assert_eq!(doorway.held(), 5);
-        assert!(doorway.enter(other).is_some());
+        assert!(doorway.enter_at(other, now).is_some());
         // A place let go to make room is not counted again when it leaves.
         doorway.leave(&places[0]);
         assert_eq!(doorway.held(), 6);
+    }
+
+    /// Every place taken by sources holding one each (many addresses, one
+    /// connection from each): nobody holds more, so a newcomer waits until
+    /// the oldest has had its time for TLS and a first line, then that one
+    /// goes; a newcomer is never let in at the cost of a young connection.
+    #[test]
+    fn with_every_place_taken_one_each_the_oldest_goes_once_it_had_its_time() {
+        let start = Instant::now();
+        let mut doorway = Doorway::new(4, 16, 32);
+        let mut places: Vec<Place> = (1..=4)
+            .map(|n| {
+                let at = start + Duration::from_millis(100 * n);
+                doorway
+                    .enter_at(format!("203.0.113.{n}").parse().unwrap(), at)
+                    .unwrap()
+            })
+            .collect();
+        let newcomer: IpAddr = "198.51.100.9".parse().unwrap();
+        let soon = start + Duration::from_millis(900);
+        assert!(
+            doorway.enter_at(newcomer, soon).is_none(),
+            "a connection still within its time was let go"
+        );
+        assert_eq!(doorway.held(), 4);
+        // The first came at 100 ms: at 1.2 s it has had its second.
+        let later = start + Duration::from_millis(1200);
+        let let_in = doorway.enter_at(newcomer, later);
+        assert!(let_in.is_some(), "the oldest kept its place for good");
+        assert!(matches!(
+            places[0].closed.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        for place in &mut places[1..] {
+            assert!(matches!(
+                place.closed.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+        }
+        assert_eq!(doorway.held(), 4);
+        // The next oldest (200 ms) has had its second at 1.2 s too; the
+        // newcomer itself (1.2 s) has not.
+        assert!(
+            doorway
+                .enter_at("198.51.100.10".parse().unwrap(), later)
+                .is_some()
+        );
+        assert!(matches!(
+            places[1].closed.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        let mut newest = let_in.unwrap();
+        let last = start + Duration::from_millis(1500);
+        for n in 11..=12 {
+            assert!(
+                doorway
+                    .enter_at(format!("198.51.100.{n}").parse().unwrap(), last)
+                    .is_some()
+            );
+        }
+        // Now the newcomers are the oldest, and young.
+        assert!(
+            doorway
+                .enter_at("198.51.100.13".parse().unwrap(), last)
+                .is_none()
+        );
+        assert!(matches!(
+            newest.closed.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    /// A site with many /64s (an IPv6 /48) holds only so many places in
+    /// all, so it cannot take every place with a new /64 for each
+    /// connection; another /48, and IPv4, still get in.
+    #[test]
+    fn an_ipv6_site_holds_only_so_many_places_across_its_64s() {
+        let now = Instant::now();
+        let mut doorway = Doorway::new(256, 16, 32);
+        let mut held = Vec::new();
+        for subnet in 0..32 {
+            let ip: IpAddr = format!("2001:db8:5:{subnet:x}::1").parse().unwrap();
+            held.push(doorway.enter_at(ip, now).unwrap());
+        }
+        assert!(
+            doorway
+                .enter_at("2001:db8:5:ff::1".parse().unwrap(), now)
+                .is_none(),
+            "a 33rd from the same /48"
+        );
+        assert!(
+            doorway
+                .enter_at("2001:db8:6::1".parse().unwrap(), now)
+                .is_some(),
+            "another /48"
+        );
+        assert!(
+            doorway
+                .enter_at("203.0.113.1".parse().unwrap(), now)
+                .is_some()
+        );
+        // A place it leaves is its again.
+        doorway.leave(&held[0]);
+        assert!(
+            doorway
+                .enter_at("2001:db8:5:ff::1".parse().unwrap(), now)
+                .is_some()
+        );
+        assert_eq!(doorway.held(), 34);
+    }
+
+    /// A computer's places for connections through relays: so many for each
+    /// computer it is paired with, so many for all the others together
+    /// while it is pairing, none at all for them otherwise; a seat given
+    /// back is free again.
+    #[test]
+    fn a_computer_keeps_places_for_each_paired_computer() {
+        let paired = "aa".repeat(32);
+        let other_paired = "bb".repeat(32);
+        let pairing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let open = pairing.clone();
+        let seats = Seats::new(6, 2, 2, move |caller: &str| {
+            if caller == "aa".repeat(32) || caller == "bb".repeat(32) {
+                Caller::Paired
+            } else if open.load(Ordering::SeqCst) {
+                Caller::Stranger
+            } else {
+                Caller::Refused
+            }
+        });
+        let stranger = "cc".repeat(32);
+        assert!(matches!(seats.take(&stranger), Err(TurnedDown::Closed)));
+        let mine: Vec<Seat> = (0..2).map(|_| seats.take(&paired).unwrap()).collect();
+        assert!(matches!(seats.take(&paired), Err(TurnedDown::Busy)));
+        let theirs = seats.take(&other_paired).unwrap();
+        assert_eq!(theirs.caller(), other_paired);
+        pairing.store(true, Ordering::SeqCst);
+        let strangers: Vec<Seat> = (0..2)
+            .map(|n| seats.take(&format!("{n:0>64}")).unwrap())
+            .collect();
+        assert!(
+            matches!(seats.take(&stranger), Err(TurnedDown::Busy)),
+            "the strangers' places are shared"
+        );
+        assert!(seats.take(&other_paired).is_ok(), "theirs are their own");
+        assert_eq!(seats.held(), 5);
+        drop(mine);
+        assert!(seats.take(&paired).is_ok());
+        drop(strangers);
+        assert!(seats.take(&stranger).is_ok());
+        drop(theirs);
+        assert_eq!(seats.held(), 0);
+        // So many in all, whoever holds them.
+        let seats = Seats::new(3, 2, 2, |_: &str| Caller::Paired);
+        let _held: Vec<Seat> = [&paired, &paired, &other_paired]
+            .into_iter()
+            .map(|caller| seats.take(caller).unwrap())
+            .collect();
+        assert!(matches!(seats.take(&other_paired), Err(TurnedDown::Busy)));
     }
 
     /// A pair passing nothing for its idle time is closed; one passing

@@ -1,8 +1,11 @@
 //! The built-in relay, in one process: a computer holding a connection to
 //! it is reached through it, with the right token only; the relay knows
 //! nothing of what passes; it takes on only so much, and one source cannot
-//! use up what everyone shares; and a call through it over a slow link
-//! still answers in the time the callers give it.
+//! use up what everyone shares; the computer behind it takes only the
+//! computers it is paired with, closes what goes unused, and a request is
+//! sent once, on a new connection when a kept one has just closed; and a
+//! call through it over a slow link still answers in the time the callers
+//! give it.
 use axum::{Json, Router, extract::State, routing::get, routing::post};
 use hmesh_core::*;
 use hmesh_security::{Instance, relay::RelayIdentity};
@@ -25,7 +28,7 @@ use tokio::{
         TcpListener, TcpSocket, TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
-    sync::{Semaphore, mpsc, watch},
+    sync::{mpsc, watch},
 };
 
 fn instance(root: &std::path::Path, name: &str) -> Arc<Instance> {
@@ -83,14 +86,22 @@ fn at(relay: &RelayAddress, authority: &str) -> RelayAddress {
 }
 /// `instance` holding a connection to `relay`, serving `/count` (it counts
 /// the calls it runs) and `/who` to the computer it trusts, on what comes
-/// through; at most `slots` at once. Whether it holds the relay now, and
-/// its calls.
-fn holding_with(
+/// through; at most `slots` at once, and only computers it trusts unless
+/// `strangers`. Each connection is closed after `idle` unused. Whether it
+/// holds the relay now, its calls, and the connections it serves now.
+fn holding_for(
     instance: Arc<Instance>,
     trusted: Peer,
     relay: RelayAddress,
     slots: usize,
-) -> (Arc<AtomicBool>, Arc<AtomicUsize>, watch::Sender<bool>) {
+    strangers: bool,
+    idle: Duration,
+) -> (
+    Arc<AtomicBool>,
+    Arc<AtomicUsize>,
+    watch::Sender<bool>,
+    Arc<AtomicUsize>,
+) {
     let calls = Arc::new(AtomicUsize::new(0));
     let name = instance.card.display_name.clone();
     let app = Router::new()
@@ -107,21 +118,28 @@ fn holding_with(
     let shown = held.clone();
     let server = instance.clone();
     let serving = stopped.clone();
-    let arrived: relay::Arrived = Arc::new(move |stream, slot| {
+    let open = Arc::new(AtomicUsize::new(0));
+    let counted = open.clone();
+    let paired = trusted.card.fingerprint.clone();
+    let arrived: relay::Arrived = Arc::new(move |stream, seat| {
         let config = server
             .server_config(std::slice::from_ref(&trusted))
             .expect("TLS");
-        let (app, serving) = (app.clone(), serving.clone());
+        let (app, serving, counted) = (app.clone(), serving.clone(), counted.clone());
         tokio::spawn(async move {
-            let _slot = slot;
-            hmesh_transport::serve_connection(
+            counted.fetch_add(1, Ordering::SeqCst);
+            hmesh_transport::serve_relayed_connection(
                 stream,
-                SocketAddr::new(relay::RELAYED, 0),
+                seat.caller(),
+                || true,
                 app,
                 config,
+                idle,
                 serving,
             )
             .await;
+            counted.fetch_sub(1, Ordering::SeqCst);
+            drop(seat);
         });
     });
     let tls = Arc::new(
@@ -129,14 +147,39 @@ fn holding_with(
             .client_config(relay.fingerprint(), false)
             .expect("TLS to the relay"),
     );
+    let seats = relay::Seats::new(slots, slots, slots, move |caller: &str| {
+        if caller == paired {
+            relay::Caller::Paired
+        } else if strangers {
+            relay::Caller::Stranger
+        } else {
+            relay::Caller::Refused
+        }
+    });
     tokio::spawn(relay::hold(
         relay,
         tls,
-        Arc::new(Semaphore::new(slots)),
+        seats,
         arrived,
         Arc::new(move |now| shown.store(now, Ordering::SeqCst)),
         stopped,
     ));
+    (held, calls, stop, open)
+}
+fn holding_with(
+    instance: Arc<Instance>,
+    trusted: Peer,
+    relay: RelayAddress,
+    slots: usize,
+) -> (Arc<AtomicBool>, Arc<AtomicUsize>, watch::Sender<bool>) {
+    let (held, calls, stop, _) = holding_for(
+        instance,
+        trusted,
+        relay,
+        slots,
+        true,
+        hmesh_transport::RELAYED_IDLE,
+    );
     (held, calls, stop)
 }
 fn holding(
@@ -386,9 +429,13 @@ async fn only_the_computer_asked_for_accepts_its_connection() {
         let (a, address, fingerprint) = (a.clone(), address.clone(), b.card.fingerprint.clone());
         async move { said(&a, &address, &dial(&address, &fingerprint)).await }
     });
-    let Ok(Line::Connect { id }) = relay::read_command(&mut control).await else {
+    let Ok(Line::Connect { id, fingerprint }) = relay::read_command(&mut control).await else {
         panic!("no CONNECT for the studio");
     };
+    assert_eq!(
+        fingerprint, a.card.fingerprint,
+        "it names the computer asking"
+    );
     let accept = format!("ACCEPT {} {id}", address.token());
     assert_eq!(
         say(&c, &address, &accept).await,
@@ -738,4 +785,271 @@ async fn a_computer_behind_a_far_relay_answers_in_the_time_its_callers_give() {
         memory.last_good(&b.card.fingerprint).as_deref(),
         Some(far_relay.to_string().as_str())
     );
+}
+
+/// `instance` holding a connection to `relay`, taking every computer that
+/// asks, each connection handed to `arrived` as it comes.
+fn holding_by_hand(
+    instance: Arc<Instance>,
+    relay: RelayAddress,
+    arrived: relay::Arrived,
+) -> (Arc<AtomicBool>, watch::Sender<bool>) {
+    let (stop, stopped) = watch::channel(false);
+    let held = Arc::new(AtomicBool::new(false));
+    let shown = held.clone();
+    let tls = Arc::new(
+        instance
+            .client_config(relay.fingerprint(), false)
+            .expect("TLS to the relay"),
+    );
+    let seats = relay::Seats::new(
+        relay::SERVED_AT_ONCE,
+        relay::SERVED_PER_CALLER,
+        relay::SERVED_STRANGERS,
+        |_: &str| relay::Caller::Paired,
+    );
+    tokio::spawn(relay::hold(
+        relay,
+        tls,
+        seats,
+        arrived,
+        Arc::new(move |now| shown.store(now, Ordering::SeqCst)),
+        stopped,
+    ));
+    (held, stop)
+}
+
+/// The studio reads a request's head and drops the connection without an
+/// answer. The request was sent: the call fails, and it is not sent again,
+/// on a new connection or anywhere else.
+#[tokio::test]
+async fn a_request_sent_before_its_connection_broke_is_not_sent_again() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (address, _token, _relay) = relay(root.path(), Limits::default()).await;
+    let a = instance(root.path(), "laptop");
+    let b = instance(root.path(), "studio");
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
+        b.server_config(std::slice::from_ref(&trusting(&a)))
+            .expect("TLS"),
+    ));
+    let (heads, connections) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (read, came) = (heads.clone(), connections.clone());
+    let arrived: relay::Arrived = Arc::new(move |stream, seat| {
+        let (acceptor, read, came) = (acceptor.clone(), read.clone(), came.clone());
+        tokio::spawn(async move {
+            let _seat = seat;
+            came.fetch_add(1, Ordering::SeqCst);
+            let Ok(mut tls) = acceptor.accept(stream).await else {
+                return;
+            };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match tls.read(&mut byte).await {
+                    Ok(1) => head.push(byte[0]),
+                    _ => return,
+                }
+            }
+            read.fetch_add(1, Ordering::SeqCst);
+            // Dropped here, without a word.
+        });
+    });
+    let (held, _b) = holding_by_hand(b.clone(), address.clone(), arrived);
+    until("the studio holds the relay", || held.load(Ordering::SeqCst)).await;
+    let (_stop, stopped) = watch::channel(false);
+    let dialer = RelayDialer::new(a.clone(), stopped);
+    let error = client_for(&a, &address, &b, &dialer)
+        .post::<_, usize>("/count", &serde_json::json!({}))
+        .await
+        .expect_err("no answer came");
+    assert_eq!(error.code, ErrorCode::PeerUnreachable, "{error:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(heads.load(Ordering::SeqCst), 1, "sent once");
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        1,
+        "no second connection"
+    );
+}
+
+/// The studio closes the connection kept for the next call before that
+/// call: the call goes on a new connection, runs once, and is answered.
+#[tokio::test]
+async fn a_kept_connection_closed_before_the_next_call_is_replaced() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (address, _token, _relay) = relay(root.path(), Limits::default()).await;
+    let a = instance(root.path(), "laptop");
+    let b = instance(root.path(), "studio");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route(
+            "/count",
+            post(|State(calls): State<Arc<AtomicUsize>>| async move {
+                Json(calls.fetch_add(1, Ordering::SeqCst) + 1)
+            }),
+        )
+        .with_state(calls.clone());
+    let closers: Arc<std::sync::Mutex<Vec<watch::Sender<bool>>>> = Arc::default();
+    let (server, kept) = (b.clone(), closers.clone());
+    let trusted = trusting(&a);
+    let arrived: relay::Arrived = Arc::new(move |stream, seat| {
+        let config = server
+            .server_config(std::slice::from_ref(&trusted))
+            .expect("TLS");
+        let (close, closing) = watch::channel(false);
+        kept.lock().expect("closers").push(close);
+        let app = app.clone();
+        tokio::spawn(async move {
+            let _seat = seat;
+            hmesh_transport::serve_connection(
+                stream,
+                SocketAddr::new(relay::RELAYED, 0),
+                app,
+                config,
+                closing,
+            )
+            .await;
+        });
+    });
+    let (held, _b) = holding_by_hand(b.clone(), address.clone(), arrived);
+    until("the studio holds the relay", || held.load(Ordering::SeqCst)).await;
+    let (_stop, stopped) = watch::channel(false);
+    let dialer = RelayDialer::new(a.clone(), stopped);
+    let client = client_for(&a, &address, &b, &dialer);
+    for expected in 1..=3usize {
+        let counted: usize = client
+            .post("/count", &serde_json::json!({}))
+            .await
+            .expect("answered");
+        assert_eq!(counted, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), expected, "run once");
+        assert_eq!(dialer.kept(), 1);
+        // The studio closes it (the end reaches the laptop through the
+        // relay a moment later).
+        for close in closers.lock().expect("closers").drain(..) {
+            let _ = close.send(true);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// A connection through the relay that goes unused for the studio's idle
+/// time is closed there; the next call opens a new one.
+#[tokio::test]
+async fn a_connection_through_a_relay_left_unused_is_closed() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (address, _token, _relay) = relay(root.path(), Limits::default()).await;
+    let a = instance(root.path(), "laptop");
+    let b = instance(root.path(), "studio");
+    let idle = Duration::from_millis(400);
+    let (held, calls, _b, open) = holding_for(
+        b.clone(),
+        trusting(&a),
+        address.clone(),
+        relay::SERVED_AT_ONCE,
+        true,
+        idle,
+    );
+    until("the studio holds the relay", || held.load(Ordering::SeqCst)).await;
+    let (_stop, stopped) = watch::channel(false);
+    let dialer = RelayDialer::new(a.clone(), stopped);
+    let client = client_for(&a, &address, &b, &dialer);
+    let counted: usize = client
+        .post("/count", &serde_json::json!({}))
+        .await
+        .expect("answered");
+    assert_eq!(counted, 1);
+    assert_eq!(open.load(Ordering::SeqCst), 1);
+    let started = Instant::now();
+    until("closed once unused", || open.load(Ordering::SeqCst) == 0).await;
+    assert!(started.elapsed() >= idle / 2, "{:?}", started.elapsed());
+    let counted: usize = client
+        .post("/count", &serde_json::json!({}))
+        .await
+        .expect("answered on a new connection");
+    assert_eq!(counted, 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(relay::KEPT_IDLE < hmesh_transport::RELAYED_IDLE);
+}
+
+/// A studio that is not pairing takes only the computers it is paired
+/// with: another one is turned down at once and told why, and the one it
+/// is paired with is still put through.
+#[tokio::test]
+async fn a_computer_turns_down_one_it_is_not_paired_with() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (address, _token, _relay) = relay(root.path(), Limits::default()).await;
+    let a = instance(root.path(), "laptop");
+    let b = instance(root.path(), "studio");
+    let c = instance(root.path(), "stranger");
+    let (held, calls, _b, _open) = holding_for(
+        b.clone(),
+        trusting(&a),
+        address.clone(),
+        relay::SERVED_AT_ONCE,
+        false,
+        hmesh_transport::RELAYED_IDLE,
+    );
+    until("the studio holds the relay", || held.load(Ordering::SeqCst)).await;
+    let started = Instant::now();
+    assert_eq!(
+        say(&c, &address, &dial(&address, &b.card.fingerprint))
+            .await
+            .as_deref(),
+        Some("ERR closed")
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let (_stop, stopped) = watch::channel(false);
+    let dialer = RelayDialer::new(c.clone(), stopped.clone());
+    let error = client_for(&c, &address, &b, &dialer)
+        .post::<_, usize>("/count", &serde_json::json!({}))
+        .await
+        .expect_err("turned down");
+    assert_eq!(
+        unreachable_reasons(&error.message),
+        ["not_accepted"],
+        "{error:?}"
+    );
+    let dialer = RelayDialer::new(a.clone(), stopped);
+    let counted: usize = client_for(&a, &address, &b, &dialer)
+        .post("/count", &serde_json::json!({}))
+        .await
+        .expect("the paired one");
+    assert_eq!(counted, 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// Inside, a connection shows the certificate it showed the relay (the one
+/// its places were counted by): one that shows the certificate of another
+/// computer the studio trusts is closed, and nothing is run.
+#[tokio::test]
+async fn a_connection_shows_inside_the_certificate_it_showed_the_relay() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (address, _token, _relay) = relay(root.path(), Limits::default()).await;
+    let a = instance(root.path(), "laptop");
+    let b = instance(root.path(), "studio");
+    let d = instance(root.path(), "desk");
+    let (held, calls, _b, _open) = holding_for(
+        b.clone(),
+        trusting(&d),
+        address.clone(),
+        relay::SERVED_AT_ONCE,
+        true,
+        hmesh_transport::RELAYED_IDLE,
+    );
+    until("the studio holds the relay", || held.load(Ordering::SeqCst)).await;
+    let (_stop, stopped) = watch::channel(false);
+    // To the relay as the laptop, inside as the desk.
+    let as_laptop = RelayDialer::new(a.clone(), stopped.clone());
+    let mixed = client_for(&d, &address, &b, &as_laptop)
+        .post::<_, usize>("/count", &serde_json::json!({}))
+        .await;
+    assert!(mixed.is_err(), "{mixed:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let as_desk = RelayDialer::new(d.clone(), stopped);
+    let counted: usize = client_for(&d, &address, &b, &as_desk)
+        .post("/count", &serde_json::json!({}))
+        .await
+        .expect("the desk as itself");
+    assert_eq!(counted, 1);
 }

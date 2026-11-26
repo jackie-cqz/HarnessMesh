@@ -3,11 +3,13 @@
 //! does: behind NAT, on a network it does not trust, or away from the others.
 //! It only ever connects out to a relay; what comes through is served like
 //! any connection from another computer (TLS with pinned certificates, the
-//! peer API only), and the pairing handshake answers through a relay only
-//! while pairing is open here. Relay tokens never go into a log, an event,
-//! an audit record or what doctor shows.
+//! peer API only). A computer it is not paired with is put through only
+//! while pairing is open here (and the pairing handshake answers through a
+//! relay only then); each paired computer has places of its own, and a
+//! connection left unused is closed. Relay tokens never go into a log, an
+//! event, an audit record or what doctor shows.
 use super::*;
-use hmesh_transport::relay::{self as relay_protocol, RELAYED};
+use hmesh_transport::relay as relay_protocol;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -25,8 +27,12 @@ pub struct UseRelay {
 }
 
 /// Connections put through relays opened and served at once; past that a
-/// computer asking is turned down (`BUSY`).
+/// computer asking is turned down (`BUSY`). Of those, so many for each
+/// computer paired with this one, and so many for all the others together
+/// (only while pairing).
 const RELAYED_CONNECTIONS: usize = hmesh_transport::relay::SERVED_AT_ONCE;
+const RELAYED_PER_CALLER: usize = hmesh_transport::relay::SERVED_PER_CALLER;
+const RELAYED_STRANGERS: usize = hmesh_transport::relay::SERVED_STRANGERS;
 
 /// Whether a computer configured as `config` is reached through relays:
 /// one that takes connections from other computers.
@@ -234,7 +240,13 @@ pub async fn run(state: AppState, mut stop: watch::Receiver<bool>) {
     let mut wanted = state.relays.subscribe();
     let mut holding: HashMap<String, watch::Sender<bool>> = HashMap::new();
     let peers = tailnet_router(state.clone());
-    let slots = Arc::new(tokio::sync::Semaphore::new(RELAYED_CONNECTIONS));
+    let judged = state.clone();
+    let seats = relay_protocol::Seats::new(
+        RELAYED_CONNECTIONS,
+        RELAYED_PER_CALLER,
+        RELAYED_STRANGERS,
+        move |caller: &str| caller_of(&judged, caller),
+    );
     loop {
         let relays = wanted.borrow_and_update().clone();
         let names: Vec<String> = relays.iter().map(ToString::to_string).collect();
@@ -270,7 +282,7 @@ pub async fn run(state: AppState, mut stop: watch::Receiver<bool>) {
             tokio::spawn(relay_protocol::hold(
                 relay,
                 tls,
-                slots.clone(),
+                seats.clone(),
                 arrived,
                 held,
                 released,
@@ -285,11 +297,32 @@ pub async fn run(state: AppState, mut stop: watch::Receiver<bool>) {
         let _ = release.send(true);
     }
 }
+/// What this computer makes of a computer a relay puts through to it, by
+/// the certificate it showed the relay: one it is paired with, one it is
+/// not while pairing is open (or a request to pair through a relay is
+/// still being answered), or one it turns down.
+fn caller_of(state: &AppState, caller: &str) -> relay_protocol::Caller {
+    if state
+        .store
+        .peer_by_fingerprint(caller)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        relay_protocol::Caller::Paired
+    } else if state.takes_relayed_pairing() {
+        relay_protocol::Caller::Stranger
+    } else {
+        relay_protocol::Caller::Refused
+    }
+}
 /// What to do with a connection put through a relay to this computer: serve
 /// it like one from another computer over a network (the peer API only),
-/// as from `RELAYED`, never as from its owner.
+/// as from `RELAYED`, never as from its owner. Inside, it shows the
+/// certificate it showed the relay, or none only while pairing is taken
+/// through relays; it is closed once unused for `RELAYED_IDLE`.
 fn arrived(state: AppState, peers: Router) -> relay_protocol::Arrived {
-    Arc::new(move |stream, slot| {
+    Arc::new(move |stream, seat| {
         let config = match state
             .instance
             .server_config(&state.store.peers().unwrap_or_default())
@@ -300,17 +333,19 @@ fn arrived(state: AppState, peers: Router) -> relay_protocol::Arrived {
                 return;
             }
         };
-        let (peers, stop) = (peers.clone(), state.shutdown.subscribe());
+        let (peers, stop, pairing) = (peers.clone(), state.shutdown.subscribe(), state.clone());
         tokio::spawn(async move {
-            let _slot = slot;
-            hmesh_transport::serve_connection(
+            hmesh_transport::serve_relayed_connection(
                 stream,
-                SocketAddr::new(RELAYED, 0),
+                seat.caller(),
+                || pairing.takes_relayed_pairing(),
                 peers,
                 config,
+                hmesh_transport::RELAYED_IDLE,
                 stop,
             )
             .await;
+            drop(seat);
         });
     })
 }
@@ -318,7 +353,7 @@ fn arrived(state: AppState, peers: Router) -> relay_protocol::Arrived {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hmesh_transport::relay::{Limits, Token};
+    use hmesh_transport::relay::{Limits, RELAYED, Token};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{
@@ -493,6 +528,157 @@ mod tests {
         );
         assert_eq!(view.visible_agent_count, Some(1), "{view:?}");
         assert_eq!(view.routes.last_good, Some(far_relay.label()), "{view:?}");
+        let _ = b_shutdown.send(true);
+    }
+
+    /// One `DIAL` for `target` through `relay` as `instance`: the stream,
+    /// and the relay's answer (none when it closed without a word).
+    async fn dialed(
+        instance: &Instance,
+        relay: &RelayAddress,
+        target: &str,
+    ) -> (
+        Option<relay_protocol::Reached>,
+        Option<relay_protocol::Line>,
+    ) {
+        let tls = Arc::new(instance.client_config(relay.fingerprint(), false).unwrap());
+        let Ok(mut stream) = relay_protocol::reach(relay, tls).await else {
+            return (None, None);
+        };
+        let dial = relay_protocol::Line::Dial {
+            token: relay.token().to_owned(),
+            fingerprint: target.to_owned(),
+        };
+        if relay_protocol::write_line(&mut stream, &dial)
+            .await
+            .is_err()
+        {
+            return (None, None);
+        }
+        let answer =
+            relay_protocol::read_command_within(&mut stream, std::time::Duration::from_secs(12))
+                .await
+                .ok();
+        (Some(stream), answer)
+    }
+
+    /// A computer the studio is not paired with, holding the relay's token
+    /// (one it revoked, which keeps the relay code), cannot take the places
+    /// of the computers it is paired with. While the studio is not pairing,
+    /// it is turned down at once, every time; while it is, it gets only the
+    /// strangers' places, even holding them with connections that say
+    /// nothing. A connection showing no certificate is closed after TLS
+    /// unless the studio is pairing. The laptop it is paired with is put
+    /// through all along.
+    #[tokio::test]
+    async fn a_computer_not_paired_cannot_take_the_places_of_the_paired_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let identity =
+            hmesh_security::relay::RelayIdentity::open(&root.path().join("relay")).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let near = identity
+            .code(&listener.local_addr().unwrap().to_string())
+            .unwrap();
+        let (_relay, relay_stopped) = watch::channel(false);
+        // Everything comes from 127.0.0.1 here: the relay's limits by
+        // source are not what is tested.
+        let limits = Limits {
+            rate: hmesh_transport::relay::Rate {
+                burst: 1000,
+                per_second: 1000,
+            },
+            ..Limits::default()
+        };
+        tokio::spawn(hmesh_transport::relay::serve(
+            listener,
+            Arc::new(identity.server_config().unwrap()),
+            Token::fixed(identity.token().unwrap()),
+            limits,
+            relay_stopped,
+        ));
+        let mut config = NodeConfig::default();
+        config.node.name = "hearth".into();
+        config.node.network = "direct".into();
+        config.node.expose_to_tailnet = true;
+        config.node.listen_address = "::".parse().unwrap();
+        config.node.trusted_networks = Some(vec![]);
+        config.node.host_names = Some(vec![]);
+        config.node.relays = Some(vec![near.to_string()]);
+        let b = Arc::new(Instance::init(&root.path().join("hearth"), config).unwrap());
+        let b_store = Store::open(&b.dir.join("state.sqlite3")).unwrap();
+        let mut config = NodeConfig::default();
+        config.node.name = "rover".into();
+        config.node.network = "direct".into();
+        let a = Arc::new(Instance::init(&root.path().join("rover"), config).unwrap());
+        b_store.trust_peer(&a.card).unwrap();
+        let mut config = NodeConfig::default();
+        config.node.name = "intruder".into();
+        config.node.network = "direct".into();
+        let c = Arc::new(Instance::init(&root.path().join("intruder"), config).unwrap());
+
+        let (b_shutdown, _) = watch::channel(false);
+        let b_state = AppState::load(b.clone(), b_store, b_shutdown.clone()).unwrap();
+        tokio::spawn(run(b_state.clone(), b_shutdown.subscribe()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while b_state.relays_view()[0]["connected"] != true {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the studio does not hold the relay"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let (_a_stop, a_stopped) = watch::channel(false);
+        let laptop = |anonymous: bool| {
+            Client::pinned_through(
+                &a,
+                &near.to_string(),
+                &b.card.fingerprint,
+                anonymous,
+                &RelayDialer::new(a.clone(), a_stopped.clone()),
+            )
+            .unwrap()
+        };
+
+        // Not pairing: the intruder is turned down at once, every time.
+        for _ in 0..20 {
+            let (_, answer) = dialed(&c, &near, &b.card.fingerprint).await;
+            assert_eq!(
+                answer,
+                Some(relay_protocol::Line::Err("closed".into())),
+                "{answer:?}"
+            );
+        }
+        let card: NodeCard = laptop(false).get("/hmesh/v1/node").await.unwrap();
+        assert_eq!(card.node_id, b.card.node_id);
+        // Showing no certificate (as a computer pairing does): closed after
+        // TLS, before anything is asked. (A request's status, which answers
+        // whenever, is not even looked up.)
+        let status = format!("/hmesh/v1/pair/requests/{}", Uuid::new_v4());
+        let refused = laptop(true).get::<Value>(&status).await.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PeerUnreachable, "{refused:?}");
+
+        // Pairing: the intruder holds every place it gets with connections
+        // that never say a word.
+        b_state.open_pairing().unwrap();
+        let mut holding = Vec::new();
+        let mut busy = 0;
+        for _ in 0..RELAYED_STRANGERS + 8 {
+            match dialed(&c, &near, &b.card.fingerprint).await {
+                (Some(stream), Some(relay_protocol::Line::Ok)) => holding.push(stream),
+                (_, Some(relay_protocol::Line::Err(why))) if why == "busy" => busy += 1,
+                other => panic!("{:?}", other.1),
+            }
+        }
+        assert_eq!(holding.len(), RELAYED_STRANGERS, "the strangers' places");
+        assert_eq!(busy, 8);
+        // The laptop is still put through, with and without its certificate.
+        let card: NodeCard = laptop(false).get("/hmesh/v1/node").await.unwrap();
+        assert_eq!(card.node_id, b.card.node_id);
+        let hello: NodeCard = laptop(true).get("/hmesh/v1/hello").await.unwrap();
+        assert_eq!(hello.node_id, b.card.node_id);
+        let unknown = laptop(true).get::<Value>(&status).await.unwrap_err();
+        assert_eq!(unknown.code, ErrorCode::InvalidInput, "{unknown:?}");
+        drop(holding);
         let _ = b_shutdown.send(true);
     }
 
