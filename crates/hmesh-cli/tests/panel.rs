@@ -873,7 +873,7 @@ async fn the_folder_dialog_is_this_computers_own_one_at_a_time() {
     let picker = root.path().join("pick.sh");
     std::fs::write(
         &picker,
-        "#!/bin/sh\necho $$ > \"$PICK_PID\"\ncase \"$(cat \"$PICK_MODE\")\" in\n  echo) printf '%s\\n' \"$1\";;\n  cancel) ;;\n  slow) sleep 3; printf '%s/\\n' \"$PICK_DIR\";;\n  hang) sleep 60;;\n  *) printf '%s/\\n' \"$PICK_DIR\";;\nesac\n",
+        "#!/bin/sh\necho $$ > \"$PICK_PID\"\ncase \"$(cat \"$PICK_MODE\")\" in\n  echo) printf '%s\\n' \"$1\";;\n  cancel) ;;\n  slow) sleep 3; printf '%s/\\n' \"$PICK_DIR\";;\n  hang) exec sleep 60;;\n  *) printf '%s/\\n' \"$PICK_DIR\";;\nesac\n",
     )
     .unwrap();
     std::fs::set_permissions(&picker, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1079,7 +1079,11 @@ async fn a_stop_signal_closes_an_open_folder_dialog() {
     let root = tempfile::tempdir().unwrap();
     let picker = root.path().join("hang.sh");
     let pid_file = root.path().join("pick-pid");
-    std::fs::write(&picker, "#!/bin/sh\necho $$ > \"$PICK_PID\"\nsleep 60\n").unwrap();
+    std::fs::write(
+        &picker,
+        "#!/bin/sh\necho $$ > \"$PICK_PID\"\nexec sleep 60\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&picker, std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_hmesh"))
         .arg("--data-dir")
@@ -1152,4 +1156,15 @@ async fn a_stop_signal_closes_an_open_folder_dialog() {
     assert!(!alive(&hung), "the dialog outlived the panel");
     let answer = open.await.unwrap().unwrap();
     assert_eq!(answer.status(), 503);
+    let answer: Value = answer.json().await.unwrap();
+    assert_eq!(answer["error"]["code"], "PANEL_STOPPING");
+    // The daemon this panel started stopped with it.
+    let daemon = ready["owned_daemon_pid"].as_u64().unwrap().to_string();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while alive(&daemon) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the daemon the panel started still runs");
 }
