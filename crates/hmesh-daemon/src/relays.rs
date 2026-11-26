@@ -462,10 +462,11 @@ mod tests {
         b_store.trust_peer(&a.card).unwrap();
         let project = root.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
+        // Never started: any absolute path will do, on Windows too.
         let agent: AgentConfig = serde_json::from_value(json!({
             "agent":{"name":"fixture","harness":"acp","project_id":"demo"},
             "project":{"root":project,"allowed_tools":["read"]},
-            "adapter":{"executable":"/nonexistent/fixture","args":[],"provider":"fixture","model":"fixture"}
+            "adapter":{"executable":project.join("fixture"),"args":[],"provider":"fixture","model":"fixture"}
         }))
         .unwrap();
         let card: AgentCard = serde_json::from_value(json!({
