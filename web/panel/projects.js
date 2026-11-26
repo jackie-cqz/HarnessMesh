@@ -4,7 +4,7 @@
 // there (their own history) under each one; clicking one continues it here.
 // Paired computers keep one flat list each. A session's local name, pin and
 // hidden flag apply everywhere. Agent and folder text is always set as text.
-const proj={list:null,loading:null,error:null,history:new Map(),queue:[],reading:0,open:readOpen(),more:new Set(),query:'',showHidden:false,menu:null,continuing:new Set(),folders:null,foldersRead:false,step:'choose',pick:null,preview:null,previewMore:new Set(),lastFolder:null,noPicker:false,adding:null};
+const proj={list:null,loading:null,error:null,history:new Map(),queue:[],reading:0,open:readOpen(),more:new Set(),query:'',showHidden:false,menu:null,continuing:new Set(),folders:null,foldersRead:false,step:'choose',pick:null,preview:null,previewMore:new Set(),previewAgent:null,previewPicked:new Map(),previewOnlyPicked:false,lastFolder:null,noPicker:false,adding:null};
 const EARLIER_SHOWN=6;
 function projectsSupported(){return state.runtime?.capabilities?.projects===true;}
 function readOpen(){try{return new Map(Object.entries(JSON.parse(localStorage.getItem('hmesh.panel.projects.open')||'{}')));}catch{return new Map();}}
@@ -465,7 +465,7 @@ function stopPicking(){
 // goes back to the path box with the reason.
 async function previewFolder(path,{typed=false,refresh=false}={}){
   const preview={path,name:folderLabel(path),state:'loading',typed};
-  proj.preview=preview;proj.lastFolder=path;proj.previewMore.clear();projectMessage('');
+  proj.preview=preview;proj.lastFolder=path;proj.previewMore.clear();proj.previewAgent=null;proj.previewPicked.clear();proj.previewOnlyPicked=false;projectMessage('');
   showProjectStep('preview');$('#project-add').focus();
   try{
     const data=unwrap(await api(`/folders/history?path=${encodeURIComponent(path)}&refresh=${refresh}`,{signal:AbortSignal.timeout(120000)}));
@@ -496,41 +496,85 @@ function drawPreview(){
 }
 function folderFlag(text){const flag=el('span','folder-flag');flag.append(icon('check','xs'),el('span','',text));return flag;}
 const newest=(a,b)=>(seconds(b.updated_at)||0)-(seconds(a.updated_at)||0);
+function previewSessionsOf(agent){return [...(agent.sessions||[])].sort(newest);}
+// Every session starts selected; the owner unticks what they do not want listed.
+function previewPickedFor(agent){
+  const saved=proj.previewPicked.get(agent.agent_id);
+  return saved||new Set(previewSessionsOf(agent).map(s=>s.agent_session_id));
+}
+function setPreviewPicked(agent,set){
+  proj.previewPicked.set(agent.agent_id,set);drawPreview();
+}
 function previewAgents(p,known){
   const agents=p.data.agents||[];
   if(!agents.length)return [el('p','preview-note','这台电脑上还没有 Agent。')];
   // Agents with sessions first; those that could not list at the end.
   const rank=a=>a.state==='listed'?((a.sessions||[]).length?0:1):a.state==='failed'?2:3;
+  const ranked=[...agents].sort((a,b)=>rank(a)-rank(b)||(b.sessions?.length||0)-(a.sessions?.length||0)||a.agent_name.localeCompare(b.agent_name));
+  const selected=ranked.find(a=>a.agent_id===proj.previewAgent)||ranked.find(a=>rank(a)===0)||ranked[0];
+  proj.previewAgent=selected.agent_id;
   const parts=[];
-  if(!known&&agents.some(a=>(a.sessions||[]).some(s=>!s.session_id)))parts.push(el('p','preview-note','点一个会话，会先把这个文件夹加成项目，再接着聊。'));
-  for(const agent of [...agents].sort((a,b)=>rank(a)-rank(b))){
-    const group=el('section','preview-agent'),head=el('div','preview-agent-head'),sessions=[...(agent.sessions||[])].sort(newest);
-    head.append(el('b','',agent.agent_name));
-    const quiet=agent.state==='unsupported'?'不提供会话记录':agent.state==='failed'?`没读到：${agent.message?projectProblem({message:agent.message}):'原因不明'}`:sessions.length?'':'这里没有会话';
-    if(quiet)head.append(el('span','preview-agent-state',quiet));
-    group.append(head);
-    if(sessions.length){
-      const shown=proj.previewMore.has(agent.agent_id)?sessions:sessions.slice(0,PREVIEW_SHOWN),list=el('div','folder-list');
-      for(const entry of shown)list.append(previewSession(agent,entry));
-      group.append(list);
-      if(sessions.length>shown.length){
-        const more=el('button','side-link preview-more',`再显示 ${sessions.length-shown.length} 个`);more.type='button';
-        more.addEventListener('click',()=>{proj.previewMore.add(agent.agent_id);drawPreview();});group.append(more);
-      }
-      if(agent.truncated)group.append(el('p','preview-note','会话太多，只列出了最近的一部分'));
-    }
-    parts.push(group);
+  if(!known&&ranked.some(a=>(a.sessions||[]).some(s=>!s.session_id)))parts.push(el('p','preview-note','点一个会话，会先把这个文件夹加成项目，再接着聊。'));
+  // One button per agent; the list below shows only the chosen one.
+  const tabs=el('div','preview-agents');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','选择 Agent');
+  for(const agent of ranked){
+    const sessions=agent.sessions||[],on=agent.agent_id===selected.agent_id;
+    const tab=el('button',`preview-agent-tab${on?' selected':''}`);tab.type='button';tab.setAttribute('role','tab');tab.setAttribute('aria-selected',String(on));
+    tab.append(el('span','preview-agent-name',agent.agent_name));
+    if(agent.state==='listed')tab.append(el('span','preview-agent-count',String(sessions.length)));
+    else if(agent.state==='failed')tab.append(el('span','preview-agent-flag','!'));
+    tab.title=agent.state==='listed'?`${sessions.length} 个会话`:agent.state==='failed'?`没读到：${agent.message?projectProblem({message:agent.message}):'原因不明'}`:'不提供会话记录';
+    tab.addEventListener('click',()=>{if(!on){proj.previewAgent=agent.agent_id;drawPreview();}});
+    tabs.append(tab);
   }
+  parts.push(tabs);
+  const group=el('section','preview-agent'),sessions=previewSessionsOf(selected),picked=previewPickedFor(selected);
+  if(selected.state!=='listed'){
+    group.append(el('p','preview-note',selected.state==='unsupported'?'这个 Agent 不提供会话记录':`没读到：${selected.message?projectProblem({message:selected.message}):'原因不明'}`));
+  }else if(!sessions.length){
+    group.append(el('p','preview-note','这个 Agent 在这个文件夹里没有会话'));
+  }else{
+    // Tick what should be listed; every session starts selected.
+    const bar=el('div','preview-select');
+    bar.append(el('span','preview-select-count',`已选 ${picked.size} / 共 ${sessions.length}`));
+    const all=el('button','side-link','全选');all.type='button';all.addEventListener('click',()=>setPreviewPicked(selected,new Set(sessions.map(s=>s.agent_session_id))));
+    const none=el('button','side-link','全不选');none.type='button';none.addEventListener('click',()=>setPreviewPicked(selected,new Set()));
+    const only=el('label','preview-only'),box=document.createElement('input');box.type='checkbox';box.checked=proj.previewOnlyPicked;
+    box.addEventListener('change',()=>{proj.previewOnlyPicked=box.checked;drawPreview();});
+    only.append(box,el('span','','只看已选'));
+    bar.append(all,none,only);group.append(bar);
+    const visible=proj.previewOnlyPicked?sessions.filter(e=>picked.has(e.agent_session_id)):sessions;
+    const shown=proj.previewMore.has(selected.agent_id)?visible:visible.slice(0,PREVIEW_SHOWN),list=el('div','folder-list');
+    for(const entry of shown)list.append(previewSession(selected,entry,picked.has(entry.agent_session_id)));
+    if(visible.length)group.append(list);
+    else group.append(el('p','preview-note','没有选中的会话'));
+    if(visible.length>shown.length){
+      const more=el('button','side-link preview-more',`再显示 ${visible.length-shown.length} 个`);more.type='button';
+      more.addEventListener('click',()=>{proj.previewMore.add(selected.agent_id);drawPreview();});group.append(more);
+    }
+    if(selected.truncated)group.append(el('p','preview-note','会话太多，只列出了最近的一部分'));
+  }
+  parts.push(group);
   return parts;
 }
-function previewSession(agent,entry){
-  const open=!!entry.session_id,row=el('button','folder-row preview-session');row.type='button';
-  row.dataset.key=`${agent.agent_id}/${entry.agent_session_id}`;
-  const title=entry.title||'没有标题的会话',go=el('span','folder-go',open?'打开':'接着聊');go.append(icon('chevron-right','xs'));
-  row.append(el('span','preview-title',title),el('span','preview-time',since(entry.updated_at)),go);
-  row.title=open?`${title}\n已经在这里接着聊过，点开看看`:`${title}\n接着 ${agent.agent_name} 里的这个会话聊`;
-  row.disabled=!!proj.adding||(!open&&!canWrite());
-  row.addEventListener('click',()=>pickSession(agent,entry));
+function previewSession(agent,entry,picked){
+  const open=!!entry.session_id,row=el('div',`folder-row preview-session${picked?'':' unpicked'}`);
+  const tick=document.createElement('label');tick.className='preview-pick';
+  const box=document.createElement('input');box.type='checkbox';box.checked=picked;box.setAttribute('aria-label',`选择会话 ${entry.title||entry.agent_session_id}`);
+  box.addEventListener('change',()=>{
+    const set=new Set(previewPickedFor(agent));
+    if(box.checked)set.add(entry.agent_session_id);else set.delete(entry.agent_session_id);
+    setPreviewPicked(agent,set);
+  });
+  tick.append(box);row.append(tick);
+  const go=el('span','folder-go',open?'打开':'接着聊');go.append(icon('chevron-right','xs'));
+  const button=el('button','preview-open');button.type='button';
+  const title=entry.title||'没有标题的会话';
+  button.append(el('span','preview-title',title),el('span','preview-time',since(entry.updated_at)),go);
+  button.title=open?`${title}\n已经在这里接着聊过，点开看看`:`${title}\n接着 ${agent.agent_name} 里的这个会话聊`;
+  button.disabled=!!proj.adding||(!open&&!canWrite());
+  button.addEventListener('click',()=>pickSession(agent,entry));
+  row.append(button);
   return row;
 }
 // While the folder is being added or a session continued, nothing else in
