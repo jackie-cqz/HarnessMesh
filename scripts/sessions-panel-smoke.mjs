@@ -32,6 +32,9 @@ async function panel(node){
  const[line]=await Promise.race([once(lines,'line'),new Promise((_,reject)=>{const t=setTimeout(()=>reject(Error('Panel startup timeout')),20000);t.unref();})]);
  lines.close();return JSON.parse(line);
 }
+// Ready for the next message: while a turn runs the send button is enabled
+// too, as 停止本轮 (stop), and a click then stops the turn instead.
+async function readyToSend(page){await page.waitForFunction(()=>{const send=document.querySelector('#composer-send');return !send.disabled&&!send.classList.contains('stop');},null,{timeout:30000});}
 // Pick an agent in the sidebar, then send the first message from the new-session screen.
 async function openSession(page,group,agentName,message){
  await page.locator('#session-agents .session-group').filter({has:page.locator('.session-group-name',{hasText:new RegExp('^'+group+'$')})}).getByRole('button',{name:new RegExp(agentName)}).click();
@@ -153,7 +156,7 @@ try{
  await stream(page).getByText('已允许（打开者）').waitFor();
  assert(await page.locator('#permission-dock .permission').count()===0,'answered request still docked');
  stage='follow-up turn';
- await page.waitForFunction(()=>!document.querySelector('#composer-send').disabled);
+ await readyToSend(page);
  await page.locator('#composer-input').fill('fixture:echo from the panel');
  await page.locator('#composer-send').click();
  await stream(page).getByText('Echo #2: from the panel').waitFor({timeout:30000});
@@ -168,7 +171,7 @@ try{
  await stream(page).getByText('已切换模型：fixture-large').waitFor({timeout:30000});
  // The large model adds a reasoning setting.
  await page.locator('#composer-settings select[aria-label="思考强度"]').waitFor({timeout:30000});
- await page.waitForFunction(()=>!document.querySelector('#composer-send').disabled);
+ await readyToSend(page);
  await page.locator('#composer-input').fill('fixture:config');await page.locator('#composer-send').click();
  await stream(page).getByText('model=fixture-large mode=ask effort=low').waitFor({timeout:30000});
  await settle(page);await page.screenshot({path:join(shots,'settings-composer.png')});
@@ -199,7 +202,7 @@ try{
  await page.locator('.conversation-chain').getByText(/调用链：mac-a → mac-b/).waitFor();
  stage='stop and close';
  await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();
- await page.waitForFunction(()=>!document.querySelector('#composer-send').disabled);
+ await readyToSend(page);
  await page.locator('#composer-input').fill('fixture:wait');await page.locator('#composer-send').click();
  await page.getByRole('button',{name:'停止本轮'}).click();
  await stream(page).getByText('本轮已停止').waitFor({timeout:30000});

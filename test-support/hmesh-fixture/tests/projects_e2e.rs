@@ -63,6 +63,18 @@ fn real(path: &Path) -> PathBuf {
     std::fs::create_dir_all(path).unwrap();
     std::fs::canonicalize(path).unwrap()
 }
+/// The fixture's `fixture:cwd` reply says the session's folder and the
+/// process's own directory are both `folder`. Compared as folders: on
+/// Windows the session is given `\\?\C:\…` and the process reads `C:\…`.
+fn assert_ran_in(reply: Option<&str>, folder: &Path) {
+    let reply = reply.unwrap_or_default();
+    let (cwd, process) = reply
+        .strip_prefix("cwd=")
+        .and_then(|rest| rest.split_once(" process="))
+        .unwrap_or_else(|| panic!("{reply}"));
+    assert_eq!(real(Path::new(cwd)), folder, "{reply}");
+    assert_eq!(real(Path::new(process)), folder, "{reply}");
+}
 struct Daemon {
     dir: PathBuf,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -378,8 +390,7 @@ async fn earlier_sessions_are_listed_per_folder_and_continue_with_their_history(
 
     prompt(&owner, opened.session_id, "fixture:cwd").await;
     let (record, events) = idle_after(&owner, opened.session_id, 1).await;
-    let expected = format!("cwd={} process={}", web.display(), web.display());
-    assert_eq!(record.last_final_text.as_deref(), Some(expected.as_str()));
+    assert_ran_in(record.last_final_text.as_deref(), &web);
     // The replayed answer is history, not this turn's reply; it stays single.
     assert_eq!(
         texts(&events, "user_message"),
@@ -629,10 +640,7 @@ async fn earlier_sessions_are_listed_per_folder_and_continue_with_their_history(
         .await
         .unwrap();
     let (record, _) = idle_after(&owner, fresh.session_id, 1).await;
-    assert_eq!(
-        record.last_final_text.as_deref(),
-        Some(format!("cwd={} process={}", api.display(), api.display()).as_str())
-    );
+    assert_ran_in(record.last_final_text.as_deref(), &api);
     // Without a project the agent keeps its own folder, as before.
     let plain: SessionRecord = owner
         .post(

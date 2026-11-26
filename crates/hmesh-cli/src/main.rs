@@ -851,8 +851,34 @@ enum TaskCommand {
     },
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// Stack for the thread everything runs on. Windows gives a program's main
+/// thread 1 MiB, less than a debug build of the daemon needs (it overflows
+/// at start); this is what macOS and Linux give theirs.
+const MAIN_STACK: usize = 8 * 1024 * 1024;
+
+fn main() -> ExitCode {
+    let main = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(MAIN_STACK)
+        .spawn(|| match tokio::runtime::Runtime::new() {
+            Ok(runtime) => runtime.block_on(run()),
+            Err(error) => {
+                eprintln!("could not start the async runtime: {error}");
+                ExitCode::FAILURE
+            }
+        });
+    match main.map(std::thread::JoinHandle::join) {
+        Ok(Ok(code)) => code,
+        // The panic was reported on that thread; exit as a panic does.
+        Ok(Err(_)) => ExitCode::from(101),
+        Err(error) => {
+            eprintln!("could not start: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> ExitCode {
     let cli = Cli::parse();
     let json_output = cli.json;
     let report_execution = matches!(
