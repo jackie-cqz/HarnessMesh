@@ -5,7 +5,7 @@
   "environment": {
     "nodes": "mac-a and mac-b, loopback, paired",
     "agents": "pi-a on mac-a, pi-b on mac-b (pi 0.83.0 through pi-acp 0.0.35), MCP bridge active",
-    "model": "test-gateway-claude/deepseek-v4.1-flash-1017"
+    "model": "a DeepSeek Flash model served by a local gateway"
   },
   "results": [
     {
