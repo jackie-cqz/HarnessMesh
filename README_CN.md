@@ -61,7 +61,7 @@ flowchart LR
 - 每台电脑运行一个 **daemon**（`hmesh daemon start`），由它启动你登记的 Agent，并把会话、任务和事件存在本机的 SQLite 数据库里。
 - **只装 MCP** 的电脑也跑 daemon，但只监听 127.0.0.1：它的 Agent 往外调用，没有任何东西能调用进来。
 - **面板**（`hmesh panel`）只监听 127.0.0.1，用终端里打印的私有链接打开。本机 owner 凭据只留在 CLI 进程里。
-- 电脑之间经 Tailscale 通信，或者在自己的局域网、VPN 里直连，都使用 TLS 1.3 双向认证，两边都固定对方的证书指纹。不需要 SSH，也不经过云端中转。直连网络里，打开了配对的电脑会用 mDNS（`_hmesh._tcp`）让附近的电脑看到它。
+- 电脑之间经 Tailscale 通信，或者在自己的局域网、VPN 里直连，都使用 TLS 1.3 双向认证，两边都固定对方的证书指纹。不需要 SSH，也不经过云端中转。直连网络里，打开了配对的电脑会用 mDNS（`_hmesh._tcp`）让附近的电脑看到它。配对的电脑之间还会互相告诉主机名（默认 `本机名.local`），局域网地址变了，只要这个名字解析得出来就照样找得到：macOS 自己会解析 `.local`，Linux 要装 Avahi 和 nss-mdns，Windows 还没测过；`hmesh peers address` 可以手动加地址。
 
 ## 开始使用
 

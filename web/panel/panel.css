@@ -1435,6 +1435,17 @@ footer{margin-top:28px}
 .paired-record p{margin:4px 0 0;overflow-wrap:anywhere}
 .paired-record summary,.panel-disclosure summary,.delegation-request summary{cursor:pointer}
 .paired-actions .button{flex:none}
+.paired-addresses{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;margin:0 0 10px;font-size:12px;min-width:0}
+.paired-address-label{color:var(--muted);flex:none}
+.paired-address-list{flex:1 1 12em;min-width:0;font-size:11.5px;overflow-wrap:anywhere}
+.paired-address-edit{padding:0;font-size:12px}
+.paired-addresses.editing{display:block}
+.paired-address-form{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;min-width:0}
+.paired-address-input{flex:1 1 14em;min-width:0;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--background);color:var(--foreground);font:12px/1.5 var(--mono)}
+.paired-address-input:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
+.paired-address-form .button{flex:none}
+.paired-address-note{margin:6px 0 0;font-size:11.5px}
+.paired-addresses .pair-message{margin:4px 0 0;overflow-wrap:anywhere}
 .remote-agent-heading{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .remote-agent-heading h2{font-size:16px;min-width:0;overflow-wrap:anywhere}
 #pair-body,.pair-form{display:flex;flex-direction:column;min-height:0}

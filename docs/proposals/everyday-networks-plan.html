@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HarnessMesh：换了 IP 自己找回来，一台电脑在局域网、Tailscale、云中继上都能被连到</title>
+<style>
+  :root{--bg:#fff;--ink:#0a0a0a;--muted:#737373;--line:#e5e5e5;--card:#fff;--accent:#171717;--ok:#047857;--warn:#b45309;--bad:#b42318;--soft:#f5f5f5}
+  @media (prefers-color-scheme: dark){:root{--bg:#0a0a0a;--ink:#ededed;--muted:#a3a3a3;--line:#2a2a2a;--card:#171717;--accent:#e5e5e5;--ok:#34d399;--warn:#fbbf24;--bad:#f2877c;--soft:#1f1f1f}}
+  *{box-sizing:border-box}
+  html,body{background:var(--bg)}
+  body{margin:0;color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",sans-serif}
+  main{max-width:1000px;margin:0 auto;padding:44px 28px 80px}
+  h1{font-size:27px;line-height:1.35;margin:0 0 10px;letter-spacing:-.01em}
+  h2{font-size:19px;margin:48px 0 14px}
+  h3{font-size:15px;margin:22px 0 8px}
+  p{margin:0 0 10px}
+  .sub{color:var(--muted)}
+  code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 5px;border:1px solid var(--line);border-radius:6px;overflow-wrap:anywhere}
+  pre{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow:auto;margin:8px 0 12px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0 8px}
+  .stat{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--card);min-width:0}
+  .stat b{display:block;font-size:15px;margin-bottom:4px}
+  .stat span{color:var(--muted);font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line);vertical-align:top;min-width:0}
+  th{color:var(--muted);font-weight:500;font-size:13px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--card);min-width:0}
+  .card .label{color:var(--muted);font-size:12px;margin-bottom:10px}
+  .note{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;margin:0 0 10px}
+  .note b{display:block;margin-bottom:2px}
+  .note.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+  .note span{color:var(--muted)}
+  .yes{color:var(--ok);font-weight:600}
+  .no{color:var(--bad);font-weight:600}
+  .half{color:var(--warn);font-weight:600}
+  ul,ol{padding-left:20px;margin:0}
+  li{margin-bottom:6px}
+  .ev li{font-size:13.5px}
+  .scroll{overflow-x:auto}
+  .kv td:first-child{white-space:nowrap}
+  .tight th:nth-last-child(-n+2),.tight td:nth-last-child(-n+2){white-space:nowrap}
+  .last th:last-child,.last td:last-child{white-space:nowrap}
+  .after{margin-top:10px}
+  svg{width:100%;height:auto;display:block}
+  svg text{font:12.5px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;fill:var(--ink)}
+  svg .muted{fill:var(--muted)}
+  svg .bad{fill:var(--bad)}
+  svg .good{fill:var(--ok)}
+  svg .box{fill:var(--card);stroke:var(--line)}
+  svg .strong{stroke:var(--accent)}
+  svg .arrow{stroke:var(--ink);stroke-width:1.3;fill:none}
+  svg .cross{stroke:var(--bad);stroke-width:1.6}
+  @media (max-width:760px){.stats{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}}
+  @media (max-width:520px){.stats{grid-template-columns:1fr}main{padding:28px 16px 60px}table{font-size:13px}th,td{padding:8px 6px}}
+</style>
+</head>
+<body>
+<main>
+<h1>日常网络场景补齐：电脑换了 IP 自己找回来，一台电脑在局域网、Tailscale 和云服务器中继上都能被连到，到了陌生网络不开端口</h1>
+<p class="sub">2026-11-26。核查结论：日常最常卡住的是「电脑换了 IP 就失联」。原因有三处：直连只监听一个固定 IP；每台电脑的名片里只有一个地址；名片只在 daemon 启动时推给对方，而且推不到只装 MCP 的电脑。其次是公司网络分网段、开客户端隔离，以及两台电脑都在 NAT 后面。方案分 5 个 PR：前 3 个补地址、监听和找回；第 4 个写「用云服务器连两台电脑」的文档，不改代码；第 5 个做内置中继。身份认证不变，还是 mTLS 加固定的证书指纹，再加配对。名片格式也不变，旧版本照常能用。</p>
+
+<div class="stats">
+  <div class="stat"><b>换了 IP 不再失联</b><span>地址列表、主机名、局域网里认出已配对的电脑，几秒内找回</span></div>
+  <div class="stat"><b>一台电脑多条路</b><span>局域网、Tailscale、主机名、中继依次试，哪条通走哪条</span></div>
+  <div class="stat"><b>陌生网络不开端口</b><span>只在你认过的网络上接受连入，别处只往外连</span></div>
+  <div class="stat"><b>旧版本照常用</b><span>名片格式不改，新地址走一条新接口，旧版本不认识就跳过</span></div>
+</div>
+
+<h2>日常场景：现在 → 做完后</h2>
+<div class="scroll"><table class="last">
+  <tr><th>场景</th><th>现在</th><th>做完后</th><th>靠哪个 PR</th></tr>
+  <tr><td>电脑换了 IP（DHCP 换地址、换工位、家和公司来回）</td><td><span class="no">✗</span> 完整安装的电脑起不来，要重跑 <code>hmesh setup</code>；只装 MCP 的那台收不到新地址，只能重新配对</td><td><span class="yes">✓</span> 几秒内发现地址变了，对方会自己找回来</td><td>1、2、3</td></tr>
+  <tr><td>公司有线和 Wi-Fi 不在一个网段</td><td><span class="half">半</span> 能连，但「附近的电脑」看不到对方，面板里没有按地址配对的入口</td><td><span class="yes">✓</span> 面板里输地址加口令就能配；地址也能写主机名</td><td>1、3</td></tr>
+  <tr><td>在家连公司 VPN，用办公室的台式机</td><td><span class="half">半</span> 笔记本往外连没问题，台式机一换 IP 就断</td><td><span class="yes">✓</span></td><td>1、2</td></tr>
+  <tr><td>一台电脑既要被局域网的电脑连，也要被 Tailscale 的电脑连</td><td><span class="no">✗</span> 只能选一种网络、监听一个地址</td><td><span class="yes">✓</span> 地址列表里两种都有</td><td>2</td></tr>
+  <tr><td>咖啡馆、酒店、访客 Wi-Fi</td><td><span class="half">半</span> 多半起不来（地址变了）；起得来时，同一网络的人能连到端口，靠配对和证书挡住</td><td><span class="yes">✓</span> 不开端口，只往外连；有中继时别人照样能通过中继用它</td><td>2、5</td></tr>
+  <tr><td>公司 Wi-Fi 开了客户端隔离，或者两台电脑都在 NAT 后面</td><td><span class="no">✗</span> 只能用 Tailscale 这类 VPN</td><td><span class="yes">✓</span> 用一台云服务器搭桥：自建 Tailscale 中继、WireGuard，或者内置中继</td><td>4、5</td></tr>
+  <tr><td>网线或雷雳线直连（169.254 自分配地址）</td><td><span class="no">✗</span></td><td><span class="no">✗</span> 这次不做</td><td>—</td></tr>
+  <tr><td>开着 Clash 之类的代理</td><td><span class="yes">✓</span> 电脑之间的连接不走代理</td><td><span class="yes">✓</span> TUN 模式会不会截走局域网流量，要真机看</td><td>—</td></tr>
+</table></div>
+
+<h2>改前 → 改后：台式机换了 IP 之后</h2>
+<div class="two">
+  <div class="card">
+    <div class="label">现在：只装 MCP 的笔记本就此失联</div>
+    <svg viewBox="0 0 460 330" role="img" aria-label="现在台式机换 IP 之后的情况">
+      <defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <rect class="box" x="14" y="14" width="432" height="40" rx="8"/><text x="28" y="39">台式机 B 的 IP 从 192.168.1.20 变成 192.168.1.35</text>
+      <rect class="box strong" x="14" y="80" width="432" height="52" rx="8"/><text x="28" y="102">① daemon 绑不上旧地址，启动失败</text><text x="28" y="121" class="muted">要你发现问题，再手动重跑 hmesh setup</text>
+      <rect class="box" x="14" y="158" width="432" height="52" rx="8"/><text x="28" y="180">② 重跑之后，把新名片推给已配对的电脑</text><text x="28" y="199" class="muted">每次启动只推一次，运行中再变就不推</text>
+      <rect class="box" x="14" y="236" width="200" height="44" rx="8"/><text x="28" y="263">完整安装的电脑：收到 <tspan class="good">✓</tspan></text>
+      <rect class="box" x="230" y="236" width="216" height="44" rx="8"/><text x="244" y="255">只装 MCP 的笔记本：</text><text x="244" y="272">它不开端口，推不过去 <tspan class="bad">✗</tspan></text>
+      <path class="arrow" d="M230 56 V78" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <path class="arrow" d="M230 134 V156" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <path class="arrow" d="M120 212 V234" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <path class="arrow" d="M338 212 V234" marker-end="url(#a1)" style="color:var(--ink)"/>
+      <text x="14" y="310" class="muted">笔记本还拿着旧地址：失联，只能重新配对</text>
+    </svg>
+  </div>
+  <div class="card">
+    <div class="label">做完后：几秒内自己找回</div>
+    <svg viewBox="0 0 460 330" role="img" aria-label="做完后台式机换 IP 之后的情况">
+      <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <rect class="box" x="14" y="14" width="432" height="40" rx="8"/><text x="28" y="39">台式机 B 的 IP 从 192.168.1.20 变成 192.168.1.35</text>
+      <rect class="box strong" x="14" y="80" width="432" height="52" rx="8"/><text x="28" y="102">① 监听所有网卡，几秒内发现地址变了</text><text x="28" y="121" class="muted">还在认过的网络上，就照常接受连入</text>
+      <rect class="box" x="14" y="158" width="432" height="40" rx="8"/><text x="28" y="183">② 更新地址列表，推给连得到的已配对电脑</text>
+      <rect class="box" x="14" y="224" width="432" height="58" rx="8"/><text x="28" y="246">③ 笔记本连不上旧地址时，依次试：主机名 studio.local →</text><text x="28" y="266">局域网里认出 B 的轮换标记 → Tailscale 地址 → 中继</text>
+      <path class="arrow" d="M230 56 V78" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <path class="arrow" d="M230 134 V156" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <path class="arrow" d="M230 200 V222" marker-end="url(#a2)" style="color:var(--ink)"/>
+      <text x="14" y="310" class="muted">④ 证书指纹对上就记住新地址，接着用，什么都不用点</text>
+    </svg>
+  </div>
+</div>
+
+<h2>五个 PR</h2>
+<div class="scroll"><table class="tight">
+  <tr><th>PR</th><th>内容</th><th>依赖</th><th>估算</th></tr>
+  <tr><td>1. 地址列表</td><td>已配对的电脑之间交换一份地址列表（新接口，名片不动）；地址可以写主机名；拨号按顺序试、记住上次成功的那条；新命令 <code>hmesh peers address</code>，面板里也能改</td><td>—</td><td>2 到 3 天</td></tr>
+  <tr><td>2. 监听和认过的网络</td><td>监听所有网卡，但只接受从「认过的网络」或 Tailscale 进来的连接；IP 变了不再启动失败，地址变化自动推送；一台电脑可以同时被局域网和 Tailscale 的电脑连</td><td>1</td><td>3 到 4 天</td></tr>
+  <tr><td>3. 找回和诊断</td><td>已配对的电脑在局域网里广播轮换标记，换了 IP 也能互相认出来；面板里「输地址加口令」配对；连不上时说清楚卡在哪一层；修正只说 Tailnet 的提示</td><td>1、2</td><td>2 到 3 天</td></tr>
+  <tr><td>4. 云服务器文档</td><td>「用一台云服务器连两台电脑」：自建 Tailscale 中继（DERP，可加 Headscale），或者 ECS 当 WireGuard 中心；代码不改</td><td>—</td><td>半天</td></tr>
+  <tr><td>5. 内置中继</td><td>云服务器上跑 <code>hmesh relay</code>，NAT 后面的电脑主动连过去挂着；中继就是地址列表里的一种地址</td><td>1、2</td><td>4 到 6 天</td></tr>
+</table></div>
+<p class="sub after">估算是按前两次网络 PR 的工作量推的，不含真机验证。第 4 个和别的 PR 互不依赖，可以随时先做。会话、MCP 工具和配对码的格式都不变。</p>
+
+<h2>PR 1：地址列表</h2>
+<div class="scroll"><table class="kv">
+  <tr><th>地址种类</th><th>从哪来</th><th>谁知道</th></tr>
+  <tr><td>局域网 IP</td><td>本机在认过的网络上的网卡地址，变了自动更新</td><td rowspan="4">已配对的电脑。通过一条新的、要证书的接口推送和拉取，不会出现在配对码和广播里</td></tr>
+  <tr><td>Tailscale IP</td><td>Tailscale 在运行时自动加上</td></tr>
+  <tr><td>主机名</td><td>默认是 <code>本机名.local</code>，可以改成公司内网域名</td></tr>
+  <tr><td>中继</td><td>运行 <code>hmesh relay use &lt;中继码&gt;</code> 之后加上（PR 5）</td></tr>
+  <tr><td>手动填的</td><td><code>hmesh peers address &lt;电脑&gt; &lt;地址:端口&gt;</code>，或者面板里电脑卡片上的「改地址」</td><td>只存在本机</td></tr>
+</table></div>
+<ul class="after">
+  <li><b>拨号顺序</b>：先试上次成功的那条，然后依次是同网段的 IP、主机名、Tailscale、中继。前一条 300 毫秒没响应，就同时开下一条，第一个对上证书指纹的胜出，记下来下次先用。</li>
+  <li><b>主机名</b>：用系统的解析，<code>.local</code> 由系统自己的 mDNS 解析。macOS 自带；Windows 10 以后自带；Linux 要装 nss-mdns，Ubuntu 桌面版默认有。解析出的每个 IP 照样要过现在的地址规则。解析错了最多连不上，因为对方必须出示配对时固定的那张证书。</li>
+  <li><b>名片不动</b>：名片里那一个地址仍然是主 IP，旧版本只看它。名片是严格校验的，多一个字段旧版本就整张拒收，所以多出来的地址放在新接口里。旧版本没有这条接口，新版本推过去失败就跳过，新旧之间按现在的方式工作。</li>
+</ul>
+
+<h2>PR 2：监听所有网卡，只对认过的网络开门</h2>
+<ul>
+  <li><b>怎么监听</b>：监听 <code>0.0.0.0</code> 和 <code>::</code>。每接进一条连接，在 TLS 握手之前先看两件事：它是从本机哪个地址进来的，那个地址所在的网络认没认过（Tailscale 网卡算认过）；来源在不在允许的网段里。有一条不满足，就直接断开。进门之后和现在一样：没配对的只能碰到配对接口，而且只在配对窗口里回应。</li>
+  <li><b>怎么认网络</b>（待你定，见下面）：推荐用「网段加上网关的硬件地址」。家里和咖啡馆可能都是 192.168.1.0/24，但网关不是同一台设备。</li>
+  <li><b>到了没认过的网络</b>：不接受连入，不广播，只往外连。面板顶部提示「这个网络还没认过」，点「信任这个网络」才开门。<code>hmesh setup</code> 时所在的网络自动算认过。</li>
+  <li><b>地址变化</b>：每 5 秒看一次网卡，地址变了就更新地址列表。推送改成「每变一次推一次」，不再是一次启动只推一次。</li>
+  <li><b>配置兼容</b>：现在的 <code>network = "tailscale"</code> 自动换成「只开 Tailscale」；<code>network = "direct"</code> 连同原来的监听地址，换成「认过这个地址所在的网络」。重跑 setup 不会丢掉已有的身份和配对。</li>
+</ul>
+
+<h2>PR 3：已配对的电脑互相找回，连不上时说清楚</h2>
+<ul>
+  <li><b>找回密钥</b>：每台电脑有一把随机的「找回密钥」，配对之后通过要证书的连接交给对方；撤销配对时换一把，被撤销的电脑就再也认不出它。</li>
+  <li><b>广播什么</b>：只在认过的网络上，一直广播一个新的服务类型 <code>_hmesh-find._tcp</code>。名字是「找回密钥对当前 10 分钟算出的 HMAC」的前 16 位十六进制，不带电脑名，也不带指纹。现在「附近的电脑」用的 <code>_hmesh._tcp</code> 不变，配对窗口之外照样看不到它。</li>
+  <li><b>怎么找</b>：连不上某台已配对的电脑时，算出它这 10 分钟和上 10 分钟的标记，在局域网里听 1.5 秒，听到就连过去核对证书指纹。外人看到的只是一串每 10 分钟换一次的随机字符。</li>
+  <li><b>按地址配对</b>：配对弹窗里加一行「按地址配对」，填 IP 或主机名，再填对方屏幕上的口令。命令行的 <code>hmesh pair join &lt;地址&gt;</code> 已经有了。</li>
+  <li><b>连不上时分层说清楚</b>：依次是主机名解析不出来；连不到端口（多半是防火墙或网络隔离）；那个地址上是另一台电脑（指纹不对）；对方已经撤销了配对。电脑卡片上显示「上次连上：5 分钟前，经 Tailscale」。</li>
+</ul>
+
+<h2>PR 4 和 PR 5：用一台云服务器连两台电脑</h2>
+<div class="scroll"><table>
+  <tr><th></th><th>① 自建 Tailscale 中继（PR 4，只写文档）</th><th>② ECS 当 WireGuard 中心（PR 4，只写文档）</th><th>③ 内置中继 <code>hmesh relay</code>（PR 5）</th></tr>
+  <tr><td>ECS 上跑什么</td><td><code>derper</code>，可加 <code>headscale</code></td><td><code>wireguard</code>，打开转发</td><td><code>hmesh relay serve</code></td></tr>
+  <tr><td>每台电脑要装什么</td><td>Tailscale</td><td>WireGuard 和一份配置</td><td>什么都不用装，运行 <code>hmesh relay use &lt;中继码&gt;</code></td></tr>
+  <tr><td>流量</td><td>能打洞就直连，打不通才经过 ECS</td><td>全部经过 ECS</td><td>全部经过 ECS</td></tr>
+  <tr><td>HarnessMesh 用哪种网络</td><td>Tailscale 模式</td><td>直连模式，WireGuard 的 10.x 地址默认放行</td><td>中继是地址列表里的一种地址</td></tr>
+  <tr><td>怎么验证</td><td colspan="2">按官方资料写，<b>没实测</b>，标在文档里</td><td>先在本机模拟</td></tr>
+</table></div>
+
+<h3>内置中继怎么工作</h3>
+<div class="card scroll">
+  <svg viewBox="0 0 900 300" style="min-width:640px" role="img" aria-label="内置中继的连接方式">
+    <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+    <rect class="box strong" x="330" y="16" width="240" height="56" rx="8"/><text x="346" y="40">ECS：hmesh relay</text><text x="346" y="60" class="muted">公网 IP 加一个自选端口</text>
+    <rect class="box" x="20" y="150" width="240" height="50" rx="8"/><text x="36" y="180">A：笔记本（在家，NAT 后面）</text>
+    <rect class="box" x="640" y="150" width="240" height="50" rx="8"/><text x="656" y="180">B：台式机（在公司，NAT 后面）</text>
+    <path class="arrow" d="M760 148 C 760 90, 680 46, 574 44" marker-end="url(#a3)" style="color:var(--ink)"/>
+    <text x="742" y="112" text-anchor="end">① B 主动连出去，</text><text x="742" y="130" class="muted" text-anchor="end">挂一条控制连接（带令牌）</text>
+    <path class="arrow" d="M140 148 C 140 90, 220 46, 326 44" marker-end="url(#a3)" style="color:var(--ink)"/>
+    <text x="40" y="112">② A 连到中继：</text><text x="40" y="130" class="muted">要找 B（带令牌）</text>
+    <text x="330" y="104">③ 中继通知 B 再开一条数据连接，</text><text x="330" y="122" class="muted">把两条接在一起，只转发字节</text>
+    <path d="M140 202 V226 M760 202 V226" style="stroke:var(--line)"/>
+    <rect class="box strong" x="20" y="228" width="860" height="40" rx="8"/><text x="36" y="253">④ A 和 B 之间照旧是 mTLS，证书指纹两边固定：中继看不到内容，也冒充不了任何一台电脑</text>
+    <text x="20" y="290" class="muted">中继能看到：谁连谁、什么时候、流量多大。它能做的坏事：把连接断掉。</text>
+  </svg>
+</div>
+<div class="scroll" style="margin-top:12px"><table class="kv">
+  <tr><th>问题</th><th>做法</th></tr>
+  <tr><td>怎么装</td><td>ECS 上运行 <code>hmesh relay serve --listen 0.0.0.0:7443</code>，打印一行中继码：地址、中继自己的证书指纹和访问令牌。安全组放行这个 TCP 端口。</td></tr>
+  <tr><td>电脑怎么用</td><td>运行 <code>hmesh relay use &lt;中继码&gt;</code>，或者在面板「设置」里粘贴。之后这台电脑一直往外连着中继，地址列表里多一条中继地址，自动推给已配对的电脑。</td></tr>
+  <tr><td>谁能用这台中继</td><td>只有拿着令牌的电脑。登记时要用自己的节点私钥签名，所以拿着令牌也冒用不了别的电脑的身份。中继码泄露了就换令牌。</td></tr>
+  <tr><td>防滥用</td><td>按令牌限流，限制并发连接数，空闲连接定时断开；只转发登记过的电脑之间的连接，不能拿来上网。</td></tr>
+  <tr><td>国内 ECS</td><td>用 IP 加非 80、443 的端口运行，不用域名，就不涉及网站备案。</td></tr>
+  <tr><td>陌生网络</td><td>没认过的网络上不开端口，只连中继，别人照样能经中继用它的 Agent。</td></tr>
+  <tr><td>配对</td><td>已配对的电脑会自动拿到中继地址。第一次配对仍然用配对码；配对码里可以写中继地址，这一点在这个 PR 里细化。</td></tr>
+</table></div>
+
+<h2>已定的事</h2>
+<div class="scroll"><table>
+  <tr><th>问题</th><th>你的决定</th></tr>
+  <tr><td>先补哪几块</td><td>换 IP 自动找回、分网段配对和诊断、Tailscale 和局域网同时可达</td></tr>
+  <tr><td>完整安装的电脑到了陌生网络</td><td>只在认过的网络开放，别处只往外连</td></tr>
+  <tr><td>已配对电脑在局域网里互相找回</td><td>一直广播轮换标记，不带名字和指纹</td></tr>
+  <tr><td>地址能不能写主机名</td><td>允许，证书指纹兜底</td></tr>
+  <tr><td>用云服务器连两台电脑</td><td>先写文档（自建 Tailscale 中继或 WireGuard），名片多地址做好之后再做内置中继</td></tr>
+  <tr><td>中继怎么验证</td><td>先在本机模拟</td></tr>
+</table></div>
+
+<h2>还要你定的事</h2>
+<div class="note"><b>1. 怎么认出「同一个网络」：网段加网关的硬件地址（推荐）</b><span>好处：家里和咖啡馆即使网段一样，网关也不是同一台设备，不会认错；三个平台都能读到（macOS、Linux 读路由和 ARP 表，Windows 读邻居表）。代价：换了路由器要重新点一次「信任这个网络」；读不到网关硬件地址时（比如某些 VPN）退成只看网段，并且提示。另外两个做法：只看网段，最简单，但同网段的陌生网络会被当成认过；看 Wi-Fi 名称，直观，但 macOS 读 Wi-Fi 名称要定位权限，名字也谁都能起一样的，不推荐。</span></div>
+<div class="note"><b>2. 做的顺序：1 → 2 → 3，文档随时插进来，中继最后（推荐）</b><span>好处：每个 PR 都能单独验证、单独合并，前一个是后一个的地基；文档半天就能写完，先发出去，有 ECS 的人马上能用。代价：内置中继要等前两个合完，大约一周半以后。另一个做法是 1、2、3 合成一个大 PR：总时间差不多，但评审和回滚都更难。</span></div>
+
+<h2>风险和应对</h2>
+<div class="note warn"><b>监听所有网卡，暴露面变大</b><span>应对：进门前双重检查，连接是从哪个本机地址进来的、那个网络认没认过，以及来源在不在允许的网段里，有一条不满足就在 TLS 之前断开；进门以后和现在一样。之前的方案和安全说明写过「不能监听 0.0.0.0」，这次要连同理由一起改掉。</span></div>
+<div class="note warn"><b>认网络认错</b><span>网段和网关硬件地址都相同的陌生网络很少见。网关硬件地址读不到时只看网段，面板会标出来。被认成可信的网络里，不认识的电脑照样只能碰到配对接口。</span></div>
+<div class="note warn"><b>主机名解析到别的电脑</b><span>应对：对方必须出示配对时固定的证书，解析错了只是连不上。解析慢的网络靠并行拨号和超时兜底。</span></div>
+<div class="note warn"><b>广播让人知道「这里有台电脑在跑 HarnessMesh」</b><span>你已经接受了这一点。标记每 10 分钟换一次，不带名字和指纹；只在认过的网络上广播；撤销配对时换找回密钥。</span></div>
+<div class="note warn"><b>新旧版本混用</b><span>名片格式和协议版本号都不改（名片校验要求版本号完全相同，改了旧版本会全部拒收）。新增的接口旧版本没有，新版本遇到就跳过。两台都升级以后，才有多地址和找回。</span></div>
+<div class="note warn"><b>中继是公网上的新组件</b><span>应对：令牌、节点签名、限流、并发上限、空闲断开，内容端到端加密；单独做一次安全评审，测试里检查中继转发的字节中找不到任何会话内容。只在本机模拟过，真实公网、ECS 安全组和运营商 NAT 的表现都没验证。</span></div>
+<div class="note warn"><b>macOS 和 Windows 的系统权限</b><span>macOS 上，往局域网地址连接和收发多播都要「本地网络」权限，PR #19 已经嵌入了 Info.plist。Windows 防火墙对监听所有网卡会问「专用 / 公用」；公用网络默认挡住入站，这正好和「陌生网络不开端口」一致，setup 会提示。</span></div>
+
+<h2>怎么验证</h2>
+<ul>
+  <li><b>PR 1</b>：两节点测试。B 换端口或地址后，A 通过地址列表找到它；主机名用 <code>localhost</code> 测解析；指纹不对的地址被跳过、换下一条；手动改地址；新节点对旧版本推地址列表失败，不影响原有功能。</li>
+  <li><b>PR 2</b>：在测试里把 <code>127.0.0.1</code> 和 <code>::1</code> 当作两个网络：只认其中一个时，从另一个进来的连接在 TLS 之前被断；地址变化后几秒内地址列表更新、推给对方；旧配置自动迁移；同时开 Tailscale 和局域网。</li>
+  <li><b>PR 3</b>：轮换标记的广播和查找在 macOS 回环上测（Linux 和 Windows 跳过，和现在「附近的电脑」一样）；撤销配对之后，对方认不出新的标记；面板的「按地址配对」和分层提示走一遍冒烟测试，深色、浅色和窄窗口都截图。</li>
+  <li><b>PR 4</b>：文档里写明没实测。</li>
+  <li><b>PR 5</b>：本机模拟。B 不开任何入站端口，只连中继；A 经中继开会话、拿回答复；令牌不对、签名不对一律被拒；中继转发的字节里找不到会话内容；中继重启后两边自动重连。</li>
+  <li><b>真机（要你配合，可以以后补）</b>：笔记本换 Wi-Fi 后台式机自己找回；公司网络分网段；用一台 ECS 跑内置中继。</li>
+</ul>
+
+<h2>这次不做</h2>
+<ul>
+  <li>NAT 打洞：中继已经能连通，打洞复杂、成功率看运营商，以后看需要再说。</li>
+  <li>路由器端口映射（UPnP）和直接监听公网 IP：暴露面最大，有中继就不需要。</li>
+  <li>网线或雷雳线直连（169.254 自分配地址）：太少见，这类地址也常被系统用作别的用途。</li>
+  <li>多台中继互为备份：一台够用，地址列表以后可以放多条中继。</li>
+  <li>在中继上做「附近的电脑」：经过中继的第一次配对仍然用配对码。</li>
+</ul>
+
+<h2>依据</h2>
+<ul class="ev">
+  <li>直连只绑一个固定地址，绑不上就启动失败，报 "no longer has the address"：<code>crates/hmesh-daemon/src/lib.rs:594</code>、<code>:598</code>。</li>
+  <li>名片只有一个地址，并且严格拒收多余字段：<code>crates/hmesh-core/src/lib.rs:239</code>、<code>:246</code>；名片校验要求协议版本号完全相同：<code>crates/hmesh-security/src/lib.rs:398</code>。</li>
+  <li>名片推送每次启动对每台电脑只推一次，每 5 分钟重试没推到的：<code>crates/hmesh-daemon/src/pairing.rs:76</code>、<code>:17</code>。完整安装的电脑不会去连只监听本机的电脑，所以推不到只装 MCP 的电脑：<code>crates/hmesh-security/src/lib.rs:351</code>。</li>
+  <li>地址只认 IP、不解析名字，排除 169.254 和 fe80：<code>crates/hmesh-security/src/lib.rs:354</code>。配对码里也是 IP：<code>:311</code>。</li>
+  <li>没有手动改对方地址的命令：<code>crates/hmesh-cli/src/main.rs:424</code>。重跑 setup 只在旧地址还在时保留它：<code>crates/hmesh-cli/src/setup.rs:426</code>。</li>
+  <li>默认放行的网段（私有网段、100.64/10、fc00::/7、本机回环）：<code>crates/hmesh-core/src/network.rs:19</code>。</li>
+  <li>电脑之间的连接不走代理：<code>crates/hmesh-transport/src/lib.rs:292</code>。</li>
+  <li>「附近的电脑」只在配对窗口里广播 <code>_hmesh._tcp</code>，名字里带电脑名：<code>crates/hmesh-daemon/src/nearby.rs:14</code>、<code>:138</code>。</li>
+  <li>连不上时的提示只提 Tailnet：<code>web/panel/pairing.js:9</code>。</li>
+  <li>现有的 SSH 隧道是给受管服务用的，两端固定在 127.0.0.1，不适合连电脑：<code>docs/managed-services.md</code>。</li>
+  <li>上一份网络方案（直连和附近的电脑）：<code>docs/proposals/direct-network-plan.html</code>，PR #17、#19 已合入。</li>
+</ul>
+</main>
+</body>
+</html>

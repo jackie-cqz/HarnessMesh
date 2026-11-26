@@ -703,6 +703,7 @@ dependencies = [
  "hmesh-security",
  "hmesh-store",
  "hmesh-transport",
+ "libc",
  "mdns-sd",
  "reqwest",
  "ring",
@@ -823,6 +824,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "tower-layer",
+ "tower-service",
  "tracing",
  "url",
 ]

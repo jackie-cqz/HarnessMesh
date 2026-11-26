@@ -342,6 +342,7 @@ async fn confirm(
         }
     };
     s.nearby.changed.notify_one();
+    s.peers_changed();
     // Trusted already: a failed audit write does not undo it.
     let _ = s.store.audit(
         Some(s.instance.card.node_id),

@@ -3,6 +3,105 @@ use hmesh_store::Store;
 use serde_json::json;
 use uuid::Uuid;
 
+fn peer_card(fingerprint: &str) -> NodeCard {
+    NodeCard {
+        version: PROTOCOL.into(),
+        node_id: Uuid::new_v4(),
+        display_name: "studio".into(),
+        fingerprint: fingerprint.into(),
+        certificate_pem: String::new(),
+        endpoint: "https://192.168.1.20:38880".into(),
+    }
+}
+
+/// A trusted peer's addresses: only a newer list replaces the stored one,
+/// an untrusted peer stores nothing, the owner's own addresses and the last
+/// one that answered are kept apart, and revoking keeps them all.
+#[test]
+fn peer_addresses_are_kept_per_trusted_peer_and_only_newer_ones_replace_them() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("addresses.sqlite3");
+    let store = Store::open(&path).unwrap();
+    let card = peer_card(&"a".repeat(64));
+    let told = |revision, addresses: &[&str]| PeerAddresses {
+        node_id: card.node_id,
+        revision,
+        addresses: addresses.iter().map(|a| a.to_string()).collect(),
+    };
+    // Not paired yet: nothing is stored, nothing can be set.
+    assert!(
+        !store
+            .set_advertised_addresses(&told(5, &["https://studio.local:38880"]))
+            .unwrap()
+    );
+    assert!(store.set_manual_addresses(card.node_id, &[]).is_err());
+    assert_eq!(
+        store.peer_routes(card.node_id).unwrap(),
+        PeerRoutes::default()
+    );
+
+    store.trust_peer(&card).unwrap();
+    assert!(
+        store
+            .set_advertised_addresses(&told(5, &[&card.endpoint, "https://studio.local:38880"]))
+            .unwrap()
+    );
+    // Older or the same revision: ignored.
+    assert!(
+        !store
+            .set_advertised_addresses(&told(4, &["https://old:1"]))
+            .unwrap()
+    );
+    assert!(
+        !store
+            .set_advertised_addresses(&told(5, &["https://same:1"]))
+            .unwrap()
+    );
+    store
+        .set_manual_addresses(card.node_id, &["https://10.0.0.7:38880".into()])
+        .unwrap();
+    store
+        .remember_route(&card.fingerprint, "https://studio.local:38880", 77)
+        .unwrap();
+    // Another certificate is not this peer.
+    store
+        .remember_route(&"b".repeat(64), "https://elsewhere:1", 78)
+        .unwrap();
+    let expected = PeerRoutes {
+        advertised: vec![card.endpoint.clone(), "https://studio.local:38880".into()],
+        manual: vec!["https://10.0.0.7:38880".into()],
+        last_good: Some("https://studio.local:38880".into()),
+        last_good_at: Some(77),
+    };
+    assert_eq!(store.peer_routes(card.node_id).unwrap(), expected);
+
+    // Revoked: kept for a pairing later, but a revoked peer changes nothing.
+    store.revoke_peer(card.node_id).unwrap();
+    assert!(
+        !store
+            .set_advertised_addresses(&told(9, &["https://new:1"]))
+            .unwrap()
+    );
+    store
+        .remember_route(&card.fingerprint, "https://new:1", 99)
+        .unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.peer_routes(card.node_id).unwrap(), expected);
+    // Paired again: its newer list is taken.
+    store.trust_peer(&card).unwrap();
+    assert!(
+        store
+            .set_advertised_addresses(&told(9, &["https://new:1"]))
+            .unwrap()
+    );
+    store.set_manual_addresses(card.node_id, &[]).unwrap();
+    let routes = store.peer_routes(card.node_id).unwrap();
+    assert_eq!(routes.advertised, ["https://new:1"]);
+    assert!(routes.manual.is_empty());
+    assert_eq!(routes.last_good_at, Some(77));
+}
+
 #[test]
 fn outbound_observation_time_is_unknown_until_a_real_response_is_cached() {
     let root = tempfile::tempdir().unwrap();
@@ -236,7 +335,7 @@ fn schema_two_upgrade_preserves_historical_task_records() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
 }
 

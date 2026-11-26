@@ -221,14 +221,7 @@ async fn outgoing(
     if peer.status != "trusted" {
         return Err(MeshError::new(ErrorCode::PermissionDenied, "peer is not trusted").into());
     }
-    let client = Client::new(
-        &s.instance,
-        &peer.card.endpoint,
-        &peer.card.fingerprint,
-        false,
-        false,
-    )
-    .map_err(internal)?;
+    let client = s.peer_client(&peer)?;
     let mut envelope = Envelope::new(s.instance.card.node_id, "task.preflight", body.task.clone());
     envelope.request_id = body.request_id;
     let path = if query.observe_git {

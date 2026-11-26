@@ -246,6 +246,53 @@ pub struct NodeCard {
     pub endpoint: String,
 }
 
+/// Most addresses in one `PeerAddresses`.
+pub const MAX_PEER_ADDRESSES: usize = 16;
+/// Longest address in one, in bytes.
+pub const MAX_PEER_ADDRESS_BYTES: usize = 300;
+/// Every address a computer may be reached at, told only to computers paired
+/// with it: its card's address first, then its host names. The card keeps
+/// its one address: older versions check cards strictly and reject any
+/// field they do not know. Unknown fields here are ignored, so later
+/// versions can add to it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PeerAddresses {
+    pub node_id: Uuid,
+    /// Grows whenever the list changes; an older list never replaces a newer one.
+    pub revision: i64,
+    pub addresses: Vec<String>,
+}
+/// How this computer reaches a paired one, besides its card: the addresses
+/// it told this one, the ones this computer's owner set, and the last
+/// address that answered.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PeerRoutes {
+    pub advertised: Vec<String>,
+    pub manual: Vec<String>,
+    pub last_good: Option<String>,
+    pub last_good_at: Option<i64>,
+}
+/// A DNS host name an address may use (`studio.local`, `localhost`):
+/// dot-separated labels of lowercase letters, digits and hyphens, none
+/// empty, longer than 63 bytes or starting or ending with a hyphen, at most
+/// 253 bytes in all, and not ending in a number (that reads as an IP).
+pub fn valid_host_name(name: &str) -> bool {
+    name.len() <= 253
+        && name
+            .rsplit('.')
+            .next()
+            .is_some_and(|last| !last.bytes().all(|b| b.is_ascii_digit()))
+        && name.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope<T> {
@@ -638,6 +685,13 @@ pub struct NodeOptions {
     /// networks and loopback. A public listen address needs them spelled out.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_sources: Option<Vec<IpNet>>,
+    /// Names paired computers may also reach this one by, at its port (a
+    /// `.local` name, a name on a company network). Told only to paired
+    /// computers, never put in a card or pairing code. Omitted means this
+    /// computer's own name with `.local` when it takes connections from
+    /// other computers; `[]` means none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_names: Option<Vec<String>>,
 }
 impl Default for NodeOptions {
     fn default() -> Self {
@@ -650,6 +704,7 @@ impl Default for NodeOptions {
             tailscale_executable: None,
             tailnet_address: None,
             allowed_sources: None,
+            host_names: None,
         }
     }
 }
@@ -780,6 +835,14 @@ impl NodeConfig {
             return Err(MeshError::input(
                 "use loopback; tailscale listening on one literal Tailnet IP; tailscale or direct that only connects out (loopback listener; tailscale also sets tailnet_address); or direct listening on one literal address of this computer (a public one needs allowed_sources); wildcard listeners are forbidden",
             ));
+        }
+        if self.node.host_names.as_ref().is_some_and(|names| {
+            names.len() >= MAX_PEER_ADDRESSES || !names.iter().all(|n| valid_host_name(n))
+        }) {
+            return Err(MeshError::input(format!(
+                "host_names are at most {} DNS names of lowercase letters, digits, hyphens and dots, without a port",
+                MAX_PEER_ADDRESSES - 1
+            )));
         }
         if self
             .node
@@ -1132,6 +1195,9 @@ pub struct PeerView {
     /// What this node does with tasks sent by the peer.
     #[serde(default)]
     pub access: PeerAccess,
+    /// Where this node reaches the peer besides its card.
+    #[serde(default)]
+    pub routes: PeerRoutes,
 }
 /// Largest final reply kept in one result event; the full text stays in events.
 pub const MAX_FINAL_TEXT_BYTES: usize = 32 * 1024;

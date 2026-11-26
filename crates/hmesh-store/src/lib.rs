@@ -9,6 +9,7 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
+mod addresses;
 mod development;
 mod projects;
 mod reliability;
@@ -21,7 +22,7 @@ pub struct Store {
     connection: Arc<Mutex<Connection>>,
 }
 /// The database schema this build creates and reads (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 /// Event kind of a message sent while a session's earlier history is not
 /// loaded yet. Stored at once; shown as a `user_message` after the history
 /// (see `Store::release_queued_messages`).
@@ -93,6 +94,7 @@ impl Store {
                 include_str!("../migrations/008_development.sql"),
                 include_str!("../migrations/009_sessions.sql"),
                 include_str!("../migrations/010_projects.sql"),
+                include_str!("../migrations/011_peer_addresses.sql"),
             ];
             for migration in migrations.iter().skip(version as usize) {
                 tx.execute_batch(migration).map_err(internal)?;

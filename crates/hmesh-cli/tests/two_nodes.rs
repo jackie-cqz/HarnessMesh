@@ -1151,3 +1151,252 @@ async fn a_computer_with_pairing_open_is_heard_nearby_until_its_passcode_is_used
     }
     assert!(gone, "still announced after its passcode was used");
 }
+
+/// Edit `dir`'s node.toml as its owner would, while its daemon is stopped.
+fn edit_node(dir: &Path, change: impl FnOnce(&mut toml::Table)) {
+    let path = dir.join("node.toml");
+    let mut config: toml::Table =
+        toml::from_str(&std::fs::read_to_string(&path).expect("node.toml")).expect("TOML");
+    change(
+        config
+            .get_mut("node")
+            .and_then(toml::Value::as_table_mut)
+            .expect("[node]"),
+    );
+    std::fs::write(&path, toml::to_string_pretty(&config).expect("TOML")).expect("write");
+}
+fn stop(daemon: Daemon, dir: &Path) {
+    drop(daemon);
+    let _ = std::fs::remove_file(dir.join("daemon.json"));
+}
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("free port")
+        .local_addr()
+        .expect("port")
+        .port()
+}
+/// A loopback address where nothing comes back, like an address on a
+/// network the computer has left: a listener whose one-place queue is full
+/// and never taken, so a new connection's first packet is dropped. Keep the
+/// second value for as long as the address should stay silent.
+async fn silent_address() -> (
+    String,
+    (tokio::net::TcpListener, Vec<tokio::net::TcpStream>),
+) {
+    let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+    socket
+        .bind("127.0.0.1:0".parse().expect("address"))
+        .expect("bind");
+    let listener = socket.listen(1).expect("listen");
+    let address = listener.local_addr().expect("address");
+    let mut queued = Vec::new();
+    for _ in 0..64 {
+        match tokio::time::timeout(
+            Duration::from_millis(300),
+            tokio::net::TcpStream::connect(address),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => queued.push(stream),
+            _ => return (format!("https://{address}"), (listener, queued)),
+        }
+    }
+    panic!("the queue at {address} never filled");
+}
+/// Pair `a_dir` with the computer at `address` using the passcode `b_dir` shows.
+fn join(a_dir: &Path, b_dir: &Path, address: &str) {
+    let passcode = cli(b_dir, &["pair", "show"])["pairing_window"]["passcode"]
+        .as_str()
+        .expect("passcode")
+        .to_owned();
+    let joined = cli(a_dir, &["pair", "join", address, "--passcode", &passcode]);
+    assert_eq!(joined["status"], "approved", "{joined}");
+}
+/// The one paired computer as `dir` lists it, once `ready` says so (or the
+/// wait runs out).
+async fn peer_until(dir: &Path, ready: impl Fn(&Value) -> bool) -> Value {
+    let mut peer = Value::Null;
+    for _ in 0..40 {
+        peer = cli(dir, &["peers", "list"])[0].clone();
+        if ready(&peer) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    peer
+}
+
+/// A paired computer learns the other's addresses, host names among them,
+/// and finds it by name when the address on its card stops answering. The
+/// studio moves from 127.0.0.1 to ::1 where `localhost` names both (macOS,
+/// Windows); where it names 127.0.0.1 only (some Linux), the other way.
+#[tokio::test]
+async fn a_computer_finds_a_peer_that_moved_by_its_host_name() {
+    use std::net::{Ipv6Addr, ToSocketAddrs};
+    if std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_err() {
+        eprintln!("skipped: this computer has no IPv6 loopback");
+        return;
+    }
+    let names_v6 = ("localhost", 1)
+        .to_socket_addrs()
+        .is_ok_and(|mut found| found.any(|a| a.ip() == Ipv6Addr::LOCALHOST));
+    let (first, then) = if names_v6 {
+        ("127.0.0.1", "::1")
+    } else {
+        ("::1", "127.0.0.1")
+    };
+    let authority = |ip: &str| {
+        if ip.contains(':') {
+            format!("[{ip}]")
+        } else {
+            ip.to_owned()
+        }
+    };
+    let root = tempfile::tempdir().expect("tempdir");
+    let (a_dir, b_dir, address) = direct_pair(root.path()).await;
+    let port = address.rsplit(':').next().expect("port").to_owned();
+    let address = format!("{}:{port}", authority(first));
+    edit_node(&b_dir, |node| {
+        node.insert("listen_address".into(), first.into());
+        node.insert(
+            "host_names".into(),
+            toml::Value::Array(vec!["localhost".into()]),
+        );
+    });
+    let a = daemon(&a_dir);
+    let b = daemon(&b_dir);
+    ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+    assert_eq!(b_card.endpoint, format!("https://{address}"));
+    join(&a_dir, &b_dir, &address);
+    // The laptop only connects out: it asks the studio for its addresses.
+    let by_name = format!("https://localhost:{port}");
+    let peer = peer_until(&a_dir, |p| {
+        p["routes"]["advertised"]
+            .as_array()
+            .is_some_and(|a| a.contains(&json!(by_name)))
+    })
+    .await;
+    assert_eq!(
+        peer["routes"]["advertised"],
+        json!([b_card.endpoint, by_name]),
+        "{peer}"
+    );
+
+    // While the laptop is off, the studio moves to another address (same
+    // port). Nothing listens at the old one any more.
+    stop(a, &a_dir);
+    stop(b, &b_dir);
+    edit_node(&b_dir, |node| {
+        node.insert("listen_address".into(), then.into());
+    });
+    let _b = daemon(&b_dir);
+    let moved = ready(&b_dir).await;
+    assert_eq!(
+        moved.endpoint,
+        format!("https://{}:{port}", authority(then))
+    );
+    assert!(std::net::TcpStream::connect(&address).is_err());
+    let _a = daemon(&a_dir);
+    ready(&a_dir).await;
+    // Called at once: the old address refuses, localhost answers at the new.
+    let agents = cli(&a_dir, &["agents", "--peer", &b_card.node_id.to_string()]);
+    assert!(agents.is_array(), "{agents}");
+    let peer = &cli(&a_dir, &["peers", "list"])[0];
+    assert_eq!(peer["card"]["endpoint"], b_card.endpoint, "{peer}");
+    assert_eq!(peer["node_connectivity"], "online", "{peer}");
+    assert_eq!(peer["registry_readable"], true, "{peer}");
+    assert_eq!(peer["routes"]["last_good"], by_name, "{peer}");
+    assert!(peer["routes"]["last_good_at"].is_i64(), "{peer}");
+}
+
+/// When no address the laptop knows answers, one set by hand does; and an
+/// address where another computer answers is passed over.
+#[tokio::test]
+async fn a_peer_is_reached_at_an_address_set_by_hand_and_never_at_another_computer() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (a_dir, b_dir, address) = direct_pair(root.path()).await;
+    edit_node(&b_dir, |node| {
+        node.insert("host_names".into(), toml::Value::Array(vec![]));
+    });
+    let a = daemon(&a_dir);
+    let b = daemon(&b_dir);
+    ready(&a_dir).await;
+    let b_card = ready(&b_dir).await;
+    join(&a_dir, &b_dir, &address);
+    let b_id = b_card.node_id.to_string();
+
+    // The studio comes back on another port; the laptop cannot be told.
+    stop(b, &b_dir);
+    let port = free_port();
+    edit_node(&b_dir, |node| {
+        node.insert("listen_port".into(), toml::Value::Integer(port.into()));
+    });
+    let _b = daemon(&b_dir);
+    let moved = ready(&b_dir).await;
+    assert_eq!(moved.endpoint, format!("https://127.0.0.1:{port}"));
+    let refused = cli_fails(&a_dir, &["agents", "--peer", &b_id]);
+    assert!(refused.contains("refused the connection"), "{refused}");
+
+    // Its owner types the new address (with or without https://).
+    let set = cli(
+        &a_dir,
+        &["peers", "address", "studio", &format!("127.0.0.1:{port}")],
+    );
+    assert_eq!(set["manual"], json!([moved.endpoint]), "{set}");
+    assert!(cli(&a_dir, &["agents", "--peer", &b_id]).is_array());
+    let peer = &cli(&a_dir, &["peers", "list"])[0];
+    assert_eq!(peer["routes"]["manual"], json!([moved.endpoint]), "{peer}");
+    assert_eq!(peer["routes"]["last_good"], moved.endpoint, "{peer}");
+    assert_eq!(peer["registry_readable"], true, "{peer}");
+
+    // Another computer answers at the address tried first: its certificate
+    // is not the studio's, so it is passed over and the next one is used.
+    let c_dir = root.path().join("other");
+    cli(&c_dir, &["init", "--name", "other", "--port", "0"]);
+    let _c = daemon(&c_dir);
+    let c_card = ready(&c_dir).await;
+    stop(a, &a_dir);
+    {
+        let store = hmesh_store::Store::open(&a_dir.join("state.sqlite3")).expect("store");
+        store
+            .remember_route(&b_card.fingerprint, &c_card.endpoint, now())
+            .expect("route");
+        assert_eq!(
+            store.peer_routes(b_card.node_id).expect("routes").last_good,
+            Some(c_card.endpoint.clone())
+        );
+    }
+    let a = daemon(&a_dir);
+    ready(&a_dir).await;
+    assert!(cli(&a_dir, &["agents", "--peer", &b_id]).is_array());
+    let peer = &cli(&a_dir, &["peers", "list"])[0];
+    assert_eq!(peer["routes"]["last_good"], moved.endpoint, "{peer}");
+    assert_eq!(peer["registry_readable"], true, "{peer}");
+
+    // The address tried first sends nothing back (where the studio was
+    // reached last is a network the laptop left): the next one answers
+    // within the panel's wait, so the studio shows online with its agents.
+    let (quiet, _queue) = silent_address().await;
+    stop(a, &a_dir);
+    hmesh_store::Store::open(&a_dir.join("state.sqlite3"))
+        .expect("store")
+        .remember_route(&b_card.fingerprint, &quiet, now())
+        .expect("route");
+    let _a = daemon(&a_dir);
+    ready(&a_dir).await;
+    let peer = &cli(&a_dir, &["peers", "list"])[0];
+    assert_eq!(peer["node_connectivity"], "online", "{peer}");
+    assert_eq!(peer["registry_readable"], true, "{peer}");
+    assert_eq!(peer["routes"]["last_good"], moved.endpoint, "{peer}");
+
+    // Cleared by hand: only what the studio said remains.
+    let cleared = cli(&a_dir, &["peers", "address", &b_id, "--clear"]);
+    assert_eq!(cleared["manual"], json!([]), "{cleared}");
+    let refused = cli_fails(
+        &a_dir,
+        &["peers", "address", "studio", "https://user@host:1"],
+    );
+    assert!(refused.contains("credentials"), "{refused}");
+}

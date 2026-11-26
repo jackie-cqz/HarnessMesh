@@ -1,5 +1,6 @@
 //! Owner and peer RPC boundaries. Every request rechecks current trust/policy.
 mod acceptance;
+mod addresses;
 mod development;
 mod discovery;
 mod integration;
@@ -12,6 +13,7 @@ mod relay;
 mod service_test;
 mod services;
 mod sessions;
+pub use addresses::ManualAddresses;
 use anyhow::Context;
 use axum::{
     Json, Router,
@@ -28,7 +30,7 @@ use hmesh_security::{
 };
 use hmesh_store::Store;
 use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
-use hmesh_transport::{Client, ConnectionIdentity};
+use hmesh_transport::{Client, ConnectionIdentity, RouteMemory};
 pub use onboarding::OnboardingRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -58,6 +60,12 @@ pub struct AppState {
     pub shutdown: watch::Sender<bool>,
     sessions: Arc<sessions::Sessions>,
     relay: Arc<relay::ModelRelay>,
+    /// Every address paired computers may reach this one at.
+    addresses: Arc<RwLock<PeerAddresses>>,
+    /// Where each paired computer answered last (kept in the store too).
+    routes: Arc<RouteMemory>,
+    /// Wakes the announcer: a computer was paired, or a way to reach one changed.
+    announce_now: Arc<tokio::sync::Notify>,
 }
 #[derive(Debug)]
 pub struct ApiError(pub MeshError);
@@ -198,6 +206,18 @@ impl AppState {
         let path = policy_path(&instance);
         let policy: Policy = toml::from_str(&fs::read_to_string(path)?)?;
         policy.validate()?;
+        // A new list each start: newer than anything told before.
+        let revision = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis() as i64)
+            .unwrap_or_default();
+        let addresses = Arc::new(RwLock::new(addresses::local(&instance, revision)));
+        let routes_store = store.clone();
+        let routes = Arc::new(RouteMemory::persisted(move |fingerprint, origin, at| {
+            if let Err(error) = routes_store.remember_route(fingerprint, origin, at) {
+                tracing::warn!(code = ?error.code, "where a paired computer answered was not kept");
+            }
+        }));
         Ok(Self {
             managed: services::Manager::default(),
             integration_slots: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -211,6 +231,9 @@ impl AppState {
             relay: Arc::new(relay::ModelRelay::new(shutdown.subscribe())),
             shutdown,
             sessions: Arc::default(),
+            addresses,
+            routes,
+            announce_now: Arc::default(),
         })
     }
     fn actor(
@@ -290,13 +313,13 @@ impl AppState {
             )))
         }
     }
-    /// Whether this node calls `peer` at all. A peer that only connects out
-    /// names a loopback address in its card; a node listening on its Tailnet
-    /// IP never calls it (that address is this node's own loopback).
+    /// Whether this node calls `peer` at all: whether any address it may be
+    /// at can be called. A peer that only connects out names a loopback
+    /// address in its card and tells no other; a node listening on its
+    /// Tailnet IP never calls it (that address is this node's own loopback).
     /// Nodes that themselves use loopback (one computer) call every peer.
     fn reaches(&self, peer: &Peer) -> bool {
-        let config = &self.instance.config;
-        hmesh_security::can_call(config, &peer.card.endpoint)
+        !self.peer_candidates(peer).is_empty()
     }
     fn handshake_limit(&self, source: IpAddr) -> std::result::Result<(), ApiError> {
         self.anonymous_limit("handshake", 60, source)
@@ -489,6 +512,7 @@ pub fn router(state: AppState) -> Router {
         .merge(pairing::routes())
         .merge(passcode::routes())
         .merge(nearby::routes())
+        .merge(addresses::routes())
         .route("/hmesh/v1/hello", get(hello))
         .route("/hmesh/v1/pair/challenge", get(challenge))
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
@@ -790,7 +814,7 @@ async fn status(
         "tailscale":match (s.instance.config.node.network.as_str(), s.instance.config.outbound_only()) {("tailscale", true) => "not_checked", ("tailscale", false) => "verified_at_startup", _ => "not_required"},
         "allowed_sources":(s.instance.config.node.network == "direct" && !s.instance.config.outbound_only()).then(|| s.instance.config.allowed_sources()),
         "pairing_window":s.pairing_window(),
-        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1","pairing-nearby-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only()}),
+        "running":true,"daemon_version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"tasks":s.store.task_count()?,"api_features":["panel-task-workflow-v1","reliability-v2","development-workflows-v1","task-preflight-v1","acp-sessions-v1","project-collaboration-v1","task-git-version-v1","agent-settings-v1","agent-service-test-v1","agent-own-login-v1","session-commands-v1","agent-service-relay-v1","pairing-auto-complete-v1","direct-network-v1","agent-projects-v1","pairing-nearby-v1","peer-addresses-v1"],"schema_version":hmesh_store::SCHEMA_VERSION,"pair_code":hmesh_security::pair_code(&s.instance.card),"outbound_only":s.instance.config.outbound_only(),"addresses":s.addresses().addresses}),
     ))
 }
 async fn stop(
@@ -823,6 +847,7 @@ async fn peers(
             visible_agent_count: None,
             runnable_agent_count: None,
             services_status: "not_supported_in_v0".into(),
+            routes: PeerRoutes::default(),
         };
         if peer.status == "trusted" && !s.reaches(&peer) {
             view.node_connectivity = NodeConnectivity::OutboundOnly;
@@ -830,32 +855,21 @@ async fn peers(
             // Asked with this computer's certificate first: a direct node
             // answers the anonymous hello only while its pairing window is
             // open. One that no longer accepts this computer (it revoked the
-            // pairing there) still answers hello.
-            let client = Client::new(
-                &s.instance,
-                &peer.card.endpoint,
-                &peer.card.fingerprint,
-                false,
-                false,
-            )
-            .map_err(internal)?;
+            // pairing there) still answers hello. Long enough for a slow but
+            // working first address (three round trips of 400 ms), or for a
+            // first that refuses or sends nothing back (given up once another
+            // completes a handshake, 200 ms on) and a next one that answers.
+            let client = s.peer_client(&peer)?;
             let accepted = matches!(
                 tokio::time::timeout(
-                    std::time::Duration::from_millis(750),
+                    std::time::Duration::from_millis(1500),
                     client.get::<NodeCard>("/hmesh/v1/node")
                 )
                 .await,
                 Ok(Ok(_))
             );
             let online = accepted || {
-                let hello = Client::new(
-                    &s.instance,
-                    &peer.card.endpoint,
-                    &peer.card.fingerprint,
-                    true,
-                    false,
-                )
-                .map_err(internal)?;
+                let hello = s.peer_hello_client(&peer)?;
                 matches!(
                     tokio::time::timeout(
                         std::time::Duration::from_millis(750),
@@ -871,6 +885,7 @@ async fn peers(
                 NodeConnectivity::Unreachable
             };
             if !accepted {
+                view.routes = s.store.peer_routes(peer.card.node_id)?;
                 views.push(view);
                 continue;
             }
@@ -893,6 +908,7 @@ async fn peers(
                 );
             }
         }
+        view.routes = s.store.peer_routes(peer.card.node_id)?;
         views.push(view);
     }
     Ok(Json(views))
@@ -971,6 +987,7 @@ async fn approve_pair(
     s.owner(&headers, &c)?;
     let expected = normalize_fingerprint(&body.expected_fingerprint).map_err(internal)?;
     let peer = s.store.approve_pair(body.request_id, &expected)?;
+    s.peers_changed();
     s.store.audit(
         Some(s.instance.card.node_id),
         "pair.approve",
@@ -1171,14 +1188,7 @@ async fn remote_agents(
     if !s.reaches(&peer) {
         return Ok(Json(vec![]));
     }
-    let client = Client::new(
-        &s.instance,
-        &peer.card.endpoint,
-        &peer.card.fingerprint,
-        false,
-        false,
-    )
-    .map_err(internal)?;
+    let client = s.peer_client(&peer)?;
     Ok(Json(client.get("/hmesh/v1/agents").await?))
 }
 async fn set_policy(
@@ -1279,16 +1289,9 @@ async fn mesh_agents(
         .filter(|peer| peer.status == "trusted" && s.reaches(peer))
         .enumerate()
     {
-        let instance = s.instance.clone();
         let access = policy.peer_access(peer.card.node_id);
+        let client = s.peer_client(&peer);
         lookups.spawn(async move {
-            let client = Client::new(
-                &instance,
-                &peer.card.endpoint,
-                &peer.card.fingerprint,
-                false,
-                false,
-            );
             let client_for_projects = client.as_ref().ok().cloned();
             let fetched = match client {
                 Ok(client) => match tokio::time::timeout(
@@ -1529,14 +1532,7 @@ async fn dispatch_task(
             "peer is not trusted",
         )));
     }
-    let client = Client::new(
-        &s.instance,
-        &peer.card.endpoint,
-        &peer.card.fingerprint,
-        false,
-        false,
-    )
-    .map_err(internal)?;
+    let client = s.peer_client(&peer)?;
     let mut envelope = Envelope::new(s.instance.card.node_id, "task.submit", body.task);
     envelope.request_id = body.request_id;
     let envelope = s.store.remember_outbound(body.peer_id, &envelope)?;
@@ -1593,16 +1589,7 @@ fn outbound_client(s: &AppState, id: Uuid) -> std::result::Result<Option<Client>
             "outbound task peer has been revoked",
         )));
     }
-    Ok(Some(
-        Client::new(
-            &s.instance,
-            &peer.card.endpoint,
-            &peer.card.fingerprint,
-            false,
-            false,
-        )
-        .map_err(internal)?,
-    ))
+    Ok(Some(s.peer_client(&peer)?))
 }
 async fn owner_task(
     State(s): State<AppState>,

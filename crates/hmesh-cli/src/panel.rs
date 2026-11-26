@@ -43,6 +43,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "pairing-nearby-v1",
     "session-commands-v1",
     "agent-projects-v1",
+    "peer-addresses-v1",
 ];
 
 #[derive(Clone)]
@@ -211,6 +212,7 @@ pub async fn run(
         .route("/api/agents/{id}/{action}", post(agent_action))
         .route("/api/services/{id}/{action}", post(service_action))
         .route("/api/peers/{id}/agents", get(remote_agents))
+        .route("/api/peers/{id}/addresses", post(set_peer_addresses))
         .route("/api/pairs/request", post(request_pair))
         .route("/api/pairing/window", post(open_pairing_window))
         .route("/api/pairing/nearby", get(pairing_nearby))
@@ -433,7 +435,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1"),"peer_addresses":running && features.contains(&"peer-addresses-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -1366,6 +1368,43 @@ async fn pair_action(
         }
         _ => error(StatusCode::BAD_REQUEST, "UNSUPPORTED_ACTION"),
     }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerAddressesBody {
+    addresses: Vec<String>,
+}
+/// Where else to reach a paired computer, set here by hand (host:port or
+/// https://host:port); none clears them.
+async fn set_peer_addresses(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    body: Result<Json<PeerAddressesBody>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return error(StatusCode::BAD_REQUEST, "INVALID_INPUT");
+    };
+    let addresses = body
+        .addresses
+        .into_iter()
+        .map(|address| address.trim().to_owned())
+        .filter(|address| !address.is_empty())
+        .map(|address| {
+            if address.starts_with("https://") {
+                address
+            } else {
+                format!("https://{address}")
+            }
+        })
+        .collect();
+    mutation(
+        s.client
+            .post(
+                &format!("/local/peers/{id}/addresses"),
+                &hmesh_daemon::ManualAddresses { addresses },
+            )
+            .await,
+    )
 }
 async fn remote_agents(State(s): State<Panel>, Path(id): Path<Uuid>) -> Json<Value> {
     Json(result(

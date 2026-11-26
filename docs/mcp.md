@@ -30,7 +30,7 @@ hmesh setup --full            # 完整安装：同时把本机 agent 共享给�
 - 改 HarnessMesh 以外的东西之前都会先问：开机自启（macOS、Windows；Linux 给提示），以及把 MCP 服务器加到 Claude Code（`claude mcp add -s user harnessmesh -- <hmesh> mcp`）和 Codex（在 `config.toml` 末尾追加 `[mcp_servers.harnessmesh]`，`tool_timeout_sec = 660`）。已经有 `harnessmesh` 这一项的客户端不再改动。
 - 没有终端可问时（例如 `--json`），没预先回答的一律当作不要：不带 `--connect` 就一个客户端都不碰，不带 `--startup` 就不加开机自启。`--connect claude,codex` 或 `--connect none`、`--startup` 或 `--no-startup` 预先回答。客户端配置里写的是节点目录的绝对路径；Codex 的 `config.toml` 是符号链接时，写的是它指向的文件，链接保留。`--name`、`--port`、`--tailnet-address`、`--network`、`--listen`、`--allow-from`、`--project`、`--agents` 见 `hmesh setup --help`。
 - setup 会在节点目录写 `setup.json`。有这个标记时，`hmesh mcp` 每次先向 daemon 确认它在运行（被强杀或崩溃时留下的 `daemon.json` 不算），没在运行就自己在后台把它启动起来（最多等 15 秒；起不来时工具返回 daemon 日志里的原因）。daemon 收到 SIGTERM 也会正常退出、清理 `daemon.json`。绑定到会话的服务器（`--session`）和手动 `hmesh init` 的节点不会这样做。
-- 名片同步：每个 daemon 启动时把自己的名片（地址、端口、是否只装 MCP）发给每台已配对的电脑，没送达就每 5 分钟重试，所以换装法、换端口后对方会更新。**已知限制**：只装 MCP 的电脑不接受连入，收不到别人的新名片。Tailscale IP 一般不变，但对方改了端口，或者直连网络上对方的局域网地址变了（DHCP 换地址比 Tailscale 常见得多），只装 MCP 的电脑就连不上它，要重新配对；建议在路由器上给完整安装的电脑固定 IP。
+- 名片和地址同步：每个 daemon 启动时把自己的名片（地址、端口、是否只装 MCP）发给每台已配对的电脑，没送达就每 5 分钟重试，所以换装法、换端口后对方会更新。只装 MCP 的电脑不接受连入，收不到别人的新名片，但它在启动、配对完成时和此后每 5 分钟向每台配对的电脑拉一次地址列表：名片地址，加上对方的主机名（默认 `本机名.local`，可以在 `node.toml` 的 `node.host_names` 里改成公司内网的域名，`[]` 表示不用）。所以对方的局域网 IP 变了，只要主机名还解析得出来，就照样连得上（`.local` 靠 mDNS 解析：macOS 自带，Linux 要装 Avahi 和 nss-mdns，Windows 还没测过）；连上的那个地址会记下来，下次先试。都连不上时可以手动加地址：`hmesh peers address <电脑名或ID> 192.168.1.30:38880`（可以写多个，`--clear` 清除），面板电脑卡片上的「改地址」也一样，手动地址只存在本机。配对码仍然只带 IP。
 
 ## 手动接入
 
@@ -91,6 +91,8 @@ tool_timeout_sec = 660
 ```bash
 hmesh peers access <对端名字或节点ID> confirm   # 对方开的会话先等本机批准
 hmesh peers access <对端名字或节点ID> auto      # 恢复直接开始
+hmesh peers address <对端名字或节点ID> studio.local:38880   # 连不上时多试这个地址（只存在本机）
+hmesh peers address <对端名字或节点ID> --clear              # 清除手动地址
 ```
 
 `confirm` 时，会话停在 `pending_approval`，第一条消息先不发给 agent；本机主人在面板「会话」页点批准，或 `hmesh session approve <会话ID>` 后才开始。设置保存在节点的 `policy.toml` 的 `[peers]` 段，可热加载。
@@ -108,7 +110,8 @@ hmesh peers access <对端名字或节点ID> auto      # 恢复直接开始
 - `node scripts/sessions-panel-smoke.mjs`：真实浏览器在面板里完成同样的流程。
 - `crates/hmesh-cli/tests/setup.rs`：用假的 `claude` 命令和临时 HOME 跑 `hmesh setup --mcp-only`，核对节点配置、Claude Code 和 Codex 各只接入一次、不同意就一个客户端和开机自启都不碰、`hmesh mcp` 自己拉起 daemon（包括 daemon 被强杀之后）、daemon 起不来时立刻报出原因、Codex 配置是符号链接时链接保留。
 - `test-support/hmesh-fixture/tests/mesh_e2e.rs` 的 `a_computer_that_only_connects_out_opens_sessions_but_none_open_on_it`：只装 MCP 的电脑经 MCP 在配对电脑上开会话、拿回答复；对方在它上面开会话被拒。
-- `crates/hmesh-cli/tests/two_nodes.rs`：只装 MCP 的电脑能向外配对和调用，对方发来的配对申请、`hello` 和节点请求都被拒；换了端口的电脑会把新名片发给配对的电脑；直连网络的电脑只在配对窗口开着时回应配对，地址没了时启动会说明怎么办；口令配对：错口令谁都不信任，对上的口令双方互信、不用批准，用一次作废，错满 3 次口令作废而配对码照样能用，只发起握手不确认的也照样扣次数；macOS 上附近的电脑在窗口开着时能被列出，口令用掉后撤回。
+- `crates/hmesh-cli/tests/two_nodes.rs`：只装 MCP 的电脑能向外配对和调用，对方发来的配对申请、`hello` 和节点请求都被拒；换了端口的电脑会把新名片发给配对的电脑；直连网络的电脑只在配对窗口开着时回应配对，地址没了时启动会说明怎么办；口令配对：错口令谁都不信任，对上的口令双方互信、不用批准，用一次作废，错满 3 次口令作废而配对码照样能用，只发起握手不确认的也照样扣次数；macOS 上附近的电脑在窗口开着时能被列出，口令用掉后撤回；已配对的电脑交换地址列表：对方换了地址（127.0.0.1 换成 ::1）后靠 `localhost` 主机名连上并记下 `last_good`，手动地址能连上名片地址已失效的电脑，排在前面的另一台电脑的地址被跳过，排在最前面的地址不回包时对方照样显示在线。
+- `crates/hmesh-transport/tests/routes.rs`：多地址拨号只在请求没发出去时换地址（返回错误或超时的写请求不会再发到别的地址），跳过证书不对的电脑，记住连上的地址，全部失败时逐条说明原因；第一条地址不回包（包丢掉、连上了但 TLS 不应答、文档用的 192.0.2.1）时 750 毫秒内用上下一条；排在最前面的是慢但通的路（每个包单程延迟半个来回的本机代理，来回 260 和 400 毫秒）、后面的地址失效时，在调用方等的 1.5 秒内照样用上它；第一条连上后回答再慢也不探测、不在别的地址再发；第一条恰好在另一条握手成功的同一刻连上时，请求也只执行一次（`client.rs` 的单元测试在连接建好的那一刻放弃，确认这条连接不被使用、请求不发）。
 - `scripts/pairing-nearby-smoke.mjs`（`npm run test:pairing-nearby`，macOS）：真实浏览器里的「附近的电脑」和口令配对。
 - `crates/hmesh-transport/tests/pinning.rs`：证书里没写着拨的那个地址也能靠指纹连上，换一张证书就连不上。
 - 以上只用 fixture，不调用模型。

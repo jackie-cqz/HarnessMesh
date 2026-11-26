@@ -27,6 +27,9 @@ toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.189"
+
 [dev-dependencies]
 tempfile.workspace = true
 

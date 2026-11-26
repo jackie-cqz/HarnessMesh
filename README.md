@@ -61,7 +61,7 @@ flowchart LR
 - Each computer runs one **daemon** (`hmesh daemon start`). It starts the agents you registered and keeps sessions, tasks and their events in a local SQLite database.
 - A computer set up with **only MCP** runs the daemon too, but on 127.0.0.1 only: its agents call out, and nothing calls in.
 - The **panel** (`hmesh panel`) listens on 127.0.0.1 only and opens with a private link printed in the terminal. Owner credentials stay in the CLI process.
-- Computers talk over Tailscale, or directly on a LAN or VPN of your own, with TLS 1.3 and mutual authentication. Each side pins the other's certificate fingerprint. No SSH or cloud relay is needed. On a direct network, a computer with pairing open announces itself to computers nearby over mDNS (`_hmesh._tcp`).
+- Computers talk over Tailscale, or directly on a LAN or VPN of your own, with TLS 1.3 and mutual authentication. Each side pins the other's certificate fingerprint. No SSH or cloud relay is needed. On a direct network, a computer with pairing open announces itself to computers nearby over mDNS (`_hmesh._tcp`). Paired computers also tell each other their host names (by default `<name>.local`), so one whose LAN address changed is still found where that name resolves: macOS resolves `.local` names itself, Linux needs Avahi with nss-mdns, and Windows has not been tested; `hmesh peers address` adds an address by hand.
 
 ## Get started
 
