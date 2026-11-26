@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Orion Todo API - Node.js built-ins only.
+// Linux Todo API - Node.js built-ins only.
 import http from 'node:http';
 import { promises as fsp } from 'node:fs';
 import fs from 'node:fs';
@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 const HOST = '127.0.0.1';
 const DEFAULT_PORT = 8000;
-const DEFAULT_NODE_LABEL = 'Orion';
-const SERVICE_NAME = 'orion-todo-api';
+const DEFAULT_NODE_LABEL = 'Linux';
+const SERVICE_NAME = 'linux-todo-api';
 const MAX_TITLE_LENGTH = 200;
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -316,11 +316,11 @@ export function createTodoServer({ dataFile, nodeLabel } = {}) {
         return;
       }
       if (err instanceof CorruptDataError) {
-        console.error(`[orion-todo-api] refusing to use corrupt data file: ${err.message}`);
+        console.error(`[linux-todo-api] refusing to use corrupt data file: ${err.message}`);
         sendError(res, 500, 'todo data is unavailable');
         return;
       }
-      console.error(`[orion-todo-api] internal error: ${err && err.message ? err.message : err}`);
+      console.error(`[linux-todo-api] internal error: ${err && err.message ? err.message : err}`);
       sendError(res, 500, 'internal server error');
     }
   });
@@ -347,13 +347,13 @@ function startFromEntryPoint() {
     port = parsePort(process.env.PORT);
     const server = createTodoServer();
     server.on('error', (err) => {
-      console.error(`[orion-todo-api] failed to start: ${err && err.message ? err.message : err}`);
+      console.error(`[linux-todo-api] failed to start: ${err && err.message ? err.message : err}`);
       process.exitCode = 1;
     });
     server.listen(port, HOST, () => {
       const address = server.address();
       const boundPort = address && typeof address === 'object' ? address.port : port;
-      console.log(`[orion-todo-api] listening on http://${HOST}:${boundPort}`);
+      console.log(`[linux-todo-api] listening on http://${HOST}:${boundPort}`);
     });
     const shutdown = () => {
       server.close(() => process.exit(0));
@@ -361,7 +361,7 @@ function startFromEntryPoint() {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
   } catch (err) {
-    console.error(`[orion-todo-api] startup error: ${err && err.message ? err.message : err}`);
+    console.error(`[linux-todo-api] startup error: ${err && err.message ? err.message : err}`);
     process.exitCode = 1;
   }
 }

@@ -5,7 +5,7 @@
   "environment": {
     "nodes": "mac-a (127.0.0.1:44001) and mac-b (127.0.0.1:44002), paired with fingerprints",
     "agents": "pi-a on mac-a and pi-b on mac-b, pi 0.83.0 through pi-acp 0.0.35, own login",
-    "model": "test-gateway-claude/deepseek-v4.1-flash-1017 via local gateway"
+    "model": "a DeepSeek Flash model served by a local gateway"
   },
   "results": [
     {"check": "pair request and approval", "result": "pass", "detail": "both sides approved; peers listed with access auto/confirm"},

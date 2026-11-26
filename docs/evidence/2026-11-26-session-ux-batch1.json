@@ -5,7 +5,7 @@
   "environment": {
     "platform": "macOS arm64",
     "agents": "pi-local (pi 0.83.0 through pi-acp 0.0.35, own login)",
-    "model": "test-gateway-claude/deepseek-v4.1-flash-1017 via local gateway"
+    "model": "a DeepSeek Flash model served by a local gateway"
   },
   "tested": [
     {

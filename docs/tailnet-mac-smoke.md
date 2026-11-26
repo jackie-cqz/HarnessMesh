@@ -6,7 +6,7 @@
 
 | 项目 | 结果 |
 |---|---|
-| 执行端 | Mac `100.69.246.117:39880`，Node `b42a0802-eee1-4799-bc3a-fb66e19a4e71` |
+| 执行端 | Mac `100.80.20.12:39880`，Node `b42a0802-eee1-4799-bc3a-fb66e19a4e71` |
 | Agent | `mac-pi-flash-key` / `5583c679-a688-4653-92c1-ee960fde64ea` |
 | 项目 | `tailnet-demo`，仅向指定 Windows Node 和新 Agent 授权 |
 | 请求 | `7545688d-ce3a-4679-9e36-66161c9599c1` |

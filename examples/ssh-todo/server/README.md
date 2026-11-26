@@ -1,4 +1,4 @@
-# Orion Todo API
+# Linux Todo API
 
 Small Todo HTTP API built with Node.js built-in modules only (no dependencies).
 
@@ -22,17 +22,17 @@ Environment variables:
 | ------------ | ------------------------------ | ---------------------------------------- |
 | `PORT`       | `8000`                         | Listen port; `0` selects a free port.    |
 | `DATA_FILE`  | `data/todos.json` (this dir)   | JSON file used for persistence.          |
-| `NODE_LABEL` | `Orion`                        | Value reported by `GET /api/health`.     |
+| `NODE_LABEL` | `Linux`                        | Value reported by `GET /api/health`.     |
 
 Example:
 
 ```sh
-PORT=18080 DATA_FILE=/tmp/todos.json NODE_LABEL=Orion npm start
+PORT=18080 DATA_FILE=/tmp/todos.json NODE_LABEL=Linux npm start
 ```
 
 ## API
 
-- `GET /api/health` → `{ "status": "ok", "service": "orion-todo-api", "node": "Orion" }`
+- `GET /api/health` → `{ "status": "ok", "service": "linux-todo-api", "node": "Linux" }`
 - `GET /api/todos` → `{ "todos": [...] }`
 - `POST /api/todos` with `{ "title": "Example" }` → `201 { "todo": {...} }`
 - `PATCH /api/todos/:id` with `{ "completed": true }` → `200 { "todo": {...} }`

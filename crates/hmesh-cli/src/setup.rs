@@ -1284,7 +1284,7 @@ mod tests {
 
     #[test]
     fn host_names_become_node_names() {
-        assert_eq!(node_name("Jackie's MacBook Pro"), "jackie-s-macbook-pro");
+        assert_eq!(node_name("Sam's MacBook Pro"), "sam-s-macbook-pro");
         assert_eq!(node_name("..."), "my-computer");
     }
 }

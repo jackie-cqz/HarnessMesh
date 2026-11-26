@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "date": "2026-10-28",
-  "scope": "Windows to Orion Linux over SSH with end-to-end HTTPS/mTLS",
+  "scope": "Windows to Linux over SSH with end-to-end HTTPS/mTLS",
   "status": "passed",
-  "ssh_host": "cqz_Orion",
+  "ssh_host": "linux-host",
   "local_os": "Microsoft Windows NT 10.0.19045.0",
   "remote_os": "Linux",
   "remote_arch": "x86_64",

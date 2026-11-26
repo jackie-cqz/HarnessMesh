@@ -2,6 +2,8 @@
 
 **English** | [简体中文](README_CN.md)
 
+> **Early and experimental (0.0.x).** Tested on real Macs, and only partly on Linux and Windows. Pair only computers you own; see [Status](#status) and [SECURITY.md](SECURITY.md).
+
 One place to work with the coding agents on all of your own computers. HarnessMesh talks to agents such as OpenCode, Claude Code, Codex, Pi and DeepSeek Harness over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP). You chat with any of them from a local web panel, whichever computer it runs on. They can also hand work to each other, across computers, through a built-in MCP server.
 
 ![A session on studio: the backend agent finds the bug, asks the reviewer agent on laptop to check the fix, and applies its suggestion](docs/images/session.png)
@@ -241,3 +243,7 @@ None of the checks call a model or read your agent configuration. They use `test
 ## Status
 
 Version 0.0.2. Developed on macOS; the CI workflow covers macOS, Windows and Linux. The panel's interface is in Chinese. Runtime packages are unsigned development builds without an installer or automatic updates.
+
+## License
+
+Apache License 2.0; see [LICENSE](LICENSE). Notices for code and icons from other projects are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).

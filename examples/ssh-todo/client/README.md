@@ -12,7 +12,7 @@ npm start
 ```
 
 - 前端监听 `http://127.0.0.1:5173`（可用环境变量 `PORT` 覆盖）。
-- `/api/*` 原样代理到 `UPSTREAM`，默认 `http://127.0.0.1:18080`（SSH 转发的 Orion API）。
+- `/api/*` 原样代理到 `UPSTREAM`，默认 `http://127.0.0.1:18080`（SSH 转发的 Linux API）。
 
 例如：
 

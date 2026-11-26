@@ -357,8 +357,8 @@ mod tests {
     #[test]
     fn a_computer_name_becomes_a_local_host_name() {
         assert_eq!(
-            local_host_name("Jackies-MacBook-Pro.local").as_deref(),
-            Some("jackies-macbook-pro.local")
+            local_host_name("Sams-MacBook-Pro.local").as_deref(),
+            Some("sams-macbook-pro.local")
         );
         assert_eq!(local_host_name("studio").as_deref(), Some("studio.local"));
         assert_eq!(

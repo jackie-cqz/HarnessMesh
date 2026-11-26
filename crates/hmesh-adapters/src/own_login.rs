@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn pi_models_by_provider() {
         // The layout of pi 0.83.0 `--list-models`.
-        let real = "provider             model                    context  max-out  thinking  images\nfable-gateway        claude-fable-5-1         200K     32K      yes       yes\ntest-gateway         glm-5.3-highspeed        1M       65.5K    yes       no\ntest-gateway         gpt-5.6-luna             272K     16.4K    no        yes\n";
+        let real = "provider             model                    context  max-out  thinking  images\ngateway-a            model-alpha              200K     32K      yes       yes\ngateway-b            model-beta-fast          1M       65.5K    yes       no\ngateway-b            model-gamma              272K     16.4K    no        yes\n";
         let seen = from_pi_models(real, true, 1);
         assert_eq!(
             (seen.state.as_str(), seen.detail.as_deref()),
