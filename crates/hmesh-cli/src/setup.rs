@@ -907,7 +907,7 @@ async fn register_agents(
         let config: AgentConfig = serde_json::from_value(json!({
             "agent": {"name": name, "harness": agent.harness, "project_id": format!("{}-project", instance.card.display_name)},
             "project": {"root": project, "allowed_tools": ["read", "write", "edit"]},
-            "adapter": {"executable": agent.executable},
+            "adapter": {"executable": agent.executable, "node_executable": agent.node},
         }))?;
         let card: AgentCard = client.post("/local/agents", &config).await?;
         report.step(

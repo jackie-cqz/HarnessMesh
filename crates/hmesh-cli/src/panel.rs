@@ -911,7 +911,7 @@ async fn detect_agents(State(s): State<Panel>) -> Json<Value> {
 async fn installable_agents() -> Json<Value> {
     let entries: Vec<_> = hmesh_runtime::agent_install::RECOMMENDED
         .iter()
-        .map(|entry| json!({"harness":entry.harness,"package":entry.package(),"version":entry.version,"node":entry.node}))
+        .map(|entry| json!({"harness":entry.harness,"package":entry.package(),"version":entry.version,"node":entry.node,"needs":entry.needs,"download_mb":entry.download_mb,"timeout_s":entry.timeout.as_secs()}))
         .collect();
     Json(json!({"data":entries}))
 }

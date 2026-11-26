@@ -126,7 +126,7 @@ cargo build --release --locked -p hmesh-cli
 
 An only-MCP computer needs no Tailscale at all; when setup does not find it, it uses the computer's own network.
 
-`hmesh agent detect` lists available ACP executables. The panel can install recommended Codex and Claude Code adapters on the execution computer, or use an existing command.
+`hmesh agent detect` lists available ACP executables. The panel can install the recommended Codex, Claude Code, Pi and DeepSeek Harness adapters on the execution computer, or use an existing command. Pi's adapter needs Pi itself installed; DeepSeek Harness needs Node.js 24.9+, and when the default `node` is older the panel uses a newer one it finds on this computer.
 
 | Agent | Command HarnessMesh looks for | Install |
 |---|---|---|

@@ -199,6 +199,10 @@ pub struct DetectedAgent {
     pub command: String,
     /// Absolute path as found on PATH (usable as `adapter.executable`).
     pub executable: std::path::PathBuf,
+    /// Node.js to run it with, when that is not the first `node` on PATH
+    /// (usable as `adapter.node_executable`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<std::path::PathBuf>,
 }
 
 /// Look for the known ACP agent commands on PATH. Nothing is run or installed.
@@ -225,6 +229,7 @@ pub fn detect_installed_agents() -> Vec<DetectedAgent> {
                         harness,
                         command: command.to_owned(),
                         executable: path,
+                        node: None,
                     })
                 })
             })

@@ -39,6 +39,15 @@ pub fn resolve_configured_executable(config: &AgentConfig) -> Result<ResolvedExe
         config.adapter.node_executable.as_deref(),
     )
 }
+/// Like `resolve_executable`, running a JavaScript entry with `node` instead
+/// of the first Node.js on PATH when one is given.
+pub fn resolve_executable_with_node(
+    kind: HarnessKind,
+    executable: &Path,
+    node: Option<&Path>,
+) -> Result<ResolvedExecutable> {
+    resolve_with_node(kind, executable, node)
+}
 fn resolve_with_node(
     kind: HarnessKind,
     executable: &Path,

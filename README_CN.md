@@ -126,7 +126,7 @@ cargo build --release --locked -p hmesh-cli
 
 只装 MCP 的电脑完全不需要 Tailscale：setup 找不到它时，就用本机自己的网络。
 
-`hmesh agent detect` 会列出可用的 ACP 命令。可直接使用已装好的命令，也可以在执行端的面板中安装推荐版本的 Codex 或 Claude Code 适配器。
+`hmesh agent detect` 会列出可用的 ACP 命令。可直接使用已装好的命令，也可以在执行端的面板中安装推荐版本的 Codex、Claude Code、Pi 或 DeepSeek Harness 适配器。Pi 的适配器需要先装好 Pi 本体；DeepSeek Harness 需要 Node.js 24.9+，默认的 `node` 版本不够时，面板会改用本机找到的更新版本。
 
 | Agent | HarnessMesh 找的命令 | 安装 |
 |---|---|---|

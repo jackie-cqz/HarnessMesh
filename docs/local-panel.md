@@ -17,11 +17,14 @@ cargo +stable build --locked -p hmesh-cli
 
 ## 安装 ACP 适配器
 
-在运行 Agent 的电脑打开面板，进入「Agents → 接入项目与 Agent」。选择 Codex 或 Claude Code 后，面板会先找本机已经安装的 ACP 命令。缺少时可以点「安装推荐版本」，确认后使用本机 Node.js 和 npm 下载。推荐版本以界面显示为准。
+在运行 Agent 的电脑打开面板，进入「Agents → 接入项目与 Agent」。选择 Codex、Claude Code、Pi 或 DeepSeek Harness 后，面板会先找本机已经安装的 ACP 命令。缺少时可以点「安装推荐版本」，确认后使用本机 Node.js 和 npm 下载。推荐版本以界面显示为准。
+
+- Pi：装的是适配器 `pi-acp`，它会启动本机的 `pi`，所以要先装好 Pi 本体（`npm install -g @earendil-works/pi-coding-agent`，0.81 或更新）。
+- DeepSeek Harness：需要 Node.js 24.9 或更新版本，装好后约 1.4 GB，下载要几分钟。PATH 上第一个 `node` 版本不够时，会在 PATH 其余位置和 nvm、fnm、Volta、asdf、mise、Homebrew、Pi 自带的 Node.js 目录里找一个够新的来安装和运行，并在登记时写入 `adapter.node_executable`。都不够新时会提示需要的版本和找到的最高版本。
 
 安装目录为节点数据目录下的 `agent-runtimes/<类型>/<版本>`。通过 ACP 握手后，面板自动填入绝对启动路径。进入「绑定项目」，填写 Agent 名称、项目 ID 和执行电脑上的绝对路径。工件、工作目录模式、环境变量名和远端授权预览在「高级设置」里。检查配置后，点击「登记此 Agent」。安装与登记无需发送模型请求。登记完成后，可点击「配置模型服务」检查本机登录，或单独设置 API 地址和 Key。
 
-CLI 可在已初始化的节点数据目录下运行 `hmesh agent install codex` 或 `hmesh agent install claude-code`。命令会输出可用于登记的路径。`hmesh agent detect` 同时查找 PATH 上的命令和当前节点已安装的推荐版本。
+CLI 可在已初始化的节点数据目录下运行 `hmesh agent install codex`、`claude-code`、`pi` 或 `dsh`。命令会输出可用于登记的路径。`hmesh agent detect` 同时查找 PATH 上的命令和当前节点已安装的推荐版本。
 
 ## 会话
 
@@ -84,7 +87,7 @@ Pi 的独立模型配置沿用本机的提示模板、技能、扩展和主题�
 
 ## DeepSeek Harness（DSH）
 
-1. 在执行 Agent 的电脑上安装 Node.js 24.9 或更新版本，运行 `npm install -g @deepseek-ai/dsh@0.2.2-rc.5`。可用 `hmesh agent detect` 检查 HarnessMesh 能否找到 `dsh`。
+1. 在执行 Agent 的电脑上安装 Node.js 24.9 或更新版本，然后在面板里点「安装推荐版本」，或运行 `npm install -g @deepseek-ai/dsh@0.2.2-rc.5`。可用 `hmesh agent detect` 检查 HarnessMesh 能否找到 `dsh`。
 2. 在面板「Agents → 接入项目与 Agent」选择「DeepSeek Harness (DSH)」，填写项目和工作目录，预览后登记。执行端以 `dsh --profile acp` 启动。旧 headless 登记可用 `hmesh agent update <原 Agent ID> --config <ACP 配置文件>` 保留原 ID。
 3. 在 HarnessMesh「Agents → 这个 Agent 的模型服务」选择「单独给它一个 key」连接 DeepSeek 官方服务。使用网关时，选「自定义地址」，填写协议、地址、Key 和网关的模型 ID。选「用它自己的登录」会沿用 DSH 的本机账号和模型设置。[官方模型设置指南](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.5/docs/user/guide/providers.zh.md)
 4. 在「会话 → 新会话」选择刚登记的 Agent。输入 `/` 可查看可用操作，有模型选项时可用面板快捷方式 `/model` 切换。模型和推理强度均取自当前 DSH 会话。`/compact` 不在此版本的官方 ACP 接口中。执行进程重启后，下一轮会通过 `session/resume` 继续已有的 DSH 会话，历史消息由 HarnessMesh 展示。[官方 ACP 协议](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.5/packages/acp/acp/README.md#protocol-contract)

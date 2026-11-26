@@ -56,7 +56,7 @@ function renderOnboardAdapter(){
  onboard('install').hidden=!canInstall;
  onboard('retry').hidden=!onboardDetectionError||onboardDetecting||onboardHarness==='acp';
  onboard('install-details').hidden=!canInstall;
- onboard('install-details').textContent=canInstall?`${offer.package}@${offer.version} · Node.js ≥ ${offer.node}`:'';
+ onboard('install-details').textContent=canInstall?installDetails(offer):'';
  onboard('detected').textContent=onboardHarness==='acp'?'提供支持 ACP 的启动命令。':
   usingDetected&&found.executable===onboardVerified?'已通过 ACP 握手':
   usingDetected?`已找到本机命令 ${found.command}`:
@@ -149,10 +149,11 @@ async function installOnboardAdapter(){
  renderOnboard();
  let installed=false;
  try{
-  if(!await confirmAction('安装 ACP 适配器？',`${offer.package}@${offer.version}\n\n将下载到当前节点的数据目录，并检查 ACP 握手。`))return;
+  const large=offer.download_mb>=500?'\n\n'+`安装后约占 ${(offer.download_mb/1000).toFixed(1)} GB，下载可能需要几分钟。`:'';
+  if(!await confirmAction('安装 ACP 适配器？',`${offer.package}@${offer.version}\n\n将下载到当前节点的数据目录，并检查 ACP 握手。${large}`))return;
   onboard('install').textContent='安装并检查中…';
   onboard('detected').textContent='正在下载适配器并检查 ACP。';
-  const result=unwrap(await api('/agents/install',{method:'POST',body:JSON.stringify({harness:kind}),signal:AbortSignal.timeout(170000)}));
+  const result=unwrap(await api('/agents/install',{method:'POST',body:JSON.stringify({harness:kind}),signal:AbortSignal.timeout(((offer.timeout_s||120)+50)*1000)}));
   if(result.protocol_probe!=='acp_initialize_passed')throw Error('适配器未通过 ACP 握手。');
   onboardVerified=result.agent.executable;
   onboardDetected=[...onboardDetected.filter(a=>a.harness!==kind),result.agent];
@@ -174,6 +175,15 @@ function updateOnboardWorkspace(){
  onboard('git-label').hidden=!worktree;
  onboard('git').required=worktree;
 }
+// The package, the Node.js it needs, a command it starts and its size.
+function installDetails(offer){
+ const parts=[`${offer.package}@${offer.version}`,`Node.js ≥ ${offer.node}`];
+ if(offer.needs)parts.push(`需要已安装 ${offer.needs.command} ${offer.needs.version}+`);
+ if(offer.download_mb)parts.push(`约 ${offer.download_mb>=1000?(offer.download_mb/1000).toFixed(1)+' GB':offer.download_mb+' MB'}`);
+ return parts.join(' · ');
+}
+// The detected agent the form points at, with the Node.js it runs with.
+function onboardDetectedChoice(){return onboardDetected.find(a=>a.harness===onboardHarness&&a.executable===onboardValue('executable'));}
 function buildOnboardBody(){
  const workspace=onboardValue('workspace');
  return {
@@ -188,6 +198,7 @@ function buildOnboardBody(){
    },
    adapter:{
     executable:onboardValue('executable'),
+    node_executable:onboardDetectedChoice()?.node||null,
     args:onboardHarness==='acp'?onboardValue('args').split(/\s+/).filter(Boolean):[],
     env_allowlist:onboardList('env')
    }
@@ -205,6 +216,7 @@ function renderOnboardPreview(preview,body){
   ['允许工具',project.allowed_tools.join(' · ')],
   ['启动命令',[adapter.executable,...(preview.launch_args||adapter.args)].join(' ')]
  ];
+ if(adapter.node_executable)summary.push(['Node.js',adapter.node_executable]);
  if(project.git_executable)summary.push(['Git 路径',project.git_executable]);
  if(project.artifact_paths.length)summary.push(['工件',project.artifact_paths.join(' · ')]);
  if(adapter.env_allowlist.length)summary.push(['环境变量名',adapter.env_allowlist.join(' · ')]);
