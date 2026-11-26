@@ -1,0 +1,60 @@
+{
+  "checkpoint": "delegation-batch1",
+  "date": "2026-11-26",
+  "scope": "agent-to-agent delegation lifecycle between two loopback Nodes with real Pi",
+  "environment": {
+    "nodes": "mac-a and mac-b, loopback, paired",
+    "agents": "pi-a on mac-a, pi-b on mac-b (pi 0.83.0 through pi-acp 0.0.35), MCP bridge active",
+    "model": "test-gateway-claude/deepseek-v4.1-flash-1017"
+  },
+  "results": [
+    {
+      "check": "continue a delegated session with its session_id",
+      "result": "pass",
+      "detail": "second mesh_send reused the same child session: turns 2, context retained, no second approval, parent returned the child's answer"
+    },
+    {
+      "check": "cancel the parent while the child runs",
+      "result": "fail",
+      "detail": "parent cancelled at 20 s, the child kept running its 60 s command and finished with CHILD-done; nothing tells the parent's owner that a child is still running"
+    },
+    {
+      "check": "peer disappears while the parent waits",
+      "result": "fail",
+      "detail": "mac-b stopped mid-delegation; the parent session was still running with no error after 150 s; after restart the child was idle with an empty final; only a manual stop recovered the parent"
+    },
+    {
+      "check": "multi-hop and loop",
+      "result": "blocked by policy",
+      "detail": "a session opened from another computer may only call agents on that computer, so A to B to C is impossible and A to B to A is rejected; the error is English policy text and the agent improvised options for the owner"
+    },
+    {
+      "check": "child session approval (peer access confirm)",
+      "result": "pass with UX gap",
+      "detail": "the child waited in pending_approval on B, the parent waited, approval on B returned APPROVAL-child-ok; on A the owner saw only a spinning parent with no hint that B was asked to approve"
+    }
+  ],
+  "remaining": [
+    "an agent can still retry a dead peer on its own after the tool error; ending that loop needs a turn budget or watchdog, which is not implemented",
+    "the remote copy close only applies while it is still busy; an idle mirror stays as last seen"
+  ],
+  "verification": {
+    "fmt": "not changed by this test",
+    "clippy": "not changed by this test",
+    "tests": "not changed by this test"
+  },
+  "fixes": [
+    "cancelling or closing a parent cancels the sessions it delegated to a peer (link recorded when mesh_send opens one)",
+    "an interrupted agent process is reported as a cancelled turn, not an error, when the owner asked to stop",
+    "mesh_wait and mesh_get_session return a clear 'lost contact' error instead of waiting forever",
+    "remote session copies close after two failed refreshes (~60 s) instead of staying busy",
+    "cross-computer delegation is explicitly one hop: remote agents are hidden from a session another computer opened, with a clear error",
+    "every turn has a time budget (default 30 min, HMESH_TURN_BUDGET_SECONDS overrides): on expiry the turn is cancelled, the agent is ended after 10 s if needed, and the turn ends as timeout with a clear error"
+  ],
+  "verified": [
+    "cancel propagation: parent cancelled, child on the peer stopped within ~10 s as a clean cancelled turn",
+    "one hop: the existing delegation test still passes; the error names the one-hop limit",
+    "unit/workspace tests and strict clippy pass after the changes",
+    "turn budget: with a 6 s budget, a 30 s tool turn ended in 11 s as stop_reason=timeout with the budget error"
+  ]
+}

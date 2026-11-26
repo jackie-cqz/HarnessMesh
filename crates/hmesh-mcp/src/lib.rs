@@ -19,9 +19,11 @@ use hmesh_transport::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -252,6 +254,9 @@ pub struct OwnerBackend {
     data_dir: PathBuf,
     /// The session this server belongs to, when HarnessMesh started it.
     session: Option<Uuid>,
+    /// Delegated sessions whose computer could not be reached. Waiting on
+    /// them again returns the same clear error instead of hanging.
+    unreachable: Mutex<HashSet<Uuid>>,
 }
 impl OwnerBackend {
     pub fn load(directory: &Path) -> anyhow::Result<Self> {
@@ -259,6 +264,7 @@ impl OwnerBackend {
         Ok(Self {
             data_dir: directory.to_path_buf(),
             session: None,
+            unreachable: Mutex::new(HashSet::new()),
         })
     }
     /// Backend bound to one session; fails unless that session is open here.
@@ -272,6 +278,7 @@ impl OwnerBackend {
         Ok(Self {
             data_dir: directory.to_path_buf(),
             session: Some(session),
+            unreachable: Mutex::new(HashSet::new()),
         })
     }
     fn client(&self) -> Result<Client> {
@@ -339,6 +346,9 @@ impl OwnerBackend {
                 for node in nodes.iter_mut().filter(|n| n.local) {
                     node.projects.retain(|p| shared.contains(&p.project_id));
                 }
+                // Cross-computer delegation is one hop: a session another
+                // computer opened may call agents on this computer only.
+                nodes.retain(|node| node.local);
             }
         }
         Ok(nodes)
@@ -354,6 +364,45 @@ impl OwnerBackend {
                 ))
             }
             _ => Ok(record),
+        }
+    }
+    /// Whether this server's session was opened by another computer: it may
+    /// only call agents on its own computer.
+    async fn chain_bound(&self, client: &Client) -> bool {
+        let Some(id) = self.session else {
+            return false;
+        };
+        client
+            .get::<SessionRecord>(&format!("/local/sessions/{id}"))
+            .await
+            .map(|record| record.origin.root_node_id != record.node_id)
+            .unwrap_or(false)
+    }
+    /// Wait for a delegated session, but never hang on a computer that is
+    /// gone: once its peer is unreachable the same clear error is returned.
+    async fn wait_child(&self, client: &Client, id: Uuid, seconds: u64) -> Result<Value> {
+        if self
+            .unreachable
+            .lock()
+            .map(|known| known.contains(&id))
+            .unwrap_or(false)
+        {
+            return Err(lost_peer());
+        }
+        match wait_turn(client, id, seconds).await {
+            Ok(value) => {
+                if let Ok(mut known) = self.unreachable.lock() {
+                    known.remove(&id);
+                }
+                Ok(value)
+            }
+            Err(error) if error.code == ErrorCode::PeerUnreachable => {
+                if let Ok(mut known) = self.unreachable.lock() {
+                    known.insert(id);
+                }
+                Err(lost_peer())
+            }
+            Err(error) => Err(error),
         }
     }
     async fn execute(&mut self, call: ToolCall) -> Result<Value> {
@@ -411,7 +460,7 @@ impl OwnerBackend {
             }
             ToolCall::Send(args) => {
                 let wait = args.wait_seconds.unwrap_or(0);
-                let (record, agent, node) = match (args.session_id, args.agent) {
+                let (record, agent, node, opened_peer) = match (args.session_id, args.agent) {
                     (Some(id), _) => {
                         self.child(&client, id).await?;
                         let record: SessionRecord = client
@@ -422,23 +471,36 @@ impl OwnerBackend {
                                 },
                             )
                             .await?;
-                        (record, None, None)
+                        (record, None, None, None)
                     }
                     (None, Some(reference)) => {
                         let nodes = self.directory(&client).await?;
-                        let (node, card) = resolve(&nodes, &reference)?;
+                        let (node, card) = match resolve(&nodes, &reference) {
+                            Ok(found) => found,
+                            Err(error) => {
+                                // A session another computer opened sees only
+                                // local agents; say why if it asks for more.
+                                if self.chain_bound(&client).await {
+                                    return Err(MeshError::input(
+                                        "cross-computer delegation is limited to one hop: this session can only call agents on this computer",
+                                    ));
+                                }
+                                return Err(error);
+                            }
+                        };
                         let reference = agent_ref(&nodes, &node, &card);
                         let project_id = args
                             .project
                             .as_deref()
                             .map(|project| resolve_project(&node, project))
                             .transpose()?;
+                        let opened_peer = (!node.local).then_some(node.node_id);
                         let record: SessionRecord = client
                             .post(
                                 "/local/sessions",
                                 &OpenSession {
                                     agent_id: card.agent_id,
-                                    peer_id: (!node.local).then_some(node.node_id),
+                                    peer_id: opened_peer,
                                     message: Some(args.message),
                                     parent_session_id: self.session,
                                     config: Default::default(),
@@ -448,12 +510,21 @@ impl OwnerBackend {
                                 },
                             )
                             .await?;
-                        (record, Some(reference), Some(node.name))
+                        (record, Some(reference), Some(node.name), opened_peer)
                     }
                     (None, None) => unreachable!("parse_call requires agent or session_id"),
                 };
+                // A cancel or close of the parent must reach this child too.
+                if let (Some(parent), Some(peer)) = (self.session, opened_peer) {
+                    let _ = client
+                        .post::<_, Value>(
+                            &format!("/local/sessions/{parent}/delegations"),
+                            &json!({"peer_id":peer,"session_id":record.session_id}),
+                        )
+                        .await;
+                }
                 let mut value = if wait > 0 {
-                    wait_turn(&client, record.session_id, wait).await?
+                    self.wait_child(&client, record.session_id, wait).await?
                 } else {
                     session_view(&record)
                 };
@@ -467,7 +538,7 @@ impl OwnerBackend {
             }
             ToolCall::Wait(args) => {
                 self.child(&client, args.session_id).await?;
-                wait_turn(
+                self.wait_child(
                     &client,
                     args.session_id,
                     args.wait_seconds.unwrap_or(DEFAULT_WAIT_SECONDS),
@@ -481,7 +552,14 @@ impl OwnerBackend {
                         "/local/sessions/{}/events?after={}",
                         args.session_id, args.after
                     ))
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        if error.code == ErrorCode::PeerUnreachable {
+                            lost_peer()
+                        } else {
+                            error
+                        }
+                    })?;
                 let mut events = vec![];
                 let mut bytes = 0;
                 let mut after = args.after;
@@ -533,6 +611,13 @@ impl Backend for OwnerBackend {
     }
 }
 /// Long-poll until the session's current turn ends or `seconds` elapse.
+fn lost_peer() -> MeshError {
+    MeshError::new(
+        ErrorCode::PeerUnreachable,
+        "lost contact with the computer running this session; the work there may still be running. Report this to the owner instead of retrying.",
+    )
+}
+
 async fn wait_turn(client: &Client, id: Uuid, seconds: u64) -> Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(seconds.min(MAX_WAIT_SECONDS));
     loop {

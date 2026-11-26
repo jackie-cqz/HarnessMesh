@@ -39,6 +39,18 @@ const IDLE_PROCESS_SECONDS: u64 = 600;
 /// ended: some adapters keep the ACP pipe open after their child agent died,
 /// and a session must not stay busy forever.
 const CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+/// A turn that runs longer than this is stopped even if the agent keeps
+/// retrying: no session may stay busy forever. `HMESH_TURN_BUDGET_SECONDS`
+/// overrides it (tests use a few seconds); the default is 30 minutes.
+const DEFAULT_TURN_BUDGET_SECONDS: u64 = 1800;
+fn turn_budget() -> std::time::Duration {
+    let seconds = std::env::var("HMESH_TURN_BUDGET_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds >= 5)
+        .unwrap_or(DEFAULT_TURN_BUDGET_SECONDS);
+    std::time::Duration::from_secs(seconds)
+}
 const MAX_PAGE_EVENTS: usize = 500;
 const MAX_FINAL_TEXT: usize = 32 * 1024;
 
@@ -75,6 +87,8 @@ struct Live {
     startup_info: Mutex<Option<String>>,
     /// Tool calls the agent has started but not finished, by id and title.
     open_tools: Mutex<HashMap<String, String>>,
+    /// Which turn is running, so a budget timer for an older turn is ignored.
+    turn: std::sync::atomic::AtomicU64,
 }
 #[derive(Default)]
 struct Reply {
@@ -110,8 +124,20 @@ pub struct Sessions {
     starting: Mutex<std::collections::HashSet<Uuid>>,
     /// Sessions whose settings are being changed; no turn starts meanwhile.
     configuring: Mutex<std::collections::HashSet<Uuid>>,
+    /// Sessions whose owner asked to stop the current turn: if the agent has
+    /// to be ended instead of answering, the turn still counts as cancelled.
+    cancelling: Mutex<std::collections::HashSet<Uuid>>,
+    /// Consecutive failed refreshes of this computer's copies of sessions on a
+    /// peer. A peer that stays away stops the local copy from looking busy.
+    remote_misses: Mutex<HashMap<Uuid, u32>>,
+    /// Turns stopped by the time budget rather than by the owner.
+    expired: Mutex<std::collections::HashSet<Uuid>>,
     refreshing: std::sync::atomic::AtomicBool,
     history: projects::HistoryCache,
+    /// Sessions this computer's sessions opened on a paired computer:
+    /// parent session -> (peer node, child session). Cancelling or closing the
+    /// parent cancels them there.
+    delegations: Mutex<HashMap<Uuid, Vec<(Uuid, Uuid)>>>,
 }
 /// Marks a session's setting change as finished when dropped.
 struct Configuring<'a> {
@@ -135,6 +161,58 @@ impl Sessions {
             .entry(id)
             .or_insert_with(|| watch::channel(0).0)
             .subscribe()
+    }
+    fn add_delegation(&self, parent: Uuid, peer: Uuid, child: Uuid) {
+        if let Ok(mut links) = self.delegations.lock() {
+            let entry = links.entry(parent).or_default();
+            if !entry.contains(&(peer, child)) {
+                entry.push((peer, child));
+            }
+        }
+    }
+    fn mark_cancelling(&self, id: Uuid) {
+        if let Ok(mut set) = self.cancelling.lock() {
+            set.insert(id);
+        }
+    }
+    fn mark_expired(&self, id: Uuid) {
+        if let Ok(mut set) = self.expired.lock() {
+            set.insert(id);
+        }
+    }
+    fn take_expired(&self, id: Uuid) -> bool {
+        self.expired
+            .lock()
+            .ok()
+            .is_some_and(|mut set| set.remove(&id))
+    }
+    fn note_remote_miss(&self, id: Uuid) -> u32 {
+        self.remote_misses
+            .lock()
+            .map(|mut misses| {
+                let count = misses.entry(id).or_insert(0);
+                *count += 1;
+                *count
+            })
+            .unwrap_or(0)
+    }
+    fn clear_remote_miss(&self, id: Uuid) {
+        if let Ok(mut misses) = self.remote_misses.lock() {
+            misses.remove(&id);
+        }
+    }
+    fn take_cancelling(&self, id: Uuid) -> bool {
+        self.cancelling
+            .lock()
+            .ok()
+            .is_some_and(|mut set| set.remove(&id))
+    }
+    fn take_delegations(&self, parent: Uuid) -> Vec<(Uuid, Uuid)> {
+        self.delegations
+            .lock()
+            .ok()
+            .and_then(|mut links| links.remove(&parent))
+            .unwrap_or_default()
     }
     fn notify(&self, id: Uuid, seq: u64) {
         if let Ok(watchers) = self.watchers.lock()
@@ -826,6 +904,7 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
             .and_then(|svc| service::ManagedModels::from_service(svc, card.harness)),
         startup_info: Mutex::new(None),
         open_tools: Mutex::new(HashMap::new()),
+        turn: std::sync::atomic::AtomicU64::new(0),
     });
     s.sessions
         .live
@@ -1170,6 +1249,52 @@ fn begin_checked_turn(
     Ok(record)
 }
 
+/// Stop a turn that outlives the budget: the owner may not be watching, and an
+/// agent can keep retrying a dead peer forever. The turn ends as `timeout`.
+async fn turn_watchdog(s: AppState, id: Uuid, live: Arc<Live>, turn: u64) {
+    tokio::time::sleep(turn_budget()).await;
+    if live.turn.load(std::sync::atomic::Ordering::SeqCst) != turn {
+        return;
+    }
+    let Ok(record) = s.store.session(id) else {
+        return;
+    };
+    if !record.status.is_busy()
+        || !s
+            .sessions
+            .live(id)
+            .is_some_and(|current| Arc::ptr_eq(&current, &live))
+    {
+        return;
+    }
+    s.sessions.mark_expired(id);
+    s.sessions.mark_cancelling(id);
+    let _ = record_event(
+        &s,
+        id,
+        "status",
+        json!({"status":"cancelling","message":"the turn exceeded its time budget; stopping it"}),
+    );
+    cancel_delegations(&s, id);
+    let agent_session = live
+        .agent_session
+        .lock()
+        .map(|a| a.clone())
+        .unwrap_or_default();
+    let _ = live.conn.cancel(&agent_session);
+    tokio::time::sleep(CANCEL_GRACE).await;
+    if s.store
+        .session(id)
+        .map(|r| r.status.is_busy())
+        .unwrap_or(false)
+        && s.sessions
+            .live(id)
+            .is_some_and(|current| Arc::ptr_eq(&current, &live))
+    {
+        discard(&s, id, &live).await;
+    }
+}
+
 async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) {
     let finish =
         |s: &AppState, stop: Option<&str>, final_text: Option<String>, error: Option<String>| {
@@ -1235,6 +1360,8 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
     if let Ok(mut open) = live.open_tools.lock() {
         open.clear();
     }
+    let turn = live.turn.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    tokio::spawn(turn_watchdog(s.clone(), id, live.clone(), turn));
     let agent_session = live
         .agent_session
         .lock()
@@ -1299,7 +1426,18 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
                     "the agent ended the turn without an answer; check its login and model service"
                         .to_owned()
                 });
-            finish(&s, Some(&stop), final_text, error)
+            s.sessions.take_cancelling(id);
+            let expired = s.sessions.take_expired(id);
+            if expired && final_text.is_none() {
+                finish(
+                    &s,
+                    Some("timeout"),
+                    None,
+                    Some("the turn exceeded its time budget".into()),
+                )
+            } else {
+                finish(&s, Some(&stop), final_text, error)
+            }
         }
         Err(error) => {
             // The process is gone: its unfinished tools will never report.
@@ -1313,7 +1451,18 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
                     );
                 }
             }
-            finish(&s, None, None, Some(redact(&live.secrets, &error.message)))
+            if s.sessions.take_expired(id) {
+                finish(
+                    &s,
+                    Some("timeout"),
+                    None,
+                    Some("the turn exceeded its time budget".into()),
+                )
+            } else if s.sessions.take_cancelling(id) {
+                finish(&s, Some("cancelled"), None, None)
+            } else {
+                finish(&s, None, None, Some(redact(&live.secrets, &error.message)))
+            }
         }
     }
 }
@@ -1365,6 +1514,58 @@ fn answer(
     s.store.session(id)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DelegationLink {
+    peer_id: Uuid,
+    session_id: Uuid,
+}
+
+/// Record that one of this session's delegated sessions runs on a peer, so a
+/// cancel or close here reaches it there.
+async fn owner_delegation(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<DelegationLink>,
+) -> ApiResult<Value> {
+    s.owner(&headers, &c)?;
+    let record = s.store.session(id)?;
+    if !record.status.is_open() {
+        return Err(err(
+            ErrorCode::TaskConflict,
+            "the calling session is closed",
+        ));
+    }
+    s.sessions.add_delegation(id, body.peer_id, body.session_id);
+    Ok(Json(json!({"recorded": true})))
+}
+
+/// Cancel the delegated sessions this computer's session opened on peers.
+/// Best effort: a peer that is already gone cannot be told.
+fn cancel_delegations(s: &AppState, parent: Uuid) {
+    let links = s.sessions.take_delegations(parent);
+    if links.is_empty() {
+        return;
+    }
+    let state = s.clone();
+    tokio::spawn(async move {
+        for (peer, child) in links {
+            if let Ok(client) = peer_client(&state, peer) {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    client.post::<_, Value>(
+                        &format!("/hmesh/v1/sessions/{child}/cancel"),
+                        &json!({}),
+                    ),
+                )
+                .await;
+            }
+        }
+    });
+}
+
 fn cancel(s: &AppState, id: Uuid) -> hmesh_core::Result<SessionRecord> {
     let record = s.store.session(id)?;
     if record.status == SessionStatus::PendingApproval {
@@ -1389,6 +1590,7 @@ fn cancel(s: &AppState, id: Uuid) -> hmesh_core::Result<SessionRecord> {
                 .map(|a| a.clone())
                 .unwrap_or_default();
             live.conn.cancel(&agent_session)?;
+            s.sessions.mark_cancelling(id);
             record_event(
                 s,
                 id,
@@ -1423,12 +1625,14 @@ fn cancel(s: &AppState, id: Uuid) -> hmesh_core::Result<SessionRecord> {
             });
         }
     }
+    cancel_delegations(s, id);
     s.store.session(id)
 }
 
 fn close_session(s: &AppState, id: Uuid, why: &str) -> hmesh_core::Result<SessionRecord> {
     // Mark it closed before taking its process: an agent that is still
     // starting sees the closed status once it is registered (see ensure_live).
+    cancel_delegations(s, id);
     let mut record = s.store.session(id)?;
     let newly = record.status != SessionStatus::Closed;
     if newly {
@@ -1964,7 +2168,7 @@ pub async fn open(s: &AppState, body: OpenSession) -> std::result::Result<Sessio
         // must not reach further computers with this computer's identity.
         return Err(err(
             ErrorCode::PermissionDenied,
-            "a session opened from another computer can only call agents on this computer",
+            "cross-computer delegation is limited to one hop: this session was opened by another computer, so it can only call agents on this computer",
         ));
     }
     match target {
@@ -2214,6 +2418,16 @@ async fn owner_open(
     s.owner(&headers, &c)?;
     Ok(Json(open(&s, body).await?))
 }
+/// This computer's copy of a session it opened elsewhere.
+fn remote_record(s: &AppState, id: Uuid) -> Option<SessionRecord> {
+    s.store
+        .remote_sessions(10_000)
+        .ok()?
+        .into_iter()
+        .find(|(_, record)| record.session_id == id)
+        .map(|(_, record)| record)
+}
+
 async fn owner_get(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
@@ -2222,6 +2436,11 @@ async fn owner_get(
 ) -> ApiResult<SessionRecord> {
     s.owner(&headers, &c)?;
     if let Some(peer) = s.store.remote_session_peer(id)? {
+        if let Some(local) = remote_record(&s, id)
+            && local.status == SessionStatus::Closed
+        {
+            return Ok(Json(local));
+        }
         let record: SessionRecord = peer_client(&s, peer)?
             .get(&format!("/hmesh/v1/sessions/{id}"))
             .await?;
@@ -2239,6 +2458,17 @@ async fn owner_events(
 ) -> ApiResult<SessionEventPage> {
     s.owner(&headers, &c)?;
     if let Some(peer) = s.store.remote_session_peer(id)? {
+        if let Some(local) = remote_record(&s, id)
+            && local.status == SessionStatus::Closed
+        {
+            let events = s.store.session_events(id, q.after, MAX_PAGE_EVENTS)?;
+            let next = events.last().map_or(q.after, |e| e.seq);
+            return Ok(Json(SessionEventPage {
+                session: local,
+                events,
+                next,
+            }));
+        }
         let page: SessionEventPage = peer_client(&s, peer)?
             .get(&format!(
                 "/hmesh/v1/sessions/{id}/events?after={}&wait={}&status_only={}",
@@ -2309,6 +2539,7 @@ async fn refresh_remote(s: &AppState) {
             };
             match fetched {
                 Some(Ok(fresh)) => {
+                    s.sessions.clear_remote_miss(id);
                     let _ = mirror(&s, peer, id, &fresh);
                 }
                 // That computer no longer lets this one use the session (or
@@ -2326,7 +2557,26 @@ async fn refresh_remote(s: &AppState) {
                     record.status = SessionStatus::Closed;
                     let _ = s.store.record_remote_session(peer, &record);
                 }
-                _ => {}
+                _ => {
+                    // The peer is away. Its session may still be running
+                    // there, but this copy must not stay busy forever: after
+                    // two refresh rounds close it with an explanation, so a
+                    // parent waiting on it gets an answer instead of hanging.
+                    if s.sessions.note_remote_miss(id) >= 2 {
+                        record.status = SessionStatus::Closed;
+                        record.last_error = Some(
+                            "lost contact with the computer running this session; the work there may still be running"
+                                .into(),
+                        );
+                        let _ = s.store.record_remote_session(peer, &record);
+                        let _ = record_event(
+                            &s,
+                            id,
+                            "error",
+                            json!({"message":"lost contact with the computer running this session; the work there may still be running"}),
+                        );
+                    }
+                }
             }
         });
     }
@@ -2727,6 +2977,7 @@ pub fn routes() -> Router<AppState> {
         .route("/local/sessions", get(list).post(owner_open))
         .route("/local/sessions/{id}", get(owner_get))
         .route("/local/sessions/{id}/events", get(owner_events))
+        .route("/local/sessions/{id}/delegations", post(owner_delegation))
         .route("/local/sessions/{id}/prompt", post(owner_prompt))
         .route(
             "/local/sessions/{id}/permissions/{key}",
