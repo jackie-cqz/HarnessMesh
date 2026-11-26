@@ -7,6 +7,6 @@ pub mod framing;
 pub mod own_login;
 pub mod protocol;
 pub use acp::AcpTaskDriver;
-pub use executable::{ResolvedExecutable, probe, resolve_executable};
+pub use executable::{ResolvedExecutable, probe, resolve_executable, resolve_executable_with_node};
 pub use framing::{JsonlDecoder, native_record_limit};
 pub use protocol::ObservedEvent;

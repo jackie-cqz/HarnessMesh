@@ -907,7 +907,7 @@ async fn register_agents(
         let config: AgentConfig = serde_json::from_value(json!({
             "agent": {"name": name, "harness": agent.harness, "project_id": format!("{}-project", instance.card.display_name)},
             "project": {"root": project, "allowed_tools": ["read", "write", "edit"]},
-            "adapter": {"executable": agent.executable},
+            "adapter": adapter_for(agent),
         }))?;
         let card: AgentCard = client.post("/local/agents", &config).await?;
         report.step(
@@ -920,6 +920,11 @@ async fn register_agents(
         report.step(false, "No ACP agent found on this computer; install one yourself (see `hmesh agent detect`) and run setup again");
     }
     Ok(registered)
+}
+/// How setup starts a detected agent: with the Node.js it was installed
+/// with, when that is not the first one on PATH.
+fn adapter_for(agent: &hmesh_core::DetectedAgent) -> Value {
+    json!({"executable": agent.executable, "node_executable": agent.node})
 }
 /// `<node>-<kind>`, as scripts/start-tailnet.mjs names them. The official
 /// DSH ACP registration keeps apart from earlier headless DSH agents.
@@ -1116,6 +1121,23 @@ fn on_path(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_detected_agent_is_registered_with_its_node() {
+        let agent = hmesh_core::DetectedAgent {
+            harness: HarnessKind::Dsh,
+            command: "dsh".into(),
+            executable: PathBuf::from("/runtimes/dsh/lib/bin.js"),
+            node: Some(PathBuf::from("/nvm/24.22.1/bin/node")),
+        };
+        let adapter = adapter_for(&agent);
+        assert_eq!(adapter["node_executable"], "/nvm/24.22.1/bin/node");
+        let agent = hmesh_core::DetectedAgent {
+            node: None,
+            ..agent
+        };
+        assert!(adapter_for(&agent)["node_executable"].is_null());
+    }
 
     fn options() -> Options {
         Options {

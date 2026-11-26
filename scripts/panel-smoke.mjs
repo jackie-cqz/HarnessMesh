@@ -142,6 +142,26 @@ try{
  await page.locator('#onboard-service').click();
  await page.getByRole('heading',{name:'wizard-fixture 的模型服务',exact:true}).waitFor();
  await page.locator('#close-service').click();
+ stage='onboarding-detected-node';
+ // An adapter installed with a Node.js other than PATH's first one: the preview carries that Node.js, a hand-edited path does not.
+ if(await page.locator('#onboard-dialog[open]').count())await page.locator('#close-onboard').click();
+ await page.route('**/api/agents/detect',route=>route.fulfill({json:{data:[{harness:'dsh',command:'dsh',executable:fixture,node:process.execPath}]}}));
+ await page.locator('[data-view="agents"]').click();await page.locator('#new-agent').click();
+ await page.locator('#onboard-status-dsh').filter({hasText:'本机已找到'}).waitFor();
+ await page.locator('.onboard-choice').filter({hasText:'DeepSeek Harness'}).click();
+ assert(await page.locator('#onboard-executable').inputValue()===fixture,'Detected DSH path missing');
+ await page.locator('#onboard-submit').click();
+ for(const[id,value]of Object.entries({name:'node-fixture',project:'panel-test',root:project}))await page.locator('#onboard-'+id).fill(value);
+ const nodePreview=page.waitForRequest(r=>r.url().endsWith('/onboarding/preview'));await page.locator('#onboard-submit').click();
+ assert((await nodePreview).postDataJSON().config.adapter.node_executable===process.execPath,'Detected Node.js missing from the registration');
+ await page.locator('#onboard-summary').filter({hasText:process.execPath}).waitFor();
+ await page.locator('#onboard-back').click();await page.locator('#onboard-back').click();
+ await page.locator('#onboard-executable').fill(process.execPath);await page.locator('#onboard-submit').click();
+ const manualPreview=page.waitForResponse(r=>r.url().endsWith('/onboarding/preview'));await page.locator('#onboard-submit').click();
+ assert((await manualPreview).request().postDataJSON().config.adapter.node_executable===null,'Node.js kept for a hand-edited path');
+ // Leave the wizard on its first step, as the later checks expect.
+ await page.locator('#onboard-back:not([disabled])').click();await page.locator('#onboard-back').click();await page.locator('#onboard-harness').waitFor();
+ await page.unroute('**/api/agents/detect');await page.locator('#close-onboard').click();
  stage='worktree-diff-review';
  const locate=spawnSync(process.platform==='win32'?'where.exe':'which',['git'],{encoding:'utf8'});assert(locate.status===0,'Git is required for worktree browser regression');const git=locate.stdout.trim().split(/\r?\n/)[0];
  mkdirSync(join(root,'disabled-test-hooks'));const gitCall=args=>assert(spawnSync(git,['-c','core.hooksPath='+join(root,'disabled-test-hooks'),'-c','core.fsmonitor=false','-C',project,...args],{encoding:'utf8',timeout:30000}).status===0,'Git browser fixture setup failed');
@@ -181,6 +201,6 @@ try{
  await page.locator('#stop-panel').click();await confirm(page);
  await until(()=>owned.find(p=>p.pid===ready.pid)?.exitCode===0,20);
  assert(b.mesh.call(['daemon','status']).running===true,'Stopping a reused panel stopped its Daemon');
- console.log(JSON.stringify({passed:true,model_calls:0,fixture_runs:6,scope:'isolated two-node mTLS and headless browser',checks:['worktree-diff-review','queue-wait-reason','queue-resumes-after-cancel','completion-snapshot-after-file-edit','onboarding-reference-preview','onboarding-idempotent-register','onboarding-no-policy-or-model','mobile-onboarding','navigation','pending-approval','request-text-XSS','reject','archive','local-create','local-runs-without-self-approval','local-verify','remote-create','lost-acknowledgement','original-request-recovery','no-duplicate-attempt','remote-verification-fail','remote-verification-pass','observation-time','retire','restore-unverified','mobile','access-gate','stop-preserves-existing-daemon']}));
+ console.log(JSON.stringify({passed:true,model_calls:0,fixture_runs:6,scope:'isolated two-node mTLS and headless browser',checks:['worktree-diff-review','queue-wait-reason','queue-resumes-after-cancel','completion-snapshot-after-file-edit','onboarding-reference-preview','onboarding-idempotent-register','onboarding-no-policy-or-model','onboarding-detected-node','mobile-onboarding','navigation','pending-approval','request-text-XSS','reject','archive','local-create','local-runs-without-self-approval','local-verify','remote-create','lost-acknowledgement','original-request-recovery','no-duplicate-attempt','remote-verification-fail','remote-verification-pass','observation-time','retire','restore-unverified','mobile','access-gate','stop-preserves-existing-daemon']}));
 }catch(e){console.error(stage+': '+e.message+' diagnostics='+root);process.exitCode=1;}
 finally{await browser?.close();for(const p of owned.reverse()){if(p.exitCode===null){p.kill();await Promise.race([once(p,'exit'),new Promise(r=>setTimeout(r,3000))]);}}}
