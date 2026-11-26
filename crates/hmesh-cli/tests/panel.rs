@@ -1065,5 +1065,91 @@ async fn the_folder_dialog_is_this_computers_own_one_at_a_time() {
             .success()
     );
     assert!(!alive(&hung), "the dialog outlived the panel");
-    let _ = open.await;
+    let answer = open.await.unwrap().unwrap();
+    assert_eq!(answer.status(), 503);
+    let answer: Value = answer.json().await.unwrap();
+    assert_eq!(answer["error"]["code"], "PANEL_STOPPING");
+}
+
+/// Ctrl+C or a stop signal to the panel also closes an open folder dialog.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_signal_closes_an_open_folder_dialog() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let picker = root.path().join("hang.sh");
+    let pid_file = root.path().join("pick-pid");
+    std::fs::write(&picker, "#!/bin/sh\necho $$ > \"$PICK_PID\"\nsleep 60\n").unwrap();
+    std::fs::set_permissions(&picker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hmesh"))
+        .arg("--data-dir")
+        .arg(root.path().join("node"))
+        .args(["--json", "panel", "--start-daemon", "--port", "0"])
+        .env("HMESH_FOLDER_PICKER", &picker)
+        .env("PICK_PID", &pid_file)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let line = tokio::time::timeout(Duration::from_secs(25), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let ready: Value = serde_json::from_str(&line).unwrap();
+    let (origin, token) = ready["url"]
+        .as_str()
+        .unwrap()
+        .split_once("/#access=")
+        .unwrap();
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    let open = tokio::spawn(
+        http.post(format!("{origin}/api/folders/pick"))
+            .bearer_auth(token)
+            .header("origin", origin)
+            .json(&json!({}))
+            .send(),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let alive = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let hung = std::fs::read_to_string(&pid_file).unwrap();
+    assert!(alive(&hung));
+    let panel = child.id().unwrap().to_string();
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-TERM", &panel])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    assert!(!alive(&hung), "the dialog outlived the panel");
+    let answer = open.await.unwrap().unwrap();
+    assert_eq!(answer.status(), 503);
 }

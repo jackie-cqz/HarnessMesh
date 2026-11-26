@@ -40,7 +40,8 @@ const pickerProblems={
 };
 function projectProblem(e){
   if(pickerProblems[e?.code])return pickerProblems[e.code];
-  if(e?.code==='FOLDER_PICKER_FAILED')return '文件夹选择框没有打开，可以直接填文件夹的完整路径';
+  if(e?.code==='FOLDER_PICKER_FAILED')return '文件夹选择框出了问题，可以再试一次，或者直接填文件夹的完整路径';
+  if(e?.code==='PANEL_STOPPING')return '面板正在关闭';
   const text=e?.message||'';
   for(const [pattern,say]of projectProblems){const m=pattern.exec(text);if(m)return typeof say==='function'?say(m):say;}
   return text||e?.code||'原因不明';

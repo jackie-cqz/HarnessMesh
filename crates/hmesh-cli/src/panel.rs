@@ -121,6 +121,7 @@ pub async fn run(
     let origin = format!("http://{host}");
     let url = format!("{origin}/#access={token}");
     let (stop, mut stopping) = tokio::sync::watch::channel(false);
+    let on_signal = stop.clone();
     let state = Panel {
         client,
         data_dir: instance.dir.clone(),
@@ -338,7 +339,12 @@ pub async fn run(
     }
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            tokio::select! {_ = shutdown_signal()=>{},_ = stopping.changed()=>{}}
+            tokio::select! {
+                // Ctrl+C or a stop signal also ends what waits on the panel's
+                // stop, such as an open folder dialog.
+                _ = shutdown_signal() => { let _ = on_signal.send(true); },
+                _ = stopping.changed() => {}
+            }
         })
         .await;
     if let Some(mut child) = owned {
@@ -1074,9 +1080,13 @@ async fn pick_folder(State(s): State<Panel>, Json(form): Json<PickFolderForm>) -
     let mut stopping = s.stop.subscribe();
     let result = tokio::select! {
         result = crate::folder_picker::pick(form.start.as_deref()) => result,
-        _ = stopping.wait_for(|stop| *stop) => Err(crate::folder_picker::PickError::Failed(
-            "the panel is stopping".into(),
-        )),
+        _ = stopping.wait_for(|stop| *stop) => {
+            return picker_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "PANEL_STOPPING",
+                "the panel is stopping",
+            );
+        }
     };
     use crate::folder_picker::PickError;
     match result {
