@@ -147,12 +147,15 @@ async function installOnboardAdapter(){
  onboardMessage();
  onboardBusy=true;
  renderOnboard();
- let installed=false;
+ let installed=false,ticking=null;
  try{
   const large=offer.download_mb>=500?'\n\n'+`安装后约占 ${(offer.download_mb/1000).toFixed(1)} GB，下载可能需要几分钟。`:'';
   if(!await confirmAction('安装 ACP 适配器？',`${offer.package}@${offer.version}\n\n将下载到当前节点的数据目录，并检查 ACP 握手。${large}`))return;
   onboard('install').textContent='安装并检查中…';
-  onboard('detected').textContent='正在下载适配器并检查 ACP。';
+  const started=Date.now(),detected=onboard('detected');
+  detected.textContent='正在下载适配器并检查 ACP。';
+  // A large adapter takes minutes; show that it is still going.
+  ticking=setInterval(()=>{detected.textContent=`正在下载适配器并检查 ACP，已用 ${Math.round((Date.now()-started)/1000)} 秒。`;},1000);
   const result=unwrap(await api('/agents/install',{method:'POST',body:JSON.stringify({harness:kind}),signal:AbortSignal.timeout(((offer.timeout_s||120)+50)*1000)}));
   if(result.protocol_probe!=='acp_initialize_passed')throw Error('适配器未通过 ACP 握手。');
   onboardVerified=result.agent.executable;
@@ -162,6 +165,7 @@ async function installOnboardAdapter(){
  }catch(error){
   onboardMessage(`安装或握手失败。${error.message||error.code}`,true);
  }finally{
+  clearInterval(ticking);
   onboardBusy=false;
   onboard('install').textContent='安装推荐版本';
   renderOnboardAdapter();

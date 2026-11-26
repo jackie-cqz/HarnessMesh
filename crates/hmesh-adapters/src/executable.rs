@@ -104,7 +104,9 @@ fn resolve_with_node(
     {
         let node = if let Some(node) = node_override {
             if !node.is_absolute() || !node.is_file() {
-                bail!("Node override must be an existing absolute executable path");
+                bail!(
+                    "Node override must be an existing absolute executable path; if the Node.js this agent was registered with has been removed, install the adapter again in the panel and register the agent again"
+                );
             }
             node.to_owned()
         } else {

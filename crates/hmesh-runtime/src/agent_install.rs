@@ -137,6 +137,18 @@ fn recorded_node(directory: &Path) -> Option<PathBuf> {
     node.is_absolute().then_some(node)
 }
 
+/// The Node.js recorded for an installation is no longer there.
+fn lost_node(agent: &DetectedAgent) -> bool {
+    agent.node.as_deref().is_some_and(|node| !node.is_file())
+}
+
+/// Run an installation with `node` from now on, and record it.
+fn use_node(directory: &Path, mut agent: DetectedAgent, node: ChosenNode) -> Result<DetectedAgent> {
+    agent.node = node.recorded.then_some(node.path);
+    record_node(directory, agent.node.as_deref())?;
+    Ok(agent)
+}
+
 fn record_node(directory: &Path, node: Option<&Path>) -> Result<()> {
     let file = directory.join(RUNTIME_FILE);
     match node {
@@ -646,11 +658,9 @@ pub async fn install(data_dir: &Path, harness: HarnessKind) -> Result<Installati
         .try_lock()
         .context("an adapter installation is already in progress")?;
     if let Some(mut agent) = pkg.detect(&target) {
-        if agent.node.as_deref().is_some_and(|node| !node.is_file()) {
+        if lost_node(&agent) {
             // The Node.js it was installed with has gone: choose one again.
-            let node = choose_node(pkg).await?;
-            agent.node = node.recorded.then_some(node.path);
-            record_node(&target, agent.node.as_deref())?;
+            agent = use_node(&target, agent, choose_node(pkg).await?)?;
         }
         return probe(agent, "managed").await;
     }
@@ -759,6 +769,34 @@ mod tests {
         record_node(&dir, None).unwrap();
         assert!(!dir.join(RUNTIME_FILE).exists());
         assert_eq!(dsh.detect(&dir).unwrap().node, None);
+    }
+
+    #[test]
+    fn a_lost_node_is_replaced_and_recorded_again() {
+        let root = tempfile::tempdir().unwrap();
+        let dsh = pkg(HarnessKind::Dsh);
+        let dir = write_package(root.path(), dsh, "lib/bin.js");
+        record_node(&dir, Some(&root.path().join("removed-node"))).unwrap();
+        let agent = dsh.detect(&dir).unwrap();
+        assert!(lost_node(&agent));
+        let newer = root.path().join("node24");
+        fs::write(&newer, "").unwrap();
+        let chosen = ChosenNode {
+            path: newer.clone(),
+            recorded: true,
+        };
+        let agent = use_node(&dir, agent, chosen).unwrap();
+        assert!(!lost_node(&agent));
+        assert_eq!(agent.node.as_deref(), Some(newer.as_path()));
+        assert_eq!(dsh.detect(&dir).unwrap().node, Some(newer));
+        // The first node on PATH is enough again: the record goes.
+        let path_node = ChosenNode {
+            path: PathBuf::from("/path/node"),
+            recorded: false,
+        };
+        let agent = use_node(&dir, agent, path_node).unwrap();
+        assert_eq!(agent.node, None);
+        assert!(!dir.join(RUNTIME_FILE).exists());
     }
 
     #[test]
