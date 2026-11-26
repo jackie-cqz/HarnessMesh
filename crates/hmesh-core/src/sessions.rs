@@ -450,6 +450,11 @@ pub struct PromptSession {
 #[serde(deny_unknown_fields)]
 pub struct PermissionAnswer {
     pub allow: bool,
+    /// One of the options the agent offered (its `optionId`). Without it,
+    /// `allow` picks the agent's one-time option, as before. Left out when
+    /// unset, so a paired computer of an earlier version accepts the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option_id: Option<String>,
 }
 pub fn validate_prompt(message: &str) -> Result<()> {
     if message.trim().is_empty() {

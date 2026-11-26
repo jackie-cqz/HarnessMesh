@@ -52,6 +52,233 @@ fn tool(session: &str, id: &str, title: &str, kind: &str, input: Value, output: 
         json!({"sessionUpdate":"tool_call_update","toolCallId":id,"status":"completed","content":[{"type":"content","content":{"type":"text","text":output}}]}),
     );
 }
+/// Tool calls as each agent family reports them over ACP, read from their
+/// adapters' sources: where command output goes, what a diff carries, what
+/// a title is. `style` is one family; `all` plays every one in turn.
+fn stream(session: &str, style: &str) -> String {
+    let call = |id: &str, fields: Value| {
+        let mut update = json!({"sessionUpdate":"tool_call","toolCallId":id,"status":"pending"});
+        update
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        self::update(session, update);
+    };
+    let done = |id: &str, fields: Value| {
+        let mut update = json!({"sessionUpdate":"tool_call_update","toolCallId":id});
+        update
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        self::update(session, update);
+    };
+    let text = |t: &str| json!([{"type":"content","content":{"type":"text","text":t}}]);
+    let plan = |states: [&str; 3]| {
+        let steps = [
+            "Find the failing test",
+            "Fix the addition",
+            "Run the tests again",
+        ];
+        let entries: Vec<Value> = steps
+            .iter()
+            .zip(states)
+            .map(|(content, status)| json!({"content":content,"priority":"medium","status":status}))
+            .collect();
+        update(session, json!({"sessionUpdate":"plan","entries":entries}));
+    };
+    let styles: Vec<&str> = if style == "all" {
+        vec![
+            "claude", "codex", "opencode", "pi", "dsh", "minimax", "kimi",
+        ]
+    } else {
+        vec![style]
+    };
+    for style in styles {
+        match style {
+            // Claude: hunks with locations, command output as a console fence
+            // in content text, thoughts streamed, a plan replaced as it moves.
+            "claude" => {
+                update(
+                    session,
+                    json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"The test name says addition, so start with `add`."}}),
+                );
+                plan(["in_progress", "pending", "pending"]);
+                call(
+                    "claude-read",
+                    json!({"title":"Read src/lib.rs","kind":"read","locations":[{"path":"/work/demo/src/lib.rs","line":1}],"rawInput":{"file_path":"/work/demo/src/lib.rs"}}),
+                );
+                done(
+                    "claude-read",
+                    json!({"status":"completed","content":text("```\npub fn add(a: i32, b: i32) -> i32 {\n    a - b\n}\n```")}),
+                );
+                call(
+                    "claude-grep",
+                    json!({"title":"grep \"fn add\" src","kind":"search","rawInput":{"pattern":"fn add","path":"src"}}),
+                );
+                done(
+                    "claude-grep",
+                    json!({"status":"completed","content":text("Found 1 file\nsrc/lib.rs")}),
+                );
+                plan(["completed", "in_progress", "pending"]);
+                call(
+                    "claude-edit",
+                    json!({"title":"Edit src/lib.rs","kind":"edit","locations":[{"path":"/work/demo/src/lib.rs","line":2}],"rawInput":{"file_path":"/work/demo/src/lib.rs","old_string":"a - b","new_string":"a + b"},"content":[{"type":"diff","path":"/work/demo/src/lib.rs","oldText":"pub fn add(a: i32, b: i32) -> i32 {\n    a - b\n}","newText":"pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}"}]}),
+                );
+                done("claude-edit", json!({"status":"completed"}));
+                plan(["completed", "completed", "in_progress"]);
+                call(
+                    "claude-bash",
+                    json!({"title":"`cargo test`","kind":"execute","rawInput":{"command":"cargo test","description":"Run the tests"}}),
+                );
+                done(
+                    "claude-bash",
+                    json!({"status":"completed","content":text("```console\nrunning 3 tests\ntest add_works ... ok\ntest result: ok. 3 passed\n```")}),
+                );
+                plan(["completed", "completed", "completed"]);
+            }
+            // Codex: a terminal item, output streamed in `_meta`, the exit
+            // code at the end.
+            "codex" => {
+                call(
+                    "codex-run",
+                    json!({"title":"Run cargo test","kind":"execute","rawInput":{"command":["bash","-lc","cargo test"],"cwd":"/work/demo"},"content":[{"type":"terminal","terminalId":"codex-run"}],"_meta":{"terminal_info":{"terminal_id":"codex-run","cwd":"/work/demo"}}}),
+                );
+                done(
+                    "codex-run",
+                    json!({"status":"in_progress","_meta":{"terminal_output":{"terminal_id":"codex-run","data":"running 3 tests\n"}}}),
+                );
+                done(
+                    "codex-run",
+                    json!({"_meta":{"terminal_output":{"terminal_id":"codex-run","data":"test add_works ... FAILED\n"}}}),
+                );
+                done(
+                    "codex-run",
+                    json!({"status":"failed","_meta":{"terminal_exit":{"terminal_id":"codex-run","exit_code":101,"signal":null}}}),
+                );
+                call(
+                    "codex-patch",
+                    json!({"title":"Edit src/lib.rs","kind":"edit","locations":[{"path":"/work/demo/src/lib.rs"}],"content":[{"type":"diff","path":"/work/demo/src/lib.rs","oldText":"    a - b\n","newText":"    a + b\n"}]}),
+                );
+                done("codex-patch", json!({"status":"completed"}));
+            }
+            // OpenCode: raw tool names as titles, the whole output again on
+            // every update, the final output in rawOutput.
+            "opencode" => {
+                call(
+                    "oc-bash",
+                    json!({"title":"bash","kind":"execute","rawInput":{"command":"npm test","description":"Run the tests"}}),
+                );
+                done(
+                    "oc-bash",
+                    json!({"status":"in_progress","content":text("> demo@1.0.0 test\n")}),
+                );
+                done(
+                    "oc-bash",
+                    json!({"status":"in_progress","content":text("> demo@1.0.0 test\n> node --test\n")}),
+                );
+                done(
+                    "oc-bash",
+                    json!({"status":"completed","content":text("> demo@1.0.0 test\n> node --test\n# pass 3\n"),"rawOutput":{"output":"> demo@1.0.0 test\n> node --test\n# pass 3\n","metadata":{"exit":0}}}),
+                );
+                call(
+                    "oc-edit",
+                    json!({"title":"edit","kind":"edit","rawInput":{"filePath":"/work/demo/index.js","oldString":"a - b","newString":"a + b"},"content":[{"type":"diff","path":"/work/demo/index.js","oldText":"return a - b","newText":"return a + b"}]}),
+                );
+                done("oc-edit", json!({"status":"completed"}));
+            }
+            // Pi: raw tool names, whole files as diffs (a new file has no old
+            // text), output as `_meta` deltas.
+            "pi" => {
+                call(
+                    "pi-read",
+                    json!({"title":"read","kind":"read","rawInput":{"path":"README.md"}}),
+                );
+                done(
+                    "pi-read",
+                    json!({"status":"completed","content":text("# Demo\n")}),
+                );
+                call(
+                    "pi-write",
+                    json!({"title":"write","kind":"edit","rawInput":{"path":"NOTES.md","content":"First line\nSecond line\n"},"content":[{"type":"diff","path":"/work/demo/NOTES.md","oldText":null,"newText":"First line\nSecond line\n"}]}),
+                );
+                done("pi-write", json!({"status":"completed"}));
+                call(
+                    "pi-bash",
+                    json!({"title":"bash","kind":"execute","rawInput":{"command":"ls"}}),
+                );
+                done(
+                    "pi-bash",
+                    json!({"status":"in_progress","_meta":{"terminal_output_delta":{"terminal_id":"pi-bash","data":"NOTES.md\n"}}}),
+                );
+                done(
+                    "pi-bash",
+                    json!({"status":"completed","_meta":{"terminal_output_delta":{"terminal_id":"pi-bash","data":"README.md\n"},"terminal_exit":{"terminal_id":"pi-bash","exit_code":0}}}),
+                );
+            }
+            // DeepSeek Harness: kind is always `other`, the title is the raw
+            // tool name, and only the arguments say what it does.
+            "dsh" => {
+                call(
+                    "dsh-shell",
+                    json!({"title":"run_shell","kind":"other","rawInput":{"command":"git status --short"}}),
+                );
+                done(
+                    "dsh-shell",
+                    json!({"status":"completed","content":text(" M src/lib.rs\n")}),
+                );
+                call(
+                    "dsh-read",
+                    json!({"title":"read_file","kind":"other","rawInput":{"path":"src/lib.rs"}}),
+                );
+                done(
+                    "dsh-read",
+                    json!({"status":"completed","content":text("pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n")}),
+                );
+            }
+            // MiniMax: output only in rawOutput, a failure as `{error}`.
+            "minimax" => {
+                call(
+                    "mm-run",
+                    json!({"title":"Shell","kind":"execute","rawInput":{"command":"make lint"}}),
+                );
+                done(
+                    "mm-run",
+                    json!({"status":"failed","rawOutput":{"error":"make: *** No rule to make target 'lint'.  Stop."}}),
+                );
+            }
+            // Kimi: the call opens while its arguments still stream in as
+            // content text, then they come back once more when final.
+            "kimi" => {
+                let args = json!({"pattern":"TODO","path":"."});
+                call(
+                    "kimi-grep",
+                    json!({"title":"Grep","kind":"search","content":text("{\"pat")}),
+                );
+                done(
+                    "kimi-grep",
+                    json!({"status":"in_progress","content":text("{\"pattern\":\"TODO\",")}),
+                );
+                done(
+                    "kimi-grep",
+                    json!({"status":"in_progress","rawInput":args.clone(),"content":text(&args.to_string())}),
+                );
+                done(
+                    "kimi-grep",
+                    json!({"status":"completed","content":text("src/main.rs:12: // TODO: handle overflow")}),
+                );
+            }
+            _ => {}
+        }
+    }
+    "## Fixed\n\nThe test failed because `add` **subtracted** its arguments.\n\n\
+     - Changed `a - b` to `a + b` in `src/lib.rs`\n\
+     - Ran the tests: *3 passed*\n\n\
+     | Check | Result |\n| --- | --- |\n| Unit tests | 3 passed |\n| Lint | no target |\n\n\
+     ```rust\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n```\n\n\
+     1. See the [Rust book](https://doc.rust-lang.org/book/)\n\
+     2. Ignore [this link](javascript:alert(1))\n"
+        .to_owned()
+}
 fn respond(id: &Value, result: Value) {
     send(json!({"jsonrpc":"2.0","id":id,"result":result}));
 }
@@ -364,6 +591,8 @@ struct Pending {
     session: String,
     granted: &'static str,
     denied: &'static str,
+    /// Reply with the chosen option instead of granted/denied.
+    echo: bool,
 }
 
 async fn probe_model_relay() -> anyhow::Result<Value> {
@@ -455,7 +684,14 @@ fn run_acp() -> anyhow::Result<()> {
                 let chosen = frame
                     .pointer("/result/outcome/optionId")
                     .and_then(Value::as_str);
-                let text = if chosen == Some("allow") {
+                let echoed;
+                let text = if pending.echo {
+                    echoed = match chosen {
+                        Some(option) => format!("Chose {option}."),
+                        None => "Cancelled.".to_owned(),
+                    };
+                    echoed.as_str()
+                } else if chosen == Some("allow") {
                     pending.granted
                 } else {
                     pending.denied
@@ -801,6 +1037,55 @@ fn run_acp() -> anyhow::Result<()> {
                                 session: session_id.clone(),
                                 granted,
                                 denied,
+                                echo: false,
+                            },
+                        );
+                    }
+                    // Every kind of option ACP has, lasting ones included.
+                    "fixture:permission-options" => {
+                        next += 1;
+                        let key = format!("perm-{next}");
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":key,"title":"Run make test","kind":"execute","status":"pending","rawInput":{"command":"make test"}}),
+                        );
+                        send(
+                            json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"toolCallId":key},"options":[
+                                {"optionId":"allow","name":"Allow once","kind":"allow_once"},
+                                {"optionId":"always","name":"Always allow make","kind":"allow_always"},
+                                {"optionId":"reject","name":"Reject","kind":"reject_once"},
+                                {"optionId":"never","name":"Never allow make","kind":"reject_always"}
+                            ]}}),
+                        );
+                        permissions.insert(
+                            key,
+                            Pending {
+                                prompt_id: id.clone(),
+                                session: session_id.clone(),
+                                granted: "",
+                                denied: "",
+                                echo: true,
+                            },
+                        );
+                    }
+                    // A request for a call the stream never showed.
+                    "fixture:permission-unseen" => {
+                        next += 1;
+                        let key = format!("perm-{next}");
+                        send(
+                            json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"toolCallId":key,"title":"Edit notes.txt","kind":"edit","locations":[{"path":"notes.txt","line":3}],"content":[{"type":"diff","path":"notes.txt","oldText":"a\n","newText":"b\n"}]},"options":[
+                                {"optionId":"allow","name":"Allow once","kind":"allow_once"},
+                                {"optionId":"reject","name":"Reject","kind":"reject_once"}
+                            ]}}),
+                        );
+                        permissions.insert(
+                            key,
+                            Pending {
+                                prompt_id: id.clone(),
+                                session: session_id.clone(),
+                                granted: "",
+                                denied: "",
+                                echo: true,
                             },
                         );
                     }
@@ -870,6 +1155,22 @@ fn run_acp() -> anyhow::Result<()> {
                                 text,
                             });
                         });
+                    }
+                    _ if prompt == "fixture:stream" || prompt.starts_with("fixture:stream ") => {
+                        let style = prompt.strip_prefix("fixture:stream ").unwrap_or("all");
+                        say(&session_id, "Let me look at the failing test.");
+                        let answer = stream(&session_id, style.trim());
+                        reply(session, &answer);
+                        end_turn(&id);
+                    }
+                    // A command still running when the turn is looked at.
+                    "fixture:stream-running" => {
+                        stream(&session_id, "claude");
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":"long-run","title":"Run the watcher","kind":"execute","status":"in_progress","rawInput":{"command":"npm run watch"},"_meta":{"terminal_output":{"terminal_id":"long-run","data":"watching for changes…\n"}}}),
+                        );
+                        waiting.insert(session_id.clone(), id.clone());
                     }
                     _ if prompt.starts_with("fixture:echo ") => {
                         let text = format!("Echo #{turn}: {}", &prompt["fixture:echo ".len()..]);

@@ -399,37 +399,20 @@ fn turn_usage(latest: Option<&Value>, fresh: bool, reported: Option<&Value>) -> 
 }
 
 /// Normalize one `session/update` into a bounded recorded event.
-fn normalize(update: &Value, secrets: &[String]) -> Option<(&'static str, Value)> {
+fn normalize(
+    update: &Value,
+    secrets: &[String],
+    inputs: &mut crate::tool_events::ToolInputs,
+) -> Option<(&'static str, Value)> {
     match update.get("sessionUpdate").and_then(Value::as_str)? {
-        kind @ ("tool_call" | "tool_call_update") => {
-            let output: Vec<String> = update
-                .get("content")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|c| c.pointer("/content/text").and_then(Value::as_str))
-                .map(str::to_owned)
-                .collect();
-            let input = update
-                .get("rawInput")
-                .map(|v| v.to_string())
-                .filter(|s| s != "null");
-            Some((
-                if kind == "tool_call" {
-                    "tool_call"
-                } else {
-                    "tool_call_update"
-                },
-                json!({
-                    "id":update.get("toolCallId"),
-                    "title":update.get("title").and_then(Value::as_str).map(|t| clipped(secrets, t, 512)),
-                    "kind":update.get("kind"),
-                    "status":update.get("status"),
-                    "input":input.map(|i| clipped(secrets, &i, 2048)),
-                    "output":(!output.is_empty()).then(|| clipped(secrets, &output.join("\n"), 2048)),
-                }),
-            ))
-        }
+        kind @ ("tool_call" | "tool_call_update") => Some((
+            if kind == "tool_call" {
+                "tool_call"
+            } else {
+                "tool_call_update"
+            },
+            inputs.payload(update, secrets),
+        )),
         "plan" => {
             let entries: Vec<Value> = update
                 .get("entries")
@@ -487,6 +470,8 @@ impl PendingText {
 }
 const TEXT_FLUSH_BYTES: usize = 512;
 const TEXT_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+/// Streamed command output is recorded at most about once a second.
+const TERMINAL_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn flush_text(write: &impl Fn(&str, Value), pending: &mut PendingText) {
     for (kind, text) in pending.take() {
@@ -506,7 +491,11 @@ async fn pump(
     let mut thought_text = RedactedStream::default();
     // Last recorded status and title length per tool call: adapters stream the
     // title character by character, and each repeat need not become an event.
-    let mut tool_trace: HashMap<String, (String, usize)> = HashMap::new();
+    let mut tool_trace: HashMap<String, (String, usize, usize)> = HashMap::new();
+    // Command output streamed through `_meta`, recorded in parts.
+    let mut terminals = crate::tool_events::TerminalLogs::default();
+    let mut tool_inputs = crate::tool_events::ToolInputs::default();
+    let mut terminal_at: Option<tokio::time::Instant> = None;
     // A first reload's history is kept until the reload succeeds.
     let write = |kind: &str, payload: Value| {
         if live.keep_replay.load(std::sync::atomic::Ordering::SeqCst) {
@@ -532,8 +521,17 @@ async fn pump(
             );
         }
     };
+    let write_terminals = |terminals: &mut crate::tool_events::TerminalLogs,
+                           when: crate::tool_events::Drain| {
+        for payload in terminals.drain(when) {
+            write("tool_call_update", payload);
+        }
+    };
     loop {
-        let until = flush_at
+        let until = [flush_at, terminal_at]
+            .into_iter()
+            .flatten()
+            .min()
             .unwrap_or_else(|| tokio::time::Instant::now() + std::time::Duration::from_secs(3600));
         tokio::select! {
             maybe = messages.recv() => {
@@ -630,7 +628,10 @@ async fn pump(
                 // Text before a tool card stays before it.
                 flush_text(&write, &mut pending_text);
                 flush_at = None;
-                if let Some((kind, payload)) = normalize(update, &live.secrets) {
+                if matches!(kind, Some("tool_call" | "tool_call_update")) {
+                    terminals.observe(update, &live.secrets);
+                }
+                if let Some((kind, payload)) = normalize(update, &live.secrets, &mut tool_inputs) {
                     if kind == "tool_call_update" {
                         let call = payload["id"].as_str().unwrap_or_default().to_owned();
                         let status = payload["status"].as_str().unwrap_or("").to_owned();
@@ -644,17 +645,32 @@ async fn pump(
                                 open.insert(call.clone(), title.clone());
                             }
                         }
+                        let output = payload["output"].as_str().map_or(0, str::len);
                         let previous = tool_trace.get(&call).cloned();
-                        tool_trace.insert(call, (status.clone(), title.chars().count()));
-                        // Status changes, results and the final title are kept;
-                        // character-by-character title growth is not.
-                        let changed = previous.is_none_or(|(was, length)| {
-                            was != status
-                                || payload["output"].is_string()
+                        // Status changes, details, the final title and output that
+                        // grew by a kilobyte are kept; character-by-character
+                        // title growth and every snapshot of streaming output are not.
+                        let detail = ["args", "diffs", "locations", "terminal"]
+                            .iter()
+                            .any(|k| payload.get(*k).is_some());
+                        let changed = previous.as_ref().is_none_or(|(was, length, shown)| {
+                            *was != status
                                 || terminal
+                                || detail
                                 || title.chars().count() >= length + 8
+                                || (output > 0 && (*shown == 0 || output.abs_diff(*shown) >= 1024))
                         });
+                        let shown = if changed {
+                            output
+                        } else {
+                            previous.map_or(0, |p| p.2)
+                        };
+                        tool_trace.insert(call, (status.clone(), title.chars().count(), shown));
                         if !changed {
+                            write_terminals(&mut terminals, crate::tool_events::Drain::Ready);
+                            if terminals.has_pending() {
+                                terminal_at.get_or_insert_with(|| tokio::time::Instant::now() + TERMINAL_FLUSH_DELAY);
+                            }
                             continue;
                         }
                     } else if kind == "tool_call" {
@@ -665,9 +681,13 @@ async fn pump(
                         {
                             open.insert(call.clone(), title.clone());
                         }
-                        tool_trace.insert(call, ("pending".into(), title.chars().count()));
+                        tool_trace.insert(call, ("pending".into(), title.chars().count(), 0));
                     }
                     write(kind, payload);
+                }
+                write_terminals(&mut terminals, crate::tool_events::Drain::Ready);
+                if terminals.has_pending() {
+                    terminal_at.get_or_insert_with(|| tokio::time::Instant::now() + TERMINAL_FLUSH_DELAY);
                 }
             }
             AgentMessage::Permission { id: rpc, params } => {
@@ -678,14 +698,45 @@ async fn pump(
                 let key = Uuid::new_v4().simple().to_string()[..12].to_owned();
                 let call = &params["toolCall"];
                 let options: Vec<Value> = params["options"].as_array().cloned().unwrap_or_default();
+                // An id too long to show is still answered through `allow`.
                 let shown: Vec<Value> = options
                     .iter()
-                    .map(|o| json!({"option_id":o.get("optionId"),"name":o.get("name"),"kind":o.get("kind")}))
+                    .take(16)
+                    .map(|o| {
+                        let option_id = o
+                            .get("optionId")
+                            .and_then(Value::as_str)
+                            .filter(|i| i.len() <= 256);
+                        let name = o
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(|n| clipped(&live.secrets, n, 256));
+                        json!({"option_id":option_id,"name":name,"kind":o.get("kind")})
+                    })
                     .collect();
+                // A call the stream never showed (some agents only ask) gets
+                // its row from what the request says about it.
+                let call_id = call
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .filter(|i| i.len() <= 256);
+                if let Some(call_id) = call_id
+                    && !tool_trace.contains_key(call_id)
+                    && ["title", "content", "rawInput", "locations"]
+                        .iter()
+                        .any(|k| call.get(*k).is_some())
+                {
+                    write(
+                        "tool_call_update",
+                        crate::tool_events::tool_payload(call, &live.secrets, None),
+                    );
+                }
                 let request = json!({
                     "key":key,
                     "title":call.get("title").and_then(Value::as_str).map(|t| clipped(&live.secrets, t, 512)),
                     "kind":call.get("kind"),
+                    // Some agents send only the id; the panel finds the call by it.
+                    "tool_call_id":call_id,
                     "options":shown,
                 });
                 let approver = s
@@ -719,6 +770,10 @@ async fn pump(
                 }
                 flush_text(&write, &mut pending_text);
                 flush_at = None;
+                if end_turn {
+                    write_terminals(&mut terminals, crate::tool_events::Drain::End);
+                    terminal_at = None;
+                }
                 // The barrier after a reload: what came before it was the
                 // replay, what comes after it is new.
                 if live
@@ -738,8 +793,17 @@ async fn pump(
                 }
             }
             _ = tokio::time::sleep_until(until) => {
-                flush_text(&write, &mut pending_text);
-                flush_at = None;
+                let now = tokio::time::Instant::now();
+                if flush_at.is_some_and(|at| at <= now) {
+                    flush_text(&write, &mut pending_text);
+                    flush_at = None;
+                }
+                if terminal_at.is_some_and(|at| at <= now) {
+                    flush_text(&write, &mut pending_text);
+                    flush_at = None;
+                    write_terminals(&mut terminals, crate::tool_events::Drain::Timer);
+                    terminal_at = None;
+                }
             }
         }
     }
@@ -747,6 +811,7 @@ async fn pump(
     pending_text.push("agent_message_chunk", &message_text.finish());
     pending_text.push("agent_thought_chunk", &thought_text.finish());
     flush_text(&write, &mut pending_text);
+    write_terminals(&mut terminals, crate::tool_events::Drain::End);
     // The process is gone; a later prompt starts a new one.
     if let Ok(mut live_map) = s.sessions.live.lock()
         && live_map.get(&id).is_some_and(|l| Arc::ptr_eq(l, &live))
@@ -1467,11 +1532,64 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
     }
 }
 
+/// The agent's options a person answers with: all of them on the agent's
+/// own computer, only the one-time ones when another computer answers.
+fn chosen_outcome(
+    options: &[Value],
+    allow: bool,
+    option_id: Option<&str>,
+    once_only: bool,
+) -> hmesh_core::Result<(Value, bool, Option<Value>)> {
+    let once = |kind: &str| matches!(kind, "allow_once" | "reject_once");
+    if let Some(chosen) = option_id {
+        let option = options
+            .iter()
+            .find(|o| o.get("optionId").and_then(Value::as_str) == Some(chosen))
+            .ok_or_else(|| MeshError::input("the agent did not offer this option"))?;
+        let kind = option.get("kind").and_then(Value::as_str).unwrap_or("");
+        if once_only && !once(kind) {
+            return Err(MeshError::new(
+                ErrorCode::PermissionDenied,
+                "another computer can only allow or reject once; lasting permissions are given on the agent's computer",
+            ));
+        }
+        let shown = json!({"option_id":chosen,"name":option.get("name"),"kind":kind});
+        return Ok((
+            json!({"outcome":{"outcome":"selected","optionId":chosen}}),
+            kind.starts_with("allow"),
+            Some(shown),
+        ));
+    }
+    if once_only {
+        let wanted = if allow { "allow_once" } else { "reject_once" };
+        if let Some(id) = options
+            .iter()
+            .find(|o| o.get("kind").and_then(Value::as_str) == Some(wanted))
+            .and_then(|o| o.get("optionId"))
+        {
+            return Ok((
+                json!({"outcome":{"outcome":"selected","optionId":id}}),
+                allow,
+                None,
+            ));
+        }
+        if allow {
+            return Err(MeshError::new(
+                ErrorCode::PermissionDenied,
+                "this agent offers no one-time permission; answer on the agent's computer",
+            ));
+        }
+        // No one-time rejection either: cancel this request, decide nothing lasting.
+        return Ok((json!({"outcome":{"outcome":"cancelled"}}), false, None));
+    }
+    Ok((acp::permission_outcome(options, allow), allow, None))
+}
+
 fn answer(
     s: &AppState,
     id: Uuid,
     key: &str,
-    allow: bool,
+    body: &PermissionAnswer,
     by: &str,
 ) -> hmesh_core::Result<SessionRecord> {
     let live = s.sessions.live(id).ok_or_else(|| {
@@ -1480,27 +1598,36 @@ fn answer(
             "the agent for this session is not running",
         )
     })?;
-    let (rpc, options, left) = {
+    let (rpc, (outcome, allow, option), left) = {
         let mut pending = live
             .permissions
             .lock()
             .map_err(|_| MeshError::new(ErrorCode::Internal, "permission map poisoned"))?;
-        let (rpc, options) = pending.remove(key).ok_or_else(|| {
+        let (_, options) = pending.get(key).ok_or_else(|| {
             MeshError::new(
                 ErrorCode::TaskConflict,
                 "no pending permission request with this key",
             )
         })?;
-        (rpc, options, pending.len())
+        // A refused answer leaves the request pending.
+        let chosen = chosen_outcome(
+            options,
+            body.allow,
+            body.option_id.as_deref(),
+            by == "origin",
+        )?;
+        let (rpc, _) = pending.remove(key).expect("checked above");
+        (rpc, chosen, pending.len())
     };
-    live.conn
-        .respond(&rpc, acp::permission_outcome(&options, allow))?;
-    record_event(
-        s,
-        id,
-        "permission_resolved",
-        json!({"key":key,"allow":allow,"by":by}),
-    )?;
+    live.conn.respond(&rpc, outcome)?;
+    let mut resolved = json!({"key":key,"allow":allow,"by":by});
+    if let Some(mut option) = option {
+        if let Some(name) = option["name"].as_str() {
+            option["name"] = json!(clipped(&live.secrets, name, 256));
+        }
+        resolved["option"] = option;
+    }
+    record_event(s, id, "permission_resolved", resolved)?;
     if left == 0 {
         // Only a turn still waiting goes back to running; a turn that ended
         // meanwhile stays idle.
@@ -2605,11 +2732,17 @@ async fn owner_permission(
 ) -> ApiResult<SessionRecord> {
     s.owner(&headers, &c)?;
     if let Some(peer) = s.store.remote_session_peer(id)? {
+        // Another computer only takes one-time answers, which `allow` says;
+        // without `option_id` an earlier version accepts it too.
+        let once = PermissionAnswer {
+            allow: body.allow,
+            option_id: None,
+        };
         return Ok(Json(
-            remote_post(&s, peer, id, &format!("permissions/{key}"), &body).await?,
+            remote_post(&s, peer, id, &format!("permissions/{key}"), &once).await?,
         ));
     }
-    Ok(Json(answer(&s, id, &key, body.allow, "owner")?))
+    Ok(Json(answer(&s, id, &key, &body, "owner")?))
 }
 async fn owner_cancel(
     State(s): State<AppState>,
@@ -2927,7 +3060,7 @@ async fn peer_permission(
             "permission requests in this session are answered on the agent's computer",
         ));
     }
-    Ok(Json(answer(&s, id, &key, body.allow, "origin")?.for_peer()))
+    Ok(Json(answer(&s, id, &key, &body, "origin")?.for_peer()))
 }
 async fn peer_cancel(
     State(s): State<AppState>,
@@ -3012,7 +3145,60 @@ pub fn routes() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_retry_notice, is_startup_banner};
+    use super::{chosen_outcome, is_retry_notice, is_startup_banner};
+    use hmesh_core::ErrorCode;
+    use serde_json::{Value, json};
+
+    fn options(kinds: &[&str]) -> Vec<Value> {
+        kinds
+            .iter()
+            .map(|k| json!({"optionId":format!("id-{k}"),"name":k,"kind":k}))
+            .collect()
+    }
+    fn selected(outcome: &Value) -> Option<&str> {
+        outcome.pointer("/outcome/optionId").and_then(Value::as_str)
+    }
+
+    #[test]
+    fn this_computer_chooses_any_offered_option() {
+        let all = options(&["allow_once", "allow_always", "reject_once", "reject_always"]);
+        let (outcome, allow, option) =
+            chosen_outcome(&all, false, Some("id-allow_always"), false).unwrap();
+        assert_eq!(selected(&outcome), Some("id-allow_always"));
+        assert!(allow, "the option's kind decides");
+        assert_eq!(option.unwrap()["kind"], "allow_always");
+        let (outcome, allow, _) =
+            chosen_outcome(&all, true, Some("id-reject_always"), false).unwrap();
+        assert_eq!(selected(&outcome), Some("id-reject_always"));
+        assert!(!allow);
+        let err = chosen_outcome(&all, true, Some("made-up"), false).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+        // Without an option, `allow` keeps meaning what it did.
+        let (outcome, _, option) = chosen_outcome(&all, true, None, false).unwrap();
+        assert_eq!(selected(&outcome), Some("id-allow_once"));
+        assert!(option.is_none());
+    }
+
+    #[test]
+    fn another_computer_only_answers_once() {
+        let all = options(&["allow_once", "allow_always", "reject_once", "reject_always"]);
+        for lasting in ["id-allow_always", "id-reject_always"] {
+            let err = chosen_outcome(&all, true, Some(lasting), true).unwrap_err();
+            assert_eq!(err.code, ErrorCode::PermissionDenied, "{lasting}");
+        }
+        let (outcome, _, _) = chosen_outcome(&all, true, Some("id-allow_once"), true).unwrap();
+        assert_eq!(selected(&outcome), Some("id-allow_once"));
+        // Only lasting options offered: allowing is refused, rejecting cancels.
+        let lasting = options(&["allow_always", "reject_always"]);
+        let err = chosen_outcome(&lasting, true, None, true).unwrap_err();
+        assert_eq!(err.code, ErrorCode::PermissionDenied);
+        let (outcome, allow, _) = chosen_outcome(&lasting, false, None, true).unwrap();
+        assert_eq!(outcome["outcome"]["outcome"], "cancelled");
+        assert!(!allow);
+        // The same request on the agent's computer still falls back as before.
+        let (outcome, _, _) = chosen_outcome(&lasting, true, None, false).unwrap();
+        assert_eq!(selected(&outcome), Some("id-allow_always"));
+    }
 
     #[test]
     fn adapter_banners_are_not_conversation() {

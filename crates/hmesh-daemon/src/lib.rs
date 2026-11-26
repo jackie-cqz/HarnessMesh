@@ -16,6 +16,7 @@ mod relays;
 mod service_test;
 mod services;
 mod sessions;
+mod tool_events;
 pub use addresses::ManualAddresses;
 use anyhow::Context;
 use axum::{

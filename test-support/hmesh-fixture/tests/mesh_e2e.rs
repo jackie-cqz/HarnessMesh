@@ -295,6 +295,42 @@ async fn sessions_span_paired_computers_with_delegation_permissions_and_access_r
     );
     assert!(kinds(&events).contains(&"permission_resolved"));
 
+    // Answering from another computer is only ever once: a lasting option
+    // chosen on node-a reaches node-b as a one-time allow.
+    let asked = open(
+        &owner_a,
+        json!({"agent_id":remote_agent,"peer_id":b.card.node_id,"message":"fixture:permission-options"}),
+    )
+    .await;
+    let (_, events) = until(&owner_a, asked.session_id, |s, _| {
+        s.status == SessionStatus::WaitingPermission
+    })
+    .await;
+    let key = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "permission_request")
+        .unwrap()
+        .payload["key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _: SessionRecord = owner_a
+        .post(
+            &format!("/local/sessions/{}/permissions/{key}", asked.session_id),
+            &json!({"allow":true,"option_id":"always"}),
+        )
+        .await
+        .unwrap();
+    let (done, events) = turn_done(&owner_a, asked.session_id, 1).await;
+    assert_eq!(done.last_final_text.as_deref(), Some("Chose allow."));
+    let resolved = events
+        .iter()
+        .find(|e| e.kind == "permission_resolved")
+        .unwrap();
+    assert_eq!(resolved.payload["by"], "origin");
+    assert!(resolved.payload.get("option").is_none());
+
     // Agents call each other: node-a's agent delegates to node-b's agent
     // through its own injected `hmesh mcp`. node-b runs the child session
     // with automatic permission answers (node-a's access is auto).
@@ -669,6 +705,97 @@ async fn rejected_permissions_depth_and_running_children_are_enforced() {
             .iter()
             .any(|e| e.kind == "permission_resolved" && e.payload["allow"] == false)
     );
+
+    // On the agent's own computer every option it offers can be chosen,
+    // lasting ones included; the kind, not `allow`, decides what it means.
+    let asked = open(
+        &owner,
+        json!({"agent_id":agents[0],"message":"fixture:permission-options"}),
+    )
+    .await;
+    let (_, events) = until(&owner, asked.session_id, |s, _| {
+        s.status == SessionStatus::WaitingPermission
+    })
+    .await;
+    let request = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "permission_request")
+        .unwrap();
+    let kinds_offered: Vec<&str> = request.payload["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds_offered,
+        ["allow_once", "allow_always", "reject_once", "reject_always"]
+    );
+    let call_id = request.payload["tool_call_id"].as_str().unwrap().to_owned();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "tool_call" && e.payload["id"] == call_id.as_str()),
+        "the request names the call the stream showed"
+    );
+    let key = request.payload["key"].as_str().unwrap().to_owned();
+    let path = format!("/local/sessions/{}/permissions/{key}", asked.session_id);
+    let forged = owner
+        .post::<_, SessionRecord>(&path, &json!({"allow":true,"option_id":"bogus"}))
+        .await
+        .unwrap_err();
+    assert_eq!(forged.code, ErrorCode::InvalidInput, "{forged:?}");
+    let still: SessionRecord = owner
+        .get(&format!("/local/sessions/{}", asked.session_id))
+        .await
+        .unwrap();
+    assert_eq!(
+        still.status,
+        SessionStatus::WaitingPermission,
+        "a refused answer leaves the request open"
+    );
+    let _: SessionRecord = owner
+        .post(&path, &json!({"allow":false,"option_id":"always"}))
+        .await
+        .unwrap();
+    let (done, events) = turn_done(&owner, asked.session_id, 1).await;
+    assert_eq!(done.last_final_text.as_deref(), Some("Chose always."));
+    let resolved = events
+        .iter()
+        .find(|e| e.kind == "permission_resolved")
+        .unwrap();
+    assert_eq!(resolved.payload["allow"], true);
+    assert_eq!(resolved.payload["option"]["kind"], "allow_always");
+    assert_eq!(resolved.payload["option"]["name"], "Always allow make");
+
+    // A request for a call the stream never showed brings the call along.
+    let asked = open(
+        &owner,
+        json!({"agent_id":agents[0],"message":"fixture:permission-unseen"}),
+    )
+    .await;
+    let (_, events) = until(&owner, asked.session_id, |s, _| {
+        s.status == SessionStatus::WaitingPermission
+    })
+    .await;
+    let request = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "permission_request")
+        .unwrap();
+    let call_id = request.payload["tool_call_id"].as_str().unwrap();
+    let call = events
+        .iter()
+        .find(|e| e.kind == "tool_call_update" && e.payload["id"] == call_id)
+        .expect("the call's row comes from the request");
+    assert_eq!(call.payload["kind"], "edit");
+    assert_eq!(call.payload["diffs"][0]["path"], "notes.txt");
+    assert_eq!(call.payload["locations"][0]["line"], 3);
+    let answered = answer(&owner, asked.session_id, true).await;
+    assert_eq!(answered.session_id, asked.session_id);
+    let (done, _) = turn_done(&owner, asked.session_id, 1).await;
+    assert_eq!(done.last_final_text.as_deref(), Some("Chose allow."));
 
     // Depth through the injected MCP tools: f1 -> f2 -> f3 -> f4 is allowed,
     // f4 -> f5 would be a fourth level below the person and is refused.
@@ -2332,4 +2459,101 @@ async fn advertised_commands_follow_the_approved_session_and_live_process() {
     assert_eq!(list().await.unwrap().state, CommandListState::Closed);
     da.stop().await;
     db.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tool_calls_keep_their_output_diffs_and_plans_however_the_agent_reports_them() {
+    let root = tempfile::tempdir().unwrap();
+    let a = init(root.path(), "solo");
+    let agent = register_named(&a, &root.path().join("project"), "fixture");
+    let daemon = Daemon::start(&a.dir);
+    daemon.ready().await;
+    let owner = daemon.owner();
+    let asked = open(&owner, json!({"agent_id":agent,"message":"fixture:stream"})).await;
+    let (done, events) = turn_done(&owner, asked.session_id, 1).await;
+    assert!(done.last_final_text.unwrap().starts_with("## Fixed"));
+    let of = |id: &str| -> Vec<&Value> {
+        events
+            .iter()
+            .filter(|e| e.kind.starts_with("tool_call") && e.payload["id"] == id)
+            .map(|e| &e.payload)
+            .collect()
+    };
+    let output = |id: &str| -> String {
+        of(id)
+            .iter()
+            .filter_map(|p| p["output"].as_str())
+            .next_back()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // Command output in content text (Claude), in `_meta` (Codex, Pi) and
+    // in rawOutput (MiniMax, OpenCode).
+    assert!(output("claude-bash").contains("3 passed"));
+    let streamed = |id: &str| -> (String, Option<i64>) {
+        let calls = of(id);
+        let text = calls
+            .iter()
+            .filter_map(|p| p["terminal"]["append"].as_str())
+            .collect::<String>();
+        let exit = calls
+            .iter()
+            .find_map(|p| p["terminal"]["exit_code"].as_i64());
+        (text, exit)
+    };
+    assert_eq!(
+        streamed("codex-run"),
+        (
+            "running 3 tests\ntest add_works ... FAILED\n".to_owned(),
+            Some(101)
+        )
+    );
+    assert!(of("codex-run").iter().any(|p| p["terminal"].is_object()));
+    assert_eq!(
+        streamed("pi-bash"),
+        ("NOTES.md\nREADME.md\n".to_owned(), Some(0))
+    );
+    assert!(output("mm-run").contains("No rule to make target"));
+    assert!(output("oc-bash").ends_with("# pass 3\n"));
+    // Diffs: hunks, and a new file without old text.
+    let diff = |id: &str| -> Value {
+        of(id)
+            .iter()
+            .find_map(|p| p.get("diffs").cloned())
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(diff("claude-edit")[0]["path"], "/work/demo/src/lib.rs");
+    assert!(
+        diff("claude-edit")[0]["new"]
+            .as_str()
+            .unwrap()
+            .contains("a + b")
+    );
+    assert!(diff("pi-write")[0]["old"].is_null());
+    assert_eq!(diff("pi-write")[0]["new"], "First line\nSecond line\n");
+    // Structured arguments, whatever the kind says.
+    assert!(
+        of("dsh-shell")
+            .iter()
+            .any(|p| p["kind"] == "other" && p["args"]["command"] == "git status --short")
+    );
+    // Kimi's repeated arguments are not mistaken for output.
+    assert!(
+        of("kimi-grep")
+            .iter()
+            .all(|p| !p["output"].as_str().unwrap_or("").contains("\"pattern\""))
+    );
+    assert!(output("kimi-grep").contains("TODO: handle overflow"));
+    // Each plan is the whole plan.
+    let plans: Vec<&Value> = events
+        .iter()
+        .filter(|e| e.kind == "plan")
+        .map(|e| &e.payload)
+        .collect();
+    assert_eq!(plans.len(), 4);
+    assert!(
+        plans
+            .iter()
+            .all(|p| p["entries"].as_array().unwrap().len() == 3)
+    );
 }
