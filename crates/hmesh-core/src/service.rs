@@ -26,15 +26,7 @@ pub enum Protocol {
 }
 /// The first entry is the default for a new custom endpoint.
 pub fn protocols_for(harness: HarnessKind) -> &'static [Protocol] {
-    use Protocol::*;
-    match harness {
-        HarnessKind::Opencode | HarnessKind::Pi | HarnessKind::Dsh => {
-            &[OpenAi, Anthropic, Responses]
-        }
-        HarnessKind::ClaudeCode => &[Anthropic],
-        HarnessKind::Codex => &[Responses],
-        HarnessKind::Acp => &[],
-    }
+    harness.family().spec().protocols
 }
 
 /// What the owner sees about one agent's model service.

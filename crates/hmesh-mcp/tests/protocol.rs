@@ -169,6 +169,7 @@ fn node(name: &str, local: bool, agents: &[&str]) -> MeshNode {
         error: None,
         agents: agents.iter().map(|a| card(node_id, a)).collect(),
         projects: vec![],
+        agent_kinds: vec![],
     }
 }
 #[test]

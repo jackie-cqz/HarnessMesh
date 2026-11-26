@@ -170,7 +170,8 @@ pub fn agent_launch(
         return Ok((agent_command(config)?, secrets));
     };
     let mut command = base_command(config)?;
-    let harness = config.agent.harness;
+    // Settings and launch fixes exist per family; a newer catalog row is generic ACP.
+    let harness = config.agent.harness.family();
     let args = config.launch_args();
     let env = service.launch_env(harness, relay)?;
     if relay.is_some() && service.relayed(harness).is_some() {

@@ -82,7 +82,7 @@ fn check(code: &str, passed: bool, action: &str) -> Check {
 }
 
 fn legacy_pi(config: &AgentConfig) -> bool {
-    if config.agent.harness != HarnessKind::Pi {
+    if config.agent.harness.family() != HarnessKind::Pi {
         return false;
     }
     config.adapter.credential_source.is_some()

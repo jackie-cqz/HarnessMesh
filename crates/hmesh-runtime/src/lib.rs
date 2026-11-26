@@ -223,7 +223,7 @@ async fn execute(
     .map_err(failure)?;
     if let Some(models) = service
         .as_ref()
-        .and_then(|s| service::ManagedModels::from_service(s, config.agent.harness))
+        .and_then(|s| service::ManagedModels::from_service(s, config.agent.harness.family()))
     {
         prepared.driver.require_model(models.default);
     }

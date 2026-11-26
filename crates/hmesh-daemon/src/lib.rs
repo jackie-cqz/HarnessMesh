@@ -576,6 +576,7 @@ pub fn router(state: AppState) -> Router {
         .route("/hmesh/v1/pair/requests", post(incoming_pair))
         .route("/hmesh/v1/node", get(node))
         .route("/hmesh/v1/agents", get(agents))
+        .route("/hmesh/v1/agents/kinds", get(agent_kinds))
         .route("/hmesh/v1/tasks", post(submit_task))
         .route("/hmesh/v1/tasks/{id}", get(task))
         .route("/hmesh/v1/tasks/{id}/events", get(events))
@@ -939,6 +940,17 @@ async fn agents(
     s.actor(&headers, &c)?;
     Ok(Json(s.store.agents()?))
 }
+/// Which catalog row each agent here comes from, where its card does not
+/// say it: cards name only the kinds every version knows. Older computers
+/// do not answer this (404).
+async fn agent_kinds(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+) -> ApiResult<Vec<AgentKindNote>> {
+    s.actor(&headers, &c)?;
+    Ok(Json(s.store.agent_kind_notes()?))
+}
 /// Open the pairing window (direct network). Harmless elsewhere: other
 /// networks answer the pairing handshake whenever they are reachable.
 async fn open_pairing_window(
@@ -1281,7 +1293,7 @@ async fn register_config(
         agent_id: id,
         node_id: s.instance.card.node_id,
         name: config.agent.name.clone(),
-        harness: config.agent.harness,
+        harness: config.agent.harness.family(),
         project_ids: vec![config.agent.project_id.clone()],
         availability: "unverified".into(),
         capabilities: config.agent.display_capabilities.clone(),
@@ -1366,11 +1378,11 @@ async fn update_agent(
     let (mut card, _) = s.store.agent(id)?;
     card.probe = probe;
     card.name = config.agent.name.clone();
-    card.harness = config.agent.harness;
+    card.harness = config.agent.harness.family();
     card.default_model = hmesh_runtime::service::load(&s.instance.dir, id)
         .ok()
         .flatten()
-        .and_then(|v| v.default_model_value(config.agent.harness))
+        .and_then(|v| v.default_model_value(config.agent.harness.family()))
         .or_else(|| config.adapter.model.clone());
     card.availability = "unverified".into();
     card.probe.authentication = "not_checked".into();
@@ -1506,6 +1518,7 @@ async fn mesh_agents(
         error: None,
         agents: s.store.agents()?,
         projects: sessions::usable_projects(&s)?,
+        agent_kinds: s.store.agent_kind_notes()?,
     }];
     let mut lookups = tokio::task::JoinSet::new();
     for (index, peer) in s
@@ -1537,18 +1550,20 @@ async fn mesh_agents(
                 Ok(agents) => (true, None, agents),
                 Err(error) => (false, Some(error), vec![]),
             };
-            // Older computers do not share projects (404): none to offer.
-            let projects = match (reachable, &client_for_projects) {
-                (true, Some(client)) => tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    client.get::<Vec<hmesh_core::projects::SharedProject>>("/hmesh/v1/projects"),
-                )
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default(),
-                _ => vec![],
+            // Older computers share neither projects nor agent kinds (404):
+            // none to offer, and their agents are what their cards say.
+            let (projects, agent_kinds) = match (reachable, &client_for_projects) {
+                (true, Some(client)) => tokio::join!(
+                    optional::<hmesh_core::projects::SharedProject>(client, "/hmesh/v1/projects"),
+                    optional::<AgentKindNote>(client, "/hmesh/v1/agents/kinds"),
+                ),
+                _ => (vec![], vec![]),
             };
+            let agent_kinds = agent_kinds
+                .into_iter()
+                .filter(AgentKindNote::plausible)
+                .take(agents.len())
+                .collect();
             (
                 index,
                 MeshNode {
@@ -1560,6 +1575,7 @@ async fn mesh_agents(
                     error,
                     agents,
                     projects,
+                    agent_kinds,
                 },
             )
         });
@@ -1571,6 +1587,21 @@ async fn mesh_agents(
     peers.sort_by_key(|(index, _)| *index);
     nodes.extend(peers.into_iter().map(|(_, node)| node));
     Ok(Json(nodes))
+}
+/// A peer's list that older versions do not have: empty when it does not
+/// answer within 3 seconds or at all.
+async fn optional<T: serde::de::DeserializeOwned>(
+    client: &hmesh_transport::Client,
+    path: &str,
+) -> Vec<T> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        client.get::<Vec<T>>(path),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .unwrap_or_default()
 }
 async fn submit_task(
     State(s): State<AppState>,

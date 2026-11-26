@@ -44,6 +44,7 @@ CLI `task send --artifact RELATIVE_PATH` 可重复指定路径；有契约时先
 |---|---|---|
 | 配对引导 | GET `/hmesh/v1/hello`, GET `/hmesh/v1/pair/challenge`, POST `/hmesh/v1/pair/requests` | 匿名 TLS 客户端可请求；仍须验证目标证书 pin，受速率限制 |
 | 节点/Agent | GET `/hmesh/v1/node`, GET `/hmesh/v1/agents` | 当前信任的 mTLS 身份；Agent 列表受项目/Agent grant 过滤 |
+| Agent 类型说明 | GET `/hmesh/v1/agents/kinds` | 当前配对的 mTLS 身份；返回 `[{agent_id,kind,label}]`，只列 agent 目录里后来加的类型（卡片的 `harness` 写的是它所属的原有类型，新类型一律记作 `acp`，老版本才读得懂）。今天的 5 种 agent 不需要，返回空列表。老版本返回 404，调用方当作没有；结构不拒绝未知字段 |
 | 共享项目 | GET `/hmesh/v1/projects` | 当前配对的 mTLS 身份；只返回 owner 标为共享且没有隐藏的项目 `{project_id,name}`，不含路径；隐藏只是不再列出，取消共享才会拒绝。老版本返回 404，调用方当作没有共享项目；面板和 MCP 只会选对方列出的共享项目，所以只对新版本电脑带 `project_id`；直接调用 owner API 给老版本电脑带了它，老版本会因为不认识字段而拒绝 |
 | 入站提交 | POST `/hmesh/v1/tasks` | 当前信任、项目/Agent 的 task.submit grant、可运行验证和本机审批 |
 | 执行条件预检 | POST `/hmesh/v1/tasks/preflight` | 当前可信 mTLS 身份；须有当前项目/Agent 的 agent.read 或 task.submit grant，只有 agent.read 不代表可提交任务 |

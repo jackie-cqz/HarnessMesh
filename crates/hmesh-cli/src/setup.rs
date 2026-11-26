@@ -929,10 +929,7 @@ fn adapter_for(agent: &hmesh_core::DetectedAgent) -> Value {
 /// `<node>-<kind>`, as scripts/start-tailnet.mjs names them. The official
 /// DSH ACP registration keeps apart from earlier headless DSH agents.
 fn agent_name(node: &str, kind: HarnessKind) -> String {
-    match kind {
-        HarnessKind::Dsh => format!("{node}-dsh-acp"),
-        _ => format!("{node}-{kind}"),
-    }
+    format!("{node}-{}", kind.spec().setup_name.unwrap_or(kind.as_str()))
 }
 
 /// Add HarnessMesh's MCP server to Claude Code and Codex when they are found

@@ -8,7 +8,7 @@
 use crate::executable::resolve_configured_executable;
 use anyhow::{Context, Result};
 use hmesh_core::service::{OWN_CONFIGURED, OWN_NOT_CONFIGURED, OWN_UNKNOWN, OwnLogin};
-use hmesh_core::{AgentConfig, HarnessKind};
+use hmesh_core::{AgentConfig, agents::LoginReading};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -404,28 +404,19 @@ async fn run(mut command: tokio::process::Command) -> Option<(bool, String, Stri
 async fn by_command(config: &AgentConfig, at: i64) -> Option<OwnLogin> {
     let executable = resolve_configured_executable(config).ok()?;
     let near = executable.entry.clone();
-    match config.agent.harness {
-        HarnessKind::Opencode => {
-            let mut command = executable.command();
-            command.args(["auth", "list"]);
-            let (_, out, err) = run(command).await?;
-            Some(from_opencode_list(&format!("{out}\n{err}"), at))
-        }
-        HarnessKind::Codex => {
-            let mut command = tokio::process::Command::new(find("codex", &near)?);
-            command.args(["login", "status"]);
-            let (_, out, err) = run(command).await?;
-            Some(from_codex_status(&format!("{out}\n{err}"), at))
-        }
-        HarnessKind::Pi => {
-            let mut command = tokio::process::Command::new(find("pi", &near)?);
-            command.arg("--list-models");
-            // The table is on standard output; warnings on standard error are not rows.
-            let (success, out, _) = run(command).await?;
-            Some(from_pi_models(&out, success, at))
-        }
-        _ => None,
-    }
+    let login = config.agent.harness.spec().login?;
+    let mut command = match login.program {
+        None => executable.command(),
+        Some(program) => tokio::process::Command::new(find(program, &near)?),
+    };
+    command.args(login.args);
+    let (success, out, err) = run(command).await?;
+    Some(match login.reading {
+        LoginReading::OpencodeAuthList => from_opencode_list(&format!("{out}\n{err}"), at),
+        LoginReading::CodexLoginStatus => from_codex_status(&format!("{out}\n{err}"), at),
+        // The table is on standard output; warnings on standard error are not rows.
+        LoginReading::PiListModels => from_pi_models(&out, success, at),
+    })
 }
 
 /// What the agent is set up with on its own. Its own report over ACP wins;
