@@ -46,4 +46,5 @@ test('an agent added to the catalog is registered like the others', () => {
   assert.throws(() => agentName('mac-a', 'acp', catalog), /Unsupported agent type/);
   // Forgetting the catalog says so instead of failing on undefined.
   assert.throws(() => agentConfig({ node: 'mac-a', harness: 'dsh', executable: '/x', project: '/tmp/p' }), /Pass the agent catalog/);
+  assert.throws(() => selectAgents(detected), /Pass the agent catalog/);
 });

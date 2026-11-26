@@ -3,9 +3,12 @@ import { createHash } from 'node:crypto';
 // `catalog` is what `hmesh --json agent catalog` prints: the agents this
 // hmesh knows, each with the command it looks for and the name `hmesh setup`
 // gives it. Only agents with a command of their own are registered here.
-function known(catalog, harness) {
+function checked(catalog) {
   if (!Array.isArray(catalog?.agents)) throw new Error('Pass the agent catalog (hmesh --json agent catalog)');
-  return catalog.agents.find(agent => agent.kind === harness && agent.command);
+  return catalog;
+}
+function known(catalog, harness) {
+  return checked(catalog).agents.find(agent => agent.kind === harness && agent.command);
 }
 
 /** `<node>-<kind>`, as `hmesh setup` names agents (DSH's ACP agent is `-dsh-acp`). */
@@ -25,6 +28,7 @@ export function agentConfig({ node, harness, executable, project, projectId = 't
 
 /** Pick detected agents, optionally limited to an explicit comma-separated list. */
 export function selectAgents(detected, only, catalog) {
+  checked(catalog);
   const wanted = only ? only.split(',').map(s => s.trim()).filter(Boolean) : null;
   for (const name of wanted ?? []) if (!known(catalog, name)) throw new Error(`Unknown agent type in --agents: ${name}`);
   const chosen = detected.filter(agent => !wanted || wanted.includes(agent.harness));
