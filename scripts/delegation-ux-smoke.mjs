@@ -84,7 +84,8 @@ async function preflight(page, expectedReady) {
 }
 
 async function openFromList(page, id) {
-  await page.locator('[data-view="tasks"]').click();
+  await page.locator('[data-view="inbox"]').click();
+  await page.locator('[data-work-area="tasks"]').click();
   await page.locator('[data-filter="all"]').click();
   await page.locator('#refresh').click();
   const row = page.locator(`#task-list tr[data-task-id="${id}"]`);
@@ -144,7 +145,8 @@ try {
   const before = counts(origin, worker);
   let taskPosts = 0;
   page.on('request', request => { if (new URL(request.url()).pathname === '/api/tasks' && request.method() === 'POST') taskPosts++; });
-  await page.locator('[data-view="tasks"]').click();
+  await page.locator('[data-view="inbox"]').click();
+  await page.locator('[data-work-area="tasks"]').click();
   await page.locator('#new-task').click();
   await page.locator('#compose-peer').selectOption(worker.card.node_id);
   await page.waitForFunction(id => document.querySelector('#compose-agent').value === id && !document.querySelector('#compose-agent').disabled, agent.agent_id);
@@ -210,16 +212,17 @@ try {
   assert(typeof copied === 'string' && copied.includes(id) && copied.includes('ux-worker'), 'Handoff did not identify the fixed task and receiver');
   const privateValues = [originReady.url, workerReady.url, ...[origin, worker].map(node => readFileSync(join(node.dir, 'owner.token'), 'utf8')), ...[originReady, workerReady].map(ready => new URLSearchParams(new URL(ready.url).hash.slice(1)).get('access'))];
   assert(!copied.includes('#access=') && !copied.includes('owner.token') && privateValues.every(value => value && !copied.includes(value)), 'Handoff exposed an owner credential or private launch link');
-  assert(await page.locator('#nav-pending').isHidden(), 'Outbound approval was counted as a local owner inbox task');
+  assert(await page.locator('#nav-inbox-count').isHidden(), 'Outbound approval was counted as a local owner inbox task');
   pass(stage);
 
   stage = 'receiver-inbox-and-approval-preflight';
   // The start page (sessions) counts pending approvals in the navigation; the banner is on the other pages.
-  await owner.locator('#nav-pending').filter({ hasText: '1' }).waitFor();
-  await owner.locator('[data-view="tasks"]').click();
+  await owner.locator('#nav-inbox-count').filter({ hasText: '1' }).waitFor();
+  await owner.locator('[data-view="inbox"]').click();
+  await owner.locator('[data-work-area="tasks"]').click();
   await owner.locator('#refresh').click();
   await owner.locator('#approval-inbox').getByRole('button', { name: /审阅本机待审批.*1/ }).waitFor();
-  assert(await owner.locator('#nav-pending').innerText() === '1', 'Receiver did not count its own pending task');
+  assert(await owner.locator('#nav-inbox-count').innerText() === '1', 'Receiver did not count its own pending task');
   await owner.locator('#approval-inbox').getByRole('button', { name: /审阅本机待审批/ }).click();
   await owner.locator(`#task-list tr[data-task-id="${id}"] .task-title`).click();
   await owner.locator('#task-preflight[data-ready="true"]').waitFor();
@@ -241,7 +244,8 @@ try {
 
   stage = 'execution-success-is-not-artifact-acceptance';
   await page.locator('[data-close="task-dialog"]').click();
-  await page.locator('[data-view="tasks"]').click();
+  await page.locator('[data-view="inbox"]').click();
+  await page.locator('[data-work-area="tasks"]').click();
   await page.locator('#refresh').click();
   const taskRow = page.locator(`#task-list tr[data-task-id="${id}"]`);
   await taskRow.locator('.acceptance-state').filter({ hasText: '待验收' }).waitFor();
@@ -310,7 +314,7 @@ try {
   await page.locator('#acceptance-state').filter({ hasText: '核验通过' }).waitFor();
   await owner.locator('[data-close="task-dialog"]').click();
   await owner.locator('#refresh').click();
-  await owner.locator('#nav-pending').waitFor({ state: 'hidden' });
+  await owner.locator('#nav-inbox-count').waitFor({ state: 'hidden' });
   mkdirSync(resolve('.hmesh-v0/panel'), { recursive: true });
   await page.locator('#task-dialog').evaluate(dialog => { dialog.scrollTop = 0; });
   await page.screenshot({ path: resolve('.hmesh-v0/panel/delegation-ux-desktop.png') });
@@ -335,7 +339,8 @@ try {
   await legacy.locator('#runtime-summary').filter({ hasText: '只读' }).waitFor();
   await legacy.locator('#local-name').filter({ hasText: 'ux-origin' }).waitFor({state:'attached'});
   assert(await legacy.locator('#new-task').isDisabled() || await legacy.locator('#new-task').isHidden(), 'Legacy read-only mode exposed task creation');
-  await legacy.locator('[data-view="tasks"]').click();
+  await legacy.locator('[data-view="inbox"]').click();
+  await legacy.locator('[data-work-area="tasks"]').click();
   assert(await legacy.locator('#development-view').isHidden() && await legacy.locator('#create-pipeline').isHidden(), 'Legacy mode exposed unsupported development actions');
   await legacy.locator('[data-view="settings"]').click();
   assert(await legacy.locator('#operations-view').isHidden() && await legacy.locator('#services-view').isVisible(), 'Legacy settings showed unsupported diagnostics or lost services');

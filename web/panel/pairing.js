@@ -220,7 +220,6 @@ function spacedPasscode(code){return code?`${code.slice(0,3)} ${code.slice(3)}`:
 function nearbySection(){
  const box=el('section','pair-nearby');box.id='pair-nearby';
  box.append(el('div','pair-nearby-head'),el('div','pair-nearby-list'));
- if(findingReady())box.append(pairByAddress());
  // After the dialog is shown: looking stops once it is closed.
  drawNearby(box);setTimeout(lookNearby,0);
  return box;
@@ -278,7 +277,7 @@ function drawNearby(box){
  // Keep the passcode being typed, and the focus, across redraws.
  const typing=list.querySelector('.pair-passcode'),typed=typing?.value||'',focused=document.activeElement===typing;
  const rows=found.map(nearbyRow);
- if(pairingState.nearbyLooked&&!found.length)rows.push(el('p','form-note muted pair-nearby-empty',pairingState.nearbyError||'还没找到。对方也要打开「配对新电脑」；有的 Wi-Fi 会挡住查找，这时用下面的配对码。'));
+ if(pairingState.nearbyLooked&&!found.length)rows.push(el('p','form-note muted pair-nearby-empty',pairingState.nearbyError||'还没找到。请在对方电脑上打开「配对新电脑」，或展开「其他配对方式」。'));
  list.replaceChildren(...rows);
  const input=list.querySelector('.pair-passcode');if(input){input.value=typed;if(focused)input.focus();}
 }
@@ -362,11 +361,11 @@ function drawPairDialog(){
   close.focus({preventScroll:true});
   return;
  }
- const form=el('form','pair-form'),scroll=el('div','pair-scroll'),label=el('label','form-label','对方的配对码'),code=el('textarea');
+ const shell=el('div','pair-form'),scroll=el('div','pair-scroll'),label=el('label','form-label','对方的配对码'),code=el('textarea');
  code.id='pair-code';code.rows=3;code.spellcheck=false;code.autocomplete='off';code.placeholder='hmesh://…';code.maxLength=600;label.append(code);
- const node=data('node',{}),canReceive=!outboundOnly(),remoteBox=el('div','pair-entry');
+ const node=data('node',{}),canReceive=!outboundOnly(),remoteBox=el('form','pair-entry');
  if(!canReceive)remoteBox.append(el('p','form-note muted',nearbyReady()?'本机以仅 MCP 模式运行，配对需要从这台电脑发起：在上面选中附近的电脑或按地址配对、输入它的口令，或者粘贴对方的配对码。':'本机以仅 MCP 模式运行，配对需要从这台电脑发起。'));
- remoteBox.append(label,el('p','form-note muted','让对方在「配对新电脑」里切到「本机配对码」，把复制的内容发给你。'));
+ remoteBox.append(label,el('p','form-note muted','请对方复制「本机配对码」发给你。如果看到「附近的电脑」，先展开「其他配对方式」。'));
  const ownBox=el('div','pair-entry'),ownCode=el('code','pair-own-code',canReceive?node.pair_code||'':'');ownCode.id='own-pair-code';
  ownBox.append(el('p','form-note','把本机配对码发给对方。收到申请后，在「配对节点」核对对方显示的 6 位校验码。'),
   ownCode,el('p','form-note muted',node.network==='loopback'?'本机当前使用回环地址，供同一台电脑上的节点配对。':''));
@@ -374,29 +373,35 @@ function drawPairDialog(){
  const send=el('button','button','发出配对申请');send.type='submit';send.id='pair-send';send.disabled=!canWrite();
  const copy=copyPairText(ownCode,'复制配对码');
  const cancel=button('取消','button secondary',()=>$('#pair-dialog').close());cancel.type='button';
- const actions=el('div','confirm-actions');actions.append(cancel,copy,send);
- const footer=el('div','pair-footer');footer.append(message,actions);
+ const requestActions=el('div','confirm-actions');requestActions.append(send);
+ remoteBox.append(message,requestActions);
+ const copyActions=el('div','confirm-actions');copyActions.append(copy);ownBox.append(copyActions);
+ const actions=el('div','confirm-actions');actions.append(cancel);
+ const footer=el('div','pair-footer');footer.append(actions);
  const methods=el('div','segmented pair-methods');methods.setAttribute('role','group');methods.setAttribute('aria-label','配对码来源');
  const useMode=own=>{
   if(pairingState.busy)return;
   remote.setAttribute('aria-pressed',String(!own));local.setAttribute('aria-pressed',String(own));
   remote.classList.toggle('selected',!own);local.classList.toggle('selected',own);
-  remoteBox.hidden=own;ownBox.hidden=!own;message.hidden=own||!message.textContent;
-  copy.hidden=!own;send.hidden=own;
-  scroll.scrollTop=0;
+  remoteBox.hidden=own;ownBox.hidden=!own;
  };
  const remote=button('粘贴对方的码','',()=>useMode(false)),local=button('本机配对码','',()=>useMode(true));
  remote.type=local.type='button';methods.append(remote,local);
- // A direct network lists computers nearby with pairing open.
- if(nearbyReady())scroll.append(nearbySection());
- if(canReceive)scroll.append(methods);
- scroll.append(remoteBox);
- if(canReceive)scroll.append(ownBox);
+ let codeSection=scroll;
+ if(nearbyReady()){
+  codeSection=el('details','panel-disclosure');codeSection.id='pair-other-methods';
+  codeSection.append(el('summary','','其他配对方式'));
+  if(findingReady())codeSection.append(pairByAddress());
+  scroll.append(nearbySection(),codeSection);
+ }
+ if(canReceive)codeSection.append(methods);
+ codeSection.append(remoteBox);
+ if(canReceive)codeSection.append(ownBox);
  if(node.pairing_window?.required&&ownCode.textContent)scroll.append(pairingWindowNote());
- form.append(scroll,footer);
+ shell.append(scroll,footer);
  code.addEventListener('input',()=>{message.hidden=true;message.textContent='';message.classList.remove('error');});
- form.addEventListener('submit',event=>{event.preventDefault();sendPair(code.value,message,send);});
- body.replaceChildren(form);
+ remoteBox.addEventListener('submit',event=>{event.preventDefault();sendPair(code.value,message,send);});
+ body.replaceChildren(shell);
  useMode(false);
 }
 async function sendPair(code,message=null,send=null){
@@ -406,7 +411,7 @@ async function sendPair(code,message=null,send=null){
  const waiting=data('pairs').find(p=>p.direction==='outgoing'&&pairOpen(p)&&String(p.card.fingerprint).toLowerCase()===fingerprint);
  if(waiting){pairingState.sent=waiting;if(!$('#pair-dialog').open)$('#pair-dialog').showModal();drawPairDialog();return;}
  pairingState.busy=true;
- const controls=send?.form.querySelectorAll('button:enabled,textarea:enabled')||[];
+ const controls=send?.closest('.pair-form')?.querySelectorAll('button:enabled,textarea:enabled,input:enabled')||[];
  if(send){
   for(const control of controls)control.disabled=true;
   $('#pair-dialog [data-close]').disabled=true;

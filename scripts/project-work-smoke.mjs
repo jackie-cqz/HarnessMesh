@@ -98,7 +98,7 @@ try {
   await page.locator('#local-name').filter({hasText: 'source'}).waitFor({state:'attached'});
 
   stage = 'project-first discovery and mismatch';
-  await page.locator('[data-view="tasks"]').click();
+  await page.locator('[data-view="inbox"]').click();
   await page.locator('#new-task').click();
   await page.locator('#compose-discovery summary').click();
   await page.locator('#discover-project').selectOption('project-review');

@@ -10,6 +10,7 @@ const onboardPaths=new Map();
 let onboardStep='agent',onboardHarness='',onboardBusy=false,onboardDetecting=false;
 let onboardDetected=[],onboardOffers=[],onboardDetectionError=false,onboardVerified=null;
 let onboardBody=null,onboardRegistered=null,onboardId=null;
+let onboardProjectRead=0,onboardProjectId='';
 
 function onboardValue(id){return onboard(id).value.trim();}
 function onboardList(id){return onboardValue(id).split(',').map(s=>s.trim()).filter(Boolean);}
@@ -19,15 +20,18 @@ function onboardMessage(text='',error=false){
  message.classList.toggle('error',error);
 }
 
-for(const [kind,[name]] of Object.entries(onboardKinds)){
- const label=el('label','onboard-choice'),radio=el('input');
- radio.type='radio';radio.name='onboard-kind';radio.value=kind;radio.required=true;
- const title=el('strong','',name),status=el('span','onboard-choice-status');
- title.id='onboard-name-'+kind;status.id='onboard-status-'+kind;
- radio.setAttribute('aria-labelledby',title.id);
- radio.setAttribute('aria-describedby',status.id);
- label.append(radio,title,status);
- onboard('harness').append(label);
+function initOnboardChoices(){
+ if(onboard('harness').firstElementChild)return;
+ for(const [kind,[name]] of Object.entries(onboardKinds)){
+  const label=el('label','onboard-choice'),radio=el('input');
+  radio.type='radio';radio.name='onboard-kind';radio.value=kind;radio.required=true;
+  const title=el('strong','',name),status=el('span','onboard-choice-status');
+  title.id='onboard-name-'+kind;status.id='onboard-status-'+kind;
+  radio.setAttribute('aria-labelledby',title.id);
+  radio.setAttribute('aria-describedby',status.id);
+  label.append(radio,productIcon(kind),title,status);
+  onboard('harness').append(label);
+ }
 }
 
 function renderOnboardAdapter(){
@@ -89,8 +93,8 @@ function renderOnboard(focus=false){
  onboard('service').hidden=!done||state.runtime?.capabilities?.agent_settings!==true;
  onboard('service').disabled=onboardBusy;
  onboard('submit').hidden=done;
- onboard('submit').disabled=onboardBusy||(picking&&!onboardHarness);
- const submitLabels={agent:'继续绑定项目',project:'检查并预览',review:'登记此 Agent'};
+ onboard('submit').disabled=onboardBusy||(picking&&!onboardHarness)||(editing&&projectsSupported()&&!onboardProject());
+ const submitLabels={agent:'继续设置',project:'预览登记',review:'登记此 Agent'};
  onboard('submit').textContent=submitLabels[onboardStep]||'';
  const current=picking?0:editing?1:2;
  [...onboard('steps').children].forEach((item,index)=>{
@@ -108,7 +112,7 @@ function renderOnboard(focus=false){
 
 function resetOnboard(){
  onboard('form').reset();
- onboardPaths.clear();
+ onboardPaths.clear();onboardProjectId='';
  onboardHarness='';onboardStep='agent';
  onboardBody=null;onboardRegistered=null;onboardId=null;
  onboard('advanced').open=false;
@@ -122,9 +126,60 @@ function updateOnboardPeers(){
  for(const p of data('peers').filter(p=>p.status==='trusted'))option(peers,p.card.node_id,`${p.card.display_name} · ${short(p.card.node_id)}`);
  if([...peers.options].some(o=>o.value===previous))peers.value=previous;
 }
+function onboardProject(){
+ const selected=onboard('project').selectedOptions[0];
+ return selected?.dataset.path ? {project_id:selected.value,path:selected.dataset.path} : null;
+}
+async function visibleOnboardProjects(){
+ return unwrap(await api('/projects')).filter(project=>!project.hidden);
+}
+async function loadOnboardProjects(){
+ const read=++onboardProjectRead,select=onboard('project');
+ const supported=projectsSupported(),help=onboard('project-help'),status=onboard('project-status');
+ for(const id of ['legacy-project','legacy-root']){
+  const input=onboard(id);input.disabled=supported;input.closest('label').hidden=supported;
+ }
+ select.disabled=true;select.replaceChildren();onboard('project-label').hidden=!supported;
+ onboard('project-path').textContent='';help.hidden=false;
+ onboard('add-project').hidden=true;onboard('retry-projects').hidden=true;
+ if(!supported){
+  status.textContent='此版本的节点需要手动指定已有项目。';
+  return;
+ }
+ status.textContent='正在读取本机项目…';
+ renderOnboard();
+ try{
+  const projects=await visibleOnboardProjects();
+  if(read!==onboardProjectRead)return;
+  if(!projects.length){
+   onboardProjectId='';
+   status.textContent='还没有可选的本机项目。';
+   onboard('project-label').hidden=true;onboard('add-project').hidden=false;
+   return;
+  }
+  const names=new Set(),duplicates=new Set();
+  for(const p of projects){if(names.has(p.name))duplicates.add(p.name);names.add(p.name);}
+  select.append(new Option('选择已有项目',''));
+  for(const p of projects){
+   const option=new Option(duplicates.has(p.name)?p.name+' · '+p.path:p.name,p.project_id);
+   option.dataset.path=p.path;select.append(option);
+  }
+  if(!projects.some(p=>p.project_id===onboardProjectId))onboardProjectId=projects.length===1?projects[0].project_id:'';
+  select.value=onboardProjectId;
+  help.hidden=true;select.disabled=false;
+  onboard('project-path').textContent=onboardProject()?.path||'';
+ }catch(e){
+  if(read!==onboardProjectRead)return;
+  status.textContent='未能读取本机项目。'+projectProblem(e);
+  onboard('retry-projects').hidden=false;
+ }finally{
+  if(read===onboardProjectRead)renderOnboard();
+ }
+}
 function openOnboarding(){
  if(!canWrite())return toast('当前面板只读，请查看运行能力与升级步骤。');
  if(onboardBusy||onboardDialog.open)return;
+ initOnboardChoices();
  if(onboardStep==='done')resetOnboard();
  if(onboardStep!=='review')updateOnboardPeers();
  const local=data('node',{}).node?.display_name;
@@ -133,6 +188,7 @@ function openOnboarding(){
  renderOnboard();
  onboardDialog.showModal();
  renderOnboard(true);
+ if(onboardStep==='project')loadOnboardProjects();
  detectOnboardAgents();
 }
 
@@ -186,13 +242,15 @@ function installDetails(offer){
 function onboardDetectedChoice(){return onboardDetected.find(a=>a.harness===onboardHarness&&a.executable===onboardValue('executable'));}
 function buildOnboardBody(){
  const workspace=onboardValue('workspace');
+ const project=projectsSupported()?onboardProject():{project_id:onboardValue('legacy-project'),path:onboardValue('legacy-root')};
+ if(!project)throw Error('请选择已有的本机项目。');
  return {
   agent_id:onboardId??=crypto.randomUUID(),
   peer_id:onboardValue('peer')||null,
   config:{
-   agent:{name:onboardValue('name'),harness:onboardHarness,project_id:onboardValue('project'),mode:'managed'},
+   agent:{name:onboardValue('name'),harness:onboardHarness,project_id:project.project_id,mode:'managed'},
    project:{
-    root:onboardValue('root'),allowed_tools:onboardList('tools'),artifact_paths:onboardList('artifacts'),
+    root:project.path,allowed_tools:onboardList('tools'),artifact_paths:onboardList('artifacts'),
     require_remote_task_approval:true,workspace_mode:workspace,
     git_executable:workspace==='git-worktree'?onboardValue('git'):null
    },
@@ -228,7 +286,7 @@ function renderOnboardPreview(preview,body){
 }
 function onboardError(error){
  const hints={
-  'local project directory is unavailable':'找不到这个项目目录。请填写执行电脑上已存在的绝对路径。',
+  'local project directory is unavailable':'这个工作目录已经不可用，请返回运行设置并选择本机已有的项目。',
   'project root must be a directory':'项目路径指向的是文件，请选择文件夹。',
   'local executable/model/credential reference check failed; no model was called':'本机引用检查失败。请检查启动命令、Git 路径和环境变量名。',
   'select a currently trusted peer':'该电脑已不在受信任列表中，请重新选择。'
@@ -253,12 +311,25 @@ onboard('executable').addEventListener('input',()=>{
 });
 onboard('install').addEventListener('click',installOnboardAdapter);
 onboard('retry').addEventListener('click',detectOnboardAgents);
+onboard('project').addEventListener('change',()=>{
+ onboardProjectId=onboard('project').value;
+ onboard('project-path').textContent=onboardProject()?.path||'';
+ renderOnboard();
+});
+onboard('retry-projects').addEventListener('click',loadOnboardProjects);
+onboard('add-project').addEventListener('click',()=>{
+ onboardDialog.close();
+ $('#project-dialog').addEventListener('close',()=>{
+  if(state.view==='agents')openOnboarding();
+ },{once:true});
+ openProjectDialog();
+});
 onboard('workspace').addEventListener('change',updateOnboardWorkspace);
 onboard('advanced').addEventListener('invalid',()=>{onboard('advanced').open=true;},true);
 onboard('back').addEventListener('click',()=>{
  if(onboardBusy)return;
  onboardStep=onboardStep==='review'?'project':'agent';
- if(onboardStep==='project')updateOnboardPeers();
+ if(onboardStep==='project'){updateOnboardPeers();loadOnboardProjects();}
  onboardMessage();
  renderOnboard(true);
 });
@@ -270,10 +341,12 @@ onboard('service').addEventListener('click',()=>{
 onboard('form').addEventListener('submit',async event=>{
  event.preventDefault();
  if(onboardBusy||onboardStep==='done')return;
+ if(!canWrite())return onboardMessage('当前面板只读，请查看运行能力与升级步骤。',true);
  onboardMessage();
  if(onboardStep==='agent'){
-  onboard('project-agent').textContent=`Agent 类型 · ${onboardKinds[onboardHarness][0]}`;
+  onboard('project-agent').replaceChildren(productIcon(onboardHarness),document.createTextNode(onboardKinds[onboardHarness][0]));
   onboardStep='project';
+  loadOnboardProjects();
   renderOnboard(true);
   return;
  }
@@ -283,6 +356,17 @@ onboard('form').addEventListener('submit',async event=>{
  onboard('submit').textContent=reviewing?'正在登记…':'正在检查…';
  let moved=false;
  try{
+  if(!reviewing)onboardBody=buildOnboardBody();
+  if(projectsSupported()){
+   // Another panel may have removed or hidden this folder during review.
+   const {agent,project}=onboardBody.config;
+   const current=await visibleOnboardProjects();
+   if(!current.some(p=>p.project_id===agent.project_id&&p.path===project.root)){
+    onboardStep='project';
+    await loadOnboardProjects();
+    throw Error('所选项目已变更，请重新选择本机项目。');
+   }
+  }
   if(reviewing){
    const {agent}=unwrap(await api('/onboarding/register',{method:'POST',body:JSON.stringify(onboardBody)}));
    onboardRegistered=agent;
@@ -295,7 +379,6 @@ onboard('form').addEventListener('submit',async event=>{
    renderAgents();
    await refresh();
   }else{
-   onboardBody=buildOnboardBody();
    const preview=unwrap(await api('/onboarding/preview',{method:'POST',body:JSON.stringify(onboardBody)}));
    onboardBody.expected_sha256=preview.configuration_sha256;
    renderOnboardPreview(preview,onboardBody);

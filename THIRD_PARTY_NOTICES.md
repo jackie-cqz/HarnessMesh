@@ -1,5 +1,17 @@
 # Third-party notices
 
+## Agent product icons
+
+The desktop panel bundles the product marks in `web/panel/agent-icons/` so they can be displayed offline. The names and marks belong to their respective owners.
+
+| Product | Source |
+| --- | --- |
+| Pi | [Pi press kit](https://pi.dev/press-kit), [compact badge](https://pi.dev/favicon.svg) |
+| OpenCode | [OpenCode brand assets](https://opencode.ai/brand), light and dark logo symbols |
+| DeepSeek Harness | [Web UI favicon](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/web/public/favicon.svg) |
+| Codex | The light and dark Codex icons bundled with the [OpenAI desktop app](https://help.openai.com/en/articles/20001276-moving-to-the-new-chatgpt-desktop-app) |
+| Claude Code | The icon from [Anthropic’s Claude Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) |
+
 ## DeepSeek-Reasonix provider presets
 
 The provider endpoint presets in `crates/hmesh-core/src/service.rs` (`PRESETS`)

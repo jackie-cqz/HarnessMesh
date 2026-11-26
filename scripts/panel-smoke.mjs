@@ -30,8 +30,34 @@ async function succeeded(mesh,id){
  return until(()=>{const task=mesh.call(['task','show',id]);if(['FAILED','UNKNOWN','CANCELLED'].includes(task.status))throw Error('Fixture task ended '+task.status);return task.status==='SUCCEEDED'?task:null;});
 }
 async function confirm(page){await page.getByRole('button',{name:'确认',exact:true}).click();}
+async function checkProductArtwork(page, theme){
+ const choices=page.locator('#onboard-harness');
+ for(const kind of ['pi','opencode','dsh','codex','claude-code']){
+  const image=choices.locator(`[data-product="${kind}"] img:visible`);
+  assert(await image.count()===1,'Expected one visible product icon for '+kind);
+  await image.evaluate(img=>img.decode());
+  if(kind==='opencode'||kind==='codex'){
+   assert((await image.getAttribute('class'))==='product-'+theme,'Wrong theme asset for '+kind);
+  }
+ }
+ assert(await choices.locator('[data-product="acp"] svg use[href="#i-terminal"]').count()===1,'Missing generic ACP icon');
+}
+async function checkTabIcon(page){
+ const primary=page.locator('link[rel="icon"]');
+ assert(await primary.count()===1&&await primary.getAttribute('href')==='/assets/brand.svg','Expected the theme-aware tab icon');
+ const icons=await primary.evaluate(async link=>{
+  return Promise.all([link.href,'/favicon.ico'].map(async path=>{
+   const reply=await fetch(path);
+   const image=new Image();image.src=path;await image.decode();
+   return {path:new URL(path,location.origin).pathname,type:reply.headers.get('content-type'),width:image.naturalWidth};
+  }));
+ });
+ assert(icons.some(i=>i.path==='/assets/brand.svg'&&i.type==='image/svg+xml'&&i.width>0),'Tab brand SVG did not load');
+ assert(icons.some(i=>i.path==='/favicon.ico'&&i.type==='image/x-icon'&&i.width>=16),'Tab icon fallback did not load');
+}
 async function create(page,agent,goal,peer,lost=false){
- await page.locator('[data-view="tasks"]').click();await page.locator('#new-task').click();
+ await page.locator('[data-view="inbox"]').click();
+ await page.locator('[data-work-area="tasks"]').click();await page.locator('#new-task').click();
  if(peer)await page.locator('#compose-peer').selectOption(peer);
  await page.waitForFunction(id=>document.querySelector('#compose-agent').value===id&&!document.querySelector('#compose-submit').disabled,agent);
  await page.locator('#compose-goal').fill(goal);
@@ -66,7 +92,8 @@ try{
  await page.goto(ready.url);await page.waitForLoadState('networkidle');await page.locator('#local-name').filter({hasText:'panel-worker'}).waitFor({state:'attached'});
  assert(!await page.evaluate(()=>!!window.panelInjected),'Task text executed');
  stage='reject-and-archive';
- await page.locator('[data-view="tasks"]').click();await page.locator('[data-filter="pending"]').click();await page.locator('#task-list .task-title').first().click();await page.locator('#task-detail .detail-id').waitFor();
+ await page.locator('[data-view="inbox"]').click();
+ await page.locator('[data-work-area="tasks"]').click();await page.locator('[data-filter="pending"]').click();await page.locator('#task-list .task-title').first().click();await page.locator('#task-detail .detail-id').waitFor();
  assert(await page.locator('#task-detail > pre.goal').innerText()===goal,'Full request missing');
  await page.getByRole('button',{name:'拒绝任务',exact:true}).click();await confirm(page);
  await until(()=>b.mesh.call(['task','show',pending.task_id]).status==='REJECTED');
@@ -112,8 +139,18 @@ try{
  await until(()=>b.mesh.call(['agents','list']).some(a=>a.agent_id===agent.agent_id&&a.probe.managed_run==='not_checked'));
  stage='onboarding-preview-register-recover';
  const beforePolicy=readFileSync(join(b.dir,'policy.toml'),'utf8');
+ await page.locator('.theme-options label[title="深色"]').click();
+ await page.reload();
+ await checkTabIcon(page);
+ await page.locator('[data-view="agents"]').click();await page.locator('#new-agent').click();
+ assert(await page.locator('html').getAttribute('data-theme')==='dark','Appearance lost on reload');
+ await checkProductArtwork(page,'dark');
+ await page.locator('#close-onboard').click();
+ await page.locator('.theme-options label[title="浅色"]').click();
  await page.locator('#new-agent').click();
+ await checkProductArtwork(page,'light');
  assert(await page.locator('#onboard-submit').isDisabled(),'Wizard allowed an unselected Agent');
+ assert(await page.locator('#onboard-harness label').count()===await page.locator('#onboard-harness .product-icon').count(),'Missing product icon in the Agent catalog');
  await page.locator('.onboard-choice').filter({hasText:'其他 ACP Agent'}).click();
  await page.locator('#onboard-executable').fill(fixture);
  await page.locator('.onboard-choice').filter({hasText:'Codex'}).click();
@@ -121,15 +158,33 @@ try{
  await page.locator('.onboard-choice').filter({hasText:'其他 ACP Agent'}).click();
  assert(await page.locator('#onboard-executable').inputValue()===fixture,'Returning to a type lost its manual path');
  await page.locator('#onboard-submit').click();
- for(const[id,value]of Object.entries({name:'wizard-fixture',project:'panel-test',root:project}))await page.locator('#onboard-'+id).fill(value);
+ await page.waitForFunction(()=>document.querySelector('#onboard-project').value==='panel-test');
+ await page.locator('#onboard-name').fill('wizard-fixture');
+ assert(await page.locator('#onboard-legacy-root').isHidden(),'Asked twice for the project folder');
+ const setProjectHidden=hidden=>page.evaluate(hidden=>api('/projects/panel-test',{method:'POST',body:JSON.stringify({hidden})}).then(unwrap),hidden);
+ await setProjectHidden(true);await page.locator('#close-onboard').click();
+ await page.route('**/api/projects',route=>route.abort('failed'));await page.locator('#new-agent').click();
+ await page.locator('#onboard-retry-projects').waitFor();
+ assert(await page.locator('#onboard-submit').isDisabled()&&await page.locator('#onboard-add-project').isHidden(),'Failed read treated as an empty project list');
+ await page.unroute('**/api/projects');await page.locator('#onboard-retry-projects').click();
+ await page.locator('#onboard-add-project').waitFor();
+ assert(await page.locator('#onboard-submit').isDisabled(),'Hidden project still selectable');
+ await page.locator('#onboard-add-project').click();
+ const secondFolder=join(root,'second-project');mkdirSync(secondFolder);
+ await page.locator('#project-path').fill(secondFolder);await page.locator('#project-look').click();await page.locator('#project-add').click();
+ await page.locator('#onboard-dialog[open]').waitFor();
+ await page.waitForFunction(()=>document.querySelector('#onboard-project').selectedOptions[0]?.textContent==='second-project');
+ await setProjectHidden(false);
  await page.locator('#onboard-back').click();
  await page.locator('#onboard-submit').click();
- assert(await page.locator('#onboard-name').inputValue()==='wizard-fixture','Back navigation lost the project draft');
+ await page.locator('#onboard-project').selectOption('panel-test');
+ assert(await page.locator('#onboard-name').inputValue()==='wizard-fixture','Back navigation lost the Agent name');
  assert(await page.locator('#onboard-peer').isHidden(),'Advanced options are expanded by default');
  await page.locator('#onboard-advanced summary').click();
  await page.locator('#onboard-peer').selectOption(a.card.node_id);
  const previewResponse=page.waitForResponse(r=>r.url().endsWith('/onboarding/preview'));
- await page.getByRole('button',{name:'检查并预览',exact:true}).click();const preview=(await(await previewResponse).json()).data;
+ await page.getByRole('button',{name:'预览登记',exact:true}).click();const preview=(await(await previewResponse).json()).data;
+ assert(preview.project_id==='panel-test'&&preview.project_root.endsWith('project'),'Project ID or folder changed in the preview');
  assert(preview.model_called===false&&preview.policy_applied===false&&preview.policy_preview.includes(preview.agent_id)&&preview.policy_preview.includes(a.card.node_id),'Exact preview failed');
  await page.route('**/api/onboarding/register',async route=>{const response=await route.fetch();assert(response.ok(),'Onboarding registration failed');await route.abort('failed');});
  await page.locator('#onboard-grant summary').click();
@@ -151,7 +206,9 @@ try{
  await page.locator('.onboard-choice').filter({hasText:'DeepSeek Harness'}).click();
  assert(await page.locator('#onboard-executable').inputValue()===fixture,'Detected DSH path missing');
  await page.locator('#onboard-submit').click();
- for(const[id,value]of Object.entries({name:'node-fixture',project:'panel-test',root:project}))await page.locator('#onboard-'+id).fill(value);
+ await page.waitForFunction(()=>document.querySelector('#onboard-project').options.length===3);
+ assert(await page.locator('#onboard-project').inputValue()===''&&await page.locator('#onboard-submit').isDisabled(),'Multiple projects require an explicit choice');
+ await page.locator('#onboard-project').selectOption('panel-test');await page.locator('#onboard-name').fill('node-fixture');
  const nodePreview=page.waitForRequest(r=>r.url().endsWith('/onboarding/preview'));await page.locator('#onboard-submit').click();
  assert((await nodePreview).postDataJSON().config.adapter.node_executable===process.execPath,'Detected Node.js missing from the registration');
  await page.locator('#onboard-summary').filter({hasText:process.execPath}).waitFor();
@@ -168,15 +225,23 @@ try{
  gitCall(['init','-q']);writeFileSync(join(project,'out/health.json'),JSON.stringify({status:'base'}));gitCall(['add','.']);gitCall(['-c','user.name=fixture','-c','user.email=fixture@invalid','-c','commit.gpgsign=false','commit','-qm','fixture base']);
  const gitConfig=join(root,'git-agent.toml');writeFileSync(gitConfig,readFileSync(config,'utf8').replace('name="panel-fixture"','name="worktree-fixture"').replace('[adapter]','workspace_mode="git-worktree"\ngit_executable='+JSON.stringify(git)+'\n[adapter]'));
  const gitAgent=b.mesh.call(['agent','register','--config',gitConfig]);const gitTask=b.mesh.call(['agent','verify',gitAgent.agent_id,'--allow-model','--prompt','fixture:create']);await succeeded(b.mesh,gitTask.task_id);
- await page.locator('[data-view="tasks"]').click();await page.locator('[data-filter="all"]').click();await page.locator('#task-list tr').filter({hasText:gitTask.task_id.slice(0,8)}).locator('.task-title').click();await page.getByRole('button',{name:'查看修改 diff',exact:true}).click();await page.locator('.workspace-diff').filter({hasText:'out/health.json'}).waitFor();await page.getByRole('button',{name:'diff 已读完',exact:true}).waitFor();
+ await page.locator('[data-view="inbox"]').click();
+ await page.locator('[data-work-area="tasks"]').click();await page.locator('[data-filter="all"]').click();await page.locator('#task-list tr').filter({hasText:gitTask.task_id.slice(0,8)}).locator('.task-title').click();await page.getByRole('button',{name:'查看修改 diff',exact:true}).click();await page.locator('.workspace-diff').filter({hasText:'out/health.json'}).waitFor();await page.getByRole('button',{name:'diff 已读完',exact:true}).waitFor();
  assert(JSON.parse(readFileSync(join(project,'out/health.json'),'utf8')).status==='base','Worktree changed original project');await page.locator('[data-close="task-dialog"]').click();
- for(const [name,section] of [['sessions','sessions'],['inbox','inbox'],['tasks','tasks'],['tasks','development'],['agents','agents'],['nodes','nodes'],['settings','operations'],['settings','services']]){await page.locator('[data-view="'+name+'"]').click();assert(await page.locator('#'+section+'-view').isVisible(),'Navigation failed: '+name+' / '+section);}
- // Gone: the overview duplicated the inbox, tasks and paired computers.
- assert(await page.locator('[data-view="overview"],[data-view="development"],[data-view="operations"],[data-view="services"]').count()===0,'Old navigation entries are still shown');
+ for(const [name,section] of [['sessions','sessions'],['inbox','inbox'],['agents','agents'],['nodes','nodes'],['settings','operations'],['settings','services']]){
+  await page.locator('[data-view="'+name+'"]').click();
+  assert(await page.locator('#'+section+'-view').isVisible(),'Navigation failed: '+name+' / '+section);
+ }
+ await page.locator('[data-view="inbox"]').click();
+ await page.locator('[data-work-area="tasks"]').click();
+ assert(await page.locator('#tasks-view').isVisible()&&await page.locator('#development-view').isVisible(),'Task history or development workflows missing from the work inbox');
+ assert(await page.locator('[data-view="inbox"]').getAttribute('aria-current')==='page','Task history lost its work inbox navigation');
+ assert(await page.locator('[data-view="overview"],[data-view="tasks"],[data-view="development"],[data-view="operations"],[data-view="services"]').count()===0,'Old navigation entries are still shown');
  // The version box lives on the settings page; elsewhere it shows only when something needs attention.
- await page.locator('[data-view="tasks"]').click();assert(await page.locator('#runtime-summary').isHidden(),'Version box shown outside settings');
+ await page.locator('[data-view="inbox"]').click();
+ await page.locator('[data-work-area="tasks"]').click();assert(await page.locator('#runtime-summary').isHidden(),'Version box shown outside settings');
  await page.locator('[data-view="settings"]').click();assert(await page.locator('#runtime-summary').isVisible(),'Version box missing from settings');
- await page.setViewportSize({width:390,height:844});await page.locator('[data-view="tasks"]').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile overflow');
+ await page.setViewportSize({width:390,height:844});await page.locator('[data-view="inbox"]').click();await page.locator('[data-work-area="tasks"]').click();assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Mobile overflow');
  await page.setViewportSize({width:360,height:540});
   await page.locator('#new-task').click();
   assert(await page.evaluate(()=>{
@@ -201,6 +266,6 @@ try{
  await page.locator('#stop-panel').click();await confirm(page);
  await until(()=>owned.find(p=>p.pid===ready.pid)?.exitCode===0,20);
  assert(b.mesh.call(['daemon','status']).running===true,'Stopping a reused panel stopped its Daemon');
- console.log(JSON.stringify({passed:true,model_calls:0,fixture_runs:6,scope:'isolated two-node mTLS and headless browser',checks:['worktree-diff-review','queue-wait-reason','queue-resumes-after-cancel','completion-snapshot-after-file-edit','onboarding-reference-preview','onboarding-idempotent-register','onboarding-no-policy-or-model','onboarding-detected-node','mobile-onboarding','navigation','pending-approval','request-text-XSS','reject','archive','local-create','local-runs-without-self-approval','local-verify','remote-create','lost-acknowledgement','original-request-recovery','no-duplicate-attempt','remote-verification-fail','remote-verification-pass','observation-time','retire','restore-unverified','mobile','access-gate','stop-preserves-existing-daemon']}));
+ console.log(JSON.stringify({passed:true,model_calls:0,fixture_runs:6,scope:'isolated two-node mTLS and headless browser',checks:['worktree-diff-review','queue-wait-reason','queue-resumes-after-cancel','completion-snapshot-after-file-edit','onboarding-existing-project-selection','onboarding-add-project-return','onboarding-reference-preview','onboarding-idempotent-register','onboarding-no-policy-or-model','onboarding-detected-node','mobile-onboarding','navigation','pending-approval','request-text-XSS','reject','archive','local-create','local-runs-without-self-approval','local-verify','remote-create','lost-acknowledgement','original-request-recovery','no-duplicate-attempt','remote-verification-fail','remote-verification-pass','observation-time','retire','restore-unverified','mobile','access-gate','stop-preserves-existing-daemon']}));
 }catch(e){console.error(stage+': '+e.message+' diagnostics='+root);process.exitCode=1;}
 finally{await browser?.close();for(const p of owned.reverse()){if(p.exitCode===null){p.kill();await Promise.race([once(p,'exit'),new Promise(r=>setTimeout(r,3000))]);}}}

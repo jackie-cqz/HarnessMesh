@@ -1,4 +1,4 @@
-# HarnessMesh
+<h1 align="center"><img src="web/panel/brand.svg" width="32" height="32" alt="" align="absmiddle"> HarnessMesh</h1>
 
 **English** | [简体中文](README_CN.md)
 
@@ -143,11 +143,11 @@ An only-MCP computer needs no Tailscale at all; when setup does not find it, it 
 
 Open the panel (`hmesh panel`) and go to **配对节点 → 配对新电脑** (paired computers → pair a new computer):
 
-1. On a full computer B, copy **这台电脑的配对码** (this computer's pairing code). On a direct network the dialog also shows how long B keeps pairing open.
+1. On both computers, expand **其他配对方式** (other pairing methods) if the dialog lists nearby computers. On computer B, select **本机配对码** (this computer’s pairing code) and copy it. On a direct network the dialog also shows how long B keeps pairing open.
 2. On computer A, paste it in the same dialog and send the request. A shows a check code.
 3. On B, type the check code and approve. A finishes by itself.
 
-**On a direct network, computers nearby are listed.** While B has 配对新电脑 open, it shows a 6-digit passcode, and the same dialog on A lists B under **附近的电脑** (computers nearby). Choose B, type its passcode, and both computers are paired: nothing to approve. A passcode allows three tries and works once; after three wrong ones it ends, while the pairing code keeps working. Guest Wi-Fi and some routers block this lookup, and a computer on another subnet is not heard: type its IP address or host name under **按地址配对** (pair at an address) with the same passcode (without a port, 39880 is used), or use the pairing code above. On the command line: `hmesh pair nearby`, then `hmesh pair join <address>`, which asks for the passcode.
+**On a direct network, computers nearby are listed.** While B has 配对新电脑 open, it shows a 6-digit passcode, and the same dialog on A lists B under **附近的电脑** (computers nearby). Choose B, type its passcode, and both computers are paired: nothing to approve. A passcode allows three tries and works once; after three wrong ones it ends, while the pairing code keeps working. Guest Wi-Fi and some routers block this lookup, and a computer on another subnet is not heard: type its IP address or host name under **其他配对方式 → 按地址配对** (other pairing methods → pair at an address) with the same passcode (without a port, 39880 is used), or use the pairing code above. On the command line: `hmesh pair nearby`, then `hmesh pair join <address>`, which asks for the passcode.
 
 **Through a relay.** When two computers cannot reach each other at all (both behind NAT, or a company Wi-Fi that keeps computers apart), run a relay on a server both can reach:
 
@@ -169,8 +169,8 @@ No Tailscale needed:
 ```
 
 1. Open the link the panel prints.
-2. On **Agents**, use **接入项目与 Agent** (add a project and agent) to register an agent for a project directory.
-3. Go to **新会话** (new session), pick the agent and send your first message.
+2. On **Agents**, select **接入 Agent** (add an agent), choose the product, then select its default project. If the list is empty, use **前往添加项目** to add a local folder and return to setup.
+3. Click **开会话** (start a session) on the agent’s card. Check the computer and project beneath the composer, then send your first message.
 
 Registering an agent runs only an ACP `initialize` handshake. No model is called until you send a message. Data lives in `~/.harnessmesh`; pass `--data-dir /absolute/path` to use another directory.
 

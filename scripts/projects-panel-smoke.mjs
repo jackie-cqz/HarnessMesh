@@ -113,7 +113,8 @@ try{
 
  stage='a session in the agent\'s own project';
  await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
- await page.locator('#hero-agents .agent-chip').filter({hasText:'helper'}).click();
+ await page.locator('#hero-target button').click();
+ await page.locator('#agent-list .entity-card').filter({has:page.getByRole('heading',{name:'helper',exact:true})}).getByRole('button',{name:'开会话',exact:true}).click();
  const picker=page.locator('#hero-project select');await picker.waitFor();
  assert(await picker.locator('option:checked').textContent()==='shop-app','the new session does not start in the agent\'s own project');
  await page.locator('#hero-input').fill('fixture:echo 第一次打招呼');await page.locator('#hero-send').click();
@@ -209,7 +210,7 @@ try{
 
  stage='the sidebar lists this computer → project → sessions';
  const localGroup=page.locator('#session-list .session-group').first();
- assert((await localGroup.locator('.session-group-name').innerText()).includes('mac-a（本机）'),'this computer does not head the project list');
+ assert(await localGroup.locator('.computer-name').innerText()==='mac-a'&&await localGroup.locator('.computer-kind').innerText()==='本机','this computer does not head the project list');
  await rowsIn(projectBlock(page,'shop-app')).filter({hasText:'fixture:echo 第一次打招呼'}).waitFor();
  await rowsIn(projectBlock(page,'site')).filter({hasText:'fixture:cwd'}).waitFor();
  assert(await rowsIn(projectBlock(page,'shop-app')).filter({hasText:'fixture:cwd'}).count()===0,'a session is listed under the wrong project');
@@ -345,7 +346,8 @@ try{
   await pageB.keyboard.press('Escape');await pageB.locator('#project-dialog').waitFor({state:'hidden'});
  }
  await pageB.locator('#new-session').click();await pageB.locator('#conversation-empty').waitFor();
- await pageB.locator('#hero-agents .agent-chip').filter({hasText:'helper'}).click();
+ await pageB.locator('#hero-target button').click();
+ await pageB.locator('#agent-list .entity-card').filter({has:pageB.getByRole('heading',{name:'helper',exact:true})}).getByRole('button',{name:'开会话',exact:true}).click();
  const pickerB=pageB.locator('#hero-project select');await pickerB.waitFor({timeout:30000});
  assert((await pickerB.locator('option').allTextContents()).join('|')==='Agent 自己的目录|网站','the paired computer is not offered the shared project: '+(await pickerB.locator('option').allTextContents()).join('|'));
  assert(await pickerB.locator('option:checked').textContent()==='Agent 自己的目录','the paired computer does not start in the agent\'s own folder');
@@ -360,6 +362,42 @@ try{
  const seenB=await pageB.evaluate(()=>({nodes:JSON.stringify(conv.nodes),records:(conv.list?.remote||[]).every(r=>!('cwd' in r.session))}));
  assert(seenB.records&&!seenB.nodes.includes(site),'the shared folder reached the paired computer');
 
+ stage='a project unshared while offline keeps a draft from switching directories';
+ await pageB.locator('#new-session').click();
+ await pickerB.selectOption({label:'网站'});const chosenProject=await pickerB.inputValue();
+ await pageB.locator('#hero-input').fill('fixture:cwd');
+ const offlinePeer=async route=>{
+  if(route.request().method()!=='GET')return route.continue();
+  const reply=await (await route.fetch()).json();
+  const peer=reply.nodes.data.find(node=>node.node_id===a.card.node_id);
+  peer.reachable=false;peer.agents=[];peer.projects=[];
+  await route.fulfill({json:reply});
+ };
+ await pageB.route('**/api/sessions',offlinePeer);
+ await until(async()=>{await pageB.evaluate(()=>loadSessions());return await pickerB.isDisabled();},15,'offline project picker is still active');
+ await projectMenu(page,'网站');await share.click();
+ await page.waitForFunction(()=>proj.list.some(p=>p.name==='网站'&&!p.shared));
+ await pageB.unroute('**/api/sessions',offlinePeer);
+ await until(async()=>{
+  await pageB.evaluate(()=>loadSessions());
+  return await pickerB.isEnabled()&&(await pickerB.locator('option').allTextContents()).includes('网站（已不可用）');
+ },15,'the withdrawn project disappeared from the picker');
+ assert(await pickerB.evaluate(select=>select.selectedOptions[0]?.disabled),'the selected project should be marked unavailable');
+ assert(await pickerB.inputValue()===chosenProject&&await pickerB.locator('option:checked').textContent()==='网站（已不可用）','the unavailable project lost its identity');
+ const attempts=[];
+ pageB.on('request',req=>{if(req.method()==='POST'&&new URL(req.url()).pathname==='/api/sessions')attempts.push(req.postDataJSON());});
+ assert(await pageB.locator('#hero-send').isDisabled()&&await pageB.locator('#hero-input').inputValue()==='fixture:cwd','draft was cleared or enabled for the wrong directory');
+ await pageB.locator('#hero-note').filter({hasText:'重新选择工作目录'}).waitFor();
+ await pageB.locator('#hero-input').press('Control+Enter');
+ await pageB.locator('#hero-input').fill('/');
+ await pageB.locator('#new-session').click();
+ assert(await pickerB.inputValue()===chosenProject&&await pageB.locator('#hero-send').isDisabled(),'navigating back to a draft changed its project');
+ assert(!attempts.length,'a first message or slash discovery opened a session in the default directory');
+ await pickerB.selectOption({label:'Agent 自己的目录'});
+ await pageB.locator('#hero-input').fill('fixture:cwd');await pageB.locator('#hero-send').click();
+ await stream(pageB).getByText(`cwd=${shop} `).waitFor({timeout:30000});
+ assert(attempts.length===1&&!attempts[0].project_id,'explicit fallback did not open exactly one session in the agent directory');
+
  stage='older daemons keep the flat list';
  const legacy=await page.evaluate(()=>{
   const caps=state.runtime.capabilities;caps.projects=false;renderSessionList();
@@ -371,7 +409,7 @@ try{
  stage='screenshots';
  const blogSession=rowsIn(projectBlock(page,'blog')).filter({hasText:'整理博客的目录结构'});
  for(const mode of ['light','dark','narrow']){
-  await page.emulateMedia({colorScheme:mode==='dark'?'dark':'light'});
+  await page.locator('.theme-options label[title="'+(mode==='dark'?'深色':'浅色')+'"]').click();
   await page.setViewportSize(mode==='narrow'?{width:390,height:844}:{width:1440,height:960});
   const toggle=page.locator('#sidebar-toggle'),narrow=mode==='narrow';
   if(narrow&&await toggle.getAttribute('aria-expanded')!=='true')await toggle.click();
@@ -414,7 +452,7 @@ try{
   await noInternals(page,`${mode} screens`);
  }
  assert(problems.length===0,`browser errors: ${problems.join(' | ')}`);
- console.log(JSON.stringify({ok:true,model_calls:0,checks:['projects-in-sidebar','pick-folder-preview-add','preview-by-path-and-history','continue-from-preview','open-existing-project','no-folder-dialog-path-only','continue-earlier-session','search-rename-pin-hide','project-rename-move-share','paired-computer-uses-shared-project','no-internals'],folder_dialog_hidden_checked:process.platform==='linux'?'real-panel-and-page':'page-only',screenshots:taken}));
+ console.log(JSON.stringify({ok:true,model_calls:0,checks:['projects-in-sidebar','pick-folder-preview-add','preview-by-path-and-history','continue-from-preview','open-existing-project','no-folder-dialog-path-only','continue-earlier-session','search-rename-pin-hide','project-rename-move-share','paired-computer-uses-shared-project','unshared-project-blocks-draft-and-slash','no-internals'],folder_dialog_hidden_checked:process.platform==='linux'?'real-panel-and-page':'page-only',screenshots:taken}));
  for(const path of taken)console.log(path);
 }catch(e){console.error(`projects panel smoke failed at ${stage}: ${e.stack||e} diagnostics=${root}`);process.exitCode=1;}
 finally{await browser?.close();for(const child of owned.reverse()){try{child.kill('SIGTERM');}catch{}}}

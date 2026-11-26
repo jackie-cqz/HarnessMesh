@@ -2,6 +2,36 @@
 // All daemon and peer text is rendered with textContent, including tool payloads.
 const $ = selector => document.querySelector(selector);
 function el(tag, cls, text) { const node=document.createElement(tag); if(cls)node.className=cls; if(text!==undefined)node.textContent=String(text); return node; }
+// Product labels come from the same catalog as the registration dialog. New
+// ACP products without bundled artwork use the terminal glyph.
+const productArtwork = new Map([
+  ['pi', ['pi.svg']],
+  ['opencode', ['opencode.svg', 'opencode-dark.svg']],
+  ['dsh', ['dsh.svg']],
+  ['codex', ['codex.png', 'codex-dark.png']],
+  ['claude-code', ['claude-code.png']],
+]);
+function productName(kind) {
+  const product = agentCatalog.find(entry => entry.kind === kind);
+  return product && !product.custom ? product.label : 'ACP Agent';
+}
+function productIcon(kind) {
+  const mark = el('span', 'product-icon');
+  const files = productArtwork.get(kind);
+  mark.dataset.product = files ? kind : 'acp';
+  mark.setAttribute('aria-hidden', 'true');
+  if (!files) {
+    mark.append(icon('terminal', 'sm'));
+    return mark;
+  }
+  for (const [index, file] of files.entries()) {
+    const image = el('img', index === 0 ? 'product-light' : 'product-dark');
+    image.alt = '';
+    image.src = '/assets/agent-icons/' + file;
+    mark.append(image);
+  }
+  return mark;
+}
 function button(text, cls, action) { const b=el('button',cls,text); b.addEventListener('click',action); return b; }
 function empty(title, description='') { const node=el('div','empty'); node.append(el('div','empty-symbol','⊹'),el('strong','',title),el('span','',description)); return node; }
 const labels={SUCCEEDED:'执行成功',FAILED:'执行失败',PENDING_APPROVAL:'待审批',QUEUED:'已排队',RUNNING:'执行中',CANCELLING:'取消中',WAITING_INPUT:'等待输入',CANCELLED:'已取消',REJECTED:'已拒绝',EXPIRED:'已过期',UNKNOWN:'结果不确定',UNCONFIRMED:'待确认',idle:'可用',busy:'忙碌',unverified:'待验证',disabled:'已停用',retired:'已退役',active:'有效',stopped:'已停止',expired:'已过期',online:'在线',unreachable:'不可达',not_probed:'未探测',outbound_only:'只调用',trusted:'已信任',revoked:'已撤销',failed_needs_input:'需要处理',healthy:'健康',running:'运行中',external:'外部进程'};
@@ -11,7 +41,7 @@ function badge(value) { let tone=''; if(['SUCCEEDED','idle','healthy','online','
 const short=value=>value?String(value).slice(0,8):'—';
 const time=value=>value?new Date(value*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'—';
 const fullTime=value=>value?new Date(value*1000).toLocaleString('zh-CN',{hour12:false}):'—';
-const state={snapshot:null,runtime:null,details:new Map(),view:'sessions',filter:'all',agentFilter:'active',refreshing:false,selected:null,cursor:0,events:0,eventsLoading:false,detailLoading:false,detailVersion:0,actionBusy:false,verificationBusy:false,detailObserved:0};
+const state={snapshot:null,runtime:null,details:new Map(),view:'sessions',filter:'all',agentFilter:'all',agentPeer:'',refreshing:false,selected:null,cursor:0,events:0,eventsLoading:false,detailLoading:false,detailVersion:0,actionBusy:false,verificationBusy:false,detailObserved:0};
 let access='';
 try { access=new URLSearchParams(location.hash.slice(1)).get('access')||sessionStorage.getItem('hmesh.panel.access')||''; if(access)sessionStorage.setItem('hmesh.panel.access',access); } catch { access=new URLSearchParams(location.hash.slice(1)).get('access')||''; }
 if(location.hash)history.replaceState(null,'',location.pathname);
@@ -72,7 +102,7 @@ function toast(message) { clearTimeout(toastTimer); $('#toast').textContent=mess
 // tasks; services, diagnostics and usage form the settings page. Sections that
 // need development workflows stay hidden when the daemon lacks them.
 const pages={sessions:['sessions'],inbox:['inbox'],tasks:['tasks','development'],agents:['agents'],nodes:['nodes'],settings:['operations','services']};
-const pageNames={sessions:['会话','和本机、配对电脑上的 Agent 对话；它们也能互相调用。'],inbox:['工作待办','集中查看审批、执行和验收进度。'],tasks:['任务','委派给本机或配对电脑上 Agent 的任务，以及可复用的模板和多阶段工作流。'],agents:['Agents','已登记的 Harness，以及它们的验证状态。'],nodes:['配对节点','和这台电脑配对的电脑。配对后，两边可以互相使用对方的 Agent。'],settings:['设置与诊断','运行版本、Agent 检查、用量与磁盘，以及本机发布的服务和连接。']};
+const pageNames={sessions:['会话','和本机、配对电脑上的 Agent 对话；它们也能互相调用。'],inbox:['工作待办','集中查看审批、执行和验收进度。'],tasks:['工作待办','搜索委派记录，查看执行结果与工件验收。'],agents:['Agents','查看本机和已配对电脑上的 Agent，选择一个开始会话。'],nodes:['配对节点','和这台电脑配对的电脑。配对后，两边可以互相使用对方的 Agent。'],settings:['设置与诊断','运行版本、Agent 检查、用量与磁盘，以及本机发布的服务和连接。']};
 function shownSections(name=state.view){return (pages[name]||[]).filter(part=>!['development','operations'].includes(part)||hasDevelopment());}
 // The development part of the current page: 'development' (templates and
 // workflows) on tasks, 'operations' (diagnostics and usage) on settings.
@@ -81,18 +111,24 @@ function applySections(){const shown=shownSections();for(const view of document.
 function showView(name) {
   if(!pageNames[name])return;
   state.view=name;$('#app').dataset.page=name;
-  for(const b of document.querySelectorAll('[data-view]')){b.classList.toggle('selected',b.dataset.view===name);b.setAttribute('aria-current',b.dataset.view===name?'page':'false');}
+  const nav=name==='tasks'?'inbox':name;
+  for(const b of document.querySelectorAll('[data-view]')){b.classList.toggle('selected',b.dataset.view===nav);b.setAttribute('aria-current',b.dataset.view===nav?'page':'false');}
+  $('#work-nav').hidden=nav!=='inbox';
+  for(const b of document.querySelectorAll('[data-work-area]')){
+    const current=b.dataset.workArea===name;
+    b.classList.toggle('selected',current);b.setAttribute('aria-pressed',String(current));
+  }
   applySections();
   $('#page-title').textContent=pageNames[name][0];$('#breadcrumb').textContent=pageNames[name][0];$('#page-description').textContent=pageNames[name][1];
   render();
   if(name!=='sessions')$('#new-session')?.classList.remove('selected');
   if(name==='sessions'&&typeof sessionsShown==='function')sessionsShown();
+  if(name==='agents'&&typeof loadSessions==='function')loadSessions();
   if(name==='inbox'&&typeof refreshInbox==='function')refreshInbox();
 }
 function renderPending() {
   const localTasks=allTasks().filter(t=>t._direction==='local');
   const pending=localTasks.filter(t=>t.status==='PENDING_APPROVAL').length;
-  $('#nav-pending').textContent=pending;$('#nav-pending').hidden=!pending;
   document.title=`${pending?`(${pending} 待审批) `:''}HarnessMesh · 本机控制台`;
   const inbox=$('#approval-inbox');inbox.replaceChildren();
   if(pending){const text=el('div');text.append(el('strong','',`${pending} 个本机待审批任务`),el('p','form-note',canWrite()?'先检查来源、目标与工件声明。批准后才会调用模型。':'当前面板只读，请在执行端本机 CLI 审阅；原任务保持待批。'));inbox.append(text,button(`审阅本机待审批（${pending}）`,'button secondary',()=>{state.filter='pending';showView('tasks');}));}
@@ -118,17 +154,95 @@ function renderTasks() {
   for(const b of document.querySelectorAll('[data-filter]'))b.classList.toggle('selected',b.dataset.filter===state.filter);
 }
 function meta(pairs) { const dl=el('dl','entity-meta');for(const [key,value]of pairs)dl.append(el('dt','',key),el('dd','',value??'—'));return dl; }
-function agentCard(agent,remote=false) {
-  const card=el('article','entity-card'),top=el('div','entity-top'),title=el('div');title.append(el('h3','entity-name',agent.name),el('div','entity-harness',String(agent.harness||'').toUpperCase()));top.append(title,badge(agent.availability));
-  card.append(top,meta([['项目',agent.project_ids?.join(' / ')],['ACP 检查',agent.probe?.protocol_probe==='acp_initialize_passed'?'已通过':'未通过'],['版本',agent.probe?.version||'—'],['模型服务',agent.service_configured?'单独配置':({configured:'用它自己的登录（已配好）',not_configured:'用它自己的登录（没检测到）'}[agent.own_login]||'用它自己的登录')],['默认模型',agent.default_model||'—']]),el('div','entity-id',agent.agent_id));
-  if(!remote&&canWrite()){const actions=el('div','entity-actions'),retired=state.agentFilter==='retired';if(!retired&&state.runtime?.capabilities?.agent_settings===true&&typeof openService==='function')actions.append(button('模型服务','button secondary',()=>openService(agent)));actions.append(button(retired?'恢复 Agent':'退役 Agent','button secondary',()=>act('agents',agent.agent_id,retired?'restore':'retire',retired?'恢复 Agent？':'退役 Agent？',`${agent.name}\n${retired?'恢复后需通过 CLI 显式重新验证模型；不会自动调用模型。':'有未结束任务时服务端会拒绝退役。历史任务会保留。'}`)));card.append(actions);}return card;
+// A newer peer may publish an additional catalog product over the ACP wire
+// family. Use its display note for identity, keeping runtime behavior keyed
+// to the wire family on the actual Agent card.
+function agentProduct(node,agentId,family){
+  const note=node?.agent_kinds?.find(item=>item.agent_id===agentId);
+  return note||{kind:family,label:productName(family)};
 }
-// This computer only calls agents on other computers ("only MCP" setup).
+function agentCard(agent,node,retired=false) {
+  const remote=!node.local,ready=!retired&&sessionReady(node,agent);
+  const card=el('article','entity-card'),top=el('div','entity-top'),title=el('div');
+  const name=el('h3','entity-name directory-name',agent.name);
+  const product=agentProduct(node,agent.agent_id,agent.harness);
+  name.prepend(productIcon(product.kind));
+  card.dataset.ownerNode=node.node_id;
+  title.append(name,el('div','entity-harness',product.label+' · '+node.name+(node.local?'（本机）':'')));
+  top.append(title,badge(remote&&!node.reachable?'unreachable':agent.availability));
+  const service=agent.service_configured?'单独配置':({configured:'用它自己的登录（已配好）',not_configured:'用它自己的登录（没检测到）'}[agent.own_login]||'用它自己的登录');
+  card.append(top,meta([
+    ['项目',agent.project_ids?.join(' / ')],
+    ['会话',ready?'可开会话':remote&&!node.reachable?'等待电脑上线':'暂不可用'],
+    ['ACP 检查',agent.probe?.protocol_probe==='acp_initialize_passed'?'已通过':'未通过'],
+    ['任务委派',agent.probe?.managed_run==='passed'?'已通过运行验证':'未报告验证通过'],
+    ['版本',agent.probe?.version||'—'],['模型服务',remote?'由对方电脑管理':service],['默认模型',agent.default_model||'—']
+  ]),el('div','entity-id',agent.agent_id));
+  const actions=el('div','entity-actions');
+  if(!retired){
+    const start=button('开会话','button secondary',()=>startNew(node.node_id,agent.agent_id));
+    start.disabled=!ready||!canWrite();
+    start.title=ready?`使用 ${node.name} 上的 ${agent.name} 开会话`:'当前无法在这台电脑上开会话';
+    actions.append(start);
+  }
+  if(node.local&&canWrite()){
+    if(!retired&&state.runtime?.capabilities?.agent_settings===true)actions.append(button('模型服务','button secondary',()=>openService(agent)));
+    actions.append(button(retired?'恢复 Agent':'退役 Agent','button secondary',()=>act('agents',agent.agent_id,retired?'restore':'retire',retired?'恢复 Agent？':'退役 Agent？',`${agent.name}
+${retired?'恢复后需通过 CLI 显式重新验证模型；不会自动调用模型。':'有未结束任务时服务端会拒绝退役。历史任务会保留。'}`)));
+  }
+  if(actions.childElementCount)card.append(actions);
+  return card;
+}
 function outboundOnly(){return data('node',{}).outbound_only===true;}
+function openAgentDirectory(peerId=''){
+  state.agentPeer=peerId;state.agentFilter=peerId?'paired':'all';showView('agents');
+}
+async function readRegistryDirectory(){
+  // Daemons without the merged session directory still expose each peer's
+  // Agent registry. These read-only cards cannot be used as session targets.
+  const peers=data('peers').filter(peer=>peer.status==='trusted'&&peer.node_connectivity!=='outbound_only');
+  return Promise.all(peers.map(async peer=>{
+    const node={node_id:peer.card.node_id,name:peer.card.display_name,local:false,directoryOnly:true};
+    try{
+      const agents=unwrap(await api('/peers/'+node.node_id+'/agents'));
+      return {...node,reachable:true,agents};
+    }catch{
+      return {...node,reachable:false,agents:[]};
+    }
+  }));
+}
 function renderAgents() {
   const note=$('#outbound-note');note.hidden=!outboundOnly();note.textContent=outboundOnly()?'这台电脑只用 MCP 调用别的电脑上的 Agent，不对外开放，配对的电脑用不了这里的 Agent。要分享本机 Agent，在终端运行 hmesh setup --full。':'';
-  const retired=state.agentFilter==='retired',agents=data(retired?'retired':'agents');$('#agent-list').replaceChildren(...(agents.length?agents.map(a=>agentCard(a)):[empty(retired?'没有已退役 Agent':'还没有登记 Agent',retired?'退役记录会保留在这里。':'使用 hmesh agent register 登记现有 Harness。')]));
-  for(const b of document.querySelectorAll('[data-agent-filter]'))b.classList.toggle('selected',b.dataset.agentFilter===state.agentFilter);
+  const filter=state.agentFilter,retired=filter==='retired';
+  // The overview includes retired Agents and can still be read when the
+  // session directory is unavailable, for example during a daemon upgrade.
+  const owner=data('node',{}).node;
+  const local=conv.nodes.find(node=>node.local)||{local:true,reachable:false,node_id:owner?.node_id||'',name:owner?.display_name||'本机'};
+  const peers=conv.nodes.filter(node=>!node.local);
+  const chooser=$('#agent-peer');
+  chooser.hidden=filter!=='paired'||(!state.agentPeer&&peers.length<2);
+  if(!chooser.hidden){
+    const select=chooser.querySelector('select');
+    select.replaceChildren(new Option('全部已配对电脑',''),...peers.map(node=>new Option(node.name,node.node_id)));
+    if(state.agentPeer&&!peers.some(node=>node.node_id===state.agentPeer))select.add(new Option(nodeName(state.agentPeer),state.agentPeer));
+    select.value=state.agentPeer;
+  }
+  const cards=[];
+  if(filter!=='paired'){
+    for(const agent of data(retired?'retired':'agents'))cards.push(agentCard(agent,local,retired));
+  }
+  if(filter==='all'||filter==='paired'){
+    for(const node of peers){
+      if(state.agentPeer&&node.node_id!==state.agentPeer)continue;
+      for(const agent of node.agents)cards.push(agentCard(agent,node));
+      if(!node.reachable&&!node.agents.length)cards.push(empty(node.name+' 暂不可达','恢复连接后可以查看这台电脑的 Agent。'));
+    }
+  }
+  $('#agent-list').replaceChildren(...(cards.length?cards:[empty(retired?'没有已退役 Agent':filter==='paired'?'该范围内没有可见的 Agent':'还没有可显示的 Agent')]));
+  for(const b of document.querySelectorAll('[data-agent-filter]')){
+    const selected=b.dataset.agentFilter===filter;
+    b.classList.toggle('selected',selected);b.setAttribute('aria-pressed',String(selected));
+  }
 }
 function isActive(row) { return row.enabled&&row.expires_at>Date.now()/1000; }
 function renderServices() {
@@ -195,7 +309,7 @@ function renderNodes() {
     }
     const details=el('details','paired-record');
     details.append(el('summary','','节点标识'),el('p','mono',peer.card.node_id));
-    const view=button('查看远端 Agent','button secondary',()=>loadRemote(peer));
+    const view=button('查看远端 Agent','button secondary',()=>openAgentDirectory(peer.card.node_id));
     view.disabled=peer.status!=='trusted'||calls;
     const actions=el('div','paired-actions');actions.append(details);
     if(!calls)actions.append(view);
@@ -213,21 +327,6 @@ function renderNodes() {
   ]));
   const input=typing&&$('#node-list .paired-address-input');
   if(input){input.focus();if(caret!=null)input.setSelectionRange(caret,caret);}
-}
-let remoteAgentView=0;
-async function loadRemote(peer) {
-  const box=$('#remote-agents'),generation=++remoteAgentView;
-  const header=el('div','remote-agent-heading'),title=el('h2','',`${peer.card.display_name} 的 Agent`);
-  const close=button('关闭列表','button secondary',()=>{remoteAgentView++;box.hidden=true;box.replaceChildren();});
-  const contents=el('div','card-grid entity-list');contents.setAttribute('aria-live','polite');
-  header.append(title,close);
-  contents.append(empty('正在读取远端 Agent…'));
-  box.hidden=false;box.replaceChildren(header,contents);
-  title.tabIndex=-1;title.focus();box.scrollIntoView({block:'nearest'});
-  try{
-    const rows=unwrap(await api(`/peers/${peer.card.node_id}/agents`));
-    if(generation===remoteAgentView)contents.replaceChildren(...(rows.length?rows.map(a=>agentCard(a,true)):[empty('该节点没有对本机可见的 Agent')]));
-  }catch(e){if(generation===remoteAgentView)contents.replaceChildren(empty('远端 Agent 暂不可读取',e.code==='PEER_UNREACHABLE'&&typeof pairProblem==='function'?pairProblem(e):e.message));}
 }
 function render() {
   if(!state.snapshot)return;
@@ -356,8 +455,10 @@ async function loadEvents(version=state.detailVersion) {
   finally{if(state.eventsLoading===version)state.eventsLoading=false;if(version===state.detailVersion)$('#load-events').disabled=state.events>=2000;}
 }
 for(const b of document.querySelectorAll('[data-view]'))b.addEventListener('click',()=>showView(b.dataset.view));
+for(const b of document.querySelectorAll('[data-work-area]'))b.addEventListener('click',()=>showView(b.dataset.workArea));
 for(const b of document.querySelectorAll('[data-filter]'))b.addEventListener('click',()=>{state.filter=b.dataset.filter;renderTasks();});
-for(const b of document.querySelectorAll('[data-agent-filter]'))b.addEventListener('click',()=>{state.agentFilter=b.dataset.agentFilter;renderAgents();});
+for(const b of document.querySelectorAll('[data-agent-filter]'))b.addEventListener('click',()=>{state.agentFilter=b.dataset.agentFilter;state.agentPeer='';renderAgents();});
+$('#agent-peer select').addEventListener('change',event=>{state.agentPeer=event.target.value;renderAgents();});
 for(const b of document.querySelectorAll('[data-close]'))b.addEventListener('click',()=>$('#'+b.dataset.close).close());
 $('.brand').addEventListener('click',e=>{e.preventDefault();showView('sessions');});
 $('#task-search').addEventListener('input',renderTasks);$('#show-inactive').addEventListener('change',renderServices);
@@ -366,8 +467,11 @@ $('#refresh-task').addEventListener('click',()=>Promise.all([readDetail(state.de
 $('#apply-detail-updates').addEventListener('click',()=>readDetail(state.detailVersion,true));
 $('#task-dialog').addEventListener('close',()=>{state.selected=null;state.detailVersion++;state.deferredDetail=null;$('#detail-updates').hidden=true;});
 $('#clear-access').addEventListener('click',()=>{try{sessionStorage.removeItem('hmesh.panel.access');}catch{}access='';toast('已清除，请重新打开终端中的访问链接。');});
-if(access)refresh();else gate();
-// Start on the sessions page once every panel script has loaded.
-document.addEventListener('DOMContentLoaded',()=>{if(access)showView(state.view);});
+// The initial render uses the agent catalog and the other deferred modules.
+document.addEventListener('DOMContentLoaded',async()=>{
+  if(!access){gate();return;}
+  await refresh();
+  showView(state.view);
+});
 setInterval(()=>{if(!document.hidden)refresh();},10000);
 setInterval(()=>{if(!document.hidden&&$('#task-dialog').open&&state.selected&&!terminal.has(state.selected.status)){readDetail(state.detailVersion);loadEvents();}},2500);
