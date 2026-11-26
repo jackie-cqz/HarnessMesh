@@ -196,11 +196,14 @@ function renderProjectSessions(rows){
 function projectBlock(p,{here,kids,keep,earlier,open,searching,first,last}){
   const id=p?.project_id??'',block=el('div',`project${p?.hidden?' is-hidden':''}${p?'':' other'}`);block.dataset.project=id;
   const head=el('div','project-head'),toggle=el('button','project-toggle');toggle.type='button';toggle.setAttribute('aria-expanded',String(open));
-  toggle.append(icon('chevron-right','xs'),el('span','project-name',p?p.name:'其他'));
+  // A folder, open while the project is; the chevron for opening it is at the end.
+  const folder=icon(open?'folder-open':'folder','xs');folder.classList.add('project-folder');
+  toggle.append(folder,el('span','project-name',p?p.name:'其他'));
   if(p)toggle.append(el('span','project-path',shortPath(p.path)));
   if(p?.pinned){const pin=icon('pin','xs');pin.classList.add('project-flag');toggle.append(pin);}
   if(p?.shared){const shared=icon('users','xs');shared.classList.add('project-flag');toggle.append(shared);}
   const total=here.length+earlier.length;if(total)toggle.append(el('span','project-count',total));
+  const chevron=icon('chevron-right','xs');chevron.classList.add('project-chevron');toggle.append(chevron);
   toggle.title=p?`${p.path}${p.shared?'\n已共享给配对的电脑':''}${p.hidden?'\n已隐藏':''}`:'不在任何项目里的会话';
   toggle.addEventListener('click',()=>{if(searching)return;proj.open.set(id,!open);saveOpen();renderSessionList();});
   head.append(toggle);

@@ -14,6 +14,7 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 - **Agents call each other.** Every session gets the HarnessMesh MCP server, so an agent can open a session with another agent (`mesh_send`), follow up, and read its reply (`mesh_wait`), even on another computer. Calls go at most three levels deep and never loop back to an agent already in the chain.
 - **You stay in charge.** When an agent wants to edit a file or run a command, the question comes back to whoever opened the session: 允许一次 (allow once) or 拒绝 (reject). In sessions an agent opened, they are answered automatically; set the calling computer to `confirm` and they wait for you instead.
 - **Pair a computer in two steps.** Paste the other computer's pairing code; it approves once with a six-character check code. On a LAN or VPN of your own it is quicker: choose the computer under 附近的电脑 (computers nearby) and type the 6-digit passcode on its screen. Then both sides can use each other's agents. Revoking a pairing closes the sessions that computer opened.
+- **Still connected when the network changes.** LAN, Tailscale and host names work together: when a computer gets a new IP, its paired computers find it again; on a network you have not trusted it opens no port and only connects out; two computers both behind NAT go through a relay on a server of your own.
 - **Model service per agent.** Each agent can use its own login, an API key, or a custom endpoint (31 provider presets). Keys stay on the execution computer. Pi, OpenCode and DSH can select Chat Completions, Responses or Anthropic Messages for a custom endpoint. See the [model service options](docs/local-panel.md#各-agent-可选的协议).
 - **Work beyond chat.** The 工作待办 (inbox) collects whatever waits for you. One-shot tasks come with artifact checks, templates and multi-stage workflows, and you can see usage per session and per project.
 
@@ -39,6 +40,10 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 |---|---|
 | ![laptop's pairing dialog showing its 6-digit passcode](docs/images/nearby-passcode.png) | ![studio's pairing dialog listing laptop nearby, with the passcode typed in](docs/images/nearby-join.png) |
 
+**Paired computers.** Each card shows where the computer is reached, and when and how it was last reached. When it cannot be reached, the card says why (a firewall in the way, a host name that does not resolve, another computer at that address, and so on). 改地址 (edit address) adds an address by hand.
+
+![laptop's card on the paired computers page: its addresses, when and how it was last reached, and edit address](docs/images/paired.png)
+
 **Start from any agent.** The start page lists every ready agent, with the computer it runs on.
 
 ![The start page with agents from both computers](docs/images/start.png)
@@ -55,20 +60,33 @@ flowchart LR
   subgraph B["A paired computer"]
     d2["hmesh daemon"] <-->|ACP| a2["its agents"]
   end
-  d1 <==>|"mTLS over Tailscale<br/>or your own LAN / VPN"| d2
+  d1 <==>|"mTLS: LAN · Tailscale"| d2
+  d1 -.->|"when out of reach"| relay["hmesh relay<br/>on a server of your own"]
+  relay -.-> d2
 ```
 
 - Each computer runs one **daemon** (`hmesh daemon start`). It starts the agents you registered and keeps sessions, tasks and their events in a local SQLite database.
 - A computer set up with **only MCP** runs the daemon too, but on 127.0.0.1 only: its agents call out, and nothing calls in.
 - The **panel** (`hmesh panel`) listens on 127.0.0.1 only and opens with a private link printed in the terminal. Owner credentials stay in the CLI process.
-- Computers talk over Tailscale, or directly on a LAN or VPN of your own, with TLS 1.3 and mutual authentication. Each side pins the other's certificate fingerprint. No SSH or cloud service is needed; computers that cannot reach each other at all (both behind NAT, say) can go through a relay of your own (`hmesh relay serve` on a server both reach), which passes their TLS on and cannot read it. On a direct network, a computer with pairing open announces itself to computers nearby over mDNS (`_hmesh._tcp`). Paired computers also tell each other their host names (by default `<name>.local`), so one whose LAN address changed is still found where that name resolves: macOS resolves `.local` names itself, Linux needs Avahi with nss-mdns, and Windows has not been tested. On a direct network they also find each other without a name: a computer that takes connections keeps announcing, on the networks it trusts, a mark only its paired computers can work out (`_hmesh-find._tcp`, a new one every 10 minutes, with no name or fingerprint), and a paired computer none of whose known addresses answers listens for it (only on its own trusted LANs, or, if it only connects out, on the network its default route goes through) and dials where it is heard, still checking the pinned certificate. Revoking a pairing changes the key behind the mark: the paired computers it can call get the new key within seconds, those that only connect out when they next ask, and the computer revoked never. `hmesh peers address` adds an address by hand, and the paired computer's card says when and how it was last reached and, when it cannot be, why.
+- Computers always use TLS 1.3 with mutual authentication, and each side pins the other's certificate fingerprint. No SSH or cloud service is needed. How they find each other:
+
+| Way | When | Notes |
+|---|---|---|
+| LAN, directly | On the same network | Listens on every interface but opens only to networks you trust; a connection from any other network is dropped before TLS |
+| Tailscale | Computers in different places | Works alongside the LAN; only addresses Tailscale itself confirms count as Tailnet |
+| Host name | LAN addresses that change | Paired computers tell each other their host names (by default `<name>.local`). macOS resolves `.local` itself, Linux needs Avahi with nss-mdns, Windows is not tested yet |
+| Recognized on the LAN | The address changed and the name does not resolve | A computer that takes connections announces, on the networks it trusts, a mark only its paired computers can work out (`_hmesh-find._tcp`, a new one every 10 minutes, with no name or fingerprint) |
+| Relay | Both behind NAT, or a Wi-Fi that keeps computers apart | Run `hmesh relay serve` on a server of your own; it passes on the TLS between the two computers and cannot read it |
+| Address set by hand | None of the above | `hmesh peers address`, or 改地址 on the card in the panel |
+
+A call to a paired computer tries the address that worked last, then the card's, then those set by hand, then those it was told, and takes the first that answers. It moves on only while the request has not been sent, so a write is never carried out twice. On a direct network, a computer with pairing open also announces itself to computers nearby over mDNS (`_hmesh._tcp`).
 
 ## Get started
 
 You need:
 
 - [Rust](https://rustup.rs) 1.90 or newer.
-- To connect computers: [Tailscale](https://tailscale.com), or a network they already share (a LAN, ZeroTier, WireGuard).
+- To connect computers: [Tailscale](https://tailscale.com), a network they already share (a LAN, ZeroTier, WireGuard), or a server both can reach (see [docs/cloud-server.md](docs/cloud-server.md)).
 - For a full install: at least one ACP agent you have installed and signed in to yourself.
 
 ### Choose how to set up each computer
@@ -79,7 +97,7 @@ Every computer runs the same `hmesh` program, set up one of two ways:
 |---|---|---|
 | Your agents here (Claude Code, Codex, …) call agents on other computers | ✓ | ✓ |
 | Shares this computer's agents with paired computers | — | ✓ |
-| Other computers can connect to it | No | Yes, over Tailscale or a direct network |
+| Other computers can connect to it | No | Yes: LAN, Tailscale or a relay |
 | Needs an ACP agent installed here | No | Yes |
 
 Use only MCP on a laptop that just hands work to a stronger machine; use full on the machines that do the work.
@@ -98,7 +116,15 @@ cargo build --release --locked -p hmesh-cli
 
 `--connect claude,codex` or `--connect none` answers the second question in advance, and `--startup` or `--no-startup` the first. With nobody to ask (no terminal, or `--json`), an unanswered question means no. Running setup again leaves what is already set up alone. Switching a computer from `--mcp-only` to `--full`, or to another network, later keeps its identity and its pairings.
 
-**Without Tailscale.** Computers on a network they already share can connect directly: `hmesh setup --full --network direct` listens on every interface but opens its port only to networks you trust: it lists the networks the computer is on for you to pick (the one with the default route first), `--listen 192.168.1.20` trusts that address's network and `--trust 10.0.0.0/24` adds one, and it takes your Tailnet too if Tailscale runs and you agree. With nobody to ask it trusts only what those options name, and Tailscale only with `--with-tailscale`. A network whose router's hardware address cannot be read is trusted by its subnet only, and setup, `hmesh networks` and the panel say so. A connection from any other network is dropped before TLS. It accepts connections from private networks only unless you name others with `--allow-from`. When the computer's LAN address changes, paired computers hear of it within seconds, with no need to run setup again; on a network it has not trusted, `hmesh networks trust <subnet>` (or 信任这个网络 in the panel) opens it. An only-MCP computer needs no Tailscale at all; when setup does not find it, it uses the computer's own network. On a direct network a computer answers pairing requests only for 10 minutes after you open 配对新电脑 on it (or run `hmesh pair show`).
+**Without Tailscale.** Computers on a network they already share can connect directly: `hmesh setup --full --network direct`.
+
+- It listens on every interface but opens only to networks you trust. Setup lists the networks the computer is on for you to pick (the one with the default route first); `--listen 192.168.1.20` trusts that address's network and `--trust 10.0.0.0/24` adds one; if Tailscale runs, it takes your Tailnet too when you agree (`--with-tailscale` answers in advance). With nobody to ask, it trusts only what those options name.
+- A network is known by its subnet and its router's hardware address. When the hardware address cannot be read, it is trusted by its subnet only, and setup, `hmesh networks` and the panel say so: another network with the same subnet would count too.
+- It accepts connections from private networks only unless you name others with `--allow-from`.
+- When the computer's LAN address changes, paired computers hear of it within seconds, with no need to run setup again. On a network it has not trusted, `hmesh networks trust <subnet>` or 信任这个网络 (trust this network) in the panel opens it; `hmesh networks list` shows what is trusted.
+- It answers pairing requests only for 10 minutes after you open 配对新电脑 on it (or run `hmesh pair show`).
+
+An only-MCP computer needs no Tailscale at all; when setup does not find it, it uses the computer's own network.
 
 `hmesh agent detect` lists available ACP executables. The panel can install recommended Codex and Claude Code adapters on the execution computer, or use an existing command.
 
@@ -121,7 +147,13 @@ Open the panel (`hmesh panel`) and go to **配对节点 → 配对新电脑** (p
 
 **On a direct network, computers nearby are listed.** While B has 配对新电脑 open, it shows a 6-digit passcode, and the same dialog on A lists B under **附近的电脑** (computers nearby). Choose B, type its passcode, and both computers are paired: nothing to approve. A passcode allows three tries and works once; after three wrong ones it ends, while the pairing code keeps working. Guest Wi-Fi and some routers block this lookup, and a computer on another subnet is not heard: type its IP address or host name under **按地址配对** (pair at an address) with the same passcode (without a port, 39880 is used), or use the pairing code above. On the command line: `hmesh pair nearby`, then `hmesh pair join <address>`, which asks for the passcode.
 
-**Through a relay.** When two computers cannot reach each other at all (both behind NAT, or a company Wi-Fi that keeps computers apart), run a relay on a server both can reach: `hmesh relay serve --listen 0.0.0.0:7443 --dir ~/hmesh-relay` prints a relay code (`--public-address <ip>:7443` puts the server's public IP in it; `hmesh relay show --dir ~/hmesh-relay` prints it again, and `--rotate-token` gives the relay a new token). On the computer to be reached, run `hmesh relay use` and paste the relay code when asked (or `hmesh relay use < relay-code.txt`), so its token stays out of your shell history: it keeps a connection to the relay open, also on a network it does not trust, and its paired computers get the relay with its address list. To pair the first time, `hmesh pair show` there also prints a relay pairing code (`hmesh-relay://…`), which the panel and `hmesh pair request --code` (paste it when asked) take like any pairing code. Calls through a relay reuse their connection for a minute, so one costs about a round trip once the first is made. The relay sees which computers talk, when, and how much; it cannot read what they say or pass for either of them. A connection that has not yet said who it is costs nothing to open, so each source address gets only a few at once and at a limited rate. Keep relay codes to yourself: whoever has one can use the relay. A computer behind the relay takes only the computers it is paired with, and others only while it is pairing; after you revoke a computer that had the relay code, give the relay a new token too. So far this has been tried on one computer only, not on a real server. To run it on a cloud server, see [docs/cloud-server.md](docs/cloud-server.md); for what it sees and how it limits connections, [docs/security.md](docs/security.md).
+**Through a relay.** When two computers cannot reach each other at all (both behind NAT, or a company Wi-Fi that keeps computers apart), run a relay on a server both can reach:
+
+1. On the server: `hmesh relay serve --listen 0.0.0.0:7443 --dir ~/hmesh-relay --public-address <public IP>:7443` prints a relay code (`hmesh relay show --dir ~/hmesh-relay` prints it again).
+2. On the computer to be reached: run `hmesh relay use` and paste the relay code when asked, so its token stays out of your shell history. It keeps a connection to the relay open, also on a network it does not trust, and its paired computers get the relay with its address list.
+3. To pair the first time: `hmesh pair show` there also prints a relay pairing code (`hmesh-relay://…`), which the panel and `hmesh pair request --code` (paste it when asked) take like any pairing code.
+
+The relay sees which computers talk, when, and how much; it cannot read what they say or pass for either of them. A computer behind the relay takes only the computers it is paired with, and others only while it is pairing. Keep relay codes to yourself: whoever has one can use the relay; after you revoke a computer that had the relay code, give the relay a new token with `hmesh relay show --rotate-token`. So far this has been tried on one computer only, not on a real server. To run it on a cloud server, and for its limits on connections, see [docs/cloud-server.md](docs/cloud-server.md) and [docs/security.md](docs/security.md).
 
 A computer set up with only MCP accepts no connections, so pairing always starts there: it is computer A. Two only-MCP computers cannot pair with each other. The [Tailscale guide](docs/quickstart-tailnet.md) has firewall notes and the command-line equivalents (`hmesh pair show`, `hmesh pair request --code`, `hmesh pair approve`).
 
@@ -168,6 +200,9 @@ On a computer set up with `hmesh setup`, the MCP server starts the daemon when i
 - **Owner controls stay local.** The owner API and the panel listen on loopback only.
 - **Only-MCP computers let nothing in.** They listen on loopback only and refuse every request from another computer, pairing requests included.
 - **Direct networks open pairing on request.** A computer on a LAN or VPN of your own accepts connections only from the networks it allows, and answers pairing requests only for 10 minutes after you open 配对新电脑 on it. Only then does it announce itself nearby. A name heard on the network proves nothing; the one-time passcode on its screen does, checked with SPAKE2 so a wrong guess teaches nothing that could be tried offline.
+- **Open only to trusted networks.** On a computer listening on every interface, a connection from a network you have not trusted is dropped before TLS, and open connections close when a network stops being trusted. Carrier and hotel Wi-Fi also hand out 100.64 addresses; only those Tailscale itself confirms count as Tailnet.
+- **The finding mark gives nothing away.** Only paired computers can work it out; it changes every 10 minutes and carries no name or fingerprint. Revoking a pairing changes the key behind it.
+- **A relay cannot read anything.** Through a relay, the two computers still talk TLS to each other and the relay only passes bytes on. Relay codes and tokens stay out of logs and are read from standard input.
 - **Per-computer access mode.** Each paired computer is either `auto` (its sessions start right away) or `confirm` (you approve first): `hmesh peers access <peer> confirm`.
 - **Keys stay put.** Model keys never leave the agent's computer and are not shown again after saving. HarnessMesh does not read agents' own credential files.
 

@@ -1522,8 +1522,9 @@ footer{margin-top:28px}
 .project-head{position:relative;display:flex;align-items:center;border-radius:8px}
 .project-head:hover,.project-head:focus-within{background:var(--sidebar-accent)}
 .project-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:var(--foreground);font-size:13.5px;text-align:left}
-.project-toggle>svg:first-child{color:var(--faint);transition:transform .15s}
-.project-toggle[aria-expanded="true"]>svg:first-child{transform:rotate(90deg)}
+.project-folder{flex:none;color:var(--muted)}
+.project-chevron{flex:none;margin-left:auto;color:var(--faint);transition:transform .15s}
+.project-toggle[aria-expanded="true"]>.project-chevron{transform:rotate(90deg)}
 .project-name{flex:none;max-width:62%;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .project-path{flex:1;min-width:0;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .project-flag{flex:none;color:var(--muted)}
