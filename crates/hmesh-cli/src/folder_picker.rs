@@ -180,7 +180,10 @@ pub fn chosen(
         let said = String::from_utf8_lossy(stderr);
         let said = said.trim();
         PickError::Failed(if said.is_empty() {
-            format!("the folder dialog exited with {code:?}")
+            match code {
+                Some(code) => format!("the folder dialog exited with code {code}"),
+                None => "the folder dialog was stopped".to_owned(),
+            }
         } else {
             said.chars().take(300).collect()
         })

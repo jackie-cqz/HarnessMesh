@@ -873,7 +873,7 @@ async fn the_folder_dialog_is_this_computers_own_one_at_a_time() {
     let picker = root.path().join("pick.sh");
     std::fs::write(
         &picker,
-        "#!/bin/sh\ncase \"$(cat \"$PICK_MODE\")\" in\n  echo) printf '%s\\n' \"$1\";;\n  cancel) ;;\n  slow) sleep 3; printf '%s/\\n' \"$PICK_DIR\";;\n  *) printf '%s/\\n' \"$PICK_DIR\";;\nesac\n",
+        "#!/bin/sh\necho $$ > \"$PICK_PID\"\ncase \"$(cat \"$PICK_MODE\")\" in\n  echo) printf '%s\\n' \"$1\";;\n  cancel) ;;\n  slow) sleep 3; printf '%s/\\n' \"$PICK_DIR\";;\n  hang) sleep 60;;\n  *) printf '%s/\\n' \"$PICK_DIR\";;\nesac\n",
     )
     .unwrap();
     std::fs::set_permissions(&picker, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -885,6 +885,7 @@ async fn the_folder_dialog_is_this_computers_own_one_at_a_time() {
         .env("HMESH_FOLDER_PICKER", &picker)
         .env("PICK_MODE", &mode)
         .env("PICK_DIR", &folder)
+        .env("PICK_PID", root.path().join("pick-pid"))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
@@ -993,6 +994,19 @@ async fn the_folder_dialog_is_this_computers_own_one_at_a_time() {
         .await;
     assert!(gave_up.is_err());
     tokio::time::sleep(Duration::from_millis(300)).await;
+    let alive = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let gone = std::fs::read_to_string(root.path().join("pick-pid")).unwrap();
+    assert!(
+        !alive(&gone),
+        "the dialog the browser gave up on still runs"
+    );
     std::fs::write(&mode, "pick").unwrap();
     let again: Value = pick(json!({})).send().await.unwrap().json().await.unwrap();
     assert_eq!(again["data"]["path"], folder.to_str().unwrap(), "{again}");
@@ -1026,5 +1040,30 @@ async fn the_folder_dialog_is_this_computers_own_one_at_a_time() {
             .unwrap();
         assert_eq!(refused.status(), 502, "{bad}");
     }
+    // Stopping the panel closes a dialog that is still open, and the panel
+    // (with the daemon it started) stops promptly.
+    std::fs::write(&mode, "hang").unwrap();
+    std::fs::remove_file(root.path().join("pick-pid")).unwrap();
+    let open = tokio::spawn(pick(json!({})).send());
+    let pid_file = root.path().join("pick-pid");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let hung = std::fs::read_to_string(&pid_file).unwrap();
+    assert!(alive(&hung));
     stop_panel(&http, &ready).await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    assert!(!alive(&hung), "the dialog outlived the panel");
+    let _ = open.await;
 }

@@ -29,6 +29,8 @@ const projectProblems=[
   [/no longer shared/,'这个项目已经不再共享'],
   [/cannot continue its earlier sessions/,'这个 Agent 不能接着它之前的会话'],
   [/unknown session/,'找不到这个会话'],
+  [/did not list its sessions within (\d+) s/,m=>`${m[1]} 秒内没有列出会话，稍后再试`],
+  [/deadline exceeded|timed out/i,'等了太久没有回应，稍后再试'],
 ];
 // The folder dialog's refusals come with a code.
 const pickerProblems={
@@ -38,7 +40,7 @@ const pickerProblems={
 };
 function projectProblem(e){
   if(pickerProblems[e?.code])return pickerProblems[e.code];
-  if(e?.code==='FOLDER_PICKER_FAILED')return `文件夹选择框没有打开：${e.message||'原因不明'}`;
+  if(e?.code==='FOLDER_PICKER_FAILED')return '文件夹选择框没有打开，可以直接填文件夹的完整路径';
   const text=e?.message||'';
   for(const [pattern,say]of projectProblems){const m=pattern.exec(text);if(m)return typeof say==='function'?say(m):say;}
   return text||e?.code||'原因不明';

@@ -1070,7 +1070,14 @@ async fn pick_folder(State(s): State<Panel>, Json(form): Json<PickFolderForm>) -
         }
     }
     let _open = Open(s.picking.clone());
-    let result = crate::folder_picker::pick(form.start.as_deref()).await;
+    // Stopping the panel closes an open dialog instead of waiting for it.
+    let mut stopping = s.stop.subscribe();
+    let result = tokio::select! {
+        result = crate::folder_picker::pick(form.start.as_deref()) => result,
+        _ = stopping.wait_for(|stop| *stop) => Err(crate::folder_picker::PickError::Failed(
+            "the panel is stopping".into(),
+        )),
+    };
     use crate::folder_picker::PickError;
     match result {
         Ok(Some(path)) => Json(json!({"data":{"path":path}})).into_response(),
