@@ -8,7 +8,7 @@ use axum::{
     routing::{get, post},
 };
 use hmesh_core::{
-    GitVersionRequirement, GitVersionState, MeshError, NodeConfig, RunLimits,
+    GitVersionRequirement, GitVersionState, MeshError, NodeConfig, PeerAccessRequest, RunLimits,
     TaskAcceptanceContract, TaskSubmit, now,
 };
 use hmesh_daemon::{OnboardingRequest, RemoteTask, VerificationRequest};
@@ -219,6 +219,7 @@ pub async fn run(
         .route("/api/agents/{id}/{action}", post(agent_action))
         .route("/api/services/{id}/{action}", post(service_action))
         .route("/api/peers/{id}/agents", get(remote_agents))
+        .route("/api/peers/{id}/access", post(set_peer_access))
         .route("/api/peers/{id}/addresses", post(set_peer_addresses))
         .route("/api/networks/trust", post(trust_network))
         .route("/api/pairs/request", post(request_pair))
@@ -1490,6 +1491,21 @@ async fn pair_action(
         _ => error(StatusCode::BAD_REQUEST, "UNSUPPORTED_ACTION"),
     }
 }
+async fn set_peer_access(
+    State(s): State<Panel>,
+    Path(id): Path<Uuid>,
+    body: Result<Json<PeerAccessRequest>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return error(StatusCode::BAD_REQUEST, "INVALID_INPUT");
+    };
+    mutation(
+        s.client
+            .post(&format!("/local/peers/{id}/access"), &body)
+            .await,
+    )
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PeerAddressesBody {

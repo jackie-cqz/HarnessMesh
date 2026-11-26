@@ -164,6 +164,36 @@ try{
  const callerCard=directPage.locator('.paired-card').filter({hasText:'pair-mcp'});
  await callerCard.getByText('只调用',{exact:true}).waitFor();
  assert(await callerCard.getByRole('button',{name:'查看远端 Agent',exact:true}).count()===0,'MCP-only peer offered an inbound Agent action');
+ stage='peer-access-modes';
+ // Give this same node a second trusted peer so changing the MCP-only peer
+ // can be checked independently from both the panel and the daemon.
+ const secondPair=a.mesh.call(['pair','request','--code',directCode.trim()]);
+ direct.mesh.call(['pair','approve',secondPair.request_id,'--expect-fingerprint',a.card.fingerprint]);
+ await until(()=>trusted(direct.mesh).includes(a.card.node_id)&&trusted(a.mesh).includes(direct.card.node_id));
+ await directPage.locator('#refresh').click();
+ const otherCard=directPage.locator('.paired-card').filter({hasText:'pair-asks'});
+ const mode=(card,text)=>card.locator('.peer-access-mode').filter({hasText:text});
+ const modeOf=peer=>direct.mesh.call(['peers','list']).find(p=>(p.card??p.peer?.card).node_id===peer.card.node_id)?.access;
+ await callerCard.getByText('发到本机的请求',{exact:true}).waitFor();
+ await mode(callerCard,'自动开始').waitFor();
+ await mode(otherCard,'自动开始').waitFor();
+ await callerCard.getByRole('button',{name:'设为本机确认',exact:true}).click();
+ await directPage.locator('#confirm-dialog[open]').waitFor();
+ assert(modeOf(caller)==='auto','Peer access changed before confirmation');
+ await directPage.locator('#confirm-accept').click();
+ await mode(callerCard,'本机确认').waitFor();
+ await mode(otherCard,'自动开始').waitFor();
+ assert(modeOf(caller)==='confirm'&&modeOf(a)==='auto','Setting one peer to confirm changed the wrong peer');
+ await directPage.reload();
+ await directPage.locator('#local-name').filter({hasText:'pair-direct'}).waitFor({state:'attached'});
+ await directPage.locator('[data-view="nodes"]').click();
+ await mode(callerCard,'本机确认').waitFor();
+ await mode(otherCard,'自动开始').waitFor();
+ await callerCard.getByRole('button',{name:'设为自动开始',exact:true}).click();
+ await directPage.locator('#confirm-dialog[open]').waitFor();
+ await directPage.locator('#confirm-accept').click();
+ await mode(callerCard,'自动开始').waitFor();
+ assert(modeOf(caller)==='auto'&&modeOf(a)==='auto','Returning one peer to auto changed the wrong peer');
  stage='trust-network';
  // On every interface, the port is open only to trusted networks. The
  // daemon reads the networks it seems to be on from a file (debug builds).
@@ -211,6 +241,6 @@ try{
   await page.close();
  }
  assert(!errors.length,'Browser errors: '+errors.join(' | '));
- console.log(JSON.stringify({passed:true,artifacts:root,model_calls:0,scope:'isolated mTLS nodes and headless browser',checks:['pairing-code-matches-cli','bad-code-explained','check-code-is-fingerprint-tail','no-trust-before-approval','request-counted-in-inbox','no-overflow','wrong-check-rejected','asking-side-finishes-itself','trusted-both-ways','agents-visible-both-ways','no-internal-fields','direct-pairing-window','mcp-only-pairs-outbound','peer-address-shown','peer-address-refused-explained','peer-address-saved-to-daemon','peer-address-no-overflow','peer-address-cleared','network-untrusted-said','network-notice-no-overflow','network-trusted-from-panel','network-subnet-only-said-before','network-subnet-only-said-after','network-subnet-only-no-overflow']}));
+ console.log(JSON.stringify({passed:true,artifacts:root,model_calls:0,scope:'isolated mTLS nodes and headless browser',checks:['pairing-code-matches-cli','bad-code-explained','check-code-is-fingerprint-tail','no-trust-before-approval','request-counted-in-inbox','no-overflow','wrong-check-rejected','asking-side-finishes-itself','trusted-both-ways','agents-visible-both-ways','no-internal-fields','direct-pairing-window','mcp-only-pairs-outbound','peer-address-shown','peer-address-refused-explained','peer-address-saved-to-daemon','peer-address-no-overflow','peer-address-cleared','peer-access-per-paired-computer','peer-access-survives-reload','mcp-only-peer-access-editable','network-untrusted-said','network-notice-no-overflow','network-trusted-from-panel','network-subnet-only-said-before','network-subnet-only-said-after','network-subnet-only-no-overflow']}));
 }catch(e){console.error(stage+': '+e.message+' diagnostics='+root);process.exitCode=1;}
 finally{await browser?.close();for(const p of owned.reverse()){if(p.exitCode===null){p.kill();await Promise.race([once(p,'exit'),new Promise(r=>setTimeout(r,3000))]);}}}
