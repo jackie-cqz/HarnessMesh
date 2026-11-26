@@ -4,7 +4,7 @@
 // there (their own history) under each one; clicking one continues it here.
 // Paired computers keep one flat list each. A session's local name, pin and
 // hidden flag apply everywhere. Agent and folder text is always set as text.
-const proj={list:null,loading:null,error:null,history:new Map(),queue:[],reading:0,open:readOpen(),more:new Set(),query:'',showHidden:false,menu:null,continuing:new Set(),folders:null,picked:new Set(),adding:false};
+const proj={list:null,loading:null,error:null,history:new Map(),queue:[],reading:0,open:readOpen(),more:new Set(),query:'',showHidden:false,menu:null,continuing:new Set(),folders:null,foldersRead:false,step:'choose',pick:null,preview:null,previewMore:new Set(),lastFolder:null,noPicker:false,adding:null};
 const EARLIER_SHOWN=6;
 function projectsSupported(){return state.runtime?.capabilities?.projects===true;}
 function readOpen(){try{return new Map(Object.entries(JSON.parse(localStorage.getItem('hmesh.panel.projects.open')||'{}')));}catch{return new Map();}}
@@ -30,7 +30,15 @@ const projectProblems=[
   [/cannot continue its earlier sessions/,'这个 Agent 不能接着它之前的会话'],
   [/unknown session/,'找不到这个会话'],
 ];
+// The folder dialog's refusals come with a code.
+const pickerProblems={
+  FOLDER_PICKER_BUSY:'这台电脑上已经开着一个文件夹选择框了，先在那里选好或者关掉它',
+  FOLDER_PICKER_UNAVAILABLE:'这台电脑弹不出文件夹选择框，请直接填文件夹的完整路径',
+  FOLDER_PICKER_TIMEOUT:'文件夹选择框开了 10 分钟没有选，已经关掉了',
+};
 function projectProblem(e){
+  if(pickerProblems[e?.code])return pickerProblems[e.code];
+  if(e?.code==='FOLDER_PICKER_FAILED')return `文件夹选择框没有打开：${e.message||'原因不明'}`;
   const text=e?.message||'';
   for(const [pattern,say]of projectProblems){const m=pattern.exec(text);if(m)return typeof say==='function'?say(m):say;}
   return text||e?.code||'原因不明';
@@ -95,7 +103,8 @@ function earlierSessions(id,local){
   }
   return rows.sort((a,b)=>(seconds(b.entry.updated_at)||0)-(seconds(a.entry.updated_at)||0));
 }
-async function continueEarlier(project,agent,entry){
+// quiet: the caller says what went wrong instead of a toast.
+async function continueEarlier(project,agent,entry,quiet=false){
   const key=`${agent.agent_id}/${entry.agent_session_id}`;
   if(proj.continuing.has(key)||!canWrite())return;
   proj.continuing.add(key);renderSessionList();
@@ -106,7 +115,7 @@ async function continueEarlier(project,agent,entry){
     if(state.view!=='sessions')showView('sessions');
     selectSession({...record,_remote:false});
     loadSessions();
-  }catch(e){toast(`没有接上这个会话：${projectProblem(e)}`);}
+  }catch(e){if(quiet)throw e;toast(`没有接上这个会话：${projectProblem(e)}`);}
   finally{proj.continuing.delete(key);renderSessionList();}
 }
 
@@ -371,17 +380,256 @@ function askName({title,description,value,allowEmpty=false,save}){
 $('#name-cancel').addEventListener('click',()=>$('#name-dialog').close());
 $('#name-input').addEventListener('input',()=>{$('#name-message').hidden=true;});
 
-// ---- Adding projects: folders from the agents' own histories, or a path ----
-function openProjectDialog(){
-  proj.picked.clear();$('#project-path').value='';$('#project-message').textContent='';$('#project-message').classList.remove('error');
-  drawFolders();updateAddButton();$('#project-dialog').showModal();
-  loadFolders(false);
+// ---- Adding a project: pick a folder, see what each agent has there ----
+// The folder comes from this computer's own folder dialog, a typed path or a
+// folder the agents have used. The preview lists each local agent's sessions
+// in it: add the folder as a project, or continue one of them at once.
+const PICK_WAIT=11*60*1000,PREVIEW_SHOWN=8;
+const projectDialog=$('#project-dialog');
+function pickerShown(){return state.runtime?.capabilities?.folder_picker===true&&!proj.noPicker;}
+function folderLabel(path){return String(path||'').split(/[\\/]/).filter(Boolean).pop()||String(path||'');}
+// The folder above, where the next folder dialog starts.
+function parentFolder(path){
+  const m=/^(.*?)[\\/]+[^\\/]+[\\/]*$/.exec(path||'');if(!m)return null;
+  return m[1]&&!m[1].endsWith(':')?m[1]:m[1]+(String(path).includes('\\')?'\\':'/');
 }
+function isFullPath(path){return /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(path);}
+function projectMessage(text,error=false){const m=$('#project-message');m.textContent=text;m.classList.toggle('error',error);}
+function openProjectDialog(){
+  proj.preview=null;proj.noPicker=false;proj.adding=null;proj.foldersRead=false;proj.previewMore.clear();
+  $('#project-path').value='';$('#project-history').open=false;projectMessage('');
+  showProjectStep('choose');projectDialog.showModal();focusChoose();
+}
+function focusChoose(){(pickerShown()&&!proj.pick?$('#project-pick'):$('#project-path')).focus();}
+function showProjectStep(step){
+  proj.step=step;
+  $('#project-choose').hidden=step!=='choose';$('#project-preview').hidden=step!=='preview';
+  drawChoose();drawPreview();drawProjectFooter();
+}
+function drawChoose(){
+  const picker=pickerShown(),waiting=!!proj.pick;
+  $('#project-pick-box').hidden=!picker;
+  $('#project-pick').hidden=waiting;$('#project-pick').disabled=!canWrite();
+  $('#project-waiting').hidden=!waiting;
+  $('#project-path-label').textContent=picker?'或者填文件夹的完整路径':'文件夹的完整路径';
+  $('#project-look').disabled=!canWrite();
+}
+// The project this folder already is, if any.
+function previewProject(){
+  const p=proj.preview;if(!p)return null;
+  const id=p.data?.project_id,list=proj.list||[];
+  return list.find(x=>id?x.project_id===id:x.path===p.path)||(id?{project_id:id,name:p.name,path:p.path}:null);
+}
+function drawProjectFooter(){
+  const back=$('#project-back'),add=$('#project-add');
+  if(proj.step!=='preview'){back.textContent='关闭';back.disabled=false;add.hidden=true;return;}
+  const known=previewProject();
+  back.textContent='返回';back.disabled=!!proj.adding;add.hidden=false;
+  add.textContent=proj.adding==='folder'?'正在添加…':known?'打开项目':'添加为项目';
+  add.disabled=!!proj.adding||(!known&&!canWrite());
+}
+
+// This computer's own folder dialog. The request waits for the answer; ending
+// it (取消, or closing this dialog) closes the folder dialog too.
+async function pickFolder(){
+  if(proj.pick||!canWrite())return;
+  const controller=new AbortController(),pick={controller,timedOut:false};
+  const timer=setTimeout(()=>{pick.timedOut=true;controller.abort();},PICK_WAIT);
+  const start=parentFolder(proj.lastFolder);
+  proj.pick=pick;projectMessage('');drawChoose();$('#project-pick-cancel').focus();
+  try{
+    const result=unwrap(await api('/folders/pick',{method:'POST',body:JSON.stringify(start?{start}:{}),signal:controller.signal}));
+    if(proj.pick!==pick)return;
+    proj.pick=null;
+    if(result?.path){previewFolder(result.path);return;}
+    drawChoose();focusChoose();
+  }catch(e){
+    if(proj.pick!==pick)return;
+    proj.pick=null;
+    if(e.code==='FOLDER_PICKER_UNAVAILABLE')proj.noPicker=true;
+    if(pick.timedOut)projectMessage(projectProblem({code:'FOLDER_PICKER_TIMEOUT'}),true);
+    else if(e.name!=='AbortError')projectMessage(projectProblem(e),true);
+    drawChoose();focusChoose();
+  }finally{clearTimeout(timer);}
+}
+function stopPicking(){
+  const pick=proj.pick;if(!pick)return;
+  proj.pick=null;pick.controller.abort();
+  if(projectDialog.open&&proj.step==='choose'){drawChoose();focusChoose();}
+}
+
+// What each local agent keeps in the folder. A typed path that is refused
+// goes back to the path box with the reason.
+async function previewFolder(path,{typed=false,refresh=false}={}){
+  const preview={path,name:folderLabel(path),state:'loading',typed};
+  proj.preview=preview;proj.lastFolder=path;proj.previewMore.clear();projectMessage('');
+  showProjectStep('preview');$('#project-add').focus();
+  try{
+    const data=unwrap(await api(`/folders/history?path=${encodeURIComponent(path)}&refresh=${refresh}`,{signal:AbortSignal.timeout(120000)}));
+    if(proj.preview!==preview)return;
+    Object.assign(preview,{state:'ready',data,path:data.path,name:data.name});proj.lastFolder=data.path;
+  }catch(e){
+    if(proj.preview!==preview)return;
+    if(typed){proj.preview=null;showProjectStep('choose');projectMessage(projectProblem(e),true);$('#project-path').focus();return;}
+    Object.assign(preview,{state:'error',error:e});
+  }
+  if(projectDialog.open){drawPreview();drawProjectFooter();}
+}
+function drawPreview(){
+  const box=$('#project-preview'),p=proj.preview;
+  if(proj.step!=='preview'||!p){box.replaceChildren();return;}
+  const known=previewProject(),head=el('div','preview-head'),name=el('div','preview-name');
+  name.append(el('b','',p.name));
+  if(known)name.append(folderFlag(known.name&&known.name!==p.name?`已是项目「${known.name}」`:'已是项目'));
+  head.append(name,el('span','folder-path',p.path));
+  const parts=[head];
+  if(p.state==='loading')parts.push(el('p','preview-note loading','正在问各个 Agent 在这个文件夹里有哪些会话，可能要几秒…'));
+  else if(p.state==='error'){
+    const note=el('p','preview-note');note.append(el('span','',`没读到这个文件夹里的会话：${projectProblem(p.error)} `));
+    const again=el('button','side-link','再试一次');again.type='button';again.addEventListener('click',()=>previewFolder(p.path,{refresh:true}));
+    note.append(again);parts.push(note);
+  }else parts.push(...previewAgents(p,known));
+  box.replaceChildren(...parts);
+}
+function folderFlag(text){const flag=el('span','folder-flag');flag.append(icon('check','xs'),el('span','',text));return flag;}
+const newest=(a,b)=>(seconds(b.updated_at)||0)-(seconds(a.updated_at)||0);
+function previewAgents(p,known){
+  const agents=p.data.agents||[];
+  if(!agents.length)return [el('p','preview-note','这台电脑上还没有 Agent。')];
+  // Agents with sessions first; those that could not list at the end.
+  const rank=a=>a.state==='listed'?((a.sessions||[]).length?0:1):a.state==='failed'?2:3;
+  const parts=[];
+  if(!known&&agents.some(a=>(a.sessions||[]).some(s=>!s.session_id)))parts.push(el('p','preview-note','点一个会话，会先把这个文件夹加成项目，再接着聊。'));
+  for(const agent of [...agents].sort((a,b)=>rank(a)-rank(b))){
+    const group=el('section','preview-agent'),head=el('div','preview-agent-head'),sessions=[...(agent.sessions||[])].sort(newest);
+    head.append(el('b','',agent.agent_name));
+    const quiet=agent.state==='unsupported'?'不提供会话记录':agent.state==='failed'?`没读到：${agent.message?projectProblem({message:agent.message}):'原因不明'}`:sessions.length?'':'这里没有会话';
+    if(quiet)head.append(el('span','preview-agent-state',quiet));
+    group.append(head);
+    if(sessions.length){
+      const shown=proj.previewMore.has(agent.agent_id)?sessions:sessions.slice(0,PREVIEW_SHOWN),list=el('div','folder-list');
+      for(const entry of shown)list.append(previewSession(agent,entry));
+      group.append(list);
+      if(sessions.length>shown.length){
+        const more=el('button','side-link preview-more',`再显示 ${sessions.length-shown.length} 个`);more.type='button';
+        more.addEventListener('click',()=>{proj.previewMore.add(agent.agent_id);drawPreview();});group.append(more);
+      }
+      if(agent.truncated)group.append(el('p','preview-note','会话太多，只列出了最近的一部分'));
+    }
+    parts.push(group);
+  }
+  return parts;
+}
+function previewSession(agent,entry){
+  const open=!!entry.session_id,row=el('button','folder-row preview-session');row.type='button';
+  row.dataset.key=`${agent.agent_id}/${entry.agent_session_id}`;
+  const title=entry.title||'没有标题的会话',go=el('span','folder-go',open?'打开':'接着聊');go.append(icon('chevron-right','xs'));
+  row.append(el('span','preview-title',title),el('span','preview-time',since(entry.updated_at)),go);
+  row.title=open?`${title}\n已经在这里接着聊过，点开看看`:`${title}\n接着 ${agent.agent_name} 里的这个会话聊`;
+  row.disabled=!!proj.adding||(!open&&!canWrite());
+  row.addEventListener('click',()=>pickSession(agent,entry));
+  return row;
+}
+// While the folder is being added or a session continued, nothing else in
+// the preview can start.
+function holdPreview(key){
+  for(const b of document.querySelectorAll('#project-preview button'))b.disabled=true;
+  const go=key&&[...document.querySelectorAll('#project-preview .preview-session')].find(r=>r.dataset.key===key)?.querySelector('.folder-go');
+  if(go)go.firstChild.textContent='正在接上…';
+  drawProjectFooter();
+}
+// Expand the project in the sidebar, clearing a search that would hide it.
+function showInSidebar(p){
+  proj.open.set(p.project_id,true);saveOpen();
+  if(proj.query){proj.query='';$('#session-search').value='';}
+  if(p.hidden&&!proj.showHidden)toast(`「${p.name}」已隐藏。勾上会话列表底部的「显示隐藏的项目和会话」可以看到。`);
+  renderSessionList();
+}
+function revealInSidebar(id){
+  const toggle=[...document.querySelectorAll('#session-list .project')].find(b=>b.dataset.project===id)?.querySelector('.project-toggle');
+  if(toggle){toggle.scrollIntoView({block:'nearest'});toggle.focus({preventScroll:true});}
+}
+// The previewed folder as a project: the one it is, or added now. What the
+// preview read is kept, so the sidebar need not ask the agents again.
+async function previewAsProject(){
+  const p=proj.preview,known=previewProject();
+  if(known){
+    let found=(proj.list||[]).find(x=>x.project_id===known.project_id);
+    if(!found){await readProjects();found=(proj.list||[]).find(x=>x.project_id===known.project_id);}
+    if(!found)throw Error('no such project');
+    showInSidebar(found);return {project:found,added:false};
+  }
+  const added=unwrap(await api('/projects',{method:'POST',body:JSON.stringify({path:p.data?.path||p.path})}));
+  if(p.data){p.data.project_id=added.project_id;proj.history.set(added.project_id,{state:'ready',data:{project_id:added.project_id,agents:p.data.agents,observed_at:p.data.observed_at}});}
+  for(const folder of proj.folders?.data?.folders||[])if(folder.path===added.path)folder.project_id=added.project_id;
+  await readProjects();
+  const project=(proj.list||[]).find(x=>x.project_id===added.project_id)||added;
+  showInSidebar(project);
+  if(state.view==='sessions'&&!conv.selected)renderHero();
+  return {project,added:true};
+}
+async function pickSession(agent,entry){
+  if(proj.adding||!proj.preview)return;
+  if(entry.session_id){openContinued(entry.session_id);return;}
+  const key=`${agent.agent_id}/${entry.agent_session_id}`;
+  proj.adding=key;projectMessage('');holdPreview(key);
+  let added=null;
+  try{
+    const result=await previewAsProject();if(result.added)added=result.project;
+    await continueEarlier(result.project,agent,entry,true);
+    if(entry.session_id&&projectDialog.open)projectDialog.close();
+  }catch(e){
+    const text=`${added?`已添加「${added.name}」，但`:''}没有接上这个会话：${projectProblem(e)}`;
+    if(projectDialog.open)projectMessage(text,true);else toast(text);
+  }finally{
+    if(proj.adding===key){
+      proj.adding=null;
+      if(projectDialog.open){drawPreview();drawProjectFooter();[...document.querySelectorAll('#project-preview .preview-session')].find(r=>r.dataset.key===key)?.focus();}
+    }
+  }
+}
+// A session HarnessMesh already continues: open it.
+async function openContinued(id){
+  const known=previewProject(),find=()=>allSessions().find(s=>s.session_id===id&&!s._remote);
+  if(!find())await loadSessions();
+  const project=known&&(proj.list||[]).find(x=>x.project_id===known.project_id);
+  if(project)showInSidebar(project);
+  projectDialog.close();
+  if(state.view!=='sessions')showView('sessions');
+  selectSession(find()||{session_id:id,_remote:false});
+}
+$('#project-add').addEventListener('click',async()=>{
+  if(proj.adding||!proj.preview)return;
+  if(!previewProject()){proj.adding='folder';projectMessage('');holdPreview(null);}
+  try{
+    const {project,added}=await previewAsProject();
+    projectDialog.close();revealInSidebar(project.project_id);
+    if(added)toast(`已添加「${project.name}」`);
+  }catch(e){if(projectDialog.open)projectMessage(`没有添加：${projectProblem(e)}`,true);}
+  finally{if(proj.adding==='folder'){proj.adding=null;if(projectDialog.open){drawPreview();drawProjectFooter();}}}
+});
+$('#project-back').addEventListener('click',()=>{
+  if(proj.step!=='preview'){projectDialog.close();return;}
+  proj.preview=null;projectMessage('');showProjectStep('choose');focusChoose();
+});
+$('#project-pick').addEventListener('click',pickFolder);
+$('#project-pick-cancel').addEventListener('click',stopPicking);
+$('#project-path-form').addEventListener('submit',e=>{
+  e.preventDefault();
+  const path=$('#project-path').value.trim();
+  if(!path){projectMessage('先填文件夹的完整路径',true);$('#project-path').focus();return;}
+  if(!isFullPath(path)){projectMessage(projectProblem({message:'must be an absolute path'}),true);$('#project-path').focus();return;}
+  stopPicking();previewFolder(path,{typed:true});
+});
+$('#project-path').addEventListener('input',()=>{if($('#project-message').classList.contains('error'))projectMessage('');});
+projectDialog.addEventListener('close',()=>{stopPicking();proj.preview=null;proj.adding=null;proj.step='choose';$('#project-preview').replaceChildren();});
+
+// The folders the agents have used: read only when asked for.
 async function loadFolders(refresh){
-  const read=Symbol();proj.folders={...proj.folders,state:'loading',read};drawFolders();
+  const read=Symbol();proj.folders={...proj.folders,state:'loading',read};proj.foldersRead=true;drawFolders();
   try{const data=unwrap(await api(`/history?refresh=${refresh}`,{signal:AbortSignal.timeout(120000)}));if(proj.folders.read===read)proj.folders={state:'ready',data};}
   catch(e){if(proj.folders.read===read)proj.folders={state:'error',error:e,data:proj.folders.data};}
-  if($('#project-dialog').open)drawFolders();
+  if(projectDialog.open)drawFolders();
 }
 function folderAdded(folder){return !!folder.project_id||(proj.list||[]).some(p=>p.path===folder.path);}
 function drawFolders(){
@@ -395,44 +643,27 @@ function drawFolders(){
     // Folders not yet added first; the daemon already lists the latest first.
     const folders=[...(data.folders||[])].sort((x,y)=>Number(folderAdded(x))-Number(folderAdded(y)));
     for(const folder of folders){
-      const added=folderAdded(folder),row=el('label',`folder-row${added?' added':''}`),check=el('input');
-      check.type='checkbox';check.disabled=added||!canWrite();check.checked=!added&&proj.picked.has(folder.path);
-      check.setAttribute('aria-label',`把 ${folder.name} 加成项目`);
-      check.addEventListener('change',()=>{check.checked?proj.picked.add(folder.path):proj.picked.delete(folder.path);updateAddButton();});
-      const text=el('div','folder-text'),meta=[`${folder.sessions} 个会话`];
-      if(folder.latest)meta.push(`最近 ${since(folder.latest)}`);
+      const added=folderAdded(folder),row=el('button','folder-row');row.type='button';
+      const text=el('span','folder-text'),meta=[`${folder.sessions} 个会话`];
+      if(folder.latest)meta.push(`${since(folder.latest)}用过`);
       if(folder.agents?.length)meta.push(folder.agents.join('、'));
       text.append(el('b','',folder.name),el('span','folder-path',folder.path),el('span','folder-meta',meta.join(' · ')));
-      row.append(check,text);if(added)row.append(el('span','badge','已添加'));
+      row.append(text);if(added)row.append(folderFlag('已添加'));
+      const go=icon('chevron-right','xs');go.classList.add('folder-chevron');row.append(go);
+      row.addEventListener('click',()=>previewFolder(folder.path));
       rows.push(row);
     }
-    if(!(data.folders||[]).length)rows.push(el('div','folder-empty','Agent 里还没有找到会话记录。可以在下面直接填路径。'));
-    const quiet=(data.agents||[]).filter(a=>a.state!=='listed').map(a=>a.agent_name);
-    if(quiet.length)rows.push(el('div','folder-empty',`${quiet.join('、')} 没有提供会话记录`));
+    if(!(data.folders||[]).length)rows.push(el('div','folder-empty','Agent 里还没有找到会话记录。'));
+    const said=(kind,text)=>{const names=(data.agents||[]).filter(a=>a.state===kind).map(a=>a.agent_name);if(names.length)rows.push(el('div','folder-empty',`${names.join('、')} ${text}`));};
+    said('unsupported','不提供会话记录');said('failed','这次没读出会话记录');
   }
   box.replaceChildren(...rows);
 }
-function updateAddButton(){$('#project-add').disabled=proj.adding||!canWrite()||(!proj.picked.size&&!$('#project-path').value.trim());}
-$('#project-path').addEventListener('input',()=>{updateAddButton();$('#project-message').textContent='';});
-$('#project-folders-refresh').addEventListener('click',()=>loadFolders(true));
-$('#project-dialog').addEventListener('close',()=>{proj.picked.clear();proj.adding=false;});
-$('#project-form').addEventListener('submit',async e=>{
-  e.preventDefault();if(proj.adding)return;
-  const typed=$('#project-path').value.trim(),paths=[...proj.picked];if(typed&&!paths.includes(typed))paths.push(typed);
-  if(!paths.length)return;
-  proj.adding=true;updateAddButton();const message=$('#project-message');message.classList.remove('error');message.textContent='正在添加…';
-  const added=[],problems=[];
-  for(const path of paths){
-    try{const p=unwrap(await api('/projects',{method:'POST',body:JSON.stringify({path})}));added.push(p);proj.picked.delete(path);if(path===typed)$('#project-path').value='';proj.open.set(p.project_id,true);}
-    catch(err){problems.push(`${path}：${projectProblem(err)}`);}
-  }
-  saveOpen();proj.adding=false;
-  if(added.length){await readProjects();renderSessionList();if(state.view==='sessions'&&!conv.selected)renderHero();}
-  for(const folder of proj.folders?.data?.folders||[]){const p=added.find(p=>p.path===folder.path);if(p)folder.project_id=p.project_id;}
-  if(!problems.length){$('#project-dialog').close();toast(`已添加 ${added.map(p=>`「${p.name}」`).join('')}`);return;}
-  message.classList.add('error');message.textContent=(added.length?`已添加 ${added.map(p=>`「${p.name}」`).join('')}。`:'')+problems.join('\n');
-  drawFolders();updateAddButton();
+$('#project-history').addEventListener('toggle',()=>{
+  if(!$('#project-history').open)return;
+  if(!proj.foldersRead&&proj.folders?.state!=='loading')loadFolders(false);else drawFolders();
 });
+$('#project-folders-refresh').addEventListener('click',()=>loadFolders(true));
 
 // ---- The project a new session starts in ----
 function heroProjectOptions(target){

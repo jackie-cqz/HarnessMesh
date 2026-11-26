@@ -205,19 +205,29 @@
   </dialog>
   <dialog id="name-dialog" class="confirm-dialog name-dialog" aria-labelledby="name-title"><form id="name-form"><h2 id="name-title"></h2><p id="name-description"></p><input id="name-input" maxlength="120" autocomplete="off" spellcheck="false" aria-labelledby="name-title"><p id="name-message" class="form-note" role="status" hidden></p><div class="confirm-actions"><button id="name-cancel" type="button" class="button secondary">取消</button><button id="name-save" type="submit" class="button">保存</button></div></form></dialog>
   <dialog id="project-dialog" class="compose-dialog service-dialog project-dialog" aria-labelledby="project-dialog-title">
-    <div class="dialog-heading"><div><h2 id="project-dialog-title">添加项目</h2><p class="muted">项目就是这台电脑上的一个文件夹。加进来以后，可以在里面开新会话，也能接着 Agent 之前在那里的会话聊。</p></div><button class="icon-button" data-close="project-dialog" type="button" aria-label="关闭添加项目">×</button></div>
-    <form id="project-form">
-      <div class="service-fields">
-        <div class="folder-heading"><b>Agent 用过的文件夹</b><button id="project-folders-refresh" type="button" class="side-link">重新查找</button></div>
-        <p class="form-note muted">这些文件夹里有 Agent 之前的会话。勾上的会加成项目。</p>
-        <div id="project-folders" class="folder-list" aria-live="polite"></div>
-        <label class="form-label">或者直接填文件夹的完整路径<input id="project-path" autocomplete="off" spellcheck="false" maxlength="4096" placeholder="/Users/你/code/项目"></label>
+    <div class="dialog-heading"><div><h2 id="project-dialog-title">添加项目</h2><p class="muted">选这台电脑上的一个文件夹，先看看各个 Agent 在里面有哪些会话，再加成项目。</p></div><button class="icon-button" data-close="project-dialog" type="button" aria-label="关闭添加项目">×</button></div>
+    <div class="service-fields">
+      <div id="project-choose">
+        <div id="project-pick-box" class="project-pick">
+          <button id="project-pick" type="button" class="button"><svg class="icon sm" aria-hidden="true"><use href="#i-folder-open"/></svg>选择文件夹…</button>
+          <p id="project-waiting" class="project-waiting" role="status" hidden>已在这台电脑上打开文件夹选择框。没看到的话，看看其他窗口后面。<button id="project-pick-cancel" type="button" class="side-link">取消</button></p>
+        </div>
+        <form id="project-path-form" class="project-path-form">
+          <label id="project-path-label" for="project-path">或者填文件夹的完整路径</label>
+          <div class="project-path-row"><input id="project-path" autocomplete="off" spellcheck="false" maxlength="4096" placeholder="/Users/你/code/项目"><button id="project-look" type="submit" class="button secondary">查看</button></div>
+        </form>
+        <details id="project-history" class="service-env project-history">
+          <summary>Agent 用过的文件夹</summary>
+          <div class="folder-heading"><span>点一个文件夹，先看看里面的会话。</span><button id="project-folders-refresh" type="button" class="side-link">重新查找</button></div>
+          <div id="project-folders" class="folder-list" aria-live="polite"></div>
+        </details>
       </div>
-      <div class="service-footer">
-        <p id="project-message" class="form-note" role="status"></p>
-        <div class="confirm-actions"><button type="button" class="button secondary" data-close="project-dialog">取消</button><button id="project-add" type="submit" class="button" disabled>添加</button></div>
-      </div>
-    </form>
+      <div id="project-preview" class="project-preview" aria-live="polite" hidden></div>
+    </div>
+    <div class="service-footer">
+      <p id="project-message" class="form-note" role="status"></p>
+      <div class="confirm-actions"><button id="project-back" type="button" class="button secondary">关闭</button><button id="project-add" type="button" class="button" hidden>添加为项目</button></div>
+    </div>
   </dialog>
   <dialog id="service-dialog" class="compose-dialog service-dialog" aria-labelledby="service-title">
     <div class="dialog-heading"><div><h2 id="service-title">模型服务</h2><p id="service-subtitle" class="muted"></p></div><button class="icon-button" id="close-service" type="button" aria-label="关闭模型服务设置">×</button></div>
