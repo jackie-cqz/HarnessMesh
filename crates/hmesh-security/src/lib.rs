@@ -23,6 +23,7 @@ use std::{
 };
 use uuid::Uuid;
 pub mod passcode;
+pub mod relay;
 
 pub struct Instance {
     pub dir: PathBuf,
@@ -423,9 +424,18 @@ pub fn validate_endpoint(endpoint: &str) -> Result<url::Url> {
 /// dialed, and only the addresses `peer_address` permits are used; who
 /// answers is still settled by the pinned certificate. Cards and pairing
 /// codes keep literal IP addresses (`validate_endpoint`).
+///
+/// A relay address (`hmesh-relay://<address>:<port>/<fingerprint>/<token>`)
+/// is one too: that computer is reached through the relay there. Its
+/// address follows the same rules, and the relay must show the certificate
+/// it names.
 pub fn validate_peer_address(address: &str) -> Result<url::Url> {
     if address.len() > MAX_PEER_ADDRESS_BYTES {
         bail!("a peer address is at most {MAX_PEER_ADDRESS_BYTES} bytes");
+    }
+    if is_relay_address(address) {
+        let relay = validate_relay(address)?;
+        return Ok(url::Url::parse(&relay.to_string())?);
     }
     let url = url::Url::parse(address)?;
     let permitted = match url.host() {
@@ -482,21 +492,41 @@ pub fn typed_peer_address(typed: &str, default_port: u16) -> Result<url::Url> {
     validate_peer_address(&address)
 }
 /// A computer's address list, checked: its count and each address, written
-/// as the origin it names (`https://studio.local:38880`), without repeats.
+/// as the origin it names (`https://studio.local:38880`), or as a relay
+/// address in full, without repeats.
 pub fn validate_peer_addresses(addresses: &[String]) -> Result<Vec<String>> {
     if addresses.len() > MAX_PEER_ADDRESSES {
         bail!("an address list has at most {MAX_PEER_ADDRESSES} addresses");
     }
     let mut origins: Vec<String> = Vec::new();
     for address in addresses {
-        let origin = validate_peer_address(address)?
-            .origin()
-            .ascii_serialization();
+        let origin = peer_address_key(address)?;
         if !origins.contains(&origin) {
             origins.push(origin);
         }
     }
     Ok(origins)
+}
+/// One peer address as it is kept and compared: the origin it names
+/// (`https://studio.local:38880`), or a relay address written in full.
+pub fn peer_address_key(address: &str) -> Result<String> {
+    if is_relay_address(address) {
+        return Ok(validate_relay(address)?.to_string());
+    }
+    Ok(validate_peer_address(address)?
+        .origin()
+        .ascii_serialization())
+}
+/// A relay address, checked: well formed, and at an address a peer may be
+/// at (`peer_address`) or a DNS host name.
+pub fn validate_relay(address: &str) -> Result<RelayAddress> {
+    let relay = RelayAddress::parse(address)?;
+    if let RelayHost::Ip(ip) = relay.host()
+        && !peer_address(*ip)
+    {
+        bail!("a relay listens on a unicast address that is not link-local");
+    }
+    Ok(relay)
 }
 pub fn validate_card(card: &NodeCard) -> Result<()> {
     if card.version != PROTOCOL || card.node_id.is_nil() {

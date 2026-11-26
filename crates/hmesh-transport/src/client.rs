@@ -1,7 +1,8 @@
 //! Calling another computer, or this computer's own daemon. A paired
 //! computer may be known by several addresses: they are tried in turn, and
 //! where it answered is tried first next time.
-use hmesh_core::{ErrorCode, MeshError, NodeCard};
+use crate::relay::RelayDialer;
+use hmesh_core::{ErrorCode, MeshError, NodeCard, RelayAddress};
 use hmesh_security::{
     Instance, normalize_fingerprint, peer_address, validate_endpoint, validate_peer_address,
 };
@@ -24,6 +25,14 @@ use tokio::{net::TcpStream, sync::Notify, task::JoinSet};
 
 /// How long a connection may take: resolving a host name, TCP and TLS.
 const CONNECT: Duration = Duration::from_secs(3);
+/// How long a connection through a relay may take: TLS to the relay, the
+/// relay asking the computer to accept, and TLS with it inside.
+const RELAY_CONNECT: Duration = Duration::from_secs(10);
+/// How long a request may take in all, unless its call says otherwise.
+const REQUEST_TIME: Duration = Duration::from_secs(15);
+/// How long a kept connection through a relay may take to be ready for
+/// the next request before a new one is opened instead.
+const KEPT_READY: Duration = Duration::from_millis(200);
 /// How long the address tried first is tried alone before the others are
 /// probed (a TLS handshake each, nothing sent), so a call that connects at
 /// once costs nothing more. The first address keeps its whole `CONNECT`: it
@@ -139,16 +148,34 @@ struct Routed {
     finder: Option<Arc<dyn Finder>>,
     /// A computer on loopback reaches only loopback addresses.
     loopback_only: bool,
+    /// Dials the relays among the routes, and keeps their connections.
+    relays: Option<Arc<RelayDialer>>,
+    /// This computer's certificate is left out (`tls` has none).
+    anonymous: bool,
 }
 #[derive(Clone)]
 struct Route {
+    /// What the route is known and remembered by: the origin it names, or a
+    /// relay address in full.
     origin: String,
     target: Target,
+}
+impl Route {
+    /// The route as it may be said in an error or a log: a relay by where
+    /// it is (its address has its token).
+    fn shown(&self) -> String {
+        match &self.target {
+            Target::Relay(relay) => relay.label(),
+            _ => self.origin.clone(),
+        }
+    }
 }
 #[derive(Clone)]
 enum Target {
     Ip(SocketAddr),
     Name(String, u16),
+    /// Through this relay, in this process (`RelayDialer`).
+    Relay(RelayAddress),
 }
 impl Target {
     fn of(url: &url::Url) -> anyhow::Result<Self> {
@@ -166,6 +193,7 @@ impl Target {
         match self {
             Self::Ip(address) => address.ip().is_loopback(),
             Self::Name(name, _) => name == "localhost",
+            Self::Relay(_) => false,
         }
     }
 }
@@ -208,7 +236,31 @@ impl Client {
         fingerprint: &str,
         memory: Arc<RouteMemory>,
     ) -> anyhow::Result<Self> {
-        Self::route(instance, candidates, fingerprint, memory, false)
+        Self::route(instance, candidates, fingerprint, memory, false, None)
+    }
+    /// The same, and through relays too: a relay address among the
+    /// candidates (`hmesh-relay://...`) is dialed through that relay, in
+    /// this process (`relays`), and tried like any other address; the
+    /// computer behind it must still show the certificate `fingerprint`
+    /// names. Connections through a relay are kept a while for the next
+    /// call. `anonymous` leaves this computer's certificate out
+    /// (`routed_anonymous`).
+    pub fn routed_through(
+        instance: &Instance,
+        candidates: Vec<String>,
+        fingerprint: &str,
+        memory: Arc<RouteMemory>,
+        relays: &Arc<RelayDialer>,
+        anonymous: bool,
+    ) -> anyhow::Result<Self> {
+        Self::route(
+            instance,
+            candidates,
+            fingerprint,
+            memory,
+            anonymous,
+            Some(relays),
+        )
     }
     /// The same, without showing this computer's certificate: for the
     /// pairing handshake's `hello`, which also answers a computer that no
@@ -219,7 +271,7 @@ impl Client {
         fingerprint: &str,
         memory: Arc<RouteMemory>,
     ) -> anyhow::Result<Self> {
-        Self::route(instance, candidates, fingerprint, memory, true)
+        Self::route(instance, candidates, fingerprint, memory, true, None)
     }
     fn route(
         instance: &Instance,
@@ -227,6 +279,7 @@ impl Client {
         fingerprint: &str,
         memory: Arc<RouteMemory>,
         bootstrap: bool,
+        relays: Option<&Arc<RelayDialer>>,
     ) -> anyhow::Result<Self> {
         let fingerprint = normalize_fingerprint(fingerprint)?;
         let config = instance.client_config(&fingerprint, bootstrap)?;
@@ -234,6 +287,25 @@ impl Client {
         let mut routes = Vec::new();
         let mut seen = HashSet::new();
         for candidate in candidates {
+            if hmesh_core::is_relay_address(&candidate) {
+                // Another computer, wherever its relay is: not for a computer
+                // on loopback.
+                if relays.is_none() || loopback_only {
+                    continue;
+                }
+                let Ok(relay) = hmesh_security::validate_relay(&candidate) else {
+                    continue;
+                };
+                let origin = relay.to_string();
+                if !seen.insert(origin.clone()) {
+                    continue;
+                }
+                routes.push(Route {
+                    origin,
+                    target: Target::Relay(relay),
+                });
+                continue;
+            }
             let Ok(url) = validate_peer_address(&candidate) else {
                 continue;
             };
@@ -255,6 +327,8 @@ impl Client {
                 tls: Arc::new(config),
                 finder: None,
                 loopback_only,
+                relays: relays.cloned(),
+                anonymous: bootstrap,
             })),
         })
     }
@@ -273,6 +347,8 @@ impl Client {
                 tls: routed.tls.clone(),
                 finder: Some(finder),
                 loopback_only: routed.loopback_only,
+                relays: routed.relays.clone(),
+                anonymous: routed.anonymous,
             })),
         }
     }
@@ -293,16 +369,37 @@ impl Client {
             fingerprint,
             Arc::new(RouteMemory::new()),
             bootstrap,
+            None,
         )
     }
-    /// The addresses tried, in the order they are tried first.
+    /// The same at a relay address too (`hmesh-relay://...`, pairing
+    /// through a relay), dialed through that relay by `relays`.
+    pub fn pinned_through(
+        instance: &Instance,
+        address: &str,
+        fingerprint: &str,
+        bootstrap: bool,
+        relays: &Arc<RelayDialer>,
+    ) -> anyhow::Result<Self> {
+        validate_peer_address(address)?;
+        Self::route(
+            instance,
+            vec![address.to_owned()],
+            fingerprint,
+            Arc::new(RouteMemory::new()),
+            bootstrap,
+            Some(relays),
+        )
+    }
+    /// The addresses tried, in the order they are tried first (a relay by
+    /// its label).
     pub fn origins(&self) -> Vec<String> {
         match &*self.dial {
             Dial::One { origin, .. } => vec![origin.clone()],
             Dial::Routed(routed) => routed
                 .order()
                 .iter()
-                .map(|&i| routed.routes[i].origin.clone())
+                .map(|&i| routed.routes[i].shown())
                 .collect(),
         }
     }
@@ -433,6 +530,23 @@ struct Call<'a> {
     timeout: Option<Duration>,
 }
 impl Call<'_> {
+    /// The request as HTTP sends it through a relay.
+    fn request(&self) -> Result<axum::http::Request<axum::body::Body>, Tried> {
+        let mut request = axum::http::Request::builder()
+            .method(self.method.clone())
+            .uri(self.path)
+            .header(axum::http::header::HOST, "localhost");
+        let body = match &self.body {
+            Some(body) => {
+                request = request.header(axum::http::header::CONTENT_TYPE, "application/json");
+                axum::body::Body::from(body.clone())
+            }
+            None => axum::body::Body::empty(),
+        };
+        request
+            .body(body)
+            .map_err(|_| Tried::Sent(MeshError::input("invalid RPC path")))
+    }
     async fn send(
         &self,
         http: &reqwest::Client,
@@ -506,7 +620,7 @@ impl Routed {
                 None => match probes.join_next().await {
                     Some(Ok((index, Ok(at)))) => (index, Some(at)),
                     Some(Ok((index, Err(why)))) => {
-                        failed[index] = Some(why);
+                        failed[index] = Some(self.why(index, why));
                         continue;
                     }
                     Some(Err(_)) => continue,
@@ -520,13 +634,13 @@ impl Routed {
             let gate = Arc::new(Gate::default());
             match self.attempt(index, &gate, at, call).await {
                 Ok(response) => return Ok(self.used(index, response)),
-                Err(error) if unsent(&error, &gate) => failed[index] = Some(failure(&error)),
-                Err(error) => return Err(transport_error(error)),
+                Err(Tried::Unsent(why)) => failed[index] = Some(self.why(index, why)),
+                Err(Tried::Sent(error)) => return Err(error),
             }
         }
         let mut failures: Vec<(String, &'static str)> = order
             .iter()
-            .filter_map(|&i| failed[i].map(|why| (self.routes[i].origin.clone(), why)))
+            .filter_map(|&i| failed[i].map(|why| (self.routes[i].shown(), why)))
             .collect();
         // None answered, and nothing was sent anywhere: ask where else it
         // might be (heard on the local network at a new address), and try
@@ -558,10 +672,8 @@ impl Routed {
                     finder.found(&route.origin);
                     return Ok(response);
                 }
-                Err(error) if unsent(&error, &gate) => {
-                    failures.push((route.origin, failure(&error)));
-                }
-                Err(error) => return Err(transport_error(error)),
+                Err(Tried::Unsent(why)) => failures.push((route.origin, why)),
+                Err(Tried::Sent(error)) => return Err(error),
             }
         }
         Err(self.unreachable(&failures, !heard))
@@ -606,7 +718,7 @@ impl Routed {
                         // It connected just now: its answer is awaited.
                         *probes = Probes::new();
                     }
-                    Ok((index, Err(why))) => failed[index] = Some(why),
+                    Ok((index, Err(why))) => failed[index] = Some(self.why(index, why)),
                     Err(_) => {}
                 },
                 () = gate.connected.notified(), if !probes.is_empty() => *probes = Probes::new(),
@@ -620,14 +732,14 @@ impl Routed {
         };
         match tried {
             Ok(response) => Ok(First::Answered(response)),
-            Err(error) if unsent(&error, &gate) => {
-                failed[first] = Some(failure(&error));
+            Err(Tried::Unsent(why)) => {
+                failed[first] = Some(self.why(first, why));
                 if !waited {
                     self.probe(others, probes);
                 }
                 Ok(First::Failed)
             }
-            Err(error) => Err(transport_error(error)),
+            Err(Tried::Sent(error)) => Err(error),
         }
     }
     /// One try at one route, with a client of its own whose connection
@@ -639,7 +751,7 @@ impl Routed {
         gate: &Arc<Gate>,
         at: Option<SocketAddr>,
         call: &Call<'_>,
-    ) -> reqwest::Result<reqwest::Response> {
+    ) -> Result<reqwest::Response, Tried> {
         self.attempt_at(&self.routes[index], gate, at, call).await
     }
     /// The same, at `route` (one of the routes, or where the computer was heard).
@@ -649,27 +761,146 @@ impl Routed {
         gate: &Arc<Gate>,
         at: Option<SocketAddr>,
         call: &Call<'_>,
-    ) -> reqwest::Result<reqwest::Response> {
+    ) -> Result<reqwest::Response, Tried> {
+        if let Target::Relay(relay) = &route.target {
+            return self.relayed(relay, gate, call).await;
+        }
         let mut builder = builder((*self.tls).clone(), CONNECT)
             .dns_resolver(Arc::new(PeerResolver))
             .connector_layer(Gated(gate.clone()));
         if let (Target::Name(name, _), Some(at)) = (&route.target, at) {
             builder = builder.resolve_to_addrs(name, &[at]);
         }
-        call.send(&builder.build()?, &route.origin, None).await
+        let http = builder
+            .build()
+            .map_err(|error| Tried::Sent(transport_error(error)))?;
+        match call.send(&http, &route.origin, None).await {
+            Ok(response) => Ok(response),
+            Err(error) if unsent(&error, gate) => Err(Tried::Unsent(failure(&error))),
+            Err(error) => Err(Tried::Sent(transport_error(error))),
+        }
+    }
+    /// One try through `relay`, in this process: a kept connection to the
+    /// computer through it, or a new one (TLS to the relay, `DIAL`, TLS with
+    /// the pinned certificate inside). The connection is made when that
+    /// inner handshake is done, and passes `gate` as a direct one does; a
+    /// connection the gate turns down is kept for the next call instead.
+    /// Once the answer has been read, the connection is kept again.
+    async fn relayed(
+        &self,
+        relay: &RelayAddress,
+        gate: &Arc<Gate>,
+        call: &Call<'_>,
+    ) -> Result<reqwest::Response, Tried> {
+        let Some(dialer) = &self.relays else {
+            return Err(Tried::Unsent(NOT_RELAYED));
+        };
+        let through = (relay.to_string(), self.fingerprint.clone(), self.anonymous);
+        let deadline = tokio::time::Instant::now() + call.timeout.unwrap_or(REQUEST_TIME);
+        let open = || async {
+            let by = deadline.min(tokio::time::Instant::now() + RELAY_CONNECT);
+            tokio::time::timeout_at(by, dialer.open(relay, &self.fingerprint, self.tls.clone()))
+                .await
+                .unwrap_or(Err(SILENT))
+        };
+        // A kept connection, once it is ready for another request (just
+        // after an answer it may take a moment); else a new one.
+        let kept = match dialer.take(&through) {
+            Some(mut sender) => {
+                let ready = tokio::time::timeout(KEPT_READY, sender.ready()).await;
+                matches!(ready, Ok(Ok(()))).then_some(sender)
+            }
+            None => None,
+        };
+        let sender = match kept {
+            Some(sender) => sender,
+            None => open().await.map_err(Tried::Unsent)?,
+        };
+        if !gate.connect() {
+            dialer.keep(through, sender);
+            return Err(Tried::Unsent(UNREACHED));
+        }
+        let exchange = async {
+            let mut sender = sender;
+            let response = match sender.try_send_request(call.request()?).await {
+                Ok(response) => response,
+                // Not written: the kept connection had just been closed. A
+                // new one, for the request that was never sent.
+                Err(mut error) => {
+                    if error.take_message().is_none() {
+                        return Err(Tried::Sent(failed_transport()));
+                    }
+                    sender = open().await.map_err(Tried::Unsent)?;
+                    sender
+                        .send_request(call.request()?)
+                        .await
+                        .map_err(|_| Tried::Sent(failed_transport()))?
+                }
+            };
+            let (parts, body) = response.into_parts();
+            let bytes = collect(body).await?;
+            Ok((sender, parts, bytes))
+        };
+        match tokio::time::timeout_at(deadline, exchange).await {
+            Ok(Ok((sender, parts, bytes))) => {
+                dialer.keep(through, sender);
+                Ok(reqwest::Response::from(axum::http::Response::from_parts(
+                    parts, bytes,
+                )))
+            }
+            Ok(Err(tried)) => Err(tried),
+            Err(_) => Err(Tried::Sent(MeshError::new(
+                ErrorCode::PeerUnreachable,
+                "RPC deadline exceeded",
+            ))),
+        }
     }
     /// Start a TLS handshake with each of these routes (nothing is sent
     /// over it): which ones answer, as the right computer, and how soon.
+    /// Through a relay, the connection that handshake makes is kept, and
+    /// the try there uses it.
     fn probe(&self, routes: &[usize], probes: &mut Probes) {
         for &index in routes {
             let target = self.routes[index].target.clone();
             let tls = self.tls.clone();
+            if let (Target::Relay(relay), Some(dialer)) = (&target, &self.relays) {
+                let (relay, dialer) = (relay.clone(), dialer.clone());
+                let through = (relay.to_string(), self.fingerprint.clone(), self.anonymous);
+                probes.spawn(async move {
+                    let opened =
+                        tokio::time::timeout(RELAY_CONNECT, dialer.open(&relay, &through.1, tls))
+                            .await
+                            .unwrap_or(Err(SILENT));
+                    let answered = opened.map(|sender| {
+                        dialer.keep(through, sender);
+                        // Not an address of its own: the try there uses
+                        // the connection kept.
+                        SocketAddr::from(([0, 0, 0, 0], 0))
+                    });
+                    (index, answered)
+                });
+                continue;
+            }
             probes.spawn(async move {
                 let answered = tokio::time::timeout(CONNECT, handshake(target, tls))
                     .await
                     .unwrap_or(Err(SILENT));
                 (index, answered)
             });
+        }
+    }
+    /// Why a try at route `index` stopped, as said: through a relay, that
+    /// the relay did not put it through (wherever on the way it stopped),
+    /// unless the computer that answered there is another one, or turned
+    /// this one down.
+    fn why(&self, index: usize, why: &'static str) -> &'static str {
+        if matches!(self.routes[index].target, Target::Relay(_))
+            && why != ANOTHER
+            && why != TURNED_DOWN
+        {
+            NOT_RELAYED
+        } else {
+            why
         }
     }
     fn used(&self, index: usize, response: reqwest::Response) -> reqwest::Response {
@@ -682,6 +913,39 @@ impl Routed {
 /// and no connection was handed over for it.
 fn unsent(error: &reqwest::Error, gate: &Gate) -> bool {
     error.is_connect() && !gate.is_connected()
+}
+/// How a try that did not answer came out: nothing was sent (and where it
+/// stopped), so another address may be tried; or it was, and the call ends
+/// with this error.
+enum Tried {
+    Unsent(&'static str),
+    Sent(MeshError),
+}
+fn failed_transport() -> MeshError {
+    MeshError::new(ErrorCode::PeerUnreachable, "RPC transport failed")
+}
+/// An answer's body through a relay, as `read` would take it: at most 1 MiB.
+async fn collect(mut body: hyper::body::Incoming) -> Result<Vec<u8>, Tried> {
+    use hyper::body::Body as _;
+    let mut bytes = Vec::new();
+    loop {
+        let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+        match frame {
+            None => return Ok(bytes),
+            Some(Err(_)) => return Err(Tried::Sent(failed_transport())),
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data() {
+                    if bytes.len() + data.len() > 1048576 {
+                        return Err(Tried::Sent(MeshError::new(
+                            ErrorCode::RateLimited,
+                            "RPC response exceeds 1 MiB",
+                        )));
+                    }
+                    bytes.extend_from_slice(&data);
+                }
+            }
+        }
+    }
 }
 
 /// One try at one address: whether its connection was made, or it was given
@@ -815,6 +1079,8 @@ async fn handshake(
     tls: Arc<rustls::ClientConfig>,
 ) -> Result<SocketAddr, &'static str> {
     let (name, addresses) = match target {
+        // Opened through its relay instead (`RelayDialer::open`).
+        Target::Relay(_) => return Err(NOT_RELAYED),
         Target::Ip(address) => (ServerName::IpAddress(address.ip().into()), vec![address]),
         Target::Name(name, port) => (
             ServerName::try_from(name.as_str())
@@ -837,7 +1103,7 @@ async fn handshake(
     Ok(at)
 }
 /// A TCP connection to whichever of `addresses` accepts first.
-async fn connect(addresses: Vec<SocketAddr>) -> std::io::Result<TcpStream> {
+pub(crate) async fn connect(addresses: Vec<SocketAddr>) -> std::io::Result<TcpStream> {
     let mut connections = JoinSet::new();
     for address in addresses {
         connections.spawn(TcpStream::connect(address));
@@ -900,7 +1166,7 @@ fn builder(config: rustls::ClientConfig, connect: Duration) -> reqwest::ClientBu
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect)
-        .timeout(Duration::from_secs(15))
+        .timeout(REQUEST_TIME)
         .pool_max_idle_per_host(0)
 }
 
@@ -909,15 +1175,24 @@ fn builder(config: rustls::ClientConfig, connect: Duration) -> reqwest::ClientBu
 const REFUSED: &str = "refused the connection";
 const SILENT: &str = "did not answer";
 const UNRESOLVED: &str = "did not resolve";
-const ANOTHER: &str = "is another computer";
+pub(crate) const ANOTHER: &str = "is another computer";
 const NO_ROUTE: &str = "has no route from here";
 const UNREACHED: &str = "could not be reached";
 const TLS: &str = "failed the TLS handshake";
 /// Looked for on the local network too, and not heard there.
 const NOT_HEARD: &str = "it was not heard on the local network either";
+/// Its relay did not put the call through: the relay is down, or the
+/// computer is not holding a connection to it, or its token is no longer
+/// the relay's.
+pub(crate) const NOT_RELAYED: &str = "was not put through by its relay";
+/// Reached through its relay, it turned this computer down: it is not
+/// paired with this one (any more), and is not pairing now.
+pub(crate) const TURNED_DOWN: &str =
+    "turned this computer down: it is not paired with it, and is not pairing now";
 /// The reasons a call to a paired computer failed, read from its error
 /// message: `refused`, `silent`, `unresolved`, `another_computer`,
-/// `no_route`, `unreached`, `tls`, `not_heard`, each once, in that order.
+/// `no_route`, `unreached`, `tls`, `not_heard`, `relay`, `not_accepted`,
+/// each once, in that order.
 /// Fixed words, so a panel can say each in its own language.
 pub fn unreachable_reasons(message: &str) -> Vec<&'static str> {
     [
@@ -929,6 +1204,8 @@ pub fn unreachable_reasons(message: &str) -> Vec<&'static str> {
         (UNREACHED, "unreached"),
         (TLS, "tls"),
         (NOT_HEARD, "not_heard"),
+        (NOT_RELAYED, "relay"),
+        (TURNED_DOWN, "not_accepted"),
     ]
     .into_iter()
     .filter(|(phrase, _)| message.contains(phrase))
@@ -943,7 +1220,7 @@ fn failure(error: &reqwest::Error) -> &'static str {
     })
 }
 /// Where a connection stopped, if `error` or an error behind it says.
-fn reason(error: &(dyn StdError + 'static)) -> Option<&'static str> {
+pub(crate) fn reason(error: &(dyn StdError + 'static)) -> Option<&'static str> {
     let tls = |error: &rustls::Error| match error {
         rustls::Error::InvalidCertificate(_) | rustls::Error::General(_) => ANOTHER,
         _ => TLS,

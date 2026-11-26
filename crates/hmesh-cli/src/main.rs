@@ -12,6 +12,7 @@ use std::{fs, path::PathBuf, process::ExitCode};
 use uuid::Uuid;
 mod maintenance;
 mod panel;
+mod relay;
 mod setup;
 mod startup;
 mod storage;
@@ -209,6 +210,14 @@ enum Commands {
     Networks {
         #[command(subcommand)]
         command: NetworksCommand,
+    },
+    /// A relay for computers that cannot reach each other: run one on a
+    /// server both can reach (`serve`), and have a computer hold a
+    /// connection to it (`use`) so the computers paired with it reach it
+    /// through the relay. The relay passes their TLS on; it cannot read it.
+    Relay {
+        #[command(subcommand)]
+        command: RelayCommand,
     },
     Agent {
         #[command(subcommand)]
@@ -491,6 +500,48 @@ enum NetworksCommand {
     },
 }
 #[derive(Subcommand)]
+enum RelayCommand {
+    /// Run a relay here until stopped. The first run makes its key,
+    /// certificate and token in --dir; its relay code is printed first.
+    Serve {
+        /// Where to listen, e.g. 0.0.0.0:7443 (open this TCP port to the
+        /// computers that use it).
+        #[arg(long)]
+        listen: std::net::SocketAddr,
+        /// The relay's own directory (not a computer's data directory).
+        #[arg(long)]
+        dir: PathBuf,
+        /// The address computers reach the relay at, as <ip>:<port>, for
+        /// its relay code (a cloud server's public IP).
+        #[arg(long)]
+        public_address: Option<String>,
+    },
+    /// Print the relay code of the relay in --dir again.
+    Show {
+        #[arg(long)]
+        dir: PathBuf,
+        /// Give the relay a new token first: every computer using the old
+        /// one is cut off and needs the new code.
+        #[arg(long)]
+        rotate_token: bool,
+        /// The address computers reach the relay at, as <ip>:<port>.
+        #[arg(long)]
+        public_address: Option<String>,
+    },
+    /// Hold a connection to a relay (its relay code, from `hmesh relay
+    /// show` there): paired computers reach this one through it.
+    Use {
+        /// The relay code. Leave it out (or write -) to paste it when asked,
+        /// or pipe it in: then it is read from standard input and stays out
+        /// of the shell history and the process list. It is a secret.
+        code: Option<String>,
+    },
+    /// Stop using every relay.
+    Forget,
+    /// The relays this computer uses, and whether it holds each now.
+    List,
+}
+#[derive(Subcommand)]
 enum PairCommand {
     /// This computer's card, with the pairing code to give another computer.
     Show,
@@ -498,8 +549,13 @@ enum PairCommand {
     /// Ask another computer to pair. Once its owner approves, this computer
     /// trusts it too; there is nothing to approve here.
     Request {
-        /// The other computer's pairing code (`hmesh pair show` there).
-        #[arg(long, conflicts_with_all = ["peer", "expect_fingerprint"], required_unless_present = "peer")]
+        /// The other computer's pairing code (`hmesh pair show` there), or
+        /// its relay pairing code (`hmesh-relay://...`) to pair through its
+        /// relay. `--code` with nothing after it reads the code from
+        /// standard input (asked for at a terminal): a relay pairing code
+        /// holds the relay's token, which should stay out of the shell
+        /// history and the process list.
+        #[arg(long, num_args = 0..=1, default_missing_value = "-", conflicts_with_all = ["peer", "expect_fingerprint"], required_unless_present = "peer")]
         code: Option<String>,
         #[arg(long, requires = "expect_fingerprint")]
         peer: Option<String>,
@@ -1077,6 +1133,35 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         panel::run(&dir, port, start_daemon, cli.json).await?;
         return Ok(None);
     }
+    // A relay keeps its own directory: no computer is involved.
+    match &cli.command {
+        Commands::Relay {
+            command:
+                RelayCommand::Serve {
+                    listen,
+                    dir,
+                    public_address,
+                },
+        } => {
+            relay::serve(*listen, dir, public_address.clone(), cli.json).await?;
+            return Ok(None);
+        }
+        Commands::Relay {
+            command:
+                RelayCommand::Show {
+                    dir,
+                    rotate_token,
+                    public_address,
+                },
+        } => {
+            return Ok(Some(relay::show(
+                dir,
+                *rotate_token,
+                public_address.clone(),
+            )?));
+        }
+        _ => {}
+    }
     match &cli.command {
         Commands::Storage { command } => {
             return Ok(Some(match command {
@@ -1157,6 +1242,15 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                         && passcode.is_string()
                     {
                         *passcode = json!("hidden");
+                    }
+                    // Nor a relay's code: the relays are shown by where they are.
+                    for relay in status
+                        .pointer_mut("/relays")
+                        .and_then(Value::as_array_mut)
+                        .into_iter()
+                        .flatten()
+                    {
+                        relay["code"] = json!("hidden");
                     }
                     for (list, field) in [("current", "gateway_mac"), ("trusted", "gateway")] {
                         for network in status
@@ -1261,9 +1355,23 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             }
         ) {
             value["pair_code"] = json!(hmesh_security::pair_code(&card));
+            // Through each relay it holds, too: for a computer that cannot
+            // reach this one any other way.
+            let relays = hmesh_daemon::configured_relays(&instance.config);
+            let relayed = hmesh_daemon::takes_relayed(&instance.config) && !relays.is_empty();
+            if relayed {
+                value["relay_pair_codes"] = json!(
+                    relays
+                        .iter()
+                        .map(|relay| hmesh_core::relay_pair_code(relay, &card.fingerprint))
+                        .collect::<Vec<_>>()
+                );
+            }
             // A direct node answers the pairing handshake for ten minutes
-            // after its owner asks for the code.
-            if instance.config.node.network == "direct" && !instance.config.outbound_only() {
+            // after its owner asks for the code; so does one through a relay.
+            if (instance.config.node.network == "direct" && !instance.config.outbound_only())
+                || relayed
+            {
                 value["pairing_window"] = match local_client(&instance) {
                     Ok(client) => match client
                         .post::<_, Value>("/local/pairing/window", &json!({}))
@@ -1279,6 +1387,20 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             }
         }
         return Ok(Some(value));
+    }
+    if let Commands::Relay { command } = cli.command {
+        let change = match command {
+            RelayCommand::Use { code } => relay::Change::Use(secret_line(
+                code,
+                "Relay code (hmesh relay show on the relay): ",
+            )?),
+            RelayCommand::Forget => relay::Change::Forget,
+            RelayCommand::List => relay::Change::List,
+            RelayCommand::Serve { .. } | RelayCommand::Show { .. } => {
+                unreachable!("handled before loading a computer")
+            }
+        };
+        return Ok(Some(relay::computer(&instance, change).await?));
     }
     if let Commands::Networks { command } = cli.command {
         return Ok(Some(networks(&instance, command).await?));
@@ -1430,7 +1552,15 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
                 peer,
                 expect_fingerprint,
             } => {
+                let code = code
+                    .map(|code| secret_line(Some(code), "Pairing code: "))
+                    .transpose()?;
                 let (endpoint, expect_fingerprint) = match (code, peer, expect_fingerprint) {
+                    // Through the other computer's relay.
+                    (Some(code), _, _) if hmesh_core::is_relay_address(&code) => {
+                        let (relay, fingerprint) = hmesh_core::parse_relay_pair_code(&code)?;
+                        (relay.to_string(), fingerprint)
+                    }
                     (Some(code), _, _) => hmesh_security::parse_pair_code(&code)?,
                     (None, Some(peer), Some(fingerprint)) => (
                         if peer.starts_with("https://") {
@@ -1468,19 +1598,7 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             }
             PairCommand::Nearby => client.get("/local/pairing/nearby").await?,
             PairCommand::Join { address, passcode } => {
-                let passcode = match passcode {
-                    Some(passcode) => passcode,
-                    None => {
-                        use std::io::{BufRead, IsTerminal, Write};
-                        if std::io::stdin().is_terminal() {
-                            eprint!("Passcode shown on the other computer: ");
-                            std::io::stderr().flush()?;
-                        }
-                        let mut line = String::new();
-                        std::io::stdin().lock().read_line(&mut line)?;
-                        line.trim().to_owned()
-                    }
-                };
+                let passcode = secret_line(passcode, "Passcode shown on the other computer: ")?;
                 client
                     .post(
                         "/local/pairs/passcode",
@@ -2183,6 +2301,22 @@ async fn networks(instance: &Instance, command: NetworksCommand) -> Result<Value
         }
     }
     Ok(hmesh_daemon::networks_view(every, &trusted, &observed))
+}
+/// A secret given on the command line, or else (none given, or `-`) the
+/// first line of standard input, asked for with `prompt` at a terminal: so
+/// it can stay out of the shell history and the process list.
+fn secret_line(given: Option<String>, prompt: &str) -> Result<String> {
+    if let Some(given) = given.filter(|given| given != "-") {
+        return Ok(given);
+    }
+    use std::io::{BufRead, IsTerminal, Write};
+    if std::io::stdin().is_terminal() {
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
+    }
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(line.trim().to_owned())
 }
 /// The one paired computer with this node ID or display name.
 fn one_peer<'a>(peers: &'a [PeerView], peer: &str) -> Result<&'a PeerView> {

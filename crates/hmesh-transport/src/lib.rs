@@ -2,15 +2,17 @@
 //! Tailnet or a direct network.
 mod client;
 pub mod netinfo;
+pub mod relay;
 pub mod tailscale;
 use axum::{Extension, Router};
 pub use client::{Client, Finder, RouteMemory, unreachable_reasons};
 use hmesh_security::fingerprint;
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
+    rt::{TokioExecutor, TokioIo, TokioTimer},
     server::conn::auto::Builder,
     service::TowerToHyperService,
 };
+pub use relay::RelayDialer;
 use std::{
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -237,14 +239,82 @@ pub async fn serve_connection<S>(
     address: SocketAddr,
     app: Router,
     config: rustls::ServerConfig,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let Some((tls, fingerprint)) = handshake(stream, config).await else {
+        return;
+    };
+    serve_tls(
+        tls,
+        fingerprint,
+        address,
+        app,
+        Builder::new(TokioExecutor::new()),
+        stop,
+    )
+    .await;
+}
+/// A connection put through a relay is closed once it has gone this long
+/// without a request (or a request's head takes longer to arrive). Longer
+/// than a caller keeps it for its next call (`relay::KEPT_IDLE`), so it is
+/// not closed under a call about to be made on it.
+pub const RELAYED_IDLE: Duration = Duration::from_secs(90);
+/// Serve a connection put through a relay to this computer, from the
+/// computer with the certificate `caller` (as the relay saw it), as from
+/// `relay::RELAYED`. A certificate shown inside must be that one; one
+/// showing none (a computer pairing) is served only if `anonymous` says so
+/// once its TLS is done, and is closed at once otherwise. HTTP/1.1 only,
+/// closed after `idle` without a request.
+pub async fn serve_relayed_connection<S>(
+    stream: S,
+    caller: &str,
+    anonymous: impl FnOnce() -> bool,
+    app: Router,
+    config: rustls::ServerConfig,
+    idle: Duration,
+    stop: watch::Receiver<bool>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let Some((tls, fingerprint)) = handshake(stream, config).await else {
+        return;
+    };
+    match &fingerprint {
+        Some(shown) if shown == caller => {}
+        Some(_) => return,
+        None if anonymous() => {}
+        None => return,
+    }
+    let mut builder = Builder::new(TokioExecutor::new()).http1_only();
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(idle);
+    serve_tls(
+        tls,
+        fingerprint,
+        SocketAddr::new(relay::RELAYED, 0),
+        app,
+        builder,
+        stop,
+    )
+    .await;
+}
+/// TLS on `stream` within 5 seconds, and the fingerprint of the
+/// certificate the other side showed, if it showed one.
+async fn handshake<S>(
+    stream: S,
+    config: rustls::ServerConfig,
+) -> Option<(tokio_rustls::server::TlsStream<S>, Option<String>)>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let acceptor = TlsAcceptor::from(Arc::new(config));
     let tls = match tokio::time::timeout(Duration::from_secs(5), acceptor.accept(stream)).await {
         Ok(Ok(tls)) => tls,
-        _ => return,
+        _ => return None,
     };
     let fingerprint = tls
         .get_ref()
@@ -252,13 +322,26 @@ pub async fn serve_connection<S>(
         .peer_certificates()
         .and_then(|certs| certs.first())
         .map(|cert| fingerprint(cert.as_ref()));
+    Some((tls, fingerprint))
+}
+/// HTTP with `app` on a connection whose TLS is done, until it closes or
+/// `stop` says so (then gracefully, within a few seconds).
+async fn serve_tls<S>(
+    tls: tokio_rustls::server::TlsStream<S>,
+    fingerprint: Option<String>,
+    address: SocketAddr,
+    app: Router,
+    builder: Builder<TokioExecutor>,
+    mut stop: watch::Receiver<bool>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     // An IPv4 client of a dual-stack listener arrives as ::ffff:a.b.c.d.
     let address = SocketAddr::new(address.ip().to_canonical(), address.port());
     let app = app.layer(Extension(ConnectionIdentity {
         fingerprint,
         address,
     }));
-    let builder = Builder::new(TokioExecutor::new());
     let connection =
         builder.serve_connection_with_upgrades(TokioIo::new(tls), TowerToHyperService::new(app));
     tokio::pin!(connection);

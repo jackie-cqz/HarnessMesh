@@ -5,7 +5,7 @@
 // sent the request finishes pairing by itself when the approval arrives.
 const pairingState={sent:null,waiting:new Set(),dismissed:new Set(),typed:new Map(),messages:new Map(),busy:false,nearby:[],nearbyLooked:false,nearbyError:'',chosen:null,passcodeMessage:'',passcodeError:false};
 const pairProblems={
- INVALID_PAIR_CODE:'这不是配对码。配对码以 hmesh:// 开头，在对方面板的「配对新电脑」里复制。',
+ INVALID_PAIR_CODE:'这不是配对码。配对码以 hmesh:// 或 hmesh-relay:// 开头，在对方面板的「配对新电脑」里复制，或在对方运行 hmesh pair show。',
  PEER_UNREACHABLE:'连不上这台电脑：确认它开着 HarnessMesh，并且两台电脑的网络互通。',
  UNAUTHENTICATED:'对方的身份和配对码对不上。请重新复制对方的配对码。',
  RATE_LIMITED:'对方刚收到太多请求，过一分钟再试。',
@@ -33,6 +33,7 @@ const unreachableReasons={
  another_computer:'那个地址上是另一台电脑（证书对不上）。',
  not_heard:'在局域网里也没找到它。',
  not_accepted:'它开着，但不再接受这台电脑：可能已经在它那边撤销了配对。',
+ relay:'中继没有接通它：确认中继在运行、它连着中继，中继码也没有换过。',
 };
 function unreachableSay(reasons){return [...new Set((Array.isArray(reasons)?reasons:[]).map(r=>unreachableReasons[r]).filter(Boolean))].join('');}
 // The last six hex digits of a certificate fingerprint, as the check code.
@@ -450,7 +451,9 @@ setInterval(()=>{if(!document.hidden&&state.snapshot&&data('pairs').some(p=>p.di
 // ones typed here by hand (kept only on this computer), edited on its card.
 const addressState={editing:null,draft:'',message:'',busy:false};
 function addressesReady(){return state.runtime?.capabilities?.peer_addresses===true;}
-function originHost(origin){try{return new URL(origin).host;}catch{return String(origin||'');}}
+// A relay is shown by where it is (the daemon gives only that, never its token).
+function isRelay(origin){return String(origin||'').startsWith('hmesh-relay://');}
+function originHost(origin){if(isRelay(origin))return `中继 ${String(origin).slice('hmesh-relay://'.length).split('/')[0]}`;try{return new URL(origin).host;}catch{return String(origin||'');}}
 // How the address that answered last reaches that computer: one typed by
 // hand, a host name, loopback, a Tailscale address, or else the local
 // network. Which network the other computer's address is on is not known
@@ -459,6 +462,7 @@ function originHost(origin){try{return new URL(origin).host;}catch{return String
 // LANs too, so the guess is made only when this computer is on Tailscale
 // itself (`tailnet`).
 function routeVia(routes,origin,tailnet){
+ if(isRelay(origin))return '中继';
  if((routes?.manual||[]).includes(origin))return '手动';
  let host;try{host=new URL(origin).hostname.replace(/^\[|\]$/g,'').toLowerCase();}catch{return '';}
  const v4=host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);

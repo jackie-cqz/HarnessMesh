@@ -46,6 +46,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "peer-addresses-v1",
     "trusted-networks-v1",
     "peer-finding-v1",
+    "relay-v1",
 ];
 
 #[derive(Clone)]
@@ -438,7 +439,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1"),"peer_addresses":running && features.contains(&"peer-addresses-v1"),"trusted_networks":running && features.contains(&"trusted-networks-v1"),"peer_finding":running && features.contains(&"peer-finding-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1"),"peer_addresses":running && features.contains(&"peer-addresses-v1"),"trusted_networks":running && features.contains(&"trusted-networks-v1"),"peer_finding":running && features.contains(&"peer-finding-v1"),"relays":running && features.contains(&"relay-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -1255,15 +1256,21 @@ fn recent_pairs(rows: Value) -> Value {
 struct PairCode {
     code: String,
 }
-/// Send a pair request to the computer whose pairing code was pasted.
+/// Send a pair request to the computer whose pairing code was pasted: an
+/// `hmesh://` code, or an `hmesh-relay://` one to pair through its relay.
 async fn request_pair(
     State(s): State<Panel>,
     body: Result<Json<PairCode>, JsonRejection>,
 ) -> Response {
-    let Some((endpoint, expected_fingerprint)) = body
-        .ok()
-        .and_then(|Json(body)| hmesh_security::parse_pair_code(&body.code).ok())
-    else {
+    let Some((endpoint, expected_fingerprint)) = body.ok().and_then(|Json(body)| {
+        if hmesh_core::is_relay_address(&body.code) {
+            hmesh_core::parse_relay_pair_code(&body.code)
+                .ok()
+                .map(|(relay, fingerprint)| (relay.to_string(), fingerprint))
+        } else {
+            hmesh_security::parse_pair_code(&body.code).ok()
+        }
+    }) else {
         return error(StatusCode::BAD_REQUEST, "INVALID_PAIR_CODE");
     };
     mutation(

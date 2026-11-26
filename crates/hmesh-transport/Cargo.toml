@@ -10,6 +10,7 @@ anyhow.workspace = true
 axum.workspace = true
 hmesh-core = { path = "../hmesh-core" }
 hmesh-security = { path = "../hmesh-security" }
+hyper = { workspace = true, features = ["client"] }
 hyper-util.workspace = true
 if-addrs.workspace = true
 reqwest.workspace = true

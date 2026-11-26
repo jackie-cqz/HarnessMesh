@@ -4,7 +4,8 @@
 // LAN address); address-joins (only MCP) types its host name and the
 // passcode its screen shows under 按地址配对. An address that does not
 // answer is explained in Chinese (the port refused, the name did not
-// resolve); after pairing the card says when and how it was reached last,
+// resolve; a relay pairing code whose relay does not put it through);
+// after pairing the card says when and how it was reached last,
 // and once address-shows stops, that it cannot be reached and why. Dark and
 // narrow layouts are checked for overflow, with screenshots kept next to
 // the diagnostics. No model is called; nothing here needs mDNS.
@@ -78,6 +79,20 @@ try{
  await tryAddress(pa,'localhost','12');
  await pa.locator('#pair-address .pair-message.error').filter({hasText:'6 位数字'}).waitFor();
  checks.push('bad-input-explained');
+ // A relay pairing code is a pairing code: sent through that relay, and
+ // when the relay does not put it through, said so (never with its token).
+ stage='relay-code-explained';
+ const relayToken='cd'.repeat(32);
+ await pa.locator('#pair-code').fill(`hmesh-relay://127.0.0.1:${closed}/${'ab'.repeat(32)}/${relayToken}/${'ef'.repeat(32)}`);
+ await pa.locator('#pair-send').click();
+ const relayed=pa.locator('#pair-message.error').filter({hasText:'中继没有接通它'});
+ await relayed.waitFor({timeout:20000});
+ assert((await relayed.textContent()).startsWith('连不上这台电脑'),'A relay that does not put it through is not explained: '+await relayed.textContent());
+ await pa.locator('#pair-code').fill('hmesh-relay://127.0.0.1:1/short');
+ await pa.locator('#pair-send').click();
+ await pa.locator('#pair-message.error').filter({hasText:'hmesh-relay://'}).filter({hasText:'这不是配对码'}).waitFor({timeout:15000});
+ await pa.locator('#pair-code').fill('');
+ checks.push('relay-code-explained');
  stage='no-overflow-dialog';
  for(const [name,options] of [['dark',{colorScheme:'dark'}],['narrow',{viewport:{width:360,height:740}}]]){
   const page=await open(aUrl,options);await page.locator('#pair-new').click();await page.locator('#pair-address').waitFor();
@@ -105,8 +120,9 @@ try{
  const reach=card.locator('.paired-reach');await reach.waitFor({timeout:15000});
  assert(/^上次连上：(刚刚|\d+分钟前)，经 (本机回环|主机名|手动)$/.test(await reach.textContent()),'Last reached is not said: '+await reach.textContent());
  // A 100.64/10 address is called Tailscale only when this computer is on Tailscale (here it is not).
- const via=await pa.evaluate(()=>[routeVia({manual:['https://x.local:1']},'https://x.local:1'),routeVia({},'https://studio.local:39880'),routeVia({},'https://100.101.1.2:39880',true),routeVia({},'https://[fd7a:115c:a1e0::5]:39880',true),routeVia({},'https://100.101.1.2:39880',false),routeVia({},'https://100.101.1.2:39880',ownTailnet()),routeVia({},'https://192.168.1.20:39880'),routeVia({},'https://[fd12::5]:39880'),routeVia({},'https://127.0.0.1:39880'),routeVia({},'https://100.12.0.1:39880')]);
- assert(JSON.stringify(via)===JSON.stringify(['手动','主机名','Tailscale','Tailscale','局域网','局域网','局域网','局域网','本机回环','局域网']),'Routes are named wrongly: '+JSON.stringify(via));
+ const via=await pa.evaluate(()=>[routeVia({},'hmesh-relay://203.0.113.10:7443',true),routeVia({manual:['https://x.local:1']},'https://x.local:1'),routeVia({},'https://studio.local:39880'),routeVia({},'https://100.101.1.2:39880',true),routeVia({},'https://[fd7a:115c:a1e0::5]:39880',true),routeVia({},'https://100.101.1.2:39880',false),routeVia({},'https://100.101.1.2:39880',ownTailnet()),routeVia({},'https://192.168.1.20:39880'),routeVia({},'https://[fd12::5]:39880'),routeVia({},'https://127.0.0.1:39880'),routeVia({},'https://100.12.0.1:39880')]);
+ assert(JSON.stringify(via)===JSON.stringify(['中继','手动','主机名','Tailscale','Tailscale','局域网','局域网','局域网','局域网','本机回环','局域网']),'Routes are named wrongly: '+JSON.stringify(via));
+ assert(await pa.evaluate(()=>originHost('hmesh-relay://203.0.113.10:7443'))==='中继 203.0.113.10:7443','A relay is not shown by where it is');
  checks.push('last-reached-said','route-kinds');
  stage='unreachable-card';
  b.mesh.call(['daemon','stop']);await until(()=>{try{b.mesh.call(['daemon','status']);return null;}catch{return true;}});
@@ -126,7 +142,7 @@ try{
  }
  checks.push('card-no-overflow');
  const text=await pa.evaluate(()=>document.body.innerText);
- assert(!['{"','request_id','undefined','null','refused the connection','did not resolve','not_heard','unreachable_reasons'].some(word=>text.includes(word)),'Internal fields shown on the page');
+ assert(!['{"','request_id','undefined','null','refused the connection','did not resolve','not_heard','unreachable_reasons','was not put through',relayToken].some(word=>text.includes(word)),'Internal fields shown on the page');
  assert(!errors.length,'Browser errors: '+errors.join(' | '));
  checks.push('no-internal-fields');
  console.log(JSON.stringify({passed:true,artifacts:root,model_calls:0,scope:'isolated two-node direct network on loopback and headless browser',checks}));

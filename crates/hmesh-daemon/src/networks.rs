@@ -279,6 +279,7 @@ impl AppState {
             &self.instance.config,
             &card,
             &self.networks.open_endpoints(),
+            &self.relays(),
             if startup { previous } else { revision },
         );
         if let Ok(mut current) = self.addresses.write() {
