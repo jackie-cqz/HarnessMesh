@@ -5,6 +5,7 @@ mod prepare;
 pub use prepare::{RedactedStream, inspect_references, redact_text};
 pub use prepare::{agent_command, agent_launch, apply_env, run_secrets};
 pub mod git_version;
+pub mod mcp_bridge;
 pub mod process_tree;
 pub mod service;
 pub mod verification;

@@ -28,7 +28,8 @@
     "collapse repeated tool_call_update title growth into meaningful changes",
     "rebuild the new-session settings when write capability changes",
     "show Pi's approval/MCP limits in the session meta and the new-session note",
-    "merge adjacent message/thought chunks (512 bytes or 150 ms) instead of one event per token"
+    "merge adjacent message/thought chunks (512 bytes or 150 ms) instead of one event per token",
+    "bridge the session's hmesh MCP server into Pi through pi-mcp-adapter's --mcp-config when it is installed (own-login agents only)"
   ],
   "after": {
     "first_chunk": "answer text first; no banner; final_text clean",
@@ -39,11 +40,12 @@
     "tool_events": "one tool_call + 2 tool_call_update for a bash call (was 20+)",
     "hero": "select enabled after load; note explains Pi's direct execution",
     "panel_errors": "none",
-    "text_events": "one thinking event and one answer event for a real turn (was 40+ thought chunks)"
+    "text_events": "one thinking event and one answer event for a real turn (was 40+ thought chunks)",
+    "mcp_bridge": "model saw harnessmesh_mesh_send and harnessmesh_mesh_list_agents through the adapter; the owner's other MCP servers (figma) stayed available"
   },
   "upstream_limits": [
-    "pi-acp stores ACP mcpServers but does not forward them to pi, so mesh_send is unavailable inside Pi sessions; the panel now says so",
-    "after a cancelled turn, reloading the conversation can make the model retry the unfinished tool call; HarnessMesh cannot rewrite pi's session history",
+    "pi-acp does not forward ACP mcpServers itself; HarnessMesh bridges them for Pi when pi-mcp-adapter is installed, and Pi sessions cannot delegate without it",
+    "after a cancelled turn, reloading the conversation can still make the model retry the unfinished tool call; the panel now warns under 本轮已停止 (the fix belongs in pi's abort handling)",
     "provider 429 retries are emitted by pi itself; HarnessMesh surfaces the final empty answer as an error instead of success"
   ],
   "verification": {
