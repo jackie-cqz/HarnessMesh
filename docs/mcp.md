@@ -130,3 +130,9 @@ hmesh pair request --code                                    # 经对方的中�
 ## 历史验收（旧模型）
 
 2026-10-29 与 2026-11-01 的 Pi 原生 MCP 真机委派是在旧的「managed Pi 父任务 + scope 文件」模型下完成的，证据见 [双向与 MCP 验收](ssh-bidirectional-mcp.md)。那套 `--parent-task` 与 scope 文件已随 ACP 迁移移除。
+
+## 跨机委派的边界
+
+- **只支持一跳**：A 的人开的会话可以叫 B 的 agent；B 上的这个子会话只能叫 B 本机的 agent，不能再叫 A 或第三台电脑。被另一台电脑拉起的会话，`mesh_list_agents` 只列出本机 agent；如果 agent 仍按名字去叫远端，工具会返回「cross-computer delegation is limited to one hop」。
+- **取消会传染**：A 取消或关闭父会话时，HarnessMesh 会把这次委派在 B 上的子会话一起取消（只对通过 `mesh_send` 开的远端会话生效，最多等 5 秒，对端已经失联时只能作罢）。
+- **对端失联**：`mesh_wait` / `mesh_get_session` 不会无限等待；对端不可达时立即返回「lost contact with the computer running this session」，并提示报告 owner 而不是重试。本机保存的远端会话副本连续两次刷新失败（约 60 秒）后会标为关闭并写一条错误事件，避免它一直显示为「进行中」。
