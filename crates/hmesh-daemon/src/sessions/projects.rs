@@ -14,6 +14,8 @@ const MAX_LISTED: usize = 1000;
 /// longer history deadline so the owner gets this reason instead of a raw RPC
 /// timeout; agents that scan many local sessions can take most of it.
 const LIST_TIMEOUT: Duration = Duration::from_secs(25);
+/// A page that takes this long means more pages would not arrive in time.
+const SLOW_PAGE: Duration = Duration::from_secs(8);
 
 type CacheKey = (Uuid, Option<PathBuf>);
 #[derive(Default)]
@@ -199,7 +201,13 @@ async fn read_history(
         let mut sessions = vec![];
         let mut cursor: Option<String> = None;
         let mut truncated = false;
+        // Some adapters (pi-acp) rescan every session file for each page, so a
+        // folder with many sessions can cost 15 s per page. One slow page is
+        // enough: list what the first page gave and say it is partial instead
+        // of letting the whole read hit the timeout.
+        let mut slow_page = false;
         for page in 0.. {
+            let started = Instant::now();
             let result = match conn.list_sessions(cwd, cursor.as_deref()).await {
                 Ok(result) => result,
                 Err(e) => {
@@ -207,12 +215,13 @@ async fn read_history(
                     return Err(e);
                 }
             };
+            slow_page |= started.elapsed() >= SLOW_PAGE;
             sessions.extend(result["sessions"].as_array().cloned().unwrap_or_default());
             cursor = result["nextCursor"].as_str().map(str::to_owned);
             if cursor.is_none() {
                 break;
             }
-            if page + 1 >= MAX_LIST_PAGES || sessions.len() >= MAX_LISTED {
+            if slow_page || page + 1 >= MAX_LIST_PAGES || sessions.len() >= MAX_LISTED {
                 truncated = true;
                 break;
             }
