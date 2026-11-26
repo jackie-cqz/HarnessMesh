@@ -30,6 +30,8 @@ const sessionNotes=[
   [/^the agent ended the turn without an answer/,'Agent 这一轮没有回答：检查它的登录和模型服务（可能是限流或密钥问题）'],
   [/agent process exited/,'Agent 进程已退出，这一轮中断'],
   [/^the agent did not stop in time/,'停止超时，已结束 Agent 进程'],
+  [/^the turn exceeded its time budget; stopping it/,'这一轮超过时间预算，正在停止'],
+  [/^the turn exceeded its time budget/,'这一轮超过时间预算，已停止'],
 ];
 function connectionProblem(message){
   const text=String(message||'');
@@ -386,7 +388,7 @@ function renderConversation(){
     else if(e.kind==='permission_resolved'){
       const r=requests.get(p.key),note=el('div','event-note');note.append(icon('shield-alert','sm'),el('span','',`${p.allow?'已允许':'已拒绝'}${p.by==='auto'?'（自动）':p.by==='origin'?'（打开者）':''}${r?.title?` · ${r.title}`:''}`));col.append(note);
     }else if(e.kind==='turn_end'){
-      const reason={cancelled:'本轮已停止',max_tokens:'达到输出上限',max_turn_requests:'达到步数上限',refusal:'Agent 拒绝了这一轮'}[p.stop_reason];
+      const reason={cancelled:'本轮已停止',timeout:'超过时间预算',max_tokens:'达到输出上限',max_turn_requests:'达到步数上限',refusal:'Agent 拒绝了这一轮'}[p.stop_reason];
       if(reason||!['end_turn'].includes(p.stop_reason))col.append(el('div','event-note center',reason||`本轮结束（${p.stop_reason}）`));
       if(p.stop_reason==='cancelled'&&harnessFor({...s,_remote:conv.remote})==='pi')col.append(el('div','event-note center','重新载入对话后，Agent 可能重试这条被取消的命令'));
     }else if(e.kind==='error'){const n=el('div','event-note bad');n.append(icon('x-circle','sm'),el('span','',noteText(p.message)||'出错了'));col.append(n);}
