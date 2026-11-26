@@ -88,7 +88,7 @@ fn stream(session: &str, style: &str) -> String {
     };
     let styles: Vec<&str> = if style == "all" {
         vec![
-            "claude", "codex", "opencode", "pi", "dsh", "minimax", "kimi", "mesh",
+            "claude", "codex", "opencode", "pi", "dsh", "minimax", "kimi", "mesh", "unknown",
         ]
     } else {
         vec![style]
@@ -267,6 +267,18 @@ fn stream(session: &str, style: &str) -> String {
                     json!({"status":"completed","content":text("src/main.rs:12: // TODO: handle overflow")}),
                 );
             }
+            // Updates and content a later ACP version may add.
+            "unknown" => {
+                update(
+                    session,
+                    json!({"sessionUpdate":"future_update","detail":{"x":1}}),
+                );
+                call(
+                    "future-tool",
+                    json!({"title":"Look something up","kind":"future_kind","content":[{"type":"resource_link","uri":"file:///work/demo/a.txt","name":"a.txt"},{"type":"audio","data":"AAAA","mimeType":"audio/wav"}]}),
+                );
+                done("future-tool", json!({"status":"completed"}));
+            }
             // Any agent handing work to another one through HarnessMesh's MCP server.
             "mesh" => {
                 call(
@@ -287,7 +299,8 @@ fn stream(session: &str, style: &str) -> String {
      | Check | Result |\n| --- | --- |\n| Unit tests | 3 passed |\n| Lint | no target |\n\n\
      ```rust\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n```\n\n\
      1. See the [Rust book](https://doc.rust-lang.org/book/)\n\
-     2. Ignore [this link](javascript:alert(1))\n"
+     2. Ignore [this link](javascript:alert(1))\n\n\
+     Raw <b>tags</b> and <script>alert(1)</script> stay text.\n"
         .to_owned()
 }
 fn respond(id: &Value, result: Value) {

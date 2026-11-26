@@ -508,6 +508,38 @@ pub fn clip(text: &str, limit: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_one_time_answer_is_what_earlier_versions_accept() {
+        // Before options, a permission answer was exactly `{allow}` and
+        // anything more was refused.
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct Earlier {
+            allow: bool,
+        }
+        let once = PermissionAnswer {
+            allow: true,
+            option_id: None,
+        };
+        let sent = serde_json::to_value(&once).unwrap();
+        assert_eq!(sent, serde_json::json!({"allow":true}));
+        assert!(serde_json::from_value::<Earlier>(sent).is_ok());
+        let chosen = PermissionAnswer {
+            allow: true,
+            option_id: Some("always".into()),
+        };
+        let sent = serde_json::to_value(&chosen).unwrap();
+        assert!(serde_json::from_value::<Earlier>(sent.clone()).is_err());
+        assert_eq!(
+            serde_json::from_value::<PermissionAnswer>(sent)
+                .unwrap()
+                .option_id
+                .as_deref(),
+            Some("always")
+        );
+    }
     fn link(agent: Uuid) -> ChainLink {
         ChainLink {
             node_id: Uuid::nil(),

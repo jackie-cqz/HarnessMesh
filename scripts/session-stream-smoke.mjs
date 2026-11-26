@@ -89,6 +89,10 @@ try{
  assert(await answer.locator('a[href^="javascript"]').count()===0,'a javascript: link was made clickable');
  assert((await answer.innerText()).includes('this link'),'the unsafe link text is gone');
  assert(!(await answer.innerText()).includes('**'),'Markdown markers left in the answer');
+ assert((await answer.innerText()).includes('Raw <b>tags</b> and <script>alert(1)</script> stay text.'),'HTML in a reply is not shown as text');
+ assert(await answer.locator('script,b').count()===0,'HTML in a reply became elements');
+ // An update or content type this panel does not know is skipped quietly.
+ assert(await step(page,'future-tool').count()>0,'a step with unknown content is missing');
 
  stage='C3 the process folds after the turn, failures stay out';
  const turn=stream(page).locator('.turn').last();
