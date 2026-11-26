@@ -20,6 +20,8 @@ setup 从 Tailscale 取本机 IP（Mac App Store 版的 CLI 位置同下文；�
 
 不用 Tailscale 也行：在同一个局域网里，或者已经用着 ZeroTier、WireGuard 之类的网络时，用 `hmesh setup --full --network direct`。它在所有网卡上监听，但只对你认过的网络开门：它会列出本机所在的网络让你选（有默认路由的那个是默认选项；`--listen 192.168.1.20` 表示认这个地址所在的网络，`--trust 10.0.0.0/24` 再认一个），Tailscale 在运行时还会问是否也接受 Tailnet 里的电脑；没有终端可问时只认这些参数写明的。局域网地址变了不用重跑 setup，配对的电脑几秒内就知道；到了没认过的网络，别的电脑连不进来，用 `hmesh networks trust <子网>` 或面板「信任这个网络」认下它。Windows 防火墙问的时候只勾「专用网络」。直连网络里，配对码只在打开「配对新电脑」之后的 10 分钟内有效；「附近的电脑」里没列出对方时（比如在另一个网段），在「按地址配对」填它的 IP 或主机名和它屏幕上的口令。配对后对方的地址变了，已知地址都连不上时会在局域网里按对方的标记找回它。macOS 上，开机自启的 daemon 第一次连局域网里的电脑时，可能要在「系统设置 → 隐私与安全性 → 本地网络」里允许 hmesh。细节见 [MCP 说明](mcp.md#用-hmesh-setup-安装) 和 [安全说明](security.md)。
 
+两台电脑都在 NAT 后面（比如一台在家、一台在公司），或者公司 Wi-Fi 开了客户端隔离、互相连不到时，可以用一台有公网 IP 的云服务器搭桥：自建 Tailscale 中继、让它当 WireGuard 中心，或者在上面跑 HarnessMesh 自带的中继（`hmesh relay serve`），见 [经一台云服务器连](cloud-server.md)。
+
 ## 从源码在前台启动（开发时用；Mac、Windows、Linux 相同）
 
 需要 Node.js 20+、通过 rustup 安装的 Rust stable >= 1.90、已登录的 Tailscale，以及你自己装好并登录过的 ACP agent（任选：`opencode`、`claude-agent-acp`、`codex-acp`、`pi-acp`、`dsh`）。DSH 0.2.2-rc.5 需要 Node.js 24.9 或更高版本。启动脚本仅登记已经可用的 ACP 命令。需要 Codex 或 Claude Code 时，可以在执行端面板中安装推荐版本并登记。
