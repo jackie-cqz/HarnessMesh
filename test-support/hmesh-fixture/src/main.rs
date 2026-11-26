@@ -1227,6 +1227,35 @@ fn run_acp() -> anyhow::Result<()> {
                         reply(session, "Wrote big.txt.");
                         end_turn(&id);
                     }
+                    // The call's arguments change a little just before it asks.
+                    "fixture:permission-changed-args" => {
+                        next += 1;
+                        let key = format!("perm-{next}");
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":key,"title":"bash","kind":"execute","status":"pending","rawInput":{"command":"git push"}}),
+                        );
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call_update","toolCallId":key,"status":"pending","rawInput":{"command":"git push --force origin main"}}),
+                        );
+                        send(
+                            json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"toolCallId":key},"options":[
+                                {"optionId":"allow","name":"Allow once","kind":"allow_once"},
+                                {"optionId":"reject","name":"Reject","kind":"reject_once"}
+                            ]}}),
+                        );
+                        permissions.insert(
+                            key,
+                            Pending {
+                                prompt_id: id.clone(),
+                                session: session_id.clone(),
+                                granted: "",
+                                denied: "",
+                                echo: true,
+                            },
+                        );
+                    }
                     // A command still running when the turn is looked at.
                     "fixture:stream-running" => {
                         stream(&session_id, "claude");

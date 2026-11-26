@@ -500,6 +500,19 @@ fn detail_bytes(payload: &Value) -> usize {
 }
 /// What one page of events may carry, well within the 1 MiB a reply may be.
 const MAX_PAGE_BYTES: usize = 512 * 1024;
+/// Large events fill a page sooner; the caller asks again from `next`. A
+/// page always holds at least one event.
+fn fit_page(events: &mut Vec<SessionEvent>) {
+    let mut used = 0;
+    let fit = events
+        .iter()
+        .take_while(|e| {
+            used += e.payload.to_string().len() + 256;
+            used <= MAX_PAGE_BYTES
+        })
+        .count();
+    events.truncate(fit.max(1));
+}
 /// Streamed command output is recorded at most about once a second.
 const TERMINAL_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -555,12 +568,22 @@ async fn pump(
             );
         }
     };
-    let write_unrecorded = |held: &mut HashMap<String, serde_json::Map<String, Value>>| {
-        let mut calls: Vec<_> = held.drain().collect();
+    // Writes the held details of one call, or of every call.
+    let write_unrecorded = |held: &mut HashMap<String, serde_json::Map<String, Value>>,
+                            traces: &mut HashMap<String, ToolTrace>,
+                            only: Option<&str>| {
+        let mut calls: Vec<_> = match only {
+            Some(id) => held.remove_entry(id).into_iter().collect(),
+            None => held.drain().collect(),
+        };
         calls.sort_by(|a, b| a.0.cmp(&b.0));
         for (id, mut fields) in calls {
             fields.insert("id".into(), json!(id));
-            write("tool_call_update", Value::Object(fields));
+            let payload = Value::Object(fields);
+            if let Some(trace) = traces.get_mut(&id) {
+                trace.detail = detail_bytes(&payload);
+            }
+            write("tool_call_update", payload);
         }
     };
     let write_terminals = |terminals: &mut crate::tool_events::TerminalLogs,
@@ -704,7 +727,7 @@ async fn pump(
                         if changed {
                             if let Some(held) = unrecorded.remove(&call) {
                                 for (key, value) in held {
-                                    if payload.get(&key).is_none() {
+                                    if payload.get(&key).is_none_or(Value::is_null) {
                                         payload[&key] = value;
                                     }
                                 }
@@ -712,7 +735,7 @@ async fn pump(
                         } else if detail > 0 {
                             let held = unrecorded.entry(call.clone()).or_default();
                             for key in DETAIL_KEYS {
-                                if let Some(value) = payload.get(key) {
+                                if let Some(value) = payload.get(key).filter(|v| !v.is_null()) {
                                     held.insert(key.to_owned(), value.clone());
                                 }
                             }
@@ -729,7 +752,8 @@ async fn pump(
                         tool_trace.insert(call, trace);
                         if !changed {
                             write_terminals(&mut terminals, crate::tool_events::Drain::Ready);
-                            if terminals.has_pending() {
+                            // Held details are written within about a second.
+                            if terminals.has_pending() || !unrecorded.is_empty() {
                                 terminal_at.get_or_insert_with(|| tokio::time::Instant::now() + TERMINAL_FLUSH_DELAY);
                             }
                             continue;
@@ -789,6 +813,10 @@ async fn pump(
                     .get("toolCallId")
                     .and_then(Value::as_str)
                     .filter(|i| i.len() <= 256);
+                // What is asked about must be what the call says now.
+                if let Some(call_id) = call_id {
+                    write_unrecorded(&mut unrecorded, &mut tool_trace, Some(call_id));
+                }
                 if let Some(call_id) = call_id
                     && !tool_trace.contains_key(call_id)
                     && ["title", "content", "rawInput", "locations"]
@@ -842,7 +870,7 @@ async fn pump(
                 if end_turn {
                     write_terminals(&mut terminals, crate::tool_events::Drain::End);
                     terminal_at = None;
-                    write_unrecorded(&mut unrecorded);
+                    write_unrecorded(&mut unrecorded, &mut tool_trace, None);
                 }
                 // The barrier after a reload: what came before it was the
                 // replay, what comes after it is new.
@@ -872,6 +900,7 @@ async fn pump(
                     flush_text(&write, &mut pending_text);
                     flush_at = None;
                     write_terminals(&mut terminals, crate::tool_events::Drain::Timer);
+                    write_unrecorded(&mut unrecorded, &mut tool_trace, None);
                     terminal_at = None;
                 }
             }
@@ -882,7 +911,7 @@ async fn pump(
     pending_text.push("agent_thought_chunk", &thought_text.finish());
     flush_text(&write, &mut pending_text);
     write_terminals(&mut terminals, crate::tool_events::Drain::End);
-    write_unrecorded(&mut unrecorded);
+    write_unrecorded(&mut unrecorded, &mut tool_trace, None);
     // The process is gone; a later prompt starts a new one.
     if let Ok(mut live_map) = s.sessions.live.lock()
         && live_map.get(&id).is_some_and(|l| Arc::ptr_eq(l, &live))
@@ -2454,20 +2483,11 @@ async fn wait_events(
     loop {
         let session = s.store.session(id)?;
         let mut events = if status_only {
-            vec![]
+            Vec::new()
         } else {
             s.store.session_events(id, after, MAX_PAGE_EVENTS)?
         };
-        // Large events fill a page sooner; the caller asks again from `next`.
-        let mut used = 0;
-        let fit = events
-            .iter()
-            .take_while(|e| {
-                used += e.payload.to_string().len() + 256;
-                used <= MAX_PAGE_BYTES
-            })
-            .count();
-        events.truncate(fit.max(1));
+        fit_page(&mut events);
         let changed = session.status != first.status || session.updated_at != first.updated_at;
         // A turn-end wait returns at once once nothing more will happen without
         // a new message; a session waiting for approval keeps the caller waiting.
@@ -2669,7 +2689,8 @@ async fn owner_events(
         if let Some(local) = remote_record(&s, id)
             && local.status == SessionStatus::Closed
         {
-            let events = s.store.session_events(id, q.after, MAX_PAGE_EVENTS)?;
+            let mut events = s.store.session_events(id, q.after, MAX_PAGE_EVENTS)?;
+            fit_page(&mut events);
             let next = events.last().map_or(q.after, |e| e.seq);
             return Ok(Json(SessionEventPage {
                 session: local,

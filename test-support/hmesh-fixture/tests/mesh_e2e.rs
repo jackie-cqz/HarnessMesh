@@ -156,7 +156,18 @@ async fn until(
         after = next.next;
         events.extend(next.events);
         if done(&next.session, &events) {
-            return (next.session, events);
+            // Pages stop at a size: the session can be done before every
+            // event was read.
+            let mut session = next.session;
+            loop {
+                let rest = page(owner, id, after, 0).await;
+                if rest.events.is_empty() {
+                    return (session, events);
+                }
+                after = rest.next;
+                session = rest.session;
+                events.extend(rest.events);
+            }
         }
         assert!(
             Instant::now() < deadline,
@@ -2642,4 +2653,34 @@ async fn large_and_streamed_tool_calls_stay_readable_and_few() {
             .is_some_and(|c| c.starts_with("line 0000")),
         "{last}"
     );
+    assert!(
+        last["input"].is_string(),
+        "the held input was not carried: {last}"
+    );
+    // Arguments that change a little before a permission request are
+    // recorded before the request, so the person approves what will run.
+    let asked = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:permission-changed-args"}),
+    )
+    .await;
+    let (_, events) = until(&owner, asked.session_id, |s, _| {
+        s.status == SessionStatus::WaitingPermission
+    })
+    .await;
+    let request = events
+        .iter()
+        .position(|e| e.kind == "permission_request")
+        .unwrap();
+    let call = events[request].payload["tool_call_id"].as_str().unwrap();
+    let shown = events[..request]
+        .iter()
+        .rev()
+        .find_map(|e| {
+            (e.kind.starts_with("tool_call") && e.payload["id"] == call)
+                .then(|| e.payload["args"]["command"].as_str())
+                .flatten()
+        })
+        .unwrap();
+    assert_eq!(shown, "git push --force origin main");
 }

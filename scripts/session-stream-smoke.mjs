@@ -167,6 +167,14 @@ try{
   return{label:box.querySelector('.step .step-label')?.textContent,output:box.querySelector('.step .step-output')?.textContent,plans:box.querySelectorAll('.plan').length,done:box.querySelectorAll('.plan .plan-entry.completed').length,answer:box.querySelector('.msg.answer')?.textContent};
  });
  assert(legacy.label==='读取 a.txt docs'&&legacy.output==='hello'&&legacy.plans===1&&legacy.done===1&&legacy.answer==='done',`earlier events: ${JSON.stringify(legacy)}`);
+ stage='a long delegated answer cut in the middle';
+ const cut=await page.evaluate(()=>{
+  const reply=JSON.stringify({session_id:'x',done:true,final_text:'start '+'a'.repeat(9000)+' end'});
+  const clipped=reply.slice(0,8000)+'\n[… 1000 bytes omitted …]\n'+reply.slice(9000);
+  return [delegationReply(clipped),delegationReply('{"done":true,"final_t')];
+ });
+ assert(cut[0].text?.startsWith('start aaa')&&cut[0].text.endsWith(' end')&&!cut[0].text.includes('{"'),`cut reply: ${JSON.stringify(cut[0]).slice(0,120)}`);
+ assert(cut[1].note&&!cut[1].text,`unreadable reply: ${JSON.stringify(cut[1])}`);
  stage='replies nested too deep stay readable';
  const deep=await page.evaluate(()=>['>'.repeat(8000)+' quoted','- '.repeat(4000)+'item','*'.repeat(9000)+'x','['.repeat(5000)+'x'].map(text=>{try{return renderMarkdown(text).textContent.length>0;}catch(e){return String(e);}}));
  assert(deep.every(r=>r===true),`deep Markdown: ${JSON.stringify(deep)}`);

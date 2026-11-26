@@ -253,9 +253,18 @@ function argumentList(args){
 // session, whose final text is the answer.
 function delegationReply(output){
   if(!output)return null;
+  const raw=stripFence(output);
   let body=null;
-  try{body=JSON.parse(stripFence(output));}catch{}
-  if(!body||typeof body!=='object'||Array.isArray(body))return{text:stripFence(output)};
+  try{body=JSON.parse(raw);}catch{}
+  if(!body&&raw.trimStart().startsWith('{')){
+    // A long reply is recorded with its middle cut out, which leaves the
+    // summary unreadable as a whole; its answer can still be read.
+    const m=raw.match(/"final_text"\s*:\s*("(?:[^"\\]|\\.)*")/);
+    // The cut marker brings raw line breaks into the string; escape them first.
+    if(m){try{return{text:JSON.parse(m[1].replace(/[\u0000-\u001f]/g,c=>`\\u${c.charCodeAt(0).toString(16).padStart(4,'0')}`))};}catch{}}
+    return{note:'对方的回答太长，这里没有完整记下'};
+  }
+  if(!body||typeof body!=='object'||Array.isArray(body))return{text:raw};
   if(typeof body.final_text==='string'&&body.final_text)return{text:body.final_text};
   const error=body.error?.message||body.error;
   if(typeof error==='string'&&error)return{note:error,bad:true};
