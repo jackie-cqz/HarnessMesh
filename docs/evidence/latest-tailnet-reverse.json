@@ -10,7 +10,7 @@
   "target": {
     "os": "windows",
     "node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
-    "endpoint": "https://100.99.145.22:39880",
+    "endpoint": "https://100.80.10.11:39880",
     "agent_id": "60c5d1af-8e83-482f-afdc-e720f4be91e3",
     "agent_name": "windows-dsh-pro",
     "harness": "dsh",

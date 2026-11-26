@@ -35,7 +35,7 @@
   ],
   "nodes": {
     "windows": "6ac51158-0178-42f1-b5c4-a60f15524645",
-    "orion": "7bd8af0a-2d2b-4591-ad83-6fd8677b3ffb"
+    "linux": "7bd8af0a-2d2b-4591-ad83-6fd8677b3ffb"
   },
   "resources": {
     "service_id": "c9cf6d1e-3141-495d-8ac0-f9fdfa7e1fa4",

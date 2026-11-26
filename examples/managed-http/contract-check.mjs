@@ -30,8 +30,8 @@ async function request(path, options = {}) {
 const health = await request("/api/health");
 assert.equal(health.status, 200, "GET /api/health must return 200");
 assert.equal(health.body?.status, "ok");
-assert.equal(health.body?.service, "orion-todo-api");
-assert.equal(health.body?.node, "Orion");
+assert.equal(health.body?.service, "linux-todo-api");
+assert.equal(health.body?.node, "Linux");
 
 // 2. Create a unique todo
 const title = `contract-check-${Date.now()}-${Math.random().toString(36).slice(2)}`;

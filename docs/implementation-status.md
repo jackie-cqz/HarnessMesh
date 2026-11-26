@@ -32,15 +32,15 @@
 
 2026-10-28：SPEC 1.3 的 **V0 L01-L05 / E2E-00 在当前 Windows x64 电脑通过**。实现语言为 Rust，测试脚本为 PowerShell 7。没有使用第二台电脑、Tailscale、Codex、MCP、Hub 或服务代理。本结论不替代后续 V0.1 的跨设备/跨 OS 门禁。
 
-后续 SSH 检查点已完成：Windows→Orion/Linux、Pi 1.4.0、`deepseek-v4-flash` 的真实任务、mTLS/审批、write/read、独立 JSON/hash、去重与事件补读通过，测试进程已停止，原认证文件未变。见 `docs/ssh-first-smoke.md` 和 `docs/evidence/latest-ssh-smoke.json`。本机适配后 fmt/Clippy/32 项测试通过，Linux CLI 本机构建通过；整个锁文件 232 个公开依赖的审计仍为零命中。下方 V0 证据与 30 项测试数量保留为该原始版本的历史记录，完整 V0.1 尚未完成。
+后续 SSH 检查点已完成：Windows→Linux、Pi 1.4.0、`deepseek-v4-flash` 的真实任务、mTLS/审批、write/read、独立 JSON/hash、去重与事件补读通过，测试进程已停止，原认证文件未变。见 `docs/ssh-first-smoke.md` 和 `docs/evidence/latest-ssh-smoke.json`。本机适配后 fmt/Clippy/32 项测试通过，Linux CLI 本机构建通过；整个锁文件 232 个公开依赖的审计仍为零命中。下方 V0 证据与 30 项测试数量保留为该原始版本的历史记录，完整 V0.1 尚未完成。
 
-SSH 应用检查点也已验收：`examples/ssh-todo` 的 Orion Pi/Flash 服务端与 Windows DSH/Pro 客户端，通过服务端 10 项、客户端 4 项测试、独立跨机 HTTP、浏览器新增/完成/刷新，以及真实后端重启后的数据保留。代码生成 Daemon/Mesh 隧道已停止，应用服务保留供试用。DSH 任务成功；Pi 写出完整文件但触发输出保护，任务仍为 FAILED，产物独立验收通过。显式累计输出额度选项及边界回归加入后，Rust fmt/Clippy/33 项测试与两端构建通过。见 [示例说明](../examples/ssh-todo/README.md)、[实际证据](evidence/latest-todo-integration.json) 及 SPEC 1.5 第 7.11 节；没有完成受管 Service/Gateway 或 Tailscale。
+SSH 应用检查点也已验收：`examples/ssh-todo` 的 Linux Pi/Flash 服务端与 Windows DSH/Pro 客户端，通过服务端 10 项、客户端 4 项测试、独立跨机 HTTP、浏览器新增/完成/刷新，以及真实后端重启后的数据保留。代码生成 Daemon/Mesh 隧道已停止，应用服务保留供试用。DSH 任务成功；Pi 写出完整文件但触发输出保护，任务仍为 FAILED，产物独立验收通过。显式累计输出额度选项及边界回归加入后，Rust fmt/Clippy/33 项测试与两端构建通过。见 [示例说明](../examples/ssh-todo/README.md)、[实际证据](evidence/latest-todo-integration.json) 及 SPEC 1.5 第 7.11 节；没有完成受管 Service/Gateway 或 Tailscale。
 
 ## 验收映射
 
-2026-10-29 SSH/MCP 检查点：两个方向的 Pi/DSH 真实任务、执行中断开 SSH、发起端正常重启、事件补读和相同请求去重均已通过。新增 hmesh-mcp 和 schema 3 委派绑定，真实 Pi 1.4.0 原生 MCP 发现并提交 Windows DSH，子任务先无 attempt 等待独立批准，父子任务最终均 SUCCEEDED，nonce/hash 核验一致。最终 Windows 46 项、Orion/Linux 45 项 Rust 测试通过。配置见 [MCP](mcp.md)，过程偏差与完整证据见 [双向与 MCP 验收](ssh-bidirectional-mcp.md)。Tailscale、Codex、受管服务和完整 V0.1 仍未完成。
+2026-10-29 SSH/MCP 检查点：两个方向的 Pi/DSH 真实任务、执行中断开 SSH、发起端正常重启、事件补读和相同请求去重均已通过。新增 hmesh-mcp 和 schema 3 委派绑定，真实 Pi 1.4.0 原生 MCP 发现并提交 Windows DSH，子任务先无 attempt 等待独立批准，父子任务最终均 SUCCEEDED，nonce/hash 核验一致。最终 Windows 46 项、Linux 45 项 Rust 测试通过。配置见 [MCP](mcp.md)，过程偏差与完整证据见 [双向与 MCP 验收](ssh-bidirectional-mcp.md)。Tailscale、Codex、受管服务和完整 V0.1 仍未完成。
 
-2026-10-29 大输出回归：已分离原生消息和内部事件限额，长正文脱敏后分段、事件按字节分页，`task watch` 补读到最后一页才退出。新的 Orion Pi/Flash 任务 `c2c13fd7-eae0-42e4-8945-99c6784129ba` 为 SUCCEEDED，实测最大原生消息 375,131 字节，累计 8,758,986 字节；新生成服务端 14 项测试通过，原应用 10+4 项测试与 HTTP/持久化复测通过。见 [独立回归报告](evidence/latest-pi-output-regression.json) 和 [ADR 0003](adr/0003-native-output-limits.md)。历史失败记录保持不变，最终 Rust 测试数量记录在该新报告中。
+2026-10-29 大输出回归：已分离原生消息和内部事件限额，长正文脱敏后分段、事件按字节分页，`task watch` 补读到最后一页才退出。新的 Linux Pi/Flash 任务 `c2c13fd7-eae0-42e4-8945-99c6784129ba` 为 SUCCEEDED，实测最大原生消息 375,131 字节，累计 8,758,986 字节；新生成服务端 14 项测试通过，原应用 10+4 项测试与 HTTP/持久化复测通过。见 [独立回归报告](evidence/latest-pi-output-regression.json) 和 [ADR 0003](adr/0003-native-output-limits.md)。历史失败记录保持不变，最终 Rust 测试数量记录在该新报告中。
 
 | 工作包 | 已交付内容 | 证据 |
 |---|---|---|

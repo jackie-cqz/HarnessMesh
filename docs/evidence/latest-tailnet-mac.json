@@ -7,13 +7,13 @@
     "os": "windows",
     "node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
     "fingerprint": "bca6a96bbb77518fc24c28ff4fab362628b61a986d15258def3dafef86ccefed",
-    "endpoint": "https://100.99.145.22:39880"
+    "endpoint": "https://100.80.10.11:39880"
   },
   "target": {
     "os": "macOS",
     "node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
     "fingerprint": "063a9034661b76f7ba517fc14c51d9bf38eb659af4467b2d1509ce9c47c2066a",
-    "endpoint": "https://100.69.246.117:39880",
+    "endpoint": "https://100.80.20.12:39880",
     "agent_id": "5583c679-a688-4653-92c1-ee960fde64ea",
     "agent_name": "mac-pi-flash-key",
     "harness": "pi",
@@ -153,7 +153,7 @@
     "windows_node_id": "a88af118-32ee-4b11-8ad6-9e04be5c36f6",
     "mac_node_id": "b42a0802-eee1-4799-bc3a-fb66e19a4e71",
     "mac_fingerprint": "063a9034661b76f7ba517fc14c51d9bf38eb659af4467b2d1509ce9c47c2066a",
-    "mac_endpoint": "https://100.69.246.117:39880",
+    "mac_endpoint": "https://100.80.20.12:39880",
     "tls_protocol": "TLSv1.3",
     "passed": true,
     "checks": [

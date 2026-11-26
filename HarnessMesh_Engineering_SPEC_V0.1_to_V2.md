@@ -610,21 +610,21 @@ Harness 种类与模型供应商是两层：Pi 或 OpenCode 使用 DeepSeek 模�
 
 ### 7.10 首条 SSH 跨机真实检查点（2026-10-28）
 
-根据用户选择，先以 SSH TCP 转发连接本机 Windows 和 Orion/Linux，保留同一套回环 HTTPS/mTLS、双向配对、项目 grant 和审批。当前已完成 **Windows CLI → Windows Daemon → SSH → Orion Daemon → Pi 1.4.0 → deepseek-v4-flash** 的真实任务，原模型 API 为 `api.deepseek.com`，模型定义沿用 Orion 的自定义 Flash 条目。
+根据用户选择，先以 SSH TCP 转发连接本机 Windows 和 Linux，保留同一套回环 HTTPS/mTLS、双向配对、项目 grant 和审批。当前已完成 **Windows CLI → Windows Daemon → SSH → Linux Daemon → Pi 1.4.0 → deepseek-v4-flash** 的真实任务，原模型 API 为 `api.deepseek.com`，模型定义沿用 Linux 的自定义 Flash 条目。
 
 Pi 实际 write/read `out/health.json`，独立 JSON 断言与 Windows 通过 SSH 发起的 SHA-256 核验一致；任务事件、游标补读、同 request-id 去重通过。任务 ID 为 `f2346c90-aa07-4a73-8b6b-fedd9fbf41a7`。脱敏证据位于 `docs/evidence/latest-ssh-smoke.json`；复现、端口关系与边界见 `docs/ssh-first-smoke.md` 和 ADR 0002。
 
-该检查点新增 Pi 1.4.0 的版本支持、owner 指定 NVM `node_executable`、只复制非认证元数据的 `models_file`，以及 Pi/DeepSeek 专用的只读 `credential_source`。认证在 Orion 内存中注入子进程并脱敏，不复制认证文件、不传给 Windows；原文件未修改。两个测试 Daemon 与专用 SSH 隧道已停止，原 7892 转发保持工作。
+该检查点新增 Pi 1.4.0 的版本支持、owner 指定 NVM `node_executable`、只复制非认证元数据的 `models_file`，以及 Pi/DeepSeek 专用的只读 `credential_source`。认证在 Linux 内存中注入子进程并脱敏，不复制认证文件、不传给 Windows；原文件未修改。两个测试 Daemon 与专用 SSH 隧道已停止，原 7892 转发保持工作。
 
-本次只证明单向 SSH 跨机链路。Orion→Windows 委派、SSH 中断恢复、Tailscale、Codex/MCP 和完整 E2E-01 仍未验收，**不勾选完整 V0.1 门禁**。V0.1 的 Tailscale 主链路规划保持，SSH 用作先行跨机检查点；V0.2 的受管 Gateway/服务发布仍另行交付。
+本次只证明单向 SSH 跨机链路。Linux→Windows 委派、SSH 中断恢复、Tailscale、Codex/MCP 和完整 E2E-01 仍未验收，**不勾选完整 V0.1 门禁**。V0.1 的 Tailscale 主链路规划保持，SSH 用作先行跨机检查点；V0.2 的受管 Gateway/服务发布仍另行交付。
 
 ### 7.11 SSH 前后端应用检查点（2026-10-28）
 
-按用户要求完成 `examples/ssh-todo`：Orion 上的 **Pi 1.4.0 / deepseek-v4-flash** 编写 Node.js 服务端，本机 **DSH 0.2.0-rc.2 / deepseek-v4-pro** 编写 HTML/CSS/JS 客户端及静态/API 代理。两端按同一份 `api-contract.json` 独立生成，业务代码无 npm 依赖。任务说明、受控 runner、生成文件和独立 HTTP 验收脚本均已保存。
+按用户要求完成 `examples/ssh-todo`：Linux 上的 **Pi 1.4.0 / deepseek-v4-flash** 编写 Node.js 服务端，本机 **DSH 0.2.0-rc.2 / deepseek-v4-pro** 编写 HTML/CSS/JS 客户端及静态/API 代理。两端按同一份 `api-contract.json` 独立生成，业务代码无 npm 依赖。任务说明、受控 runner、生成文件和独立 HTTP 验收脚本均已保存。
 
-运行链路为 **浏览器 → Windows 127.0.0.1:5173 → 127.0.0.1:18080 → SSH LocalForward → Orion 127.0.0.1:8000 → Orion JSON 数据文件**。代码生成阶段仍使用独立 Node 身份、HTTPS/mTLS、项目 grant 和 Orion owner 审批；应用运行阶段没有模型调用。服务只监听回环地址，应用隧道与模型生成用的 Mesh 隧道分开管理。
+运行链路为 **浏览器 → Windows 127.0.0.1:5173 → 127.0.0.1:18080 → SSH LocalForward → Linux 127.0.0.1:8000 → Linux JSON 数据文件**。代码生成阶段仍使用独立 Node 身份、HTTPS/mTLS、项目 grant 和 Linux owner 审批；应用运行阶段没有模型调用。服务只监听回环地址，应用隧道与模型生成用的 Mesh 隧道分开管理。
 
-独立验收通过：Orion 服务端 10 项测试、本机客户端 4 项测试；跨机 HTTP 新增/完成/读取及 400/404/413；浏览器实际新增、勾选、刷新；核对 Orion 磁盘文件后重启后端、重载页面，数据和完成状态仍保留。三份接口契约 SHA-256 一致，导出的服务端文件与 Orion 文件 SHA-256 一致。脱敏记录见 `docs/evidence/latest-todo-integration.json`，使用与停止命令见 `examples/ssh-todo/README.md`。
+独立验收通过：Linux 服务端 10 项测试、本机客户端 4 项测试；跨机 HTTP 新增/完成/读取及 400/404/413；浏览器实际新增、勾选、刷新；核对 Linux 磁盘文件后重启后端、重载页面，数据和完成状态仍保留。三份接口契约 SHA-256 一致，导出的服务端文件与 Linux 文件 SHA-256 一致。脱敏记录见 `docs/evidence/latest-todo-integration.json`，使用与停止命令见 `examples/ssh-todo/README.md`。
 
 **任务状态与产物验收分开记录**：DSH 任务 `29fa9a8e-f879-4ef6-a985-38c4a420f383` 为 SUCCEEDED。Pi 首次任务达到默认 stdout 额度；单独提交并获批的后续任务 `c5e3ecaf-87b6-4393-bec3-cb906b9a621b` 写出全部服务端文件后触发 JSONL 单条记录保护，状态保持 FAILED。runner 导出并测试这些实际文件，不将应用测试通过改写为 Pi 任务成功，也不自动重跑有副作用的任务。
 
@@ -636,13 +636,13 @@ Pi 实际 write/read `out/health.json`，独立 JSON 断言与 Windows 通过 SS
 
 内部 payload 上限仍为 64 KiB。正文先执行跨消息脱敏，再按 UTF-8 边界拆为每段至多 8 KiB 的事件；长正文不再套用诊断摘要的截断。原生工具参数/结果与快照不进入事件库。事件每页另限制为 512 KiB，并修复 `task watch` 在终态出现后读取完全部分页才退出。output_summary 只记录字节数、完整消息计数与最大消息大小。
 
-新的隔离 Orion 项目使用 Pi 1.4.0 / deepseek-v4-flash，经相同 SSH、mTLS、项目 grant 和 owner 审批运行。任务 `c2c13fd7-eae0-42e4-8945-99c6784129ba` 先读取 runner 构造的引号/反斜线测试文件，再重新生成完整 Todo 服务端，最终原生完成、退出 0、清理成立，状态 **SUCCEEDED**。实际解析 27,157 条原生消息，最大单条 **375,131 字节**，累计 stdout **8,758,986 字节**；确实越过旧 64 KiB 边界。新服务端的 14 项测试全部通过；原应用的服务端 10 项和客户端 4 项测试、跨机 HTTP 与原待办持久化也重跑通过。
+新的隔离 Linux 项目使用 Pi 1.4.0 / deepseek-v4-flash，经相同 SSH、mTLS、项目 grant 和 owner 审批运行。任务 `c2c13fd7-eae0-42e4-8945-99c6784129ba` 先读取 runner 构造的引号/反斜线测试文件，再重新生成完整 Todo 服务端，最终原生完成、退出 0、清理成立，状态 **SUCCEEDED**。实际解析 27,157 条原生消息，最大单条 **375,131 字节**，累计 stdout **8,758,986 字节**；确实越过旧 64 KiB 边界。新服务端的 14 项测试全部通过；原应用的服务端 10 项和客户端 4 项测试、跨机 HTTP 与原待办持久化也重跑通过。
 
 修复不改写第 7.11 节历史 FAILED，也没有用新生成代码覆盖正在试用的原服务端。隔离生成文件按 SHA-256 核验并保存在私有运行记录。实现决策见 ADR 0003；执行入口为 `scripts/retest-pi-output.ps1`，脱敏结果见 `docs/evidence/latest-pi-output-regression.json`。最终两端回归数量见该报告；原应用继续通过专用 SSH 应用隧道运行。
 
 ### 7.13 SSH 双向与断线恢复（2026-10-29）
 
-Windows→Orion Pi/Flash 与 Orion→Windows DSH/Pro 的真实任务均已通过。反向 DSH 在 RUNNING 时切断专用 Mesh 隧道，并正常停止 Orion 发起端 Daemon；Windows 执行继续，断线期间完成。发起端沿用原身份和数据库重启、恢复隧道后，观察到相同 task/attempt，补读 10 条后续事件且与执行端 seq 序列一致。重复相同 request_id/正文没有新增 attempt 或运行事件，工件 hash 不变。该结果覆盖 SSH 中断与发起端正常重启，执行端硬崩溃/脱离进程组的子进程仍另行验收。
+Windows→Linux Pi/Flash 与 Linux→Windows DSH/Pro 的真实任务均已通过。反向 DSH 在 RUNNING 时切断专用 Mesh 隧道，并正常停止 Linux 发起端 Daemon；Windows 执行继续，断线期间完成。发起端沿用原身份和数据库重启、恢复隧道后，观察到相同 task/attempt，补读 10 条后续事件且与执行端 seq 序列一致。重复相同 request_id/正文没有新增 attempt 或运行事件，工件 hash 不变。该结果覆盖 SSH 中断与发起端正常重启，执行端硬崩溃/脱离进程组的子进程仍另行验收。
 
 正常正向任务为 `3f090707-fcd3-46da-8f8e-7bd0162387dd`，反向任务为 `35c153a8-07e8-4b8d-88cf-8716f5212e72`，均 SUCCEEDED 并通过独立 JSON/hash 断言。首条正向任务因同机 Daemon 停止被取消、DSH 首次产物路径不符等过程事实均保留，详见 `docs/ssh-bidirectional-mcp.md`。这些检查点继续使用 SSH，不勾选完整 Tailnet/Codex/Mac↔Windows 的 V0.1 发布门禁。
 
@@ -650,13 +650,13 @@ Windows→Orion Pi/Flash 与 Orion→Windows DSH/Pro 的真实任务均已通过
 
 新增 Rust `hmesh-mcp`，提供五个 stdio 工具，固定连接本机 owner RPC。Pi 1.4.0 的 owner Agent 配置可显式选择 `mesh_server` 和 `mesh_scope`；Runtime 只额外加载原生 `builtin:mcp` 和本次生成的注册扩展，不导入用户 MCP 配置。工具限制到精确 peer/Agent/project 和有限次数，提交仍需执行端独立批准，模型没有 approve/policy 接口。
 
-真实 Orion Pi/Flash 父任务 `6b268118-6f6c-4b24-99cd-89248653b523` 亲自调用发现节点、发现 Agent、提交和查询工具，创建 Windows DSH 子任务 `15536b80-bf73-44fc-bb8c-e51a828a51fc`。runner 观察到子任务 PENDING_APPROVAL 且无 attempt，再从 Windows owner CLI 批准。父子任务都 SUCCEEDED，nonce 和回传 artifact SHA-256 与两端实际文件一致。取消工具的真实模型调用、DSH 作为 MCP caller 尚未计入通过范围。
+真实 Linux Pi/Flash 父任务 `6b268118-6f6c-4b24-99cd-89248653b523` 亲自调用发现节点、发现 Agent、提交和查询工具，创建 Windows DSH 子任务 `15536b80-bf73-44fc-bb8c-e51a828a51fc`。runner 观察到子任务 PENDING_APPROVAL 且无 attempt，再从 Windows owner CLI 批准。父子任务都 SUCCEEDED，nonce 和回传 artifact SHA-256 与两端实际文件一致。取消工具的真实模型调用、DSH 作为 MCP caller 尚未计入通过范围。
 
 SQLite schema 3 原子保存 parent/request/child 绑定和额度，跨进程重启仍生效；父任务结束、目标越界、其他父任务的 child_id、未知执行参数和超限输入均拒绝。断线不释放额度、不自动换 UUID 重跑。普通测试使用合成身份/任务和真实 stdio/TLS 进程，真实模型证据单独记录。配置与边界见 `docs/mcp.md`，结果见 `docs/evidence/latest-ssh-mcp-smoke.json`。
 
 ### 7.15 受管 HTTP 服务、SSH 隧道与有限修复（2026-10-29）
 
-在既有 Windows ↔ Orion/Linux 的授权 SSH 路径上实现单独检查点，不将其计为完整 V0.1/V0.2 或 Mac 三机 Gateway 验收。实际 CLI/JSON 入口见 [受管服务说明](docs/managed-services.md)，SQLite schema 4 新增服务、隧道、连接租约与 IntegrationRun；旧任务和委派记录保留。
+在既有 Windows ↔ Linux 的授权 SSH 路径上实现单独检查点，不将其计为完整 V0.1/V0.2 或 Mac 三机 Gateway 验收。实际 CLI/JSON 入口见 [受管服务说明](docs/managed-services.md)，SQLite schema 4 新增服务、隧道、连接租约与 IntegrationRun；旧任务和委派记录保留。
 
 - Daemon 负责自己启动的进程树、租约回收及初启后三次有退避的重试；进程、SSH、HTTP 健康分别报告。owner 明确项目、可执行文件、端口和 peer，拒绝接管占用端口/历史 PID。
 - 服务通道为具名服务的 mTLS HTTP 桥接，两侧正文各限 256 KiB，只在本机回环建立入口；不携带 Cookie/Authorization，不跟随重定向，不自动重放写请求。HTTP 总预算由 owner 设为 1..30 秒，Mesh 另留 5 秒；示例前端/客户端为 45 秒。此项不宣称通用 TCP、WebSocket 或 SSE。
@@ -666,7 +666,7 @@ SQLite schema 3 原子保存 parent/request/child 绑定和额度，跨进程重
 
 真实验收过程与已知失败须一起保留于 `docs/evidence/latest-managed-services.json`；不得把代理/超时失败重写为模型修复成功。最终检查点以独立客户端、后端单测、固定契约、隧道恢复与撤销访问的实际结果为准。
 
-最终真实运行 `ed972039-357c-4f3d-a989-7df388f9bdc6` 已一轮修复后 verified，Orion Pi 修复任务 `00d63a84-8d6a-46a4-8771-a1c42d884062` 为 SUCCEEDED；同一版本 DSH 客户端在修复前失败、修复后通过。后端 10 项、客户端 4 项测试、独立前端 HTTP、受管重启后数据保留、SSH 子进程停止后的自动恢复与远端撤销关闭本地入口均通过。最终 Windows 52 / Linux 51 项 Rust 测试通过；格式与 Clippy 在 Windows 通过，Orion 便携工具链无对应组件，仅独立运行 Linux 构建/测试。最初代理超时与固定 5 秒/1 秒限制导致的失败保留在报告中；操作预算与调用方余量已明确化，没有自动重放旧写请求。
+最终真实运行 `ed972039-357c-4f3d-a989-7df388f9bdc6` 已一轮修复后 verified，Linux Pi 修复任务 `00d63a84-8d6a-46a4-8771-a1c42d884062` 为 SUCCEEDED；同一版本 DSH 客户端在修复前失败、修复后通过。后端 10 项、客户端 4 项测试、独立前端 HTTP、受管重启后数据保留、SSH 子进程停止后的自动恢复与远端撤销关闭本地入口均通过。最终 Windows 52 / Linux 51 项 Rust 测试通过；格式与 Clippy 在 Windows 通过，Linux 便携工具链无对应组件，仅独立运行 Linux 构建/测试。最初代理超时与固定 5 秒/1 秒限制导致的失败保留在报告中；操作预算与调用方余量已明确化，没有自动重放旧写请求。
 
 ## 8. CLI 与 MCP Tool 规范
 
@@ -1102,7 +1102,7 @@ max_service_lease_seconds = 3600
 
 - [ ] Linux 服务发布后，Mac 能经过两跳建立临时本地 endpoint。
 - [ ] 禁止端口扫描、通用 SOCKS、向任意内网 IP 开洞。
-- [x] HTTP health/test contracts 与代理连接证据（Windows ↔ Orion 两机检查点；三机验收保持未完成）。
+- [x] HTTP health/test contracts 与代理连接证据（Windows ↔ Linux 两机检查点；三机验收保持未完成）。
 - **验收**：Mac 访问 Linux FastAPI，Windows Gateway 不开放公网端口，不配置校园网段路由。
 
 #### W13 — IntegrationRun / Artifact

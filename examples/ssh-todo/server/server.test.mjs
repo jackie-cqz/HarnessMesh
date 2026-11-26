@@ -9,7 +9,7 @@ import { createTodoServer } from './server.mjs';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function makeDataFile(t) {
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'orion-todo-test-'));
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'linux-todo-test-'));
   t.after(() => fsp.rm(dir, { recursive: true, force: true }));
   return path.join(dir, 'nested', 'todos.json');
 }
@@ -79,7 +79,7 @@ test('GET /api/health reports the default service and node label', async (t) => 
 
   const res = await send(baseUrl, '/api/health');
   assert.equal(res.status, 200);
-  assert.deepEqual(res.json, { status: 'ok', service: 'orion-todo-api', node: 'Orion' });
+  assert.deepEqual(res.json, { status: 'ok', service: 'linux-todo-api', node: 'Linux' });
   assert.match(res.headers.get('content-type') ?? '', /application\/json/);
 });
 

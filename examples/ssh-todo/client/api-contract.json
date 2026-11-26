@@ -3,7 +3,7 @@
   "application": "HarnessMesh SSH Todo",
   "todo": { "id": "UUID string", "title": "trimmed text, 1..200 characters", "completed": "boolean", "created_at": "ISO 8601 string" },
   "endpoints": [
-    { "method": "GET", "path": "/api/health", "status": 200, "response": { "status": "ok", "service": "orion-todo-api", "node": "Orion" } },
+    { "method": "GET", "path": "/api/health", "status": 200, "response": { "status": "ok", "service": "linux-todo-api", "node": "Linux" } },
     { "method": "GET", "path": "/api/todos", "status": 200, "response": { "todos": [] } },
     { "method": "POST", "path": "/api/todos", "request": { "title": "Example" }, "status": 201, "response": { "todo": "Todo object" } },
     { "method": "PATCH", "path": "/api/todos/:id", "request": { "completed": true }, "status": 200, "response": { "todo": "updated Todo object" } }

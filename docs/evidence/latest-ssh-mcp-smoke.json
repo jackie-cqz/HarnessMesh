@@ -7,9 +7,9 @@
   "scope": "SSH bidirectional tasks, in-flight tunnel cut with origin graceful restart, event replay/deduplication, and Pi native MCP delegation",
   "nodes": {
     "windows": "542d4e55-667d-4704-8413-a5cf88c200f3",
-    "orion": "f2515a0a-2901-4636-9cb8-816aa0b553a3"
+    "linux": "f2515a0a-2901-4636-9cb8-816aa0b553a3"
   },
-  "transport": "SSH forwards over existing cqz_Orion; independent Node HTTPS/mTLS identities and per-project grants",
+  "transport": "SSH forwards over existing linux-host; independent Node HTTPS/mTLS identities and per-project grants",
   "forward": {
     "harness": "Pi 1.4.0",
     "task": {
@@ -49,7 +49,7 @@
     "artifact": {
       "json": {
         "status": "ok",
-        "direction": "windows-to-orion",
+        "direction": "windows-to-linux",
         "nonce": "43b657fd-ffde-4dd9-95de-e13ceeec68ce"
       },
       "sha256": "54969d7cb238435c71a2007a83f229f822c8db21d2fe145d1b872b17282f0d24",
@@ -63,7 +63,7 @@
       "sha256": "2311db9f117fae0ed01bd6ff30989620c5edef3e9abbb6dca1f7d84eccc83c95",
       "json": {
         "status": "ok",
-        "direction": "orion-to-windows",
+        "direction": "linux-to-windows",
         "nonce": "67e900d1-4151-4d49-b7e9-a6b526a7c8ac"
       }
     },
@@ -295,7 +295,7 @@
     "actual_file_moved_or_rewritten_by_runner": false,
     "initial_windows_policy_empty_grant_parse_error": "Retained operational observation; grant=[] removed before adding array entries; existing model verifications were reused",
     "reverse_actual_path": "reverse.json",
-    "cancellation_reason": "Orion graceful stop during reverse fault injection also stopped the concurrent forward task; an inspected known terminal cancellation was followed by a separate normal forward smoke with a new nonce/request",
+    "cancellation_reason": "Linux graceful stop during reverse fault injection also stopped the concurrent forward task; an inspected known terminal cancellation was followed by a separate normal forward smoke with a new nonce/request",
     "cancelled_initial_forward": [
       {
         "task_id": "603c1ca9-3c28-447f-b4a9-62681f0dc1d0",
@@ -313,8 +313,8 @@
   "cleanup": {
     "original_todo_health": {
       "status": "ok",
-      "service": "orion-todo-api",
-      "node": "Orion"
+      "service": "linux-todo-api",
+      "node": "Linux"
     },
     "policies_restored": true,
     "authoring_daemons_and_mesh_tunnel_stopped": true,

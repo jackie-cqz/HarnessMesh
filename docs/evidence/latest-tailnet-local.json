@@ -14,8 +14,8 @@
     "revoked-peer-denied"
   ],
   "endpoints": [
-    "https://100.99.145.22:59183",
-    "https://100.99.145.22:59185"
+    "https://100.80.10.11:59183",
+    "https://100.80.10.11:59185"
   ],
   "node_ids": [
     "133e4a06-d12b-4fd9-a2e7-4478a6b5ee7b",
@@ -39,7 +39,7 @@
     "application_tested": false,
     "path": "direct",
     "samples": 1,
-    "ip": "100.69.246.117"
+    "ip": "100.80.20.12"
   },
   "binary_sha256": "7c2be8e394f37835a5faaadc8b663c5dfef739a1cdc0a401b9a6896db5da46af",
   "source_sha256": {

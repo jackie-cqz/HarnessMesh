@@ -288,7 +288,7 @@ fn only_a_direct_computer_with_trusted_networks_listens_on_every_interface() {
     let mut tailnet = every("::");
     tailnet.node.network = "tailscale".into();
     assert!(tailnet.validate().is_err());
-    tailnet.node.listen_address = "100.99.145.22".parse().unwrap();
+    tailnet.node.listen_address = "100.80.10.11".parse().unwrap();
     assert!(tailnet.validate().is_err());
     tailnet.node.trusted_networks = None;
     tailnet.validate().unwrap();
