@@ -1,0 +1,59 @@
+{
+  "checkpoint": "pi-session-ux",
+  "date": "2026-11-26",
+  "repo_head": "815811d+uncommitted-fixes",
+  "environment": {
+    "platform": "macOS arm64",
+    "harness": "pi 0.83.0 through pi-acp 0.0.35",
+    "model": "test-gateway-claude/deepseek-v4.1-flash-1017",
+    "endpoint": "local gateway http://127.0.0.1:15804",
+    "pi_config": "owner's own ~/.pi/agent (pi-lens, pi-subagents, pi-mcp-adapter, pi-web-access, pi-multiagent, zstack extension)"
+  },
+  "before": {
+    "first_visible": "startup banner at 4s; answer at 7s",
+    "final_text": "startup banner polluted the turn's final text",
+    "cancel": "tool card stayed pending; reload re-ran the cancelled sleep 60 (66.7s to first chunk)",
+    "history": "panel call failed at 15.0s with RPC deadline exceeded; pi-acp session/list took 15.7s for 1350 sessions",
+    "errors": "429 retries became assistant text; turn ended end_turn with no answer and last_error null",
+    "events": "20+ tool_call_update events per bash call; 40+ per-token thought chunks for one sentence",
+    "hero": "new-session model select could stay disabled",
+    "approval": "Pi wrote files with zero permission requests and no UI notice"
+  },
+  "fixes": [
+    "filter the adapter banner by session/new _meta.piAcp.startupInfo plus its shape; keep it out of reply and events",
+    "record provider retry chatter as status notes, not assistant text",
+    "an empty prompt answer now records an error event and last_error",
+    "on a cancelled turn, unfinished tool calls receive a terminal event",
+    "panel history deadline 35 s, daemon list timeout 25 s; failed refresh falls back to the last good list",
+    "collapse repeated tool_call_update title growth into meaningful changes",
+    "rebuild the new-session settings when write capability changes",
+    "show Pi's approval/MCP limits in the session meta and the new-session note",
+    "merge adjacent message/thought chunks (512 bytes or 150 ms) instead of one event per token"
+  ],
+  "after": {
+    "first_chunk": "answer text first; no banner; final_text clean",
+    "final_verification": "status idle, stop end_turn, final text 最终验证通过, 6.2s",
+    "cancel": "terminal tool state (failed/cancelled), no pending card",
+    "error_path": "stub 429 produced retry notes in Chinese and the error 这一轮没有回答",
+    "history": "15.5s then listed Agent 里之前的会话 (native pi session visible); cache/fallback in place",
+    "tool_events": "one tool_call + 2 tool_call_update for a bash call (was 20+)",
+    "hero": "select enabled after load; note explains Pi's direct execution",
+    "panel_errors": "none",
+    "text_events": "one thinking event and one answer event for a real turn (was 40+ thought chunks)"
+  },
+  "upstream_limits": [
+    "pi-acp stores ACP mcpServers but does not forward them to pi, so mesh_send is unavailable inside Pi sessions; the panel now says so",
+    "after a cancelled turn, reloading the conversation can make the model retry the unfinished tool call; HarnessMesh cannot rewrite pi's session history",
+    "provider 429 retries are emitted by pi itself; HarnessMesh surfaces the final empty answer as an error instead of success"
+  ],
+  "verification": {
+    "fmt": "pass",
+    "clippy_strict": "pass",
+    "workspace_tests": "pass",
+    "unit_tests_added": [
+      "adapter_banners_are_not_conversation",
+      "provider_retries_are_not_answers"
+    ],
+    "panel_js": "node --check pass"
+  }
+}
