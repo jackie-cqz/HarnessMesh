@@ -58,6 +58,8 @@ struct Panel {
     token: String,
     requests: Arc<Semaphore>,
     stop: tokio::sync::watch::Sender<bool>,
+    /// A folder dialog is open: one at a time.
+    picking: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub async fn run(
@@ -127,6 +129,7 @@ pub async fn run(
         token,
         requests: Arc::new(Semaphore::new(32)),
         stop,
+        picking: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let app = Router::new()
         .route(
@@ -301,6 +304,8 @@ pub async fn run(
         .route("/api/projects/{id}/remove", post(remove_project))
         .route("/api/projects/{id}/history", get(project_history))
         .route("/api/history", get(history_folders))
+        .route("/api/folders/pick", post(pick_folder))
+        .route("/api/folders/history", get(folder_history))
         .route("/api/sessions/{id}/mark", post(mark_session))
         .route("/api/sessions", get(sessions).post(open_session))
         .route("/api/sessions/summary", get(session_summary))
@@ -439,7 +444,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1"),"peer_addresses":running && features.contains(&"peer-addresses-v1"),"trusted_networks":running && features.contains(&"trusted-networks-v1"),"peer_finding":running && features.contains(&"peer-finding-v1"),"relays":running && features.contains(&"relay-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"folder_picker":running && features.contains(&"agent-projects-v1") && crate::folder_picker::picker(None).is_some(),"pairing_nearby":running && features.contains(&"pairing-nearby-v1"),"peer_addresses":running && features.contains(&"peer-addresses-v1"),"trusted_networks":running && features.contains(&"trusted-networks-v1"),"peer_finding":running && features.contains(&"peer-finding-v1"),"relays":running && features.contains(&"relay-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -1031,6 +1036,77 @@ async fn project_history(
         Some(path) => session_reply(s.client.get::<Value>(&path).await),
         None => invalid_project(),
     }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PickFolderForm {
+    /// Where the dialog starts; ignored unless an existing full path.
+    #[serde(default)]
+    start: Option<PathBuf>,
+}
+/// Show this computer's own folder dialog and return the folder chosen.
+async fn pick_folder(State(s): State<Panel>, Json(form): Json<PickFolderForm>) -> Response {
+    use std::sync::atomic::Ordering;
+    let picker_error = |status: StatusCode, code: &str, message: &str| {
+        (
+            status,
+            Json(json!({"error":{"code":code,"message":message,"automatic_retry":false}})),
+        )
+            .into_response()
+    };
+    if s.picking.swap(true, Ordering::SeqCst) {
+        return picker_error(
+            StatusCode::CONFLICT,
+            "FOLDER_PICKER_BUSY",
+            "a folder dialog is already open on this computer",
+        );
+    }
+    // Released however this ends, also when the browser goes away and the
+    // request (and with it the dialog) is dropped.
+    struct Open(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Open {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _open = Open(s.picking.clone());
+    let result = crate::folder_picker::pick(form.start.as_deref()).await;
+    use crate::folder_picker::PickError;
+    match result {
+        Ok(Some(path)) => Json(json!({"data":{"path":path}})).into_response(),
+        Ok(None) => Json(json!({"data":{"cancelled":true}})).into_response(),
+        Err(PickError::Unavailable) => picker_error(
+            StatusCode::CONFLICT,
+            "FOLDER_PICKER_UNAVAILABLE",
+            "this computer cannot show a folder dialog here",
+        ),
+        Err(PickError::TimedOut) => picker_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "FOLDER_PICKER_TIMEOUT",
+            "the folder dialog was closed after waiting too long",
+        ),
+        Err(PickError::Failed(message)) => {
+            picker_error(StatusCode::BAD_GATEWAY, "FOLDER_PICKER_FAILED", &message)
+        }
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FolderForm {
+    path: String,
+    #[serde(default)]
+    refresh: bool,
+}
+async fn folder_history(State(s): State<Panel>, Query(form): Query<FolderForm>) -> Response {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("path", &form.path)
+        .append_pair("refresh", if form.refresh { "true" } else { "false" })
+        .finish();
+    session_reply(
+        s.client
+            .get::<Value>(&format!("/local/history/folder?{query}"))
+            .await,
+    )
 }
 async fn history_folders(State(s): State<Panel>, Query(form): Query<HistoryForm>) -> Response {
     session_reply(

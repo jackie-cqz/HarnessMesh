@@ -345,6 +345,30 @@ struct HistoryQuery {
     #[serde(default)]
     refresh: bool,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FolderQuery {
+    path: PathBuf,
+    #[serde(default)]
+    refresh: bool,
+}
+
+/// Each local agent's sessions in `folder`. Some agents ignore the folder
+/// filter, and two agents of one kind share their sessions: each session is
+/// shown once, under the first agent, and only when it was in that folder.
+async fn sessions_in(s: &AppState, folder: &FilePath, refresh: bool) -> Vec<AgentHistory> {
+    let mut agents = histories(s, Some(folder), refresh).await;
+    let mut seen = std::collections::HashSet::new();
+    for agent in &mut agents {
+        let harness = agent.harness;
+        agent.sessions.retain(|listed| {
+            (listed.cwd == folder || same_folder(&listed.cwd) == folder)
+                && seen.insert((harness, listed.agent_session_id.clone()))
+        });
+    }
+    link_sessions(s, &mut agents);
+    agents
+}
 
 async fn list_projects(
     State(s): State<AppState>,
@@ -450,19 +474,32 @@ async fn project_history(
         .into_iter()
         .find(|p| p.project_id == id)
         .ok_or_else(|| err(ErrorCode::ProjectNotFound, "no such project"))?;
-    let mut agents = histories(&s, Some(&project.path), q.refresh).await;
-    // Some agents ignore the folder filter; two agents of one kind share
-    // their sessions. Each session is shown once, under the first agent.
-    let mut seen = std::collections::HashSet::new();
-    for agent in &mut agents {
-        let harness = agent.harness;
-        agent.sessions.retain(|listed| {
-            listed.cwd == project.path && seen.insert((harness, listed.agent_session_id.clone()))
-        });
-    }
-    link_sessions(&s, &mut agents);
+    let agents = sessions_in(&s, &project.path, q.refresh).await;
     Ok(Json(ProjectHistory {
         project_id: project.project_id,
+        agents,
+        observed_at: now(),
+    }))
+}
+/// What a folder holds before it is added: picked in this computer's own
+/// folder dialog, typed, or chosen from the agents' folders.
+async fn folder_history(
+    State(s): State<AppState>,
+    Extension(c): Extension<ConnectionIdentity>,
+    headers: HeaderMap,
+    Query(q): Query<FolderQuery>,
+) -> ApiResult<FolderHistory> {
+    s.owner(&headers, &c)?;
+    let path = real_folder(&q.path)?;
+    let agents = sessions_in(&s, &path, q.refresh).await;
+    let project_id = projects(&s)?
+        .into_iter()
+        .find(|p| p.path == path)
+        .map(|p| p.project_id);
+    Ok(Json(FolderHistory {
+        name: folder_name(&path),
+        path,
+        project_id,
         agents,
         observed_at: now(),
     }))
@@ -579,6 +616,7 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/local/projects/{id}/remove", post(remove_project))
         .route("/local/projects/{id}/history", get(project_history))
         .route("/local/history", get(history_folders))
+        .route("/local/history/folder", get(folder_history))
         .route("/local/sessions/{id}/mark", post(mark_session))
         .route("/hmesh/v1/projects", get(shared_projects))
 }

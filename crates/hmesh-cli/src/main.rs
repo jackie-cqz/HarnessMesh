@@ -10,6 +10,7 @@ use hmesh_transport::tailscale::{CliTailscale, TailscaleProvider};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::ExitCode};
 use uuid::Uuid;
+mod folder_picker;
 mod maintenance;
 mod panel;
 mod relay;
