@@ -25,7 +25,8 @@ use tokio::{
 
 /// Serve `instance` on a new loopback port: `/who` answers its name, `/count`
 /// counts calls, `/later` counts and answers after 600 ms, `/slow` counts and
-/// answers after two seconds, `/fail` counts and answers 503.
+/// answers after two seconds, `/slower` after eight, `/fail` counts and
+/// answers 503.
 async fn computer(
     instance: Arc<Instance>,
     trusted: Peer,
@@ -55,6 +56,14 @@ async fn computer(
             post(|State(calls): State<Arc<AtomicUsize>>| async move {
                 calls.fetch_add(1, Ordering::SeqCst);
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                Json(0)
+            }),
+        )
+        .route(
+            "/slower",
+            post(|State(calls): State<Arc<AtomicUsize>>| async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
                 Json(0)
             }),
         )
@@ -910,10 +919,13 @@ async fn a_call_that_failed_where_the_computer_was_heard_is_not_sent_again() {
     assert!(heard.answered.lock().unwrap().is_empty());
     assert_eq!(memory.last_good(&b.card.fingerprint), None);
 
+    // The call's deadline also covers the known address refusing it first,
+    // which takes about two seconds on Windows (it tries again before giving
+    // up): long enough for that, shorter than the answer.
     let (late, late_calls, _late) = computer(b.clone(), trusting(&a)).await;
     let heard = Heard::at(&[&late, &next]);
     let failed = call(&heard)
-        .post_with_timeout::<_, usize>("/slow", &(), 1)
+        .post_with_timeout::<_, usize>("/slower", &(), 4)
         .await
         .unwrap_err();
     assert_eq!(failed.message, "RPC deadline exceeded");

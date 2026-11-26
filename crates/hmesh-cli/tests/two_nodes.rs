@@ -2165,7 +2165,28 @@ async fn a_paired_computer_found_by_its_mark_and_a_revoked_one_that_cannot() {
     assert!(std::net::TcpStream::connect(&address).is_err());
     tokio::time::sleep(Duration::from_secs(1)).await;
     let b_id = b_card.node_id.to_string();
-    let agents = cli(&a_dir, &["agents", "--peer", &b_id]);
+    // Heard within a moment here; a slower computer may listen before the
+    // lantern's mark is out, and then looks again only after `LOOK_EVERY`
+    // (30 seconds): ask until it answers, a little longer than that.
+    let asked = std::time::Instant::now();
+    let agents = loop {
+        let output = Command::new(env!("CARGO_BIN_EXE_hmesh"))
+            .arg("--data-dir")
+            .arg(&a_dir)
+            .args(["--json", "agents", "--peer", &b_id])
+            .output()
+            .expect("CLI process");
+        if output.status.success() {
+            break serde_json::from_slice::<Value>(&output.stdout).expect("JSON output");
+        }
+        assert!(
+            asked.elapsed() < Duration::from_secs(45),
+            "never found by its mark: {}\nlantern log:\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            std::fs::read_to_string(&b_log).unwrap_or_default()
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
     assert!(agents.is_array(), "{agents}");
     let peer = &cli(&a_dir, &["peers", "list"])[0];
     assert_eq!(peer["routes"]["last_good"], moved.endpoint, "{peer}");
