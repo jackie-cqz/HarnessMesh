@@ -2,7 +2,10 @@
 use crate::prepare::native_path;
 use anyhow::{Context, Result, bail, ensure};
 use hmesh_adapters::executable::probe_command;
-use hmesh_core::{DetectedAgent, HarnessKind};
+use hmesh_core::{
+    AgentSpec, CATALOG, DetectedAgent, HarnessKind,
+    agents::{self, Needed},
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -13,78 +16,31 @@ use std::{
 };
 use tokio::process::Command;
 
-#[derive(Clone, Copy, Serialize)]
+/// A catalog row HarnessMesh installs by itself, at its pinned version.
+#[derive(Clone, Copy)]
 pub struct Recommendation {
     pub harness: HarnessKind,
     pub version: &'static str,
     /// Oldest Node.js the package declares it runs on.
     pub node: &'static str,
     /// The package's `bin` entry for its ACP command.
-    #[serde(skip)]
     pub entry: &'static str,
     /// A command the adapter starts, which must already be installed.
     pub needs: Option<Needed>,
     /// Rough size once installed, for packages large enough to mention.
     pub download_mb: Option<u32>,
     /// How long `npm install` may take.
-    #[serde(skip)]
     pub timeout: Duration,
+    home_variable: Option<&'static str>,
 }
 
-#[derive(Clone, Copy, Serialize)]
-pub struct Needed {
-    pub command: &'static str,
-    /// Oldest version the adapter supports.
-    pub version: &'static str,
-    /// What installs the command when it is missing.
-    pub install: &'static str,
+/// Every row of `catalog` HarnessMesh installs by itself, in install-list order.
+pub fn recommended(catalog: &[&'static AgentSpec]) -> Vec<Recommendation> {
+    agents::installable(catalog)
+        .into_iter()
+        .filter_map(Recommendation::of)
+        .collect()
 }
-
-pub const RECOMMENDED: [Recommendation; 4] = [
-    Recommendation {
-        harness: HarnessKind::Codex,
-        version: "2.8.0",
-        node: "20.3",
-        entry: "dist/index.js",
-        needs: None,
-        download_mb: None,
-        timeout: Duration::from_secs(120),
-    },
-    Recommendation {
-        harness: HarnessKind::ClaudeCode,
-        version: "0.109.0",
-        node: "22.0",
-        entry: "dist/index.js",
-        needs: None,
-        download_mb: None,
-        timeout: Duration::from_secs(120),
-    },
-    // pi-acp starts `pi --mode rpc` from PATH. It answers ACP initialize
-    // without Pi, so the install checks for Pi itself.
-    Recommendation {
-        harness: HarnessKind::Pi,
-        version: "0.0.35",
-        node: "20.0",
-        entry: "dist/index.js",
-        needs: Some(Needed {
-            command: "pi",
-            version: "0.81",
-            install: "npm install -g @earendil-works/pi-coding-agent",
-        }),
-        download_mb: None,
-        timeout: Duration::from_secs(120),
-    },
-    // About 670 packages and 1.4 GB; a fresh install takes minutes.
-    Recommendation {
-        harness: HarnessKind::Dsh,
-        version: "0.2.2-rc.5",
-        node: "24.9",
-        entry: "lib/bin.js",
-        needs: None,
-        download_mb: Some(1400),
-        timeout: Duration::from_secs(900),
-    },
-];
 
 const TOOL_TIMEOUT: Duration = Duration::from_secs(8);
 /// Written next to a managed installation that runs with a Node.js other
@@ -92,28 +48,41 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(8);
 const RUNTIME_FILE: &str = "hmesh-runtime.json";
 
 impl Recommendation {
+    pub fn of(spec: &'static AgentSpec) -> Option<Self> {
+        let install = spec.install?;
+        Some(Self {
+            harness: HarnessKind::of(spec),
+            version: install.version,
+            node: install.node,
+            entry: spec.entry?,
+            needs: install.needs,
+            download_mb: install.download_mb,
+            timeout: Duration::from_secs(install.timeout_s),
+            home_variable: install.home_variable,
+        })
+    }
     pub fn package(self) -> &'static str {
-        self.harness.acp_package().expect("recommended ACP package")
+        self.harness
+            .spec()
+            .package
+            .expect("recommended ACP package")
+    }
+    /// How the panel offers it.
+    pub fn offer(self) -> Value {
+        serde_json::json!({"harness":self.harness,"package":self.package(),"version":self.version,"node":self.node,"needs":self.needs,"download_mb":self.download_mb,"timeout_s":self.timeout.as_secs()})
     }
     fn destination(self, root: &Path) -> PathBuf {
         root.join(self.harness.to_string()).join(self.version)
     }
     fn display_name(self) -> &'static str {
-        match self.harness {
-            HarnessKind::Codex => "Codex",
-            HarnessKind::ClaudeCode => "Claude Code",
-            HarnessKind::Pi => "Pi",
-            HarnessKind::Dsh => "DeepSeek Harness",
-            HarnessKind::Opencode => "OpenCode",
-            HarnessKind::Acp => "ACP",
-        }
+        self.harness.spec().label
     }
     // The pinned packages keep the same layout on every platform.
     fn detect(self, directory: &Path) -> Option<DetectedAgent> {
         let package_dir = directory.join("node_modules").join(self.package());
         let package: Value =
             serde_json::from_slice(&fs::read(package_dir.join("package.json")).ok()?).ok()?;
-        let command = self.harness.acp_command()?;
+        let command = self.harness.spec().command?;
         if package["name"] != self.package()
             || package["version"] != self.version
             || package["bin"][command] != self.entry
@@ -163,9 +132,19 @@ fn record_node(directory: &Path, node: Option<&Path>) -> Result<()> {
 }
 
 pub fn detect(data_dir: &Path) -> Vec<DetectedAgent> {
-    let mut agents = hmesh_core::detect_installed_agents();
+    detect_in(data_dir, CATALOG, std::env::var_os("PATH"))
+}
+
+/// The agents of `catalog` on `path` (a `PATH` value), then those installed
+/// under `data_dir` that are not on it.
+pub fn detect_in(
+    data_dir: &Path,
+    catalog: &[&'static AgentSpec],
+    path: Option<std::ffi::OsString>,
+) -> Vec<DetectedAgent> {
+    let mut agents = agents::detect_on_path(catalog, path);
     if let Ok(dir) = fs::canonicalize(data_dir) {
-        for agent in managed(&native_path(&dir).join("agent-runtimes")) {
+        for agent in managed(&native_path(&dir).join("agent-runtimes"), catalog) {
             if !agents.iter().any(|a| a.harness == agent.harness) {
                 agents.push(agent);
             }
@@ -177,8 +156,8 @@ pub fn detect(data_dir: &Path) -> Vec<DetectedAgent> {
 /// Managed installations that can run. One whose recorded Node.js has gone
 /// is left out, so the panel offers to install it again and `install`
 /// chooses a Node.js anew.
-fn managed(root: &Path) -> Vec<DetectedAgent> {
-    RECOMMENDED
+fn managed(root: &Path, catalog: &[&'static AgentSpec]) -> Vec<DetectedAgent> {
+    recommended(catalog)
         .iter()
         .filter_map(|pkg| pkg.detect(&pkg.destination(root)))
         .filter(|agent| agent.node.as_deref().is_none_or(Path::is_file))
@@ -201,7 +180,7 @@ async fn probe(agent: DetectedAgent, source: &'static str) -> Result<Installatio
     )?
     .command();
     command
-        .args(agent.harness.default_acp_args())
+        .args(agent.harness.spec().args)
         .current_dir(cwd.path());
     let report = probe_command(command).await?;
     ensure!(
@@ -617,22 +596,25 @@ async fn download(pkg: Recommendation, stage: &Path, node: &ChosenNode) -> Resul
     Ok(())
 }
 
-pub async fn install(data_dir: &Path, harness: HarnessKind) -> Result<Installation> {
-    let Some(pkg) = RECOMMENDED
-        .iter()
-        .copied()
-        .find(|pkg| pkg.harness == harness)
-    else {
-        bail!("this agent does not have a managed adapter package");
-    };
-    if harness == HarnessKind::Codex
-        && let Some(home) = std::env::var_os("CODEX_HOME").filter(|path| !path.is_empty())
-    {
+/// An agent's own home directory, when its variable is set, must exist
+/// before the agent is installed (`CODEX_HOME` for Codex).
+fn check_home(variable: &str, value: Option<std::ffi::OsString>) -> Result<()> {
+    if let Some(home) = value.filter(|path| !path.is_empty()) {
         let home = PathBuf::from(home);
         ensure!(
             home.is_absolute() && home.is_dir(),
-            "CODEX_HOME must refer to an existing absolute directory; correct it where HarnessMesh starts"
+            "{variable} must refer to an existing absolute directory; correct it where HarnessMesh starts"
         );
+    }
+    Ok(())
+}
+
+pub async fn install(data_dir: &Path, harness: HarnessKind) -> Result<Installation> {
+    let Some(pkg) = Recommendation::of(harness.spec()) else {
+        bail!("this agent does not have a managed adapter package");
+    };
+    if let Some(variable) = pkg.home_variable {
+        check_home(variable, std::env::var_os(variable))?;
     }
     check_needed(pkg).await?;
     if let Some(agent) = hmesh_core::detect_installed_agents()
@@ -696,7 +678,7 @@ mod tests {
     use super::*;
 
     fn pkg(harness: HarnessKind) -> Recommendation {
-        RECOMMENDED
+        recommended(CATALOG)
             .into_iter()
             .find(|p| p.harness == harness)
             .unwrap()
@@ -708,7 +690,7 @@ mod tests {
         let entry_file = package_dir.join(entry);
         fs::create_dir_all(entry_file.parent().unwrap()).unwrap();
         fs::write(&entry_file, "").unwrap();
-        let command = pkg.harness.acp_command().unwrap();
+        let command = pkg.harness.spec().command.unwrap();
         let manifest = serde_json::json!({"name": pkg.package(), "version": pkg.version, "bin": {command: entry}});
         fs::write(package_dir.join("package.json"), manifest.to_string()).unwrap();
         dir
@@ -726,7 +708,7 @@ mod tests {
 
     #[test]
     fn pi_and_dsh_are_offered_with_their_own_entries() {
-        let offered: Vec<_> = RECOMMENDED.iter().map(|p| p.harness).collect();
+        let offered: Vec<_> = recommended(CATALOG).iter().map(|p| p.harness).collect();
         assert_eq!(
             offered,
             [
@@ -739,7 +721,7 @@ mod tests {
         assert_eq!(pkg(HarnessKind::Pi).package(), "pi-acp");
         assert_eq!(pkg(HarnessKind::Dsh).entry, "lib/bin.js");
         assert!(pkg(HarnessKind::Dsh).timeout > Duration::from_secs(300));
-        for pkg in RECOMMENDED {
+        for pkg in recommended(CATALOG) {
             assert!(parse_version(pkg.node).is_some(), "{}", pkg.node);
         }
     }
@@ -758,12 +740,12 @@ mod tests {
             dir.join("node_modules/@deepseek-ai/dsh/lib/bin.js")
         );
         assert_eq!(found.node.as_deref(), Some(node.as_path()));
-        assert_eq!(managed(root.path()).len(), 1);
+        assert_eq!(managed(root.path(), CATALOG).len(), 1);
 
         // A Node.js that has gone leaves the install for `install` to repair.
         fs::remove_file(&node).unwrap();
         assert!(dsh.detect(&dir).is_some());
-        assert!(managed(root.path()).is_empty());
+        assert!(managed(root.path(), CATALOG).is_empty());
 
         // Without a record it runs with the first node on PATH.
         record_node(&dir, None).unwrap();
@@ -903,5 +885,146 @@ mod tests {
             fs::canonicalize(found).unwrap(),
             fs::canonicalize(npm).unwrap()
         );
+    }
+
+    #[test]
+    fn codex_home_must_be_an_existing_absolute_directory() {
+        assert_eq!(pkg(HarnessKind::Codex).home_variable, Some("CODEX_HOME"));
+        assert!(
+            CATALOG
+                .iter()
+                .filter(|spec| spec.kind != "codex")
+                .all(|spec| spec.install.is_none_or(|i| i.home_variable.is_none()))
+        );
+        let dir = tempfile::tempdir().unwrap();
+        assert!(check_home("CODEX_HOME", None).is_ok());
+        assert!(check_home("CODEX_HOME", Some("".into())).is_ok());
+        assert!(check_home("CODEX_HOME", Some(dir.path().into())).is_ok());
+        for wrong in [PathBuf::from("relative/codex"), dir.path().join("missing")] {
+            assert_eq!(
+                check_home("CODEX_HOME", Some(wrong.into()))
+                    .unwrap_err()
+                    .to_string(),
+                "CODEX_HOME must refer to an existing absolute directory; correct it where HarnessMesh starts"
+            );
+        }
+    }
+
+    /// A made-up agent: one catalog row, and nothing else here names it.
+    static EXAMPLE: AgentSpec = AgentSpec {
+        kind: "example-agent",
+        label: "Example Agent",
+        command: Some("example-acp"),
+        args: &["acp"],
+        package: Some("@example/agent"),
+        entry: Some("bin/acp.js"),
+        install: Some(agents::Install {
+            version: "1.2.3",
+            node: "20.0",
+            needs: None,
+            download_mb: None,
+            timeout_s: 120,
+            order: 9,
+            home_variable: None,
+        }),
+        ..agents::BLANK
+    };
+
+    #[test]
+    fn one_more_row_is_one_more_agent() {
+        let catalog: Vec<&'static AgentSpec> = CATALOG.iter().copied().chain([&EXAMPLE]).collect();
+        let example = HarnessKind::of(&EXAMPLE);
+
+        // Found on PATH, after the agents found before it.
+        let bin = tempfile::tempdir().unwrap();
+        for command in ["codex-acp", "example-acp"] {
+            fs::write(bin.path().join(command), "").unwrap();
+        }
+        let on_path = agents::detect_on_path(&catalog, Some(bin.path().into()));
+        let found: Vec<_> = on_path
+            .iter()
+            .map(|a| (a.harness, a.command.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            [(HarnessKind::Codex, "codex-acp"), (example, "example-acp")]
+        );
+        assert_eq!(on_path[1].executable, bin.path().join("example-acp"));
+        // The built-in catalog does not have it.
+        assert_eq!(
+            agents::detect_on_path(CATALOG, Some(bin.path().into())).len(),
+            1
+        );
+
+        // Offered for install after the original four, as the panel lists it.
+        let offered: Vec<_> = recommended(&catalog).iter().map(|p| p.harness).collect();
+        assert_eq!(
+            offered,
+            [
+                HarnessKind::Codex,
+                HarnessKind::ClaudeCode,
+                HarnessKind::Pi,
+                HarnessKind::Dsh,
+                example
+            ]
+        );
+        let offer = Recommendation::of(&EXAMPLE).unwrap().offer();
+        assert_eq!(
+            offer,
+            serde_json::json!({"harness":"example-agent","package":"@example/agent","version":"1.2.3","node":"20.0","needs":null,"download_mb":null,"timeout_s":120})
+        );
+
+        // A managed install of it is found by its own entry.
+        let data = tempfile::tempdir().unwrap();
+        let root = native_path(&fs::canonicalize(data.path()).unwrap()).join("agent-runtimes");
+        let dir = write_package(&root, Recommendation::of(&EXAMPLE).unwrap(), "bin/acp.js");
+        let managed = detect_in(data.path(), &catalog, None);
+        assert_eq!(managed.len(), 1);
+        assert_eq!(managed[0].harness, example);
+        assert_eq!(
+            managed[0].executable,
+            dir.join("node_modules/@example/agent/bin/acp.js")
+        );
+        assert!(detect_in(data.path(), CATALOG, None).is_empty());
+
+        // Registered, it starts with its own ACP arguments.
+        let mut config: hmesh_core::AgentConfig = serde_json::from_value(serde_json::json!({
+            "agent":{"name":"example","harness":"acp","project_id":"demo"},
+            "project":{"root":"/tmp","allowed_tools":["read"]},
+            "adapter":{"executable":"/usr/bin/true"}
+        }))
+        .unwrap();
+        config.agent.harness = example;
+        assert_eq!(config.launch_args(), ["acp"]);
+
+        // The onboarding dialog and `hmesh agent catalog` list it, and a
+        // Windows npm shim leads to its entry.
+        assert_eq!(
+            EXAMPLE.view(),
+            serde_json::json!({"kind":"example-agent","label":"Example Agent","command":"example-acp","args":["acp"],"custom":false,"setup_name":"example-agent","installable":true})
+        );
+        assert_eq!(
+            EXAMPLE.shim_entry().as_deref(),
+            Some("node_modules/@example/agent/bin/acp.js")
+        );
+
+        // Other computers see generic ACP; which agent it is goes in a note.
+        assert_eq!(example.family(), HarnessKind::Acp);
+        assert!(hmesh_core::service::protocols_for(example).is_empty());
+        let id = uuid::Uuid::new_v4();
+        assert_eq!(
+            hmesh_core::AgentKindNote::of(id, example),
+            Some(hmesh_core::AgentKindNote {
+                agent_id: id,
+                kind: "example-agent".into(),
+                label: "Example Agent".into()
+            })
+        );
+        for spec in CATALOG {
+            assert_eq!(
+                hmesh_core::AgentKindNote::of(id, HarnessKind::of(spec)),
+                None
+            );
+        }
     }
 }

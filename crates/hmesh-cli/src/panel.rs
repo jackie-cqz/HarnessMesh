@@ -134,6 +134,15 @@ pub async fn run(
     };
     let app = Router::new()
         .route(
+            "/assets/agents.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    agent_catalog_script(),
+                )
+            }),
+        )
+        .route(
             "/assets/onboarding.js",
             get(|| async {
                 (
@@ -921,11 +930,20 @@ async fn detect_agents(State(s): State<Panel>) -> Json<Value> {
 }
 
 async fn installable_agents() -> Json<Value> {
-    let entries: Vec<_> = hmesh_runtime::agent_install::RECOMMENDED
-        .iter()
-        .map(|entry| json!({"harness":entry.harness,"package":entry.package(),"version":entry.version,"node":entry.node,"needs":entry.needs,"download_mb":entry.download_mb,"timeout_s":entry.timeout.as_secs()}))
+    let entries: Vec<_> = hmesh_runtime::agent_install::recommended(hmesh_core::CATALOG)
+        .into_iter()
+        .map(|entry| entry.offer())
         .collect();
     Json(json!({"data":entries}))
+}
+
+/// The catalog as the onboarding dialog lists it, loaded before onboarding.js.
+fn agent_catalog_script() -> String {
+    let rows: Vec<Value> = hmesh_core::CATALOG.iter().map(|spec| spec.view()).collect();
+    format!(
+        "'use strict';\n// Generated from the agent catalog (crates/hmesh-core/src/agents.rs).\nconst agentCatalog={};\n",
+        Value::Array(rows)
+    )
 }
 
 #[derive(Deserialize)]
