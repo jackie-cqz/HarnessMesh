@@ -2727,4 +2727,22 @@ async fn large_and_streamed_tool_calls_stay_readable_and_few() {
         .map(|e| e.payload["status"].as_str().unwrap_or("-"))
         .collect();
     assert_eq!(kinds, ["pending", "in_progress", "completed"]);
+    // Output sent whole again at every update reaches the record while the
+    // command runs, not only when it ends.
+    let ticks = open(
+        &owner,
+        json!({"agent_id":agent,"message":"fixture:snapshot-output"}),
+    )
+    .await;
+    let (_, events) = turn_done(&owner, ticks.session_id, 1).await;
+    let running: Vec<&str> = events
+        .iter()
+        .filter(|e| e.kind.starts_with("tool_call") && e.payload["id"] == "ticks")
+        .filter(|e| e.payload["status"] != "completed")
+        .filter_map(|e| e.payload["output"].as_str())
+        .collect();
+    assert!(
+        running.iter().any(|o| o.contains("tick 002")),
+        "the running command's output stopped at {running:?}"
+    );
 }

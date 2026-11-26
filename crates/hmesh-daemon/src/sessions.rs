@@ -592,6 +592,9 @@ async fn pump(
             let payload = Value::Object(fields);
             if let Some(trace) = traces.get_mut(&id) {
                 trace.record(&payload);
+                if let Some(output) = payload["output"].as_str() {
+                    trace.output = output.len();
+                }
             }
             write("tool_call_update", payload);
         }
@@ -755,6 +758,12 @@ async fn pump(
                                 } else {
                                     held.insert(key.to_owned(), payload[key].clone());
                                 }
+                            }
+                            // Output that grew too little to record now (an agent
+                            // sending the whole output again each time) still
+                            // shows within about a second.
+                            if output > 0 && output != was.output {
+                                held.insert("output".into(), payload["output"].clone());
                             }
                             if held.is_empty() {
                                 unrecorded.remove(&call);

@@ -319,17 +319,19 @@ function patchChildren(parent,specs){
   for(const node of [...parent.children]){if(node.dataset.key)byKey.set(node.dataset.key,node);else node.remove();}
   specs.forEach((spec,index)=>{
     let node=byKey.get(spec.key);
+    let before=null;
     if(!node||(!spec.update&&node.dataset.sig!==spec.sig)){
       const fresh=spec.make();fresh.dataset.key=spec.key;if(spec.sig!==undefined)fresh.dataset.sig=spec.sig;
-      const before=scrollMemo(node);
+      before=scrollMemo(node);
       if(node)node.replaceWith(fresh);
-      carryScroll(before,fresh);
       node=fresh;
     }
     byKey.delete(spec.key);
     spec.update?.(node);
     if(spec.open!==undefined&&node.open!==spec.open)node.open=spec.open;
     if(parent.children[index]!==node)parent.insertBefore(node,parent.children[index]||null);
+    // Once open and in place, the output has a size to scroll in.
+    if(before)carryScroll(before,node);
   });
   for(const node of byKey.values())node.remove();
 }

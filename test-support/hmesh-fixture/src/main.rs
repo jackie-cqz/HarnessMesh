@@ -1253,6 +1253,29 @@ fn run_acp() -> anyhow::Result<()> {
                         reply(session, "Tests pass.");
                         end_turn(&id);
                     }
+                    // The whole output again at every update, growing a line at
+                    // a time, the way some agents report a running command.
+                    "fixture:snapshot-output" => {
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":"ticks","title":"bash","kind":"execute","status":"in_progress","rawInput":{"command":"./tick"}}),
+                        );
+                        let mut output = String::new();
+                        for i in 0..3 {
+                            output.push_str(&format!("tick {i:03} ok\n"));
+                            update(
+                                &session_id,
+                                json!({"sessionUpdate":"tool_call_update","toolCallId":"ticks","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":output}}]}),
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(1300));
+                        }
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call_update","toolCallId":"ticks","status":"completed","content":[{"type":"content","content":{"type":"text","text":output}}]}),
+                        );
+                        reply(session, "Ticked.");
+                        end_turn(&id);
+                    }
                     // The request describes the call more recently than the stream.
                     "fixture:permission-newer-args" => {
                         next += 1;
