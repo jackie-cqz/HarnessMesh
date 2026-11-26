@@ -66,6 +66,11 @@ struct Live {
     usage: Mutex<Option<Value>>,
     usage_fresh: std::sync::atomic::AtomicBool,
     managed_models: Option<service::ManagedModels>,
+    /// The startup block an adapter reports in `session/new`'s `_meta`; it is
+    /// banner text about the adapter, not part of the conversation.
+    startup_info: Mutex<Option<String>>,
+    /// Tool calls the agent has started but not finished, by id and title.
+    open_tools: Mutex<HashMap<String, String>>,
 }
 #[derive(Default)]
 struct Reply {
@@ -144,6 +149,30 @@ fn clipped(secrets: &[String], text: &str, limit: usize) -> Value {
     } else {
         json!(text)
     }
+}
+
+/// The banner an adapter prints before a turn (pi-acp reports it in the
+/// `session/new` response `_meta`). It names the adapter version, skills,
+/// prompts and extensions; it is not an answer and must not become the
+/// conversation or the turn's final text.
+fn is_startup_banner(text: &str, reported: Option<&str>) -> bool {
+    if reported.is_some_and(|banner| banner.trim() == text.trim()) {
+        return true;
+    }
+    // A banner split across frames keeps its opening and a section heading.
+    let trimmed = text.trim_start();
+    trimmed.starts_with("pi v")
+        && (text.contains("\n## Skills")
+            || text.contains("\n## Prompts")
+            || text.contains("\n## Extensions"))
+}
+
+/// Provider retry chatter from pi's adapter: progress notices, not answers.
+fn is_retry_notice(text: &str) -> bool {
+    let text = text.trim();
+    (text.starts_with("Retrying (attempt ") && text.ends_with(")..."))
+        || text == "Retry finished, resuming."
+        || (text.starts_with("New version available: ") && text.contains("npm i -g"))
 }
 fn err(code: ErrorCode, message: impl Into<String>) -> ApiError {
     ApiError(MeshError::new(code, message))
@@ -346,6 +375,43 @@ fn record_text(write: &impl Fn(&str, Value), kind: &str, mut text: &str) {
     }
 }
 
+/// Text waiting to be recorded. Adapters stream by token; one event per token
+/// bloats the store and makes the panel re-walk thousands of entries on every
+/// refresh, so adjacent chunks of one kind are merged and flushed shortly after
+/// they arrive or at a turn boundary.
+#[derive(Default)]
+struct PendingText {
+    entries: Vec<(&'static str, String)>,
+    bytes: usize,
+}
+impl PendingText {
+    fn push(&mut self, kind: &'static str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some((last, buffer)) = self.entries.last_mut()
+            && *last == kind
+        {
+            buffer.push_str(text);
+        } else {
+            self.entries.push((kind, text.to_owned()));
+        }
+        self.bytes += text.len();
+    }
+    fn take(&mut self) -> Vec<(&'static str, String)> {
+        self.bytes = 0;
+        std::mem::take(&mut self.entries)
+    }
+}
+const TEXT_FLUSH_BYTES: usize = 512;
+const TEXT_FLUSH_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
+fn flush_text(write: &impl Fn(&str, Value), pending: &mut PendingText) {
+    for (kind, text) in pending.take() {
+        record_text(write, kind, &text);
+    }
+}
+
 async fn pump(
     s: AppState,
     id: Uuid,
@@ -356,6 +422,9 @@ async fn pump(
     // independent, even when tool events occur before the next text delta.
     let mut message_text = RedactedStream::default();
     let mut thought_text = RedactedStream::default();
+    // Last recorded status and title length per tool call: adapters stream the
+    // title character by character, and each repeat need not become an event.
+    let mut tool_trace: HashMap<String, (String, usize)> = HashMap::new();
     // A first reload's history is kept until the reload succeeds.
     let write = |kind: &str, payload: Value| {
         if live.keep_replay.load(std::sync::atomic::Ordering::SeqCst) {
@@ -366,10 +435,10 @@ async fn pump(
             let _ = record_event(&s, id, kind, payload);
         }
     };
-    let finish_text = |message: &mut RedactedStream, thought: &mut RedactedStream| {
-        record_text(&write, "agent_message_chunk", &message.finish());
-        record_text(&write, "agent_thought_chunk", &thought.finish());
-    };
+    // Text merged for a moment before it becomes events; `flush_at` is when
+    // that happens without further chunks arriving.
+    let mut pending_text = PendingText::default();
+    let mut flush_at: Option<tokio::time::Instant> = None;
     // A replayed user message, recorded once the agent moves on.
     let mut replayed_user = String::new();
     let flush_user = |text: &mut String| {
@@ -381,8 +450,13 @@ async fn pump(
             );
         }
     };
-    while let Some(message) = messages.recv().await {
-        match message {
+    loop {
+        let until = flush_at
+            .unwrap_or_else(|| tokio::time::Instant::now() + std::time::Duration::from_secs(3600));
+        tokio::select! {
+            maybe = messages.recv() => {
+                let Some(message) = maybe else { break };
+                match message {
             AgentMessage::Update(params) => {
                 if params["update"]["sessionUpdate"] == "available_commands_update" {
                     commands::advertised(&s, id, &live, &params);
@@ -394,7 +468,10 @@ async fn pump(
                 let update = &params["update"];
                 if live.keep_replay.load(std::sync::atomic::Ordering::SeqCst) {
                     if update["sessionUpdate"] == "user_message_chunk" {
-                        finish_text(&mut message_text, &mut thought_text);
+                        pending_text.push("agent_message_chunk", &message_text.finish());
+                        pending_text.push("agent_thought_chunk", &thought_text.finish());
+                        flush_text(&write, &mut pending_text);
+                        flush_at = None;
                         if let Some(text) = update.pointer("/content/text").and_then(Value::as_str)
                         {
                             replayed_user.push_str(text);
@@ -427,10 +504,20 @@ async fn pump(
                     }
                     continue;
                 }
-                if let Some(text) = acp::message_text(update)
-                    && let Ok(mut reply) = live.reply.lock()
-                {
-                    reply.push(text);
+                if let Some(text) = acp::message_text(update) {
+                    // An adapter banner and provider retries are not answers.
+                    let banner = live.startup_info.lock().ok().and_then(|b| b.clone());
+                    if live.harness == HarnessKind::Pi && is_startup_banner(text, banner.as_deref())
+                    {
+                        continue;
+                    }
+                    if live.harness == HarnessKind::Pi && is_retry_notice(text) {
+                        write("status", json!({"message": redact(&live.secrets, text)}));
+                        continue;
+                    }
+                    if let Ok(mut reply) = live.reply.lock() {
+                        reply.push(text);
+                    }
                 }
                 let kind = update["sessionUpdate"].as_str();
                 let stream = match kind {
@@ -440,7 +527,14 @@ async fn pump(
                 };
                 if let Some((kind, stream)) = stream {
                     if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
-                        record_text(&write, kind, &stream.push(&live.secrets, text));
+                        pending_text.push(kind, &stream.push(&live.secrets, text));
+                        if pending_text.bytes >= TEXT_FLUSH_BYTES {
+                            flush_text(&write, &mut pending_text);
+                            flush_at = None;
+                        } else {
+                            flush_at
+                                .get_or_insert_with(|| tokio::time::Instant::now() + TEXT_FLUSH_DELAY);
+                        }
                     }
                     continue;
                 }
@@ -451,11 +545,53 @@ async fn pump(
                 {
                     reply.tool();
                 }
+                // Text before a tool card stays before it.
+                flush_text(&write, &mut pending_text);
+                flush_at = None;
                 if let Some((kind, payload)) = normalize(update, &live.secrets) {
+                    if kind == "tool_call_update" {
+                        let call = payload["id"].as_str().unwrap_or_default().to_owned();
+                        let status = payload["status"].as_str().unwrap_or("").to_owned();
+                        let title = payload["title"].as_str().unwrap_or("").to_owned();
+                        let terminal =
+                            matches!(status.as_str(), "completed" | "failed" | "cancelled");
+                        if let Ok(mut open) = live.open_tools.lock() {
+                            if terminal {
+                                open.remove(&call);
+                            } else if !call.is_empty() {
+                                open.insert(call.clone(), title.clone());
+                            }
+                        }
+                        let previous = tool_trace.get(&call).cloned();
+                        tool_trace.insert(call, (status.clone(), title.chars().count()));
+                        // Status changes, results and the final title are kept;
+                        // character-by-character title growth is not.
+                        let changed = previous.is_none_or(|(was, length)| {
+                            was != status
+                                || payload["output"].is_string()
+                                || terminal
+                                || title.chars().count() >= length + 8
+                        });
+                        if !changed {
+                            continue;
+                        }
+                    } else if kind == "tool_call" {
+                        let call = payload["id"].as_str().unwrap_or_default().to_owned();
+                        let title = payload["title"].as_str().unwrap_or("").to_owned();
+                        if !call.is_empty()
+                            && let Ok(mut open) = live.open_tools.lock()
+                        {
+                            open.insert(call.clone(), title.clone());
+                        }
+                        tool_trace.insert(call, ("pending".into(), title.chars().count()));
+                    }
                     write(kind, payload);
                 }
             }
             AgentMessage::Permission { id: rpc, params } => {
+                // Text before a permission card stays before it.
+                flush_text(&write, &mut pending_text);
+                flush_at = None;
                 // Unique per session even when the agent process restarts.
                 let key = Uuid::new_v4().simple().to_string()[..12].to_owned();
                 let call = &params["toolCall"];
@@ -496,8 +632,11 @@ async fn pump(
             AgentMessage::Barrier { end_turn, done } => {
                 flush_user(&mut replayed_user);
                 if end_turn || live.keep_replay.load(std::sync::atomic::Ordering::SeqCst) {
-                    finish_text(&mut message_text, &mut thought_text);
+                    pending_text.push("agent_message_chunk", &message_text.finish());
+                    pending_text.push("agent_thought_chunk", &thought_text.finish());
                 }
+                flush_text(&write, &mut pending_text);
+                flush_at = None;
                 // The barrier after a reload: what came before it was the
                 // replay, what comes after it is new.
                 if live
@@ -514,10 +653,18 @@ async fn pump(
                 let _ = done.send(());
             }
             AgentMessage::Exited => break,
+                }
+            }
+            _ = tokio::time::sleep_until(until) => {
+                flush_text(&write, &mut pending_text);
+                flush_at = None;
+            }
         }
     }
     flush_user(&mut replayed_user);
-    finish_text(&mut message_text, &mut thought_text);
+    pending_text.push("agent_message_chunk", &message_text.finish());
+    pending_text.push("agent_thought_chunk", &thought_text.finish());
+    flush_text(&write, &mut pending_text);
     // The process is gone; a later prompt starts a new one.
     if let Ok(mut live_map) = s.sessions.live.lock()
         && live_map.get(&id).is_some_and(|l| Arc::ptr_eq(l, &live))
@@ -657,6 +804,8 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         managed_models: service
             .as_ref()
             .and_then(|svc| service::ManagedModels::from_service(svc, card.harness)),
+        startup_info: Mutex::new(None),
+        open_tools: Mutex::new(HashMap::new()),
     });
     s.sessions
         .live
@@ -715,9 +864,18 @@ async fn ensure_live(s: &AppState, record: &SessionRecord) -> hmesh_core::Result
         }
         None => {
             let note = record.agent_session_id.as_ref().map(|_| NO_RELOAD);
-            conn.new_session(&cwd, &mcp)
-                .await
-                .map(|(id, result)| (id, result, true, note))
+            conn.new_session(&cwd, &mcp).await.map(|(id, result)| {
+                // Some adapters report their startup banner here and send
+                // it as an update right after; keep it out of the turn.
+                if let Some(banner) = result
+                    .pointer("/_meta/piAcp/startupInfo")
+                    .and_then(Value::as_str)
+                    && let Ok(mut slot) = live.startup_info.lock()
+                {
+                    *slot = Some(banner.to_owned());
+                }
+                (id, result, true, note)
+            })
         }
     };
     let (agent_session, result, fresh, note) = match started {
@@ -1054,6 +1212,9 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
     if let Ok(mut reply) = live.reply.lock() {
         *reply = Reply::default();
     }
+    if let Ok(mut open) = live.open_tools.lock() {
+        open.clear();
+    }
     let agent_session = live
         .agent_session
         .lock()
@@ -1089,6 +1250,21 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
                 .and_then(Value::as_str)
                 .unwrap_or("end_turn")
                 .to_owned();
+            // A stopped turn leaves its tool call without a terminal state in
+            // the agent's own stream; mark it so the panel does not show a
+            // command as still waiting (and a reload cannot re-run it quietly).
+            if stop == "cancelled"
+                && let Ok(mut open) = live.open_tools.lock()
+            {
+                for (call, title) in open.drain() {
+                    let _ = record_event(
+                        &s,
+                        id,
+                        "tool_call_update",
+                        json!({"id":call,"title":title,"status":"cancelled"}),
+                    );
+                }
+            }
             let latest = live.usage.lock().ok().and_then(|u| u.clone());
             let fresh = live
                 .usage_fresh
@@ -1096,9 +1272,21 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
             if let Some(payload) = turn_usage(latest.as_ref(), fresh, response.get("usage")) {
                 let _ = record_event(&s, id, "usage", payload);
             }
-            finish(&s, Some(&stop), final_text, None)
+            // An empty prompt answer is a failure, not a quiet success: the
+            // common cause is an exhausted provider retry (rate limit, auth).
+            let error =
+                (command.is_none() && stop == "end_turn" && final_text.is_none()).then(|| {
+                    "the agent ended the turn without an answer; check its login and model service"
+                        .to_owned()
+                });
+            finish(&s, Some(&stop), final_text, error)
         }
-        Err(error) => finish(&s, None, None, Some(redact(&live.secrets, &error.message))),
+        Err(error) => {
+            if let Ok(mut open) = live.open_tools.lock() {
+                open.clear();
+            }
+            finish(&s, None, None, Some(redact(&live.secrets, &error.message)))
+        }
     }
 }
 
@@ -1294,7 +1482,7 @@ async fn set_config(
     let name = match known.iter().find(|o| o.id == body.config_id) {
         Some(option) if !option.accepts(&body.value) => {
             return Err(MeshError::input(format!(
-                "{} is not one of the choices for {}",
+                "{} is not one of the choices for {}; start a new session once so the agent reports its current list",
                 body.value, option.name
             )));
         }
@@ -1531,7 +1719,7 @@ fn open_here(
             Some(option) if option.accepts(value) => option.current = value.clone(),
             Some(option) => {
                 return Err(MeshError::input(format!(
-                    "{value} is not one of the choices for {}",
+                    "{value} is not one of the choices for {}; start a new session once so the agent reports its current list",
                     option.name
                 )));
             }
@@ -2515,4 +2703,34 @@ pub fn routes() -> Router<AppState> {
         .route("/hmesh/v1/sessions/{id}/cancel", post(peer_cancel))
         .route("/hmesh/v1/sessions/{id}/close", post(peer_close))
         .route("/hmesh/v1/sessions/{id}/config", post(peer_config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_retry_notice, is_startup_banner};
+
+    #[test]
+    fn adapter_banners_are_not_conversation() {
+        let banner = "pi v0.83.0\n---\n\n## Skills\n- /skills/a/SKILL.md\n\n## Prompts\n- /clip\n";
+        assert!(is_startup_banner(banner, Some(banner)));
+        assert!(is_startup_banner(banner, None));
+        assert!(is_startup_banner(
+            "pi v0.83.0\n---\n\n## Extensions\n- npm:pi-lens",
+            None
+        ));
+        let answer = "pi v0.83.0 是一个版本号，答案是 4。";
+        assert!(!is_startup_banner(answer, None));
+        assert!(!is_startup_banner("好的", None));
+    }
+
+    #[test]
+    fn provider_retries_are_not_answers() {
+        assert!(is_retry_notice("Retrying (attempt 1/3, waiting 2s)..."));
+        assert!(is_retry_notice("Retry finished, resuming."));
+        assert!(is_retry_notice(
+            "New version available: v1.6.1 (installed v0.83.0). Run: `npm i -g @earendil-works/pi-coding-agent`"
+        ));
+        assert!(!is_retry_notice("Retry finished, resuming. 好的"));
+        assert!(!is_retry_notice("答案是 4"));
+    }
 }

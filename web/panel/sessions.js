@@ -24,6 +24,10 @@ const sessionNotes=[
   [/^this agent cannot continue its earlier sessions/,'这个 Agent 不能接着它之前的会话'],
   [/^this project is no longer shared/,'这个项目已经不再共享给配对的电脑'],
   [/^the turn was interrupted because HarnessMesh restarted/,'HarnessMesh 重启，这一轮被中断'],
+  [/^Retrying \(attempt \d+\/\d+/,'模型服务在重试，稍等'],
+  [/^Retry finished, resuming\./,'重试结束，继续'],
+  [/^New version available:/,'Agent 有新版本可用'],
+  [/^the agent ended the turn without an answer/,'Agent 这一轮没有回答：检查它的登录和模型服务（可能是限流或密钥问题）'],
 ];
 function noteText(message){
   const refused=/^the agent did not accept the setting (\S+) = "?([^":]*)"?/.exec(message||'');
@@ -55,7 +59,12 @@ function originText(s){
   if(s.origin?.node_id===me)return '你打开的';
   return `由 ${nodeLabel(s.origin?.node_id)} 打开`;
 }
+function harnessFor(s){
+  const node=conv.nodes.find(n=>n.node_id===s.node_id);
+  return (node?.agents||[]).find(a=>a.agent_id===s.agent_id)?.harness||'';
+}
 function approverText(s){
+  if(harnessFor(s)==='pi')return '工具调用不经过 HarnessMesh 审批';
   if(s.approver==='auto')return '工具权限自动允许';
   if(s.approver==='local')return s._remote?`工具权限由 ${nodeLabel(s.node_id)} 的主人回答`:'工具权限由你回答';
   return s.origin?.node_id===localNodeId()?'工具权限由你回答':`工具权限由 ${nodeLabel(s.origin?.node_id)} 回答`;
@@ -190,7 +199,11 @@ function renderHero(){
   if(typeof renderHeroProject==='function')renderHeroProject(target);
   const values={...heroDefaults(target?.agent),...conv.heroConfig},box=$('#hero-settings');
   box.hidden=!settingsSupported()||!target;
-  renderSettings(box,target?.agent.config_options,values,!canWrite(),(id,value)=>{conv.heroConfig[id]=value;renderHero();},JSON.stringify([conv.target,target?.agent.config_options,values]));
+  const heroNote=$('#hero-note');
+  if(heroNote)heroNote.textContent=target?.agent.harness==='pi'
+    ?'Pi 的工具调用会直接执行，不在 HarnessMesh 里请求审批；会话里也不能调用其他 Agent。'
+    :'发出后 Agent 会调用模型；它要动文件或执行命令时，会在这里问你。';
+  renderSettings(box,target?.agent.config_options,values,!canWrite(),(id,value)=>{conv.heroConfig[id]=value;renderHero();},JSON.stringify([conv.target,target?.agent.config_options,values,canWrite()]));
   $('#hero-send').disabled=!target||!canWrite();
 }
 let openingHero=null;
@@ -304,7 +317,7 @@ function openPermissions(){
   return open;
 }
 function toolIcon(kind){return {execute:'terminal',read:'file-text',search:'search',edit:'pencil',delete:'pencil',move:'pencil'}[kind]||'wrench';}
-const toolStates={pending:'等待',in_progress:'进行中',completed:'完成',failed:'失败'};
+const toolStates={pending:'等待',in_progress:'进行中',completed:'完成',failed:'失败',cancelled:'已取消'};
 function renderHeader(s){
   if(!s){const crumb=el('div','crumb');crumb.append(icon('square-pen','sm'),el('strong','','新会话'));$('#conversation-header').replaceChildren(crumb);return;}
   const crumb=el('div','crumb');crumb.append(el('span','',shortNode(s.node_id)),icon('chevron-right','sm'),el('strong','',s.agent_name));
@@ -333,6 +346,7 @@ function renderConversation(){
   meta.append(el('span','',originText({...s,_remote:conv.remote})),el('span','',approverText({...s,_remote:conv.remote})),el('span','',`第 ${s.turns||0} 轮`));
   const projectName=typeof sessionProjectName==='function'?sessionProjectName({...s,_remote:conv.remote}):null;
   if(projectName)meta.append(el('span','',`项目：${projectName}`));
+  if(harnessFor({...s,_remote:conv.remote})==='pi'){const note=el('span','', 'Pi：工具不经审批');note.title='pi-acp 不会把 HarnessMesh 的 MCP 服务转给 Pi，所以 Pi 会话里也不能调用其他 Agent。';meta.append(note);}
   if(s.origin?.chain?.length)meta.append(el('span','conversation-chain',`调用链：${s.origin.chain.map(l=>shortNode(l.node_id)).join(' → ')} → ${shortNode(s.node_id)}`));
   col.append(meta);
   const requests=new Map();let text=null,thought=null;
