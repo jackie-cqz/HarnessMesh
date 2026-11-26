@@ -1453,11 +1453,17 @@ impl RelayDialer {
             }
         });
     }
-    /// Connections kept now, through any relay.
+    /// Connections kept now, through any relay, that are still open (one
+    /// closed from the other end is dropped when it is next looked at).
     pub fn kept(&self) -> usize {
         self.kept
             .lock()
-            .map(|kept| kept.values().map(Vec::len).sum())
+            .map(|kept| {
+                kept.values()
+                    .flatten()
+                    .filter(|(_, sender)| !sender.is_closed())
+                    .count()
+            })
             .unwrap_or_default()
     }
 }

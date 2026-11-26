@@ -1135,7 +1135,12 @@ async fn session_usage_is_what_the_agent_reported() {
     .await;
     turn_done(&owner, quiet.session_id, 1).await;
     let session = open(&owner, json!({"agent_id":agent,"message":"fixture:usage"})).await;
-    let (_, events) = turn_done(&owner, session.session_id, 1).await;
+    // The session reads idle a moment before its `turn_end` is recorded:
+    // wait for that too.
+    let (_, events) = until(&owner, session.session_id, |s, events| {
+        s.turns >= 1 && !s.status.is_busy() && events.iter().any(|e| e.kind == "turn_end")
+    })
+    .await;
     let usage: Vec<&SessionEvent> = events.iter().filter(|e| e.kind == "usage").collect();
     assert_eq!(usage.len(), 1, "{:?}", kinds(&events));
     assert_eq!(
