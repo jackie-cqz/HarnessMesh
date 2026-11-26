@@ -26,7 +26,7 @@ cargo +stable build --locked -p hmesh-cli
 
 CLI 可在已初始化的节点数据目录下运行 `hmesh agent install codex`、`claude-code`、`pi` 或 `dsh`。命令会输出可用于登记的路径。`hmesh agent detect` 同时查找 PATH 上的命令和当前节点已安装的推荐版本。
 
-这里能选的 agent、要找的命令、推荐版本和启动参数都来自 agent 目录 [`crates/hmesh-core/src/agents.rs`](../crates/hmesh-core/src/agents.rs)，检测、一键安装、接入对话框和 CLI 读的是同一张表。接入一种新的 ACP agent 只需在表里加一行（写法见文件开头）；它在配对电脑上显示为通用 ACP，具体类型另经 `/hmesh/v1/agents/kinds` 告知新版本电脑。
+这里能选的 agent、要找的命令、推荐版本和启动参数都来自 agent 目录 [`crates/hmesh-core/src/agents.rs`](../crates/hmesh-core/src/agents.rs)，检测、一键安装、接入对话框和 CLI 读的是同一张表。接入一种新的 ACP agent，在表里加一行（写法见文件开头），再在两份 README 的 agent 表里各加一行（有测试检查）；它在配对电脑上显示为通用 ACP，具体类型另经 `/hmesh/v1/agents/kinds` 告知新版本电脑。
 
 ## 会话
 

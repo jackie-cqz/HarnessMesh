@@ -938,10 +938,7 @@ async fn installable_agents() -> Json<Value> {
 
 /// The catalog as the onboarding dialog lists it, loaded before onboarding.js.
 fn agent_catalog_script() -> String {
-    let rows: Vec<Value> = hmesh_core::CATALOG
-        .iter()
-        .map(|spec| spec.onboarding_view())
-        .collect();
+    let rows: Vec<Value> = hmesh_core::CATALOG.iter().map(|spec| spec.view()).collect();
     format!(
         "'use strict';\n// Generated from the agent catalog (crates/hmesh-core/src/agents.rs).\nconst agentCatalog={};\n",
         Value::Array(rows)

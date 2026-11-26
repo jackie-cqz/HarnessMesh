@@ -1559,11 +1559,15 @@ async fn mesh_agents(
                 ),
                 _ => (vec![], vec![]),
             };
-            let agent_kinds = agent_kinds
+            // Only notes about agents it listed, one each.
+            let mut agent_kinds: Vec<AgentKindNote> = agent_kinds
                 .into_iter()
-                .filter(AgentKindNote::plausible)
-                .take(agents.len())
+                .filter(|note| {
+                    note.plausible() && agents.iter().any(|a| a.agent_id == note.agent_id)
+                })
                 .collect();
+            agent_kinds.sort_by_key(|note| note.agent_id);
+            agent_kinds.dedup_by_key(|note| note.agent_id);
             (
                 index,
                 MeshNode {

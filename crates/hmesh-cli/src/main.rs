@@ -634,6 +634,9 @@ enum PairCommand {
 enum AgentCommand {
     /// List the ACP agent commands installed on this computer (nothing is run).
     Detect,
+    /// The agents HarnessMesh knows (its agent catalog), for scripts.
+    #[command(hide = true)]
+    Catalog,
     /// Install and check a recommended local ACP adapter.
     Install {
         #[arg(value_parser = installable_kinds())]
@@ -992,6 +995,13 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
             "--data-dir requires an expanded path; use an absolute path instead of ~",
         )
         .into());
+    }
+    if let Commands::Agent {
+        command: AgentCommand::Catalog,
+    } = &cli.command
+    {
+        let agents: Vec<Value> = CATALOG.iter().map(|spec| spec.view()).collect();
+        return Ok(Some(json!({ "agents": agents })));
     }
     if let Commands::Agent {
         command: AgentCommand::Detect,

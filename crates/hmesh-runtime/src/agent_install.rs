@@ -596,18 +596,25 @@ async fn download(pkg: Recommendation, stage: &Path, node: &ChosenNode) -> Resul
     Ok(())
 }
 
-pub async fn install(data_dir: &Path, harness: HarnessKind) -> Result<Installation> {
-    let Some(pkg) = Recommendation::of(harness.spec()) else {
-        bail!("this agent does not have a managed adapter package");
-    };
-    if let Some(variable) = pkg.home_variable
-        && let Some(home) = std::env::var_os(variable).filter(|path| !path.is_empty())
-    {
+/// An agent's own home directory, when its variable is set, must exist
+/// before the agent is installed (`CODEX_HOME` for Codex).
+fn check_home(variable: &str, value: Option<std::ffi::OsString>) -> Result<()> {
+    if let Some(home) = value.filter(|path| !path.is_empty()) {
         let home = PathBuf::from(home);
         ensure!(
             home.is_absolute() && home.is_dir(),
             "{variable} must refer to an existing absolute directory; correct it where HarnessMesh starts"
         );
+    }
+    Ok(())
+}
+
+pub async fn install(data_dir: &Path, harness: HarnessKind) -> Result<Installation> {
+    let Some(pkg) = Recommendation::of(harness.spec()) else {
+        bail!("this agent does not have a managed adapter package");
+    };
+    if let Some(variable) = pkg.home_variable {
+        check_home(variable, std::env::var_os(variable))?;
     }
     check_needed(pkg).await?;
     if let Some(agent) = hmesh_core::detect_installed_agents()
@@ -880,6 +887,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn codex_home_must_be_an_existing_absolute_directory() {
+        assert_eq!(pkg(HarnessKind::Codex).home_variable, Some("CODEX_HOME"));
+        assert!(
+            CATALOG
+                .iter()
+                .filter(|spec| spec.kind != "codex")
+                .all(|spec| spec.install.is_none_or(|i| i.home_variable.is_none()))
+        );
+        let dir = tempfile::tempdir().unwrap();
+        assert!(check_home("CODEX_HOME", None).is_ok());
+        assert!(check_home("CODEX_HOME", Some("".into())).is_ok());
+        assert!(check_home("CODEX_HOME", Some(dir.path().into())).is_ok());
+        for wrong in [PathBuf::from("relative/codex"), dir.path().join("missing")] {
+            assert_eq!(
+                check_home("CODEX_HOME", Some(wrong.into()))
+                    .unwrap_err()
+                    .to_string(),
+                "CODEX_HOME must refer to an existing absolute directory; correct it where HarnessMesh starts"
+            );
+        }
+    }
+
     /// A made-up agent: one catalog row, and nothing else here names it.
     static EXAMPLE: AgentSpec = AgentSpec {
         kind: "example-agent",
@@ -967,10 +997,11 @@ mod tests {
         config.agent.harness = example;
         assert_eq!(config.launch_args(), ["acp"]);
 
-        // The onboarding dialog lists it, and a Windows npm shim leads to its entry.
+        // The onboarding dialog and `hmesh agent catalog` list it, and a
+        // Windows npm shim leads to its entry.
         assert_eq!(
-            EXAMPLE.onboarding_view(),
-            serde_json::json!({"kind":"example-agent","label":"Example Agent","command":"example-acp","custom":false})
+            EXAMPLE.view(),
+            serde_json::json!({"kind":"example-agent","label":"Example Agent","command":"example-acp","args":["acp"],"custom":false,"setup_name":"example-agent","installable":true})
         );
         assert_eq!(
             EXAMPLE.shim_entry().as_deref(),

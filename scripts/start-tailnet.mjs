@@ -70,7 +70,8 @@ try {
   if (!isAbsolute(project)) throw new Error('--project must be an absolute directory');
   // Discover available agents without installing anything.
   const detected = JSON.parse(run(binary, [...hargs, 'agent', 'detect']));
-  const agents = selectAgents(detected.installed, flags.get('--agents'));
+  const catalog = JSON.parse(run(binary, [...hargs, 'agent', 'catalog']));
+  const agents = selectAgents(detected.installed, flags.get('--agents'), catalog);
   if (!agents.length) console.log(`No ACP agent found on PATH. Install one yourself, e.g. ${detected.not_found.map(a => a.install).filter(Boolean).join(' | ')}`);
   const init = ['init', '--name', nodeName, '--port', port, '--network', 'tailscale'];
   if (flags.has('--tailscale-executable')) init.push('--tailscale-executable', absoluteFile('--tailscale-executable'));
@@ -78,10 +79,10 @@ try {
   if (new URL(card.endpoint).port !== port) throw new Error('Existing instance uses a different port; use a fresh --root');
   mkdirSync(project, { recursive: true, mode: 0o700 });
   const configs = agents.map(agent => {
-    const config = agentConfig({ node: nodeName, harness: agent.harness, executable: agent.executable, project });
+    const config = agentConfig({ node: nodeName, harness: agent.harness, executable: agent.executable, project, catalog });
     const path = join(root, `${nodeName}-${agent.harness}-${configDigest(config)}.toml`);
     if (!existsSync(path)) writeFileSync(path, config, { flag: 'wx', mode: 0o600 });
-    return { path, name: agentName(nodeName, agent.harness) };
+    return { path, name: agentName(nodeName, agent.harness, catalog) };
   });
   // A second invocation refuses the daemon lock; it never adopts another process.
   daemon = spawn(binary, [...hargs, 'daemon', 'start'], { cwd: repo, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });

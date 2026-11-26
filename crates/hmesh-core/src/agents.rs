@@ -1,7 +1,17 @@
 //! The agent catalog: what HarnessMesh knows about each agent it can find,
 //! install and start, one row each. Detection, the one-click install, launch
-//! arguments, the panel's onboarding dialog and the CLI read this table, so
-//! another ACP agent is another row.
+//! arguments, the panel's onboarding dialog, the CLI and
+//! `scripts/start-tailnet.mjs` (through `hmesh agent catalog`) read this
+//! table, so another ACP agent is another row:
+//!
+//! ```text
+//! &AgentSpec { kind: "example-agent", label: "Example Agent", command: Some("example-acp"),
+//!     args: &["acp"], package: Some("@example/agent"), entry: Some("bin/acp.js"), ..BLANK },
+//! ```
+//!
+//! in [`CATALOG`], before the generic ACP row, plus a row in the agent table
+//! of each README (a test checks). Leave `wire` as `Acp`. Add `install` for a
+//! one-click install, `login` and `shim` only when the agent needs them.
 //!
 //! What a row cannot say stays code keyed by the agent's [`Wire`] kind: how
 //! its model-service settings are written, and the session-flow fixes for a
@@ -504,14 +514,19 @@ impl AgentSpec {
             _ => Some(format!("node_modules/{}/{}", self.package?, self.entry?)),
         }
     }
-    /// The panel's onboarding dialog names it `label` and finds `command`.
-    /// A row without a command is filled in by hand (`custom`).
-    pub fn onboarding_view(&self) -> serde_json::Value {
+    /// How tools outside Rust see this row: the panel's onboarding dialog
+    /// (`/assets/agents.js`) and `hmesh agent catalog`, which
+    /// `scripts/start-tailnet.mjs` reads. A row without a command is filled
+    /// in by hand (`custom`); `setup_name` is resolved.
+    pub fn view(&self) -> serde_json::Value {
         serde_json::json!({
             "kind": self.kind,
             "label": self.label,
             "command": self.command.unwrap_or(""),
+            "args": self.args,
             "custom": self.command.is_none(),
+            "setup_name": self.setup_name.unwrap_or(self.kind),
+            "installable": self.install.is_some(),
         })
     }
 }
