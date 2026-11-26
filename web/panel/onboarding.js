@@ -2,14 +2,10 @@
 
 const onboard=id=>$('#onboard-'+id);
 const onboardDialog=onboard('dialog');
-const onboardKinds={
- opencode:['OpenCode','opencode'],
- 'claude-code':['Claude Code','claude-agent-acp'],
- codex:['Codex','codex-acp'],
- pi:['Pi','pi-acp'],
- dsh:['DeepSeek Harness','dsh'],
- acp:['其他 ACP Agent','']
-};
+// Kind → [name, command, custom], from the agent catalog (agents.js). An
+// agent without a command of its own is filled in by hand.
+const onboardKinds=Object.fromEntries(agentCatalog.map(a=>[a.kind,[a.custom?'其他 ACP Agent':a.label,a.command,a.custom]]));
+const onboardCustom=kind=>!!onboardKinds[kind]?.[2];
 const onboardPaths=new Map();
 let onboardStep='agent',onboardHarness='',onboardBusy=false,onboardDetecting=false;
 let onboardDetected=[],onboardOffers=[],onboardDetectionError=false,onboardVerified=null;
@@ -38,12 +34,12 @@ function renderOnboardAdapter(){
  for(const kind of Object.keys(onboardKinds)){
   const status=onboard('status-'+kind),found=onboardDetected.some(a=>a.harness===kind);
   status.dataset.found=String(found);
-  status.textContent=kind==='acp'?'自定义命令':onboardDetecting?'检测中…':found?'本机已找到':
+  status.textContent=onboardCustom(kind)?'自定义命令':onboardDetecting?'检测中…':found?'本机已找到':
     onboardOffers.some(a=>a.harness===kind)?'可一键安装':onboardDetectionError?'检测不可用':'未找到';
  }
  onboard('launch').hidden=!onboardHarness;
  onboard('executable').disabled=!onboardHarness;
- onboard('args-label').hidden=onboardHarness!=='acp';
+ onboard('args-label').hidden=!onboardCustom(onboardHarness);
  if(!onboardHarness)return;
  const found=onboardDetected.find(a=>a.harness===onboardHarness);
  const offer=onboardOffers.find(a=>a.harness===onboardHarness);
@@ -54,10 +50,10 @@ function renderOnboardAdapter(){
  const usingDetected=found&&input.value===found.executable;
  const canInstall=!!offer&&!found&&!input.value&&!onboardDetecting&&canWrite();
  onboard('install').hidden=!canInstall;
- onboard('retry').hidden=!onboardDetectionError||onboardDetecting||onboardHarness==='acp';
+ onboard('retry').hidden=!onboardDetectionError||onboardDetecting||onboardCustom(onboardHarness);
  onboard('install-details').hidden=!canInstall;
  onboard('install-details').textContent=canInstall?installDetails(offer):'';
- onboard('detected').textContent=onboardHarness==='acp'?'提供支持 ACP 的启动命令。':
+ onboard('detected').textContent=onboardCustom(onboardHarness)?'提供支持 ACP 的启动命令。':
   usingDetected&&found.executable===onboardVerified?'已通过 ACP 握手':
   usingDetected?`已找到本机命令 ${found.command}`:
   input.value?'将使用手动指定的命令。':
@@ -203,7 +199,7 @@ function buildOnboardBody(){
    adapter:{
     executable:onboardValue('executable'),
     node_executable:onboardDetectedChoice()?.node||null,
-    args:onboardHarness==='acp'?onboardValue('args').split(/\s+/).filter(Boolean):[],
+    args:onboardCustom(onboardHarness)?onboardValue('args').split(/\s+/).filter(Boolean):[],
     env_allowlist:onboardList('env')
    }
   }

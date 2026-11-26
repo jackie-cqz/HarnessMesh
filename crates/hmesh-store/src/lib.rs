@@ -523,6 +523,24 @@ impl Store {
                 .collect()
         })
     }
+    /// Which catalog row each active agent comes from, where its card's
+    /// harness (its family) does not say it.
+    pub fn agent_kind_notes(&self) -> Result<Vec<AgentKindNote>> {
+        self.read(|c| {
+            let mut q = c
+                .prepare("SELECT card_json,config_json FROM agents WHERE agent_id NOT IN (SELECT agent_id FROM retired_agents) ORDER BY name")
+                .map_err(internal)?;
+            let agents = q
+                .query_map([], agent_row)
+                .map_err(internal)?
+                .map(|r| decode_agent(r.map_err(internal)?))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(agents
+                .into_iter()
+                .filter_map(|(card, config)| AgentKindNote::of(card.agent_id, config.agent.harness))
+                .collect())
+        })
+    }
     pub fn agent(&self, id: Uuid) -> Result<(AgentCard, AgentConfig)> {
         self.read(|c| {
             let row: Option<(String, String)> = c

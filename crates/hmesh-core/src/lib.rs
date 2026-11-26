@@ -6,6 +6,7 @@ pub use network::{
     default_allowed_sources, forget_network, is_private_address, is_tailnet_ip,
     normalize_hardware_address, recognize, trust_network,
 };
+pub mod agents;
 pub mod development;
 mod git_version;
 pub mod managed;
@@ -130,123 +131,11 @@ impl TaskStatus {
     }
 }
 
-/// Which agent an Agent registration launches. Every kind is driven over the
-/// Agent Client Protocol (ACP); the kind only selects default launch arguments
-/// and how the agent is labelled. `acp` is any other ACP agent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HarnessKind {
-    /// Pi through the `pi-acp` adapter.
-    Pi,
-    /// DeepSeek Harness's built-in `dsh --profile acp`.
-    Dsh,
-    /// OpenCode's built-in `opencode acp`.
-    Opencode,
-    /// Claude Code through the `claude-agent-acp` adapter.
-    #[serde(rename = "claude-code")]
-    ClaudeCode,
-    /// Codex through the `codex-acp` adapter.
-    Codex,
-    /// Any other ACP agent; `adapter.args` gives its launch arguments.
-    Acp,
-}
-impl HarnessKind {
-    pub const KNOWN_ACP_AGENTS: [Self; 5] = [
-        Self::Opencode,
-        Self::ClaudeCode,
-        Self::Codex,
-        Self::Pi,
-        Self::Dsh,
-    ];
-    /// Arguments that start the agent in ACP mode when the configuration does
-    /// not list its own.
-    pub fn default_acp_args(self) -> &'static [&'static str] {
-        match self {
-            Self::Opencode => &["acp"],
-            Self::Dsh => &["--profile", "acp"],
-            _ => &[],
-        }
-    }
-    /// The command that speaks ACP for this agent, as its package installs it.
-    pub fn acp_command(self) -> Option<&'static str> {
-        match self {
-            Self::Opencode => Some("opencode"),
-            Self::ClaudeCode => Some("claude-agent-acp"),
-            Self::Codex => Some("codex-acp"),
-            Self::Pi => Some("pi-acp"),
-            Self::Dsh => Some("dsh"),
-            Self::Acp => None,
-        }
-    }
-    /// The package that provides this agent's ACP command.
-    pub fn acp_package(self) -> Option<&'static str> {
-        match self {
-            Self::Opencode => Some("opencode-ai"),
-            Self::ClaudeCode => Some("@agentclientprotocol/claude-agent-acp"),
-            Self::Codex => Some("@agentclientprotocol/codex-acp"),
-            Self::Pi => Some("pi-acp"),
-            Self::Dsh => Some("@deepseek-ai/dsh"),
-            Self::Acp => None,
-        }
-    }
-}
+pub use agents::{AgentKindNote, AgentSpec, CATALOG, DetectedAgent, HarnessKind};
 
-/// An ACP agent command found on this computer's PATH.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DetectedAgent {
-    pub harness: HarnessKind,
-    pub command: String,
-    /// Absolute path as found on PATH (usable as `adapter.executable`).
-    pub executable: std::path::PathBuf,
-    /// Node.js to run it with, when that is not the first `node` on PATH
-    /// (usable as `adapter.node_executable`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node: Option<std::path::PathBuf>,
-}
-
-/// Look for the known ACP agent commands on PATH. Nothing is run or installed.
+/// Look for the catalog's ACP commands on PATH. Nothing is run or installed.
 pub fn detect_installed_agents() -> Vec<DetectedAgent> {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return vec![];
-    };
-    let directories: Vec<std::path::PathBuf> = std::env::split_paths(&paths)
-        .filter(|p| p.is_absolute())
-        .collect();
-    let suffixes: &[&str] = if cfg!(windows) {
-        &[".cmd", ".exe", ""]
-    } else {
-        &[""]
-    };
-    HarnessKind::KNOWN_ACP_AGENTS
-        .into_iter()
-        .filter_map(|harness| {
-            let command = harness.acp_command()?;
-            directories.iter().find_map(|dir| {
-                suffixes.iter().find_map(|suffix| {
-                    let path = dir.join(format!("{command}{suffix}"));
-                    path.is_file().then(|| DetectedAgent {
-                        harness,
-                        command: command.to_owned(),
-                        executable: path,
-                        node: None,
-                    })
-                })
-            })
-        })
-        .collect()
-}
-impl fmt::Display for HarnessKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Pi => "pi",
-            Self::Dsh => "dsh",
-            Self::Opencode => "opencode",
-            Self::ClaudeCode => "claude-code",
-            Self::Codex => "codex",
-            Self::Acp => "acp",
-        })
-    }
+    agents::detect_on_path(CATALOG, std::env::var_os("PATH"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1089,7 +978,8 @@ impl AgentConfig {
         if self.adapter.args.is_empty() {
             self.agent
                 .harness
-                .default_acp_args()
+                .spec()
+                .args
                 .iter()
                 .map(|a| (*a).to_owned())
                 .collect()
@@ -1246,6 +1136,8 @@ pub struct AgentCard {
     pub agent_id: Uuid,
     pub node_id: Uuid,
     pub name: String,
+    /// The agent's family: other computers may know only the original kinds.
+    #[serde(with = "agents::family")]
     pub harness: HarnessKind,
     pub project_ids: Vec<String>,
     pub availability: String,
@@ -1346,6 +1238,10 @@ pub struct MeshNode {
     /// every visible project here, the shared ones on a paired computer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projects: Vec<projects::SharedProject>,
+    /// Which catalog row each agent here comes from, where its card's
+    /// harness (its family) does not say it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_kinds: Vec<AgentKindNote>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

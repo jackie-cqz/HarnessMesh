@@ -73,6 +73,14 @@ async fn tailnet_router_blocks_every_owner_namespace_even_with_owner_certificate
             .code,
         ErrorCode::Unauthenticated
     );
+    assert_eq!(
+        anonymous
+            .get::<Value>("/hmesh/v1/agents/kinds")
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthenticated
+    );
     shutdown.send(true).unwrap();
     task.await.unwrap().unwrap();
 }
@@ -177,6 +185,13 @@ async fn project_grants_sender_identity_ownership_and_approval_are_enforced_over
             .expect("registry")
             .len(),
         1
+    );
+    // Its card says which agent it is: no note needed.
+    assert!(
+        peer.get::<Vec<Value>>("/hmesh/v1/agents/kinds")
+            .await
+            .expect("agent kinds")
+            .is_empty()
     );
     // Peers cannot change their own access mode; the executing owner chooses it.
     assert_eq!(

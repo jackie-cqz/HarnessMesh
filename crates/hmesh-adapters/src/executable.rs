@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use hmesh_core::{AgentConfig, HarnessKind, ProbeReport};
+use hmesh_core::{AgentConfig, HarnessKind, ProbeReport, agents::Shim};
 use serde_json::Value;
 use std::{
     ffi::OsString,
@@ -69,28 +69,26 @@ fn resolve_with_node(
     };
     if extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("ps1") {
         let parent = executable.parent().context("missing shim directory")?;
-        let relative = match kind {
-            HarnessKind::Pi => "node_modules/pi-acp/dist/index.js",
-            HarnessKind::Dsh => "node_modules/@deepseek-ai/dsh/lib/bin.js",
-            HarnessKind::Opencode => "node_modules/opencode-ai/bin/opencode.exe",
-            HarnessKind::ClaudeCode => {
-                "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js"
-            }
-            HarnessKind::Codex => {
-                const CURRENT: &str = "node_modules/@agentclientprotocol/codex-acp/dist/index.js";
-                const LEGACY: &str = "node_modules/@zed-industries/codex-acp/bin/codex-acp.js";
+        let spec = kind.spec();
+        let Some(current) = spec.shim_entry() else {
+            bail!("configure the agent's real JS entry or native executable, not a shell shim")
+        };
+        let relative = match spec.shim {
+            Some(Shim::Moved {
+                legacy,
+                legacy_marker,
+                current_marker,
+            }) => {
                 let shim = std::fs::read_to_string(executable).unwrap_or_default();
-                if shim.contains("@zed-industries")
-                    || (!parent.join(CURRENT).is_file() && !shim.contains("@agentclientprotocol"))
+                if shim.contains(legacy_marker)
+                    || (!parent.join(&current).is_file() && !shim.contains(current_marker))
                 {
-                    LEGACY
+                    legacy.to_owned()
                 } else {
-                    CURRENT
+                    current
                 }
             }
-            HarnessKind::Acp => {
-                bail!("configure the agent's real JS entry or native executable, not a shell shim")
-            }
+            _ => current,
         };
         entry = parent.join(relative);
         if !entry.is_file() {

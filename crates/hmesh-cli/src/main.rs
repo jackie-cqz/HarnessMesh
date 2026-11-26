@@ -22,6 +22,44 @@ fn parse_provider_protocol(value: &str) -> serde_json::Result<hmesh_core::servic
     serde_json::from_value(json!(value))
 }
 
+/// The kinds `hmesh agent install` accepts: the catalog rows with a pinned
+/// version, in install-list order.
+fn installable_kinds() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        agents::installable(CATALOG)
+            .into_iter()
+            .map(|spec| spec.kind),
+    )
+}
+
+/// `hmesh agent detect`: the agents found, the catalog's others with how to
+/// install them, and which ones `hmesh agent install` handles.
+fn detect_report(found: &[DetectedAgent]) -> Value {
+    let missing: Vec<Value> = CATALOG
+        .iter()
+        .filter(|spec| spec.command.is_some())
+        .filter(|spec| !found.iter().any(|f| f.harness == HarnessKind::of(spec)))
+        .map(|spec| json!({"harness":spec.kind,"command":spec.command,"install":spec.package.map(|p| format!("npm install -g {p}"))}))
+        .collect();
+    // A label that does not spell the kind is followed by it: DeepSeek Harness (dsh).
+    let names: Vec<String> = agents::installable(CATALOG)
+        .into_iter()
+        .map(|spec| {
+            if spec.label.to_lowercase().replace(' ', "-") == spec.kind {
+                spec.label.to_owned()
+            } else {
+                format!("{} ({})", spec.label, spec.kind)
+            }
+        })
+        .collect();
+    let names = match names.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    json!({"installed":found,"not_found":missing,"note":format!("Use hmesh agent install for {names}, or install the command yourself.")})
+}
+
 #[derive(Parser)]
 #[command(name = "hmesh", version, about = "Local-first coding harness mesh")]
 struct Cli {
@@ -596,9 +634,12 @@ enum PairCommand {
 enum AgentCommand {
     /// List the ACP agent commands installed on this computer (nothing is run).
     Detect,
+    /// The agents HarnessMesh knows (its agent catalog), for scripts.
+    #[command(hide = true)]
+    Catalog,
     /// Install and check a recommended local ACP adapter.
     Install {
-        #[arg(value_parser = ["codex", "claude-code", "pi", "dsh"])]
+        #[arg(value_parser = installable_kinds())]
         harness: String,
     },
     Retired,
@@ -956,18 +997,18 @@ async fn execute(cli: Cli) -> Result<Option<Value>> {
         .into());
     }
     if let Commands::Agent {
+        command: AgentCommand::Catalog,
+    } = &cli.command
+    {
+        let agents: Vec<Value> = CATALOG.iter().map(|spec| spec.view()).collect();
+        return Ok(Some(json!({ "agents": agents })));
+    }
+    if let Commands::Agent {
         command: AgentCommand::Detect,
     } = &cli.command
     {
         let found = hmesh_runtime::agent_install::detect(&dir);
-        let missing: Vec<Value> = HarnessKind::KNOWN_ACP_AGENTS
-        .into_iter()
-        .filter(|h| !found.iter().any(|f| f.harness == *h))
-        .map(|h| json!({"harness":h,"command":h.acp_command(),"install":h.acp_package().map(|p| format!("npm install -g {p}"))}))
-        .collect();
-        return Ok(Some(
-            json!({"installed":found,"not_found":missing,"note":"Use hmesh agent install for Codex, Claude Code, Pi or DeepSeek Harness (dsh), or install the command yourself."}),
-        ));
+        return Ok(Some(detect_report(&found)));
     }
     if let Commands::Agent {
         command: AgentCommand::Install { harness },
@@ -2509,6 +2550,21 @@ fn human_output(value: &Value) -> String {
 #[cfg(test)]
 mod selection_tests {
     use super::*;
+    #[test]
+    fn detect_names_what_hmesh_agent_install_handles() {
+        let report = detect_report(&[]);
+        assert_eq!(
+            report["note"],
+            "Use hmesh agent install for Codex, Claude Code, Pi or DeepSeek Harness (dsh), or install the command yourself."
+        );
+        let missing: Vec<_> = report["not_found"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["harness"].as_str().unwrap())
+            .collect();
+        assert_eq!(missing, ["opencode", "claude-code", "codex", "pi", "dsh"]);
+    }
     #[test]
     fn names_never_choose_ambiguous_targets() {
         let id = Uuid::new_v4();
