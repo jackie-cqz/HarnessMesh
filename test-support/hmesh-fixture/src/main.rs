@@ -186,7 +186,11 @@ fn modified(path: &std::path::Path) -> (u64, String) {
 /// ACP `session/list` over the saved sessions: newest first, optionally one
 /// folder only, `--list-page-size` per page (default 50).
 fn list_sessions(params: &Value) -> Value {
-    let only = params["cwd"].as_str().map(PathBuf::from);
+    // `--list-everywhere`: an agent that ignores the folder it is asked about.
+    let only = params["cwd"]
+        .as_str()
+        .map(PathBuf::from)
+        .filter(|_| !std::env::args().any(|a| a == "--list-everywhere"));
     let mut all: Vec<(u64, String, Value)> = vec![];
     for entry in std::fs::read_dir(state_dir())
         .into_iter()

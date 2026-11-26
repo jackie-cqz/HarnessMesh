@@ -817,7 +817,31 @@ async fn a_folder_shows_each_agents_sessions_before_it_is_added() {
         &other,
         &[("user", "Somewhere else"), ("agent", "Yes.")],
     );
-    // Two agents of one kind share their sessions; one cannot list at all.
+    // Two agents of one kind share their sessions; one cannot list at all;
+    // one ignores the folder it is asked about and lists every session.
+    let loose_state = root.path().join("loose-state");
+    seed(
+        &loose_state,
+        "loose-here",
+        &app,
+        &[("user", "Here too"), ("agent", "Yes.")],
+    );
+    seed(
+        &loose_state,
+        "loose-elsewhere",
+        &other,
+        &[("user", "Not here"), ("agent", "No.")],
+    );
+    register(
+        &a,
+        &root.path().join("home/loose"),
+        "loose",
+        &[
+            "--state-dir",
+            loose_state.to_str().unwrap(),
+            "--list-everywhere",
+        ],
+    );
     let first = register(
         &a,
         &root.path().join("home/first"),
@@ -850,7 +874,7 @@ async fn a_folder_shows_each_agents_sessions_before_it_is_added() {
     assert_eq!(view.name, "app");
     assert_eq!(view.project_id, None);
     let names: Vec<&str> = view.agents.iter().map(|a| a.agent_name.as_str()).collect();
-    assert_eq!(names, ["first", "quiet", "second"]);
+    assert_eq!(names, ["first", "loose", "quiet", "second"]);
     let by = |name: &str| view.agents.iter().find(|a| a.agent_name == name).unwrap();
     assert_eq!(by("first").state, HistoryState::Listed);
     let mut ids: Vec<&str> = by("first")
@@ -868,6 +892,13 @@ async fn a_folder_shows_each_agents_sessions_before_it_is_added() {
         by("second").sessions.is_empty(),
         "the same sessions are shown once"
     );
+    // Only this folder's, also from an agent that lists everything.
+    let loose: Vec<&str> = by("loose")
+        .sessions
+        .iter()
+        .map(|s| s.agent_session_id.as_str())
+        .collect();
+    assert_eq!(loose, ["loose-here"]);
     assert_eq!(by("quiet").state, HistoryState::Unsupported);
     assert!(by("quiet").sessions.is_empty());
 
@@ -884,7 +915,7 @@ async fn a_folder_shows_each_agents_sessions_before_it_is_added() {
                 .iter()
                 .map(|a| a.sessions.len())
                 .sum::<usize>(),
-            2
+            3
         );
     }
 
