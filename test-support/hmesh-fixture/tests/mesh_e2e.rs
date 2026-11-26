@@ -135,10 +135,13 @@ async fn post(owner: &Owner, path: &str) -> SessionRecord {
     owner.post(path, &json!({})).await.unwrap()
 }
 async fn page(owner: &Owner, id: Uuid, after: u64, wait: u64) -> SessionEventPage {
+    // A loaded runner (all tests of this file run at once) can keep a daemon
+    // busy past the default deadline; the tests are about what arrives.
     owner
-        .get(&format!(
-            "/local/sessions/{id}/events?after={after}&wait={wait}"
-        ))
+        .get_with_timeout(
+            &format!("/local/sessions/{id}/events?after={after}&wait={wait}"),
+            40,
+        )
         .await
         .unwrap()
 }
