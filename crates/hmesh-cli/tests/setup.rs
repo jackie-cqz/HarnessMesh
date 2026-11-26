@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::{
     io::Write,
     os::unix::fs::PermissionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output, Stdio},
 };
 
@@ -94,8 +94,10 @@ impl Home {
     }
     fn stop(&self) {
         let _ = self.hmesh(&["daemon", "stop"], None);
+        // A daemon removes daemon.json first and lets go of its lock as it
+        // exits: a daemon started in between finds the lock still taken.
         for _ in 0..100 {
-            if !self.node.join("daemon.json").exists() {
+            if !self.node.join("daemon.json").exists() && lock_free(&self.node) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -110,6 +112,14 @@ impl Home {
             .map(|c| c["state"].as_str().unwrap().to_owned())
             .unwrap_or_default()
     }
+}
+/// Whether no daemon holds `node`'s lock (taken and let go at once here).
+fn lock_free(node: &Path) -> bool {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(node.join("daemon.lock"))
+        .map_or(true, |lock| lock.try_lock().is_ok())
 }
 impl Drop for Home {
     fn drop(&mut self) {

@@ -848,13 +848,25 @@ async fn ensure_daemon(
         Some(client) => {
             let _ = client.post::<_, Value>("/local/stop", &json!({})).await;
             let deadline = std::time::Instant::now() + Duration::from_secs(20);
-            while dir.join("daemon.json").exists() && std::time::Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(200)).await;
+            // It removes daemon.json first and lets go of its lock as it
+            // exits: one started in between would find the lock taken.
+            while (dir.join("daemon.json").exists() || !lock_free(dir))
+                && std::time::Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
         None => {}
     }
     hmesh_daemon::start_detached(binary, dir, Duration::from_secs(20)).await
+}
+/// Whether no daemon holds `dir`'s lock (taken and let go at once here).
+fn lock_free(dir: &Path) -> bool {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.join("daemon.lock"))
+        .map_or(true, |lock| lock.try_lock().is_ok())
 }
 
 /// Register each ACP agent installed here that is not registered yet, named

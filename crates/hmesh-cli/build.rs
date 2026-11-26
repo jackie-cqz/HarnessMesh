@@ -28,10 +28,11 @@ fn main() {
 	<key>CFBundleVersion</key>
 	<string>{version}</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>HarnessMesh connects to your other computers on this network, and lists the ones ready to pair.</string>
+	<string>HarnessMesh connects to your other computers on this network, lists the ones ready to pair, and finds the ones paired with it when their addresses change.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_hmesh._tcp</string>
+		<string>_hmesh-find._tcp</string>
 	</array>
 </dict>
 </plist>

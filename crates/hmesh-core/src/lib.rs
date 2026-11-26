@@ -259,13 +259,42 @@ pub const MAX_PEER_ADDRESS_BYTES: usize = 300;
 /// its one address: older versions check cards strictly and reject any
 /// field they do not know. Unknown fields here are ignored, so later
 /// versions can add to it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PeerAddresses {
     pub node_id: Uuid,
     /// Grows whenever the list changes; an older list never replaces a newer one.
     pub revision: i64,
     pub addresses: Vec<String>,
+    /// The key (64 hex digits) this computer's mark on the local network is
+    /// made with, so a computer paired with it can find it there after its
+    /// addresses change. Only for paired computers; never logged. A new one
+    /// each time this computer revokes a pairing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub find_key: Option<String>,
 }
+/// The find key stays out of debug output, and so out of logs.
+impl std::fmt::Debug for PeerAddresses {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerAddresses")
+            .field("node_id", &self.node_id)
+            .field("revision", &self.revision)
+            .field("addresses", &self.addresses)
+            .field("find_key", &self.find_key.as_ref().map(|_| "hidden"))
+            .finish()
+    }
+}
+/// Bytes in a find key.
+pub const FIND_KEY_BYTES: usize = 32;
+/// Whether `key` is written as a find key is: 64 lowercase hex digits.
+pub fn valid_find_key(key: &str) -> bool {
+    key.len() == FIND_KEY_BYTES * 2
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+/// The port `hmesh setup` gives a computer, used for an address written
+/// without one.
+pub const SETUP_PORT: u16 = 39880;
 /// How this computer reaches a paired one, besides its card: the addresses
 /// it told this one, the ones this computer's owner set, and the last
 /// address that answered.
@@ -1245,6 +1274,11 @@ pub struct PeerView {
     /// Where this node reaches the peer besides its card.
     #[serde(default)]
     pub routes: PeerRoutes,
+    /// Why it could not be reached just now, as the words the panel matches
+    /// (see `hmesh_transport::unreachable_reasons`); empty when it was, or
+    /// when nothing more is known.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreachable_reasons: Vec<String>,
 }
 /// Largest final reply kept in one result event; the full text stays in events.
 pub const MAX_FINAL_TEXT_BYTES: usize = 32 * 1024;

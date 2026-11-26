@@ -167,6 +167,7 @@ function renderNodes() {
     const actions=el('div','paired-actions');actions.append(details);
     if(!calls)actions.append(view);
     card.append(top,inventory);
+    if(!calls&&peer.status==='trusted'&&typeof peerReachRows==='function')card.append(...peerReachRows(peer));
     if(!calls&&peer.status==='trusted'&&typeof peerAddressRow==='function'&&addressesReady())card.append(peerAddressRow(peer));
     card.append(actions);
     return card;
@@ -192,7 +193,7 @@ async function loadRemote(peer) {
   try{
     const rows=unwrap(await api(`/peers/${peer.card.node_id}/agents`));
     if(generation===remoteAgentView)contents.replaceChildren(...(rows.length?rows.map(a=>agentCard(a,true)):[empty('该节点没有对本机可见的 Agent')]));
-  }catch(e){if(generation===remoteAgentView)contents.replaceChildren(empty('远端 Agent 暂不可读取',e.message));}
+  }catch(e){if(generation===remoteAgentView)contents.replaceChildren(empty('远端 Agent 暂不可读取',e.code==='PEER_UNREACHABLE'&&typeof pairProblem==='function'?pairProblem(e):e.message));}
 }
 function render() {
   if(!state.snapshot)return;

@@ -45,6 +45,7 @@ const KNOWN_FEATURES: &[&str] = &[
     "agent-projects-v1",
     "peer-addresses-v1",
     "trusted-networks-v1",
+    "peer-finding-v1",
 ];
 
 #[derive(Clone)]
@@ -437,7 +438,7 @@ fn runtime_view(status: Option<&Value>) -> Value {
             "network":status.and_then(|s|s["network"].as_str()).filter(|v|matches!(*v,"loopback"|"tailscale")),
             "api_features":features
         },
-        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1"),"peer_addresses":running && features.contains(&"peer-addresses-v1"),"trusted_networks":running && features.contains(&"trusted-networks-v1")},
+        "capabilities":{"task_workflow":task_workflow,"task_preflight":task_preflight,"development_workflows":development_workflows,"sessions":sessions,"project_collaboration":project_collaboration,"agent_settings":running && features.contains(&"agent-settings-v1"),"agent_service_test":running && features.contains(&"agent-service-test-v1"),"session_commands":running && features.contains(&"session-commands-v1"),"agent_own_login":running && features.contains(&"agent-own-login-v1"),"agent_service_relay":running && features.contains(&"agent-service-relay-v1"),"pairing":running && features.contains(&"pairing-auto-complete-v1"),"projects":running && features.contains(&"agent-projects-v1"),"pairing_nearby":running && features.contains(&"pairing-nearby-v1"),"peer_addresses":running && features.contains(&"peer-addresses-v1"),"trusted_networks":running && features.contains(&"trusted-networks-v1"),"peer_finding":running && features.contains(&"peer-finding-v1")},
         "mode":mode,"upgrade":{"required":upgrade_required,"steps":steps,"automatic":false}
     })
 }
@@ -569,10 +570,21 @@ async fn guard(State(s): State<Panel>, req: Request, next: Next) -> Response {
 fn result(value: Result<Value, MeshError>) -> Value {
     match value {
         Ok(value) => json!({"data":value}),
-        Err(e) => {
-            json!({"error":{"code":e.code,"retryable":e.retryable,"trace_id":e.trace_id,"automatic_retry":false}})
+        Err(e) => json!({"error":shown_error(&e)}),
+    }
+}
+/// An error as the page gets it: its code, never its message (which may name
+/// paths and other details), and for a computer that could not be reached
+/// the fixed words saying where it stopped, which the page says in Chinese.
+fn shown_error(e: &MeshError) -> Value {
+    let mut shown = json!({"code":e.code,"retryable":e.retryable,"trace_id":e.trace_id,"automatic_retry":false});
+    if e.code == hmesh_core::ErrorCode::PeerUnreachable {
+        let reasons = hmesh_transport::unreachable_reasons(&e.message);
+        if !reasons.is_empty() {
+            shown["reasons"] = json!(reasons);
         }
     }
+    shown
 }
 // Managed process configurations may contain secrets in env/argv. Never send them to the UI.
 fn resources(value: Result<Value, MeshError>) -> Value {
@@ -861,7 +873,14 @@ async fn recover(
     )
 }
 fn mutation(response: Result<Value, MeshError>) -> Response {
-    match response {Ok(v)=>Json(json!({"data":v})).into_response(),Err(e)=>(StatusCode::BAD_GATEWAY,Json(json!({"error":{"code":e.code,"retryable":e.retryable,"trace_id":e.trace_id,"automatic_retry":false}}))).into_response()}
+    match response {
+        Ok(v) => Json(json!({"data":v})).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"error":shown_error(&e)})),
+        )
+            .into_response(),
+    }
 }
 #[derive(Deserialize)]
 struct Cursor {

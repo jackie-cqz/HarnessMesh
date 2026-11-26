@@ -4,7 +4,7 @@
 //! carries the answering computer's message and confirmation; the asker
 //! checks it and sends its own confirmation, and on a match the answering
 //! computer trusts it at once. The asker then completes the way any approved
-//! request does (pairing::check), which also proves the other side now
+//! request does (pairing::check_via), which also proves the other side now
 //! accepts its certificate.
 //!
 //! The passcode allows three tries: each handshake started uses one, and a
@@ -227,6 +227,8 @@ pub struct PasscodeDone {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PasscodeTarget {
+    /// Where the other computer is: `https://<address>:<port>`, or as typed
+    /// (an IP address or host name, with or without a port).
     pub endpoint: String,
     pub passcode: String,
 }
@@ -357,6 +359,8 @@ async fn confirm(
 }
 
 /// Pair with the computer at `endpoint` using the passcode its screen shows.
+/// The address may be typed by hand: an IP address or a host name, with or
+/// without a port (`hmesh setup`'s when it has none).
 async fn pair_with_passcode(
     State(s): State<AppState>,
     Extension(c): Extension<ConnectionIdentity>,
@@ -366,15 +370,21 @@ async fn pair_with_passcode(
     s.owner(&headers, &c)?;
     let code = passcode::normalize_passcode(&target.passcode)
         .map_err(|e| ApiError(MeshError::input(e.to_string())))?;
+    let address = hmesh_security::typed_peer_address(&target.endpoint, SETUP_PORT)
+        .map_err(|e| ApiError(MeshError::input(e.to_string())))?
+        .origin()
+        .ascii_serialization();
     // Its certificate is not known yet: learn it from this first answer,
     // then pin it. The passcode confirmations below are what make it trusted.
-    let (card, seen) = Client::learn(&s.instance, &target.endpoint).await?;
+    let (card, seen) = Client::learn(&s.instance, &address).await?;
     validate_card(&card).map_err(|e| ApiError(MeshError::input(e.to_string())))?;
     if card.node_id == s.instance.card.node_id {
         return Err(ApiError(MeshError::input("cannot pair a node with itself")));
     }
-    let client =
-        Client::new(&s.instance, &target.endpoint, &seen, true, false).map_err(internal)?;
+    let client = Client::pinned(&s.instance, &address, &seen, true).map_err(internal)?;
+    // Reached somewhere its card does not name (a host name, say): asked
+    // there to finish, and kept there afterwards.
+    let via = (address != card.endpoint).then(|| address.clone());
     let challenge: PairChallenge = client.get("/hmesh/v1/pair/challenge").await?;
     if challenge.node_id != card.node_id {
         return Err(ApiError(MeshError::new(
@@ -437,7 +447,7 @@ async fn pair_with_passcode(
         Ok(done) if done.request_id == request_id => {}
         // No answer: it may have trusted this computer; ask in the background.
         Err(error) if error.code == ErrorCode::PeerUnreachable => {
-            pairing::watch(s.clone(), record.clone());
+            pairing::watch_via(s.clone(), record.clone(), via);
             return Ok(Json(record));
         }
         // Refused (or answered for another request): nothing was trusted.
@@ -454,8 +464,8 @@ async fn pair_with_passcode(
     }
     // The other computer already trusts this one: finish now, or keep
     // trying in the background if it cannot be reached this moment.
-    if !pairing::check(&s, &record).await {
-        pairing::watch(s.clone(), record.clone());
+    if !pairing::check_via(&s, &record, via.as_deref()).await {
+        pairing::watch_via(s.clone(), record.clone(), via);
     }
     Ok(Json(s.store.pair(request_id)?.unwrap_or(record)))
 }

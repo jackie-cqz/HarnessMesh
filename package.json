@@ -10,6 +10,7 @@
     "test:projects-panel": "node scripts/projects-panel-smoke.mjs",
     "test:pairing-panel": "node scripts/pairing-panel-smoke.mjs",
     "test:pairing-nearby": "node scripts/pairing-nearby-smoke.mjs",
+    "test:pairing-address": "node scripts/pairing-address-smoke.mjs",
     "test:real-agent-commands": "node scripts/real-agent-commands-smoke.mjs",
     "test:real-dsh": "node scripts/real-dsh-smoke.mjs",
     "test:provider-protocols": "node scripts/real-provider-protocols-smoke.mjs"
