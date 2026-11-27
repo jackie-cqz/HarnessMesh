@@ -32,9 +32,15 @@ async function panel(node){
  const[line]=await Promise.race([once(lines,'line'),new Promise((_,reject)=>{const t=setTimeout(()=>reject(Error('Panel startup timeout')),20000);t.unref();})]);
  lines.close();return JSON.parse(line);
 }
+async function chooseAgent(page,name,group){
+ await page.locator('nav [data-view="agents"]').click();
+ await page.locator('[data-agent-filter="all"]').click();
+ let card=page.locator('#agent-list .entity-card').filter({has:page.getByRole('heading',{name,exact:true})});
+ if(group)card=card.filter({hasText:group});
+ await card.getByRole('button',{name:'开会话',exact:true}).click();
+}
 async function openSession(page,group,agentName,message){
- await page.locator('#new-session').click();
- await page.locator('#session-agents .session-group').filter({has:page.locator('.session-group-name',{hasText:new RegExp('^'+group+'$')})}).getByRole('button',{name:new RegExp(agentName)}).click();
+ await chooseAgent(page,agentName,group);
  await page.locator('#conversation-empty').waitFor();
  await page.locator('#hero-target').filter({hasText:agentName}).waitFor();
  await page.locator('#hero-input').fill(message);
@@ -72,8 +78,9 @@ try{
  await page.goto(ready.url);await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor({state:'attached'});
  // The first overview read can win over the pairing announcement on a loaded
  // runner; reload so the panel takes a fresh snapshot instead of failing.
+ const workerCard=page.locator('#agent-list .entity-card').filter({hasText:'mac-b'}).filter({has:page.getByRole('heading',{name:'worker',exact:true})});
  for(let attempt=0;attempt<3;attempt++){
-   try{await page.locator('#session-agents .session-group').filter({hasText:'mac-b'}).getByText('worker').waitFor({timeout:20000});break;}
+   try{await page.locator('nav [data-view="agents"]').click();await page.locator('[data-agent-filter="all"]').click();await workerCard.waitFor({timeout:20000});break;}
    catch(error){
      if(attempt===2)throw error;
      await page.reload();
