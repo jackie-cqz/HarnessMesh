@@ -70,7 +70,16 @@ try{
  const answers=[];
  page.on('request',r=>{if(r.method()==='POST'&&/\/permissions\//.test(new URL(r.url()).pathname))answers.push(r.postDataJSON());});
  await page.goto(ready.url);await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor({state:'attached'});
- await page.locator('#session-agents .session-group').filter({hasText:'mac-b'}).getByText('worker').waitFor();
+ // The first overview read can win over the pairing announcement on a loaded
+ // runner; reload so the panel takes a fresh snapshot instead of failing.
+ for(let attempt=0;attempt<3;attempt++){
+   try{await page.locator('#session-agents .session-group').filter({hasText:'mac-b'}).getByText('worker').waitFor({timeout:20000});break;}
+   catch(error){
+     if(attempt===2)throw error;
+     await page.reload();
+     await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor({state:'attached'});
+   }
+ }
 
  stage='every family in one turn';
  await openSession(page,'mac-a（本机）','helper','fixture:stream');
