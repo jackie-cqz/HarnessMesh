@@ -289,6 +289,11 @@ fn update_record(
     Ok(record)
 }
 fn set_status(s: &AppState, id: Uuid, status: SessionStatus) -> hmesh_core::Result<SessionRecord> {
+    let _guard = s
+        .sessions
+        .starting
+        .lock()
+        .map_err(|_| MeshError::new(ErrorCode::Internal, "session lock poisoned"))?;
     let mut record = s.store.session(id)?;
     if record.status != SessionStatus::Closed {
         record.status = status;
@@ -1528,6 +1533,12 @@ async fn turn_watchdog(s: AppState, id: Uuid, live: Arc<Live>, turn: u64) {
 async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) {
     let finish =
         |s: &AppState, stop: Option<&str>, final_text: Option<String>, error: Option<String>| {
+            // A close can run at the same moment (revoking a peer, the owner
+            // closing the session). Read and write under the turn lock so a
+            // finishing turn cannot put an already closed record back to idle.
+            let Ok(_guard) = s.sessions.starting.lock() else {
+                return;
+            };
             if let Ok(mut record) = s.store.session(id) {
                 if record.status != SessionStatus::Closed {
                     record.status = SessionStatus::Idle;
@@ -1540,6 +1551,7 @@ async fn run_turn(s: AppState, id: Uuid, text: String, command: Option<String>) 
                 record.last_error = error.clone();
                 let _ = save(s, &mut record);
             }
+            drop(_guard);
             if let Some(stop) = stop {
                 let (text, truncated) = final_text
                     .as_deref()
@@ -1925,13 +1937,23 @@ fn close_session(s: &AppState, id: Uuid, why: &str) -> hmesh_core::Result<Sessio
     // Mark it closed before taking its process: an agent that is still
     // starting sees the closed status once it is registered (see ensure_live).
     cancel_delegations(s, id);
-    let mut record = s.store.session(id)?;
-    let newly = record.status != SessionStatus::Closed;
-    if newly {
-        record.status = SessionStatus::Closed;
-        record.pending_message = None;
-        save(s, &mut record)?;
-    }
+    // The same lock a finishing turn takes: closing must not be overwritten
+    // by a turn that read the record just before this close.
+    let (record, newly) = {
+        let _guard = s
+            .sessions
+            .starting
+            .lock()
+            .map_err(|_| MeshError::new(ErrorCode::Internal, "session lock poisoned"))?;
+        let mut record = s.store.session(id)?;
+        let newly = record.status != SessionStatus::Closed;
+        if newly {
+            record.status = SessionStatus::Closed;
+            record.pending_message = None;
+            save(s, &mut record)?;
+        }
+        (record, newly)
+    };
     let live = s
         .sessions
         .live
