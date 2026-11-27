@@ -32,12 +32,19 @@ async function succeeded(mesh,id){
 async function confirm(page){await page.getByRole('button',{name:'确认',exact:true}).click();}
 async function checkProductArtwork(page, theme){
  const choices=page.locator('#onboard-harness');
+ // A <dialog> that is not open renders nothing, and the catalog can still be
+ // one animation frame away on a slow runner: make sure the dialog is open
+ // and its icons are on screen before counting.
+ if(await page.locator('#onboard-dialog[open]').count()===0)await page.locator('#new-agent').click();
+ await page.locator('#onboard-dialog[open]').waitFor({timeout:20000});
+ await choices.locator('.product-icon').first().waitFor({state:'visible',timeout:20000});
  for(const kind of ['pi','opencode','dsh','codex','claude-code']){
   const image=choices.locator(`[data-product="${kind}"] img:visible`);
   // The dialog animates open; on a slow runner the first image is not laid
   // out yet when this runs, so give it a moment before counting.
   await image.first().waitFor({state:'visible',timeout:20000}).catch(()=>{});
-  assert(await image.count()===1,'Expected one visible product icon for '+kind);
+  const count=await image.count();
+  assert(count===1,`Expected one visible product icon for ${kind}, got ${count}`);
   await image.evaluate(img=>img.decode());
   if(kind==='opencode'||kind==='codex'){
    assert((await image.getAttribute('class'))==='product-'+theme,'Wrong theme asset for '+kind);
