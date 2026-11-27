@@ -42,7 +42,7 @@ const trusted=mesh=>mesh.call(['peers','list']).filter(p=>(p.status??p.peer?.sta
 try{
  const b=await node('pair-shows','shows-agent',['--listen-address','127.0.0.1'],await freePort()),a=await node('pair-joins',null,['--outbound-only']);
  const aUrl=await panel(a),bUrl=await panel(b);
- const errors=[];browser=await chromium.launch({headless:true});
+ const errors=[];browser=await chromium.launch({headless:true,...(process.env.HMESH_CHROME?{executablePath:process.env.HMESH_CHROME}:{})});
  async function open(url,options={}){
   const page=await browser.newPage({viewport:{width:1280,height:900},...options});
   page.on('pageerror',e=>errors.push(String(e)));

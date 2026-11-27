@@ -35,9 +35,15 @@ async function panel(node){
 // Ready for the next message: while a turn runs the send button is enabled
 // too, as 停止本轮 (stop), and a click then stops the turn instead.
 async function readyToSend(page){await page.waitForFunction(()=>{const send=document.querySelector('#composer-send');return !send.disabled&&!send.classList.contains('stop');},null,{timeout:30000});}
-// Pick an agent in the sidebar, then send the first message from the new-session screen.
+async function chooseAgent(page,name,group){
+ await page.locator('nav [data-view="agents"]').click();
+ await page.locator('[data-agent-filter="all"]').click();
+ let card=page.locator('#agent-list .entity-card').filter({has:page.getByRole('heading',{name,exact:true})});
+ if(group)card=card.filter({has:page.locator('.entity-harness',{hasText:group})});
+ await card.getByRole('button',{name:'开会话',exact:true}).click();
+}
 async function openSession(page,group,agentName,message){
- await page.locator('#session-agents .session-group').filter({has:page.locator('.session-group-name',{hasText:new RegExp('^'+group+'$')})}).getByRole('button',{name:new RegExp(agentName)}).click();
+ await chooseAgent(page,agentName,group);
  await page.locator('#conversation-empty').waitFor();
  await page.locator('#hero-target').filter({hasText:agentName}).waitFor();
  await page.locator('#hero-input').fill(message);
@@ -71,13 +77,53 @@ try{
  browser=await chromium.launch({headless:true,...(process.env.HMESH_CHROME?{executablePath:process.env.HMESH_CHROME}:{})});const page=await browser.newPage({viewport:{width:1440,height:960}});
  const problems=[];page.on('pageerror',e=>problems.push(e.message));page.on('console',m=>{if(m.type()==='error')problems.push(m.text());});
  await page.goto(ready.url);await page.locator('#local-name').filter({hasText:'mac-a'}).waitFor({state:'attached'});
- stage='sidebar lists both computers\' agents';
- await page.locator('#session-agents .session-group').filter({hasText:'mac-a（本机）'}).getByText('helper').waitFor();
- await page.locator('#session-agents .session-group').filter({hasText:'mac-b'}).getByText('worker').waitFor();
+ stage='Agents directory lists this computer and its peers';
+ await page.locator('nav [data-view="agents"]').click();
+ const cards=page.locator('#agent-list .entity-card');
+ await cards.filter({hasText:'mac-a（本机）'}).getByRole('heading',{name:'helper',exact:true}).waitFor();
+ await cards.filter({hasText:'mac-b'}).getByRole('heading',{name:'worker',exact:true}).waitFor();
+ assert(await cards.count()===7,'directory does not offer every agent');
+ // Older daemons may answer the registry while lacking session endpoints.
+ let legacyDirectory=false;
+ const partialReply=async route=>{
+   const reply=await (await route.fetch()).json();
+   reply.sessions={error:{code:'UNSUPPORTED'}};
+   if(legacyDirectory)reply.nodes={error:{code:'UNSUPPORTED'}};
+   else reply.nodes.data.find(n=>n.node_id===b.card.node_id).agent_kinds=[{agent_id:remote.agent_id,kind:'fixture-acp',label:'Fixture ACP'}];
+   await route.fulfill({json:reply});
+ };
+ await page.route('**/api/sessions',partialReply);
+ const workerCard=cards.filter({has:page.getByRole('heading',{name:'worker',exact:true})});
+ await until(async()=>{await page.evaluate(()=>loadSessions());return (await workerCard.locator('.entity-harness').innerText()).includes('Fixture ACP');},15,'session errors hid the peer catalog note');
+ legacyDirectory=true;
+ await until(async()=>{await page.evaluate(()=>loadSessions());return await workerCard.getByRole('button',{name:'开会话'}).isDisabled();},15,'legacy registry cards must be view-only');
+ await page.unroute('**/api/sessions',partialReply);
+ await until(async()=>{await page.evaluate(()=>loadSessions());return await workerCard.getByRole('button',{name:'开会话'}).isEnabled();},15,'session directory failed to recover');
  await settle(page);await page.screenshot({path:join(shots,'overview-light.png')});
  await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
- assert(await page.locator('#hero-agents .agent-chip').count()===7,'new-session screen does not offer every agent');
+ await page.locator('#hero-target button').click();
+ await cards.filter({has:page.getByRole('heading',{name:'pico',exact:true})}).getByRole('button',{name:'开会话',exact:true}).click();
+ await page.locator('#hero-target .product-icon[data-product=pi]').waitFor();
  await settle(page);await page.screenshot({path:join(shots,'sessions-empty.png')});
+ stage='a remote draft keeps its original executor while offline';
+ await page.locator('#hero-input').fill('保留 Pi 草稿');
+ const offline=async route=>{
+   const response=await route.fetch(),body=await response.json();
+   const peer=body.nodes.data.find(node=>!node.local);peer.reachable=false;peer.agents=[];peer.projects=[];
+   await route.fulfill({json:body});
+ };
+ await page.route('**/api/sessions',offline);
+ await until(async()=>{
+   await page.evaluate(()=>loadSessions());
+   return await page.locator('#hero-send').isDisabled();
+ },15,'offline executor did not disable sending');
+ assert((await page.locator('#hero-target').innerText()).includes('pico')&&await page.locator('#hero-input').inputValue()==='保留 Pi 草稿','offline draft or target changed');
+ await page.unroute('**/api/sessions',offline);
+ await until(async()=>{
+   await page.evaluate(()=>loadSessions());
+   return await page.locator('#hero-send').isEnabled();
+ },15,'recovered agent is still unavailable');
+ assert((await page.locator('#hero-target').innerText()).includes('pico'),'returning Agent was silently changed');
  stage='slash suggestions on an approved remote Pi session';
  b.mesh.call(['peers','access',a.card.node_id,'confirm']);
  const sent=[];
@@ -85,7 +131,6 @@ try{
    const path=new URL(r.url()).pathname;
    if(r.method()==='POST'&&/^\/api\/sessions(?:$|\/[^/]+\/(?:prompt|config|command)$)/.test(path))sent.push({path,body:r.postDataJSON()});
  });
- await page.locator('#hero-agents .agent-chip').filter({hasText:'pico'}).click();
  await page.locator('#hero-input').fill('/');
  await page.locator('#command-help').filter({hasText:'等待执行端批准'}).waitFor();
  const pendingId=await page.evaluate(()=>conv.selected);
@@ -125,7 +170,7 @@ try{
  assert(await row('compact').count()===0,'old commands survived an empty ACP announcement');
  b.mesh.call(['peers','access',a.card.node_id,'auto']);
  stage='OpenCode slash catalog and model alias';
- await page.locator('#new-session').click();await page.locator('#hero-agents .agent-chip').filter({hasText:'coder'}).click();
+ await page.locator('#new-session').click();await chooseAgent(page,'coder');
  await page.locator('#hero-input').fill('/');await row('models').waitFor();
  assert(await row('model').count()===0,'OpenCode offered the Pi model spelling');
  await input.fill('/models fixture-large');await page.locator('#composer-send').click();
@@ -134,7 +179,7 @@ try{
  await input.fill('/');await row('compact').waitFor();await input.press('Escape');
  assert(await page.locator('#command-menu').isHidden(),'Escape did not dismiss the list');
  stage='DSH model shortcut without native commands';
- await page.locator('#new-session').click();await page.locator('#hero-agents .agent-chip').filter({hasText:'deepseek'}).click();
+ await page.locator('#new-session').click();await chooseAgent(page,'deepseek');
  await page.locator('#hero-input').fill('/');
  await row('model').getByText(/面板快捷方式/).waitFor();
  assert(await options.getByRole('option').count()===1,'DSH offered an unannounced command');
@@ -185,7 +230,7 @@ try{
  stage='new session with chosen settings';
  // Settings the agent offered last time can be chosen before the first message.
  await page.locator('#new-session').click();await page.locator('#conversation-empty').waitFor();
- await page.locator('#hero-agents .agent-chip').filter({hasText:'worker'}).click();
+ await chooseAgent(page,'worker');
  const heroModel=page.locator('#hero-settings select[aria-label="模型"]');await heroModel.waitFor({timeout:30000});
  await heroModel.selectOption('fixture-large');await page.locator('#hero-settings select[aria-label="模式"]').selectOption('code');
  await settle(page);await page.screenshot({path:join(shots,'settings-hero.png')});
@@ -359,13 +404,13 @@ try{
  await page.setViewportSize({width:390,height:720});
  const directory=page.locator('#sidebar-directory'),directoryToggle=page.locator('#sidebar-toggle');
  assert(await directory.isHidden(),'mobile directory takes up space before being opened');
- await directoryToggle.click();await directory.getByText('可用 Agent',{exact:true}).waitFor();
+ await directoryToggle.click();await directory.getByRole('button',{name:'会话',exact:true}).waitFor();
  assert(await directoryToggle.getAttribute('aria-expanded')==='true','mobile directory state not announced');
  await directoryToggle.click();assert(await directory.isHidden(),'mobile directory did not collapse');
  await page.setViewportSize({width:1440,height:960});
  assert(await directory.isVisible()&&await directoryToggle.isHidden(),'desktop directory was affected by the mobile toggle');
  stage='dark theme';
- await page.emulateMedia({colorScheme:'dark'});
+ await page.locator('.theme-options label[title="深色"]').click();
  await page.locator('.session-row').filter({hasText:'fixture:reply'}).first().click();
  await stream(page).getByText(/Final answer/).first().waitFor();
  const shade=await page.evaluate(()=>{const lum=c=>{const m=c.match(/[\d.]+/g).map(Number);return (0.2126*m[0]+0.7152*m[1]+0.0722*m[2])/255;};return {page:lum(getComputedStyle(document.body).backgroundColor),sidebar:lum(getComputedStyle(document.querySelector('.sidebar')).backgroundColor),text:lum(getComputedStyle(document.querySelector('.msg.agent .msg-text')).color)};});
@@ -383,7 +428,7 @@ try{
  await page.locator('#service-cancel').click();
  await openFor('claude');await page.locator('#service-own.configured').waitFor({timeout:30000});await settle(page);await page.screenshot({path:join(shots,'service-own-dark.png')});
  await page.locator('#service-cancel').click();
- await page.emulateMedia({colorScheme:'light'});
+ await page.locator('.theme-options label[title="浅色"]').click();
  stage='narrow window';
  await page.locator('.session-row').filter({hasText:'fixture:permission'}).first().click();
  await page.setViewportSize({width:720,height:900});await settle(page);await page.screenshot({path:join(shots,'sessions-narrow.png'),fullPage:true});

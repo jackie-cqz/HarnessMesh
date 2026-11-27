@@ -1,7 +1,5 @@
 'use strict';
-// Agent sessions in codeg's layout: sessions and agents in the app sidebar,
-// a centered conversation with the composer at the bottom, and a new-session
-// screen with an agent picker. Agent and peer text is always set as text.
+// Conversations use the executing computer's Agent directory and project list.
 const sessionLabels={pending_approval:'等待批准',idle:'空闲',running:'进行中',waiting_permission:'等待授权',closed:'已关闭'};
 const sessionTone={pending_approval:'warn',idle:'good',running:'live',waiting_permission:'warn',closed:''};
 const conv={list:null,nodes:[],selected:null,cursor:0,events:[],record:null,remote:false,generation:0,busy:false,listLoading:false,target:null,open:new Map(),heroConfig:{},heroProject:null,settingBusy:false};
@@ -72,7 +70,13 @@ function originText(s){
 }
 function harnessFor(s){
   const node=conv.nodes.find(n=>n.node_id===s.node_id);
-  return (node?.agents||[]).find(a=>a.agent_id===s.agent_id)?.harness||'';
+  const current=node?.agents?.find(a=>a.agent_id===s.agent_id);
+  const retired=s.node_id===localNodeId()&&data('retired').find(a=>a.agent_id===s.agent_id);
+  return current?.harness||retired?.harness||s.harness||'';
+}
+function sessionProduct(s){
+  const node=conv.nodes.find(n=>n.node_id===s.node_id);
+  return agentProduct(node,s.agent_id,harnessFor(s));
 }
 function approverText(s){
   if(harnessFor(s)==='pi')return '工具调用不经过 HarnessMesh 审批';
@@ -89,17 +93,38 @@ function needsOwner(s){return (s.status==='pending_approval'&&!s._remote)||(s.st
 
 async function loadSessions(){
   if(conv.listLoading||!access)return;conv.listLoading=true;
+  let directoryUpdated=false;
   try{
     // Projects come with the list so sessions are grouped under them at once.
     const [reply]=await Promise.all([api('/sessions'),typeof readProjects==='function'?readProjects():null]);
+    if(reply.nodes?.data){
+      const previous=new Map(conv.nodes.map(node=>[node.node_id,node]));
+      conv.nodes=reply.nodes.data.map(node=>{
+        const last=previous.get(node.node_id);
+        // Keep the names of an offline peer's Agents and shared projects for
+        // the draft while blocking session creation until a fresh reply.
+        return !node.reachable&&last?{...node,agents:last.agents,projects:last.projects,agent_kinds:last.agent_kinds}:node;
+      });
+    }else if(state.view==='agents'){
+      conv.nodes=await readRegistryDirectory();
+    }else{
+      conv.nodes=conv.nodes.map(node=>({...node,reachable:false}));
+    }
+    directoryUpdated=true;
     if(reply.sessions?.error)throw Object.assign(Error(reply.sessions.error.code),reply.sessions.error);
-    conv.list=reply.sessions.data;conv.nodes=reply.nodes?.data||conv.nodes;
+    conv.list=reply.sessions.data;
     // The open conversation may know a newer state than this list snapshot.
     if(conv.record)syncListRow(conv.record,false);
     renderSessionList();
+  }catch(e){
+    if(!directoryUpdated)conv.nodes=conv.nodes.map(node=>({...node,reachable:false}));
+    $('#session-list').replaceChildren(el('div','side-empty',`会话暂不可读取：${e.message}`));
+  }
+  finally{
+    conv.listLoading=false;
     if(state.view==='sessions'&&!conv.selected)renderHero();
-  }catch(e){$('#session-list').replaceChildren(el('div','side-empty',`会话暂不可读取：${e.message}`));}
-  finally{conv.listLoading=false;}
+    if(state.view==='agents')renderAgents();
+  }
 }
 function renderSessions(){if(!conv.list)loadSessions();else renderSessionList();}
 // Called when the sessions view becomes visible.
@@ -115,21 +140,32 @@ function syncListRow(record,render=true){
   if(render)renderSessionList();
 }
 
-// ---- Sidebar: sessions grouped by computer, then the agents ----
+// ---- Sidebar: computers, projects and conversations ----
 function stateClass(status){return {running:'running',waiting_permission:'waiting',pending_approval:'pending',idle:'idle',closed:'closed'}[status]||'idle';}
 function sessionRow(s,child){
   const row=el('button',`session-row${child?' child':''}${s.session_id===conv.selected?' selected':''}${s.status==='closed'?' closed':''}`);row.type='button';
   const dot=el('span',`state-dot ${stateClass(s.status)}`);dot.title=sessionLabels[s.status]||s.status;
-  row.append(dot);if(child)row.prepend(icon('corner-down-right','xs'));
+  if(s.session_id===conv.selected)row.setAttribute('aria-current','true');
+  if(child)row.append(icon('corner-down-right','xs'));
+  const product=sessionProduct(s),mark=el('span','session-product');
+  mark.append(productIcon(product.kind),dot);row.append(mark);
   row.append(el('span','session-row-title',sessionTitle(s)));
   if(markOf(s.session_id)?.pinned){const pin=icon('pin','xs');pin.classList.add('row-pin');row.append(pin);}
   row.append(el('span','session-row-time',ago(s.updated_at)));
-  row.title=`${s.agent_name} · ${sessionLabels[s.status]||s.status} · ${originText(s)}`;
+  row.title=[...new Set([product.label,s.agent_name,sessionLabels[s.status]||s.status,originText(s)])].join(' · ');
+  row.setAttribute('aria-label',sessionTitle(s)+'，'+row.title);
   row.addEventListener('click',()=>{if(state.view!=='sessions')showView('sessions');selectSession(s);});
   return row;
 }
+function sessionComputerHeading(id){
+  const node=conv.nodes.find(n=>n.node_id===id);
+  const heading=el('div','session-group-name'),emblem=el('span','computer-icon');
+  emblem.append(icon('monitor','sm'));
+  heading.setAttribute('role','heading');heading.setAttribute('aria-level','3');
+  heading.append(emblem,el('span','computer-name',node?.name||nodeLabel(id)),el('span','computer-kind',id===localNodeId()?'本机':'已配对'));
+  return heading;
+}
 function renderSessionList(){
-  renderAgentDirectory();
   const rows=allSessions(),waiting=rows.filter(needsOwner).length;
   $('#nav-sessions').hidden=!waiting;$('#nav-sessions').textContent=waiting;
   const grouped=typeof projectsSupported==='function'&&projectsSupported();
@@ -140,7 +176,7 @@ function renderSessionList(){
   for(const s of rows){if(!groups.has(s.node_id))groups.set(s.node_id,[]);groups.get(s.node_id).push(s);}
   const order=[...groups.keys()].sort((a,b)=>(a===localNodeId()?-1:b===localNodeId()?1:0));
   $('#session-list').replaceChildren(...order.map(node=>{
-    const group=el('div','session-group'),head=el('div','session-group-name');head.append(icon('monitor','xs'),el('span','',nodeLabel(node)));group.append(head);
+    const group=el('div','session-group');group.append(sessionComputerHeading(node));
     const items=groups.get(node),inGroup=new Set(items.map(s=>s.session_id));
     // A delegated session sits under its caller when both are in this group.
     const parentOf=s=>s.origin?.chain?.at(-1)?.session_id;
@@ -150,22 +186,6 @@ function renderSessionList(){
     return group;
   }));
 }
-function renderAgentDirectory(){
-  const box=$('#session-agents');if(!box)return;
-  const groups=conv.nodes.map(n=>{
-    const group=el('div','session-group'),head=el('div','session-group-name');head.append(icon('monitor','xs'),el('span','',n.local?`${n.name}（本机）`:`${n.name}${n.reachable?'':' · 连不上'}`));group.append(head);
-    const agents=(n.agents||[]).filter(a=>a.availability!=='disabled');
-    if(!agents.length)group.append(el('div','side-empty','没有可用 Agent'));
-    for(const a of agents){
-      const ready=a.probe?.version_supported&&n.reachable,row=el('button','agent-row');row.type='button';row.disabled=!ready||!canWrite();
-      row.append(icon('bot','sm'),el('span','agent-row-name',a.name),el('span','agent-row-kind',String(a.harness||'')));
-      row.title=ready?'和这个 Agent 开新会话':'这个 Agent 现在不能用';
-      row.addEventListener('click',()=>startNew(n.node_id,a.agent_id));group.append(row);
-    }
-    return group;
-  });
-  box.replaceChildren(...(groups.length?groups:[el('div','side-empty','还没有 Agent')]));
-}
 for(const label of document.querySelectorAll('.side-label'))label.addEventListener('click',()=>{const open=label.getAttribute('aria-expanded')!=='true';label.setAttribute('aria-expanded',String(open));$('#'+label.getAttribute('aria-controls')).hidden=!open;});
 const sidebarToggle=$('#sidebar-toggle');
 sidebarToggle.addEventListener('click',()=>{
@@ -174,15 +194,19 @@ sidebarToggle.addEventListener('click',()=>{
 });
 
 // ---- New session ----
-function readyAgents(){return conv.nodes.flatMap(n=>(n.agents||[]).filter(a=>a.availability!=='disabled'&&a.probe?.version_supported&&n.reachable).map(a=>({node:n,agent:a})));}
-// projectId: a project to start in (null forgets an earlier choice).
-function startNew(nodeId,agentId,projectId){
+function sessionReady(node,agent){
+  return !!(state.runtime?.capabilities?.sessions&&node?.reachable&&!node.directoryOnly&&agent&&agent.availability!=='disabled'&&agent.probe?.version_supported);
+}
+function readyAgents(){return conv.nodes.flatMap(node=>node.agents.filter(agent=>sessionReady(node,agent)).map(agent=>({node,agent})));}
+// An explicit project sets the draft directory; null clears an earlier choice.
+function startNew(nodeId,agentId,project){
   resetSessionCommands();
-  if($('#hero-input').value.trimStart().startsWith('/'))$('#hero-input').value='';
+  if(!nodeId&&$('#hero-input').value.trimStart().startsWith('/'))$('#hero-input').value='';
+  $('#hero-error').hidden=true;
   $('#hero-command-status').hidden=true;
   conv.selected=null;conv.record=null;conv.generation++;
   if(nodeId&&agentId&&(conv.target?.node!==nodeId||conv.target?.agent!==agentId)){conv.target={node:nodeId,agent:agentId};conv.heroConfig={};}
-  if(projectId!==undefined)conv.heroProject=projectId&&nodeId?{node:nodeId,value:projectId}:null;
+  if(project!==undefined)conv.heroProject=project&&nodeId?{node:nodeId,value:project.project_id,name:project.name}:null;
   if(state.view!=='sessions')showView('sessions');else renderConversation();
   renderSessionList();$('#hero-input').focus();
 }
@@ -196,32 +220,49 @@ function heroDefaults(agent){
   }
   return values;
 }
+let lastHeroTarget=null;
 function renderHero(){
-  const ready=readyAgents();
-  if(!conv.target||!ready.some(r=>r.node.node_id===conv.target.node&&r.agent.agent_id===conv.target.agent)){const first=ready.find(r=>r.node.local)||ready[0];conv.target=first?{node:first.node.node_id,agent:first.agent.agent_id}:null;conv.heroConfig={};}
-  $('#hero-agents').replaceChildren(...(ready.length?ready.map(({node,agent})=>{
-    const chip=el('button','agent-chip'),on=conv.target?.node===node.node_id&&conv.target?.agent===agent.agent_id;chip.type='button';chip.setAttribute('role','radio');chip.setAttribute('aria-checked',String(on));
-    chip.append(icon('bot','sm'),el('span','',agent.name));if(!node.local)chip.append(el('small','',node.name));
-    chip.addEventListener('click',()=>{if(!on){startNew(node.node_id,agent.agent_id);return;}renderHero();$('#hero-input').focus();});
-    return chip;
-  }):[el('div','side-empty','没有可用的 Agent。先在 Agents 页接入一个已安装的 ACP agent。')]));
-  const target=ready.find(r=>r.node.node_id===conv.target?.node&&r.agent.agent_id===conv.target?.agent);
-  $('#hero-target').replaceChildren(...(target?[icon('bot','xs'),el('span','',`${target.agent.name} · ${target.node.local?'本机':target.node.name}`)]:[]));
-  if(typeof renderHeroProject==='function')renderHeroProject(target);
+  if(!conv.target){
+    const ready=readyAgents(),first=ready.find(row=>row.node.local)||ready[0];
+    if(first)conv.target={node:first.node.node_id,agent:first.agent.agent_id};
+  }
+  const node=conv.nodes.find(n=>n.node_id===conv.target?.node);
+  const agent=node?.agents.find(a=>a.agent_id===conv.target.agent);
+  const target=agent?{node,agent}:null,available=sessionReady(node,agent);
+  // Keep an explicitly selected destination even if access changes. Only a
+  // deliberate choice in Agents may redirect a draft to another executor.
+  if(target)lastHeroTarget=target;
+  const display=target||(lastHeroTarget?.node.node_id===conv.target?.node&&lastHeroTarget?.agent.agent_id===conv.target?.agent?lastHeroTarget:null);
+  const choose=button('','setting-pill toggle',()=>openAgentDirectory());
+  choose.type='button';
+  const label=display?`${display.agent.name} · ${display.node.local?'本机':display.node.name}`:'选择 Agent';
+  const product=display&&agentProduct(display.node,display.agent.agent_id,display.agent.harness);
+  choose.append(product?productIcon(product.kind):icon('bot','xs'),el('span','',label),icon('chevron-down','xs'));
+  choose.setAttribute('aria-label',display?`${product.label}，${label}，点击更换 Agent`:'选择执行会话的 Agent');
+  choose.title=choose.getAttribute('aria-label');
+  $('#hero-target').replaceChildren(choose);
+  const project=typeof heroProject==='function'?heroProject(display):null;
+  if(typeof renderHeroProject==='function')renderHeroProject(display,!available,project);
   const values={...heroDefaults(target?.agent),...conv.heroConfig},box=$('#hero-settings');
   box.hidden=!settingsSupported()||!target;
   const heroNote=$('#hero-note');
-  if(heroNote)heroNote.textContent=target?.agent.harness==='pi'
+  if(heroNote)heroNote.textContent=conv.target&&!available
+    ?'当前 Agent 暂不可用。草稿和执行目标已保留，可等待恢复或另选 Agent。'
+    :project?.missing?'之前选择的项目已不可用。请在输入框下方重新选择工作目录。'
+    :!target?'从 Agents 选择一个可用的执行目标。':target.agent.harness==='pi'
     ?'Pi 的工具调用会直接执行，不在 HarnessMesh 里请求审批；本机装了 pi-mcp-adapter 时，会话里可以调用其他 Agent。'
     :'发出后 Agent 会调用模型；它要动文件或执行命令时，会在这里问你。';
-  renderSettings(box,target?.agent.config_options,values,!canWrite(),(id,value)=>{conv.heroConfig[id]=value;renderHero();},JSON.stringify([conv.target,target?.agent.config_options,values,canWrite()]));
-  $('#hero-send').disabled=!target||!canWrite();
+  renderSettings(box,target?.agent.config_options,values,!available||!canWrite(),(id,value)=>{conv.heroConfig[id]=value;renderHero();},JSON.stringify([conv.target,target?.agent.config_options,values,available,canWrite()]));
+  $('#hero-send').disabled=!available||!!project?.missing||!canWrite()||openingHero?.target===conv.target;
 }
 let openingHero=null;
 async function submitNew(event,discover=false){
   event?.preventDefault();
   const target=conv.target,input=$('#hero-input'),draft=input.value,message=draft.trim(),node=conv.nodes.find(n=>n.node_id===target?.node);
-  if(!target||!node||!message||!canWrite())return;
+  const agent=node?.agents.find(a=>a.agent_id===target.agent);
+  if(!message||!canWrite()||!sessionReady(node,agent))return;
+  const project=typeof heroProject==='function'?heroProject({node,agent}):null;
+  if(project?.missing)return;
   // A slash draft opens an empty session to get this Agent's live commands.
   // The draft must never become a first prompt, even on an older daemon.
   const slash=message.startsWith('/');
@@ -232,13 +273,12 @@ async function submitNew(event,discover=false){
   const generation=conv.generation,isCurrent=()=>generation===conv.generation&&conv.target===target&&state.view==='sessions';
   if(openingHero?.generation===generation&&openingHero.target===target)return;
   const opening={generation,target};openingHero=opening;
-  const agent=(node.agents||[]).find(a=>a.agent_id===target.agent),defaults=heroDefaults(agent);
+  const defaults=heroDefaults(agent);
   const config=Object.fromEntries(Object.entries(conv.heroConfig).filter(([id,value])=>defaults[id]!==value));
-  const project=typeof heroProject==='function'?heroProject({node,agent})?.chosen:null;
   $('#hero-send').disabled=true;$('#hero-error').hidden=true;
   const status=$('#hero-command-status');status.hidden=!slash;status.textContent='正在打开会话以读取 Agent 命令…';
   try{
-    const record=unwrap(await api('/sessions',{method:'POST',body:JSON.stringify({agent_id:target.agent,peer_id:node.local?null:node.node_id,...(!slash?{message}:{}),...(Object.keys(config).length?{config}:{}),...(project?{project_id:project}:{})})}));
+    const record=unwrap(await api('/sessions',{method:'POST',body:JSON.stringify({agent_id:target.agent,peer_id:node.local?null:node.node_id,...(!slash?{message}:{}),...(Object.keys(config).length?{config}:{}),...(project?.chosen?{project_id:project.chosen}:{})})}));
     loadSessions();
     if(!isCurrent()||(slash&&!input.value.trimStart().startsWith('/')))return;
     const nextDraft=slash?input.value:(input.value===draft?'':input.value);
@@ -246,7 +286,7 @@ async function submitNew(event,discover=false){
     const composer=$('#composer-input');composer.value=nextDraft;composer.focus();
     if(slash)openSessionCommands();
   }catch(e){if(isCurrent()){$('#hero-error').textContent=`没有打开：${e.message||e.code}`;$('#hero-error').hidden=false;}}
-  finally{if(openingHero===opening){openingHero=null;status.hidden=true;$('#hero-send').disabled=!conv.target||!canWrite();}}
+  finally{if(openingHero===opening){openingHero=null;status.hidden=true;if(state.view==='sessions'&&!conv.selected)renderHero();}}
 }
 
 // ---- Session settings (model, mode, reasoning) ----
@@ -446,7 +486,9 @@ function renderConversation(){
   send.disabled=!canWrite()||conv.busy||conv.settingBusy||!(busy||s.status==='idle');
   input.disabled=s.status==='closed'||!canWrite();
   input.placeholder=s.status==='closed'?'会话已关闭':s.status==='pending_approval'?'等对方电脑批准后才能继续':busy?`${s.agent_name} 正在处理，可以先写下一条`:`回复 ${s.agent_name}，或输入 / 查看命令…`;
-  $('#composer-target').replaceChildren(icon('bot','xs'),el('span','',`${s.agent_name} · ${conv.remote?shortNode(s.node_id):'本机'}`));
+  const targetBox=$('#composer-target'),product=sessionProduct(s);
+  targetBox.title=product.label+' · '+s.agent_name+' · '+shortNode(s.node_id);
+  targetBox.replaceChildren(productIcon(product.kind),el('span','',`${s.agent_name} · ${conv.remote?shortNode(s.node_id):'本机'}`));
   // Settings change between turns, and only by whoever opened the session.
   const opener=conv.remote||s.origin?.node_id===localNodeId(),settings=$('#composer-settings');
   const locked=!canWrite()||busy||conv.settingBusy||s.status==='closed'||!opener;
@@ -761,7 +803,10 @@ $('#service-fill').addEventListener('click',()=>{
 });
 $('#service-env-add').addEventListener('click',()=>{$('#service-env').append(serviceEnvRow());$('#service-env').lastChild.querySelector('input').focus();});
 
-$('#new-session').addEventListener('click',()=>startNew(undefined,undefined,null));
+$('#new-session').addEventListener('click',()=>{
+  if(!conv.selected&&$('#hero-input').value.trim()){$('#hero-input').focus();return;}
+  startNew(undefined,undefined,null);
+});
 $('#hero-composer').addEventListener('submit',submitNew);
 $('#hero-input').addEventListener('input',e=>{
   if(e.isComposing)return;

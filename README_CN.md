@@ -1,4 +1,4 @@
-# HarnessMesh
+<h1 align="center"><img src="web/panel/brand.svg" width="32" height="32" alt="" align="absmiddle"> HarnessMesh</h1>
 
 [English](README.md) | **简体中文**
 
@@ -6,9 +6,9 @@
 
 在一个地方使用你所有电脑上的编程 Agent。HarnessMesh 通过 [Agent Client Protocol](https://agentclientprotocol.com)（ACP）连接 OpenCode、Claude Code、Codex、Pi 和 DeepSeek Harness 等 Agent：在本机的网页面板里，不管 Agent 在哪台电脑上，都能直接和它对话；Agent 之间也能通过内置的 MCP 服务器跨电脑互相派活。
 
-![在 studio 上开的会话：backend 找到 bug，请 laptop 上的 reviewer 审查修复，再按它的建议改好](docs/images/session.png)
+![studio 上的 backend 展示了登录修复和 laptop 返回的审查意见。侧栏和输入框旁的 OpenCode 图标标明了执行 Agent。](docs/images/session.png)
 
-<sub>本文截图：在一台电脑上模拟两台电脑（studio 和 laptop），用的是按台词回复的演示 Agent，没有调用任何模型。</sub>
+<sub>截图来自同一台电脑上的两个测试节点 studio 和 laptop。示例对话由脚本化 ACP Agent 生成，模型调用为零。</sub>
 
 ## 能做什么
 
@@ -22,15 +22,22 @@
 
 ## 界面
 
+**选择 Agent 和执行电脑。** 打开「Agents」，可以看到 studio 上的 backend（OpenCode），以及 laptop 上的 frontend（Claude Code）和 reviewer（Codex）。在目标卡片上点「开会话」即可开始对话。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/start-dark.png">
+  <img src="docs/images/start.png" alt="Agents 目录列出 studio 和 laptop 的三个 Agent，每张卡片都有产品图标、执行电脑和「开会话」按钮">
+</picture>
+
 **被调用的电脑知道是谁在调用。** laptop 上的 reviewer 会话写明是 studio 的 backend 打开的，调用链是 studio → laptop。
 
 ![laptop 上由 studio 的 backend 打开的 reviewer 会话](docs/images/delegated.png)
 
-**权限问题回到你这里。** laptop 上的 frontend 想运行 `npm install`；会话是你在 studio 上打开的，就在 studio 上回答。
+**权限请求回到你这里。** laptop 上的 frontend 请求运行 `npm install react-loading-skeleton`。这个会话由你在 studio 打开，因此你可以在 studio 查看命令，选择「允许一次」或「拒绝」。
 
 ![另一台电脑上的 Agent 发来的权限请求](docs/images/permission.png)
 
-**配对。** 在一台电脑上粘贴对方的配对码，弹窗显示校验码；另一台电脑的「配对节点」和「工作待办」里出现这条申请，输入校验码后批准，第一台电脑会自动完成。
+**用配对码连接。** 在 studio 打开「配对新电脑 → 其他配对方式 → 粘贴对方的码」，粘贴 laptop 的配对码。studio 会显示六位校验码，在 laptop 的配对申请中输入它并点「批准」，两台电脑即完成配对。
 
 | 1. 发出申请 | 2. 在另一台电脑上批准 |
 |---|---|
@@ -42,13 +49,9 @@
 |---|---|
 | ![laptop 的配对弹窗显示 6 位口令](docs/images/nearby-passcode.png) | ![studio 的配对弹窗在附近的电脑里列出 laptop，填好口令](docs/images/nearby-join.png) |
 
-**已配对的电脑。** 卡片上写着它的地址，和上次什么时候、经哪条路连上；连不上时直接说原因（被防火墙挡了、主机名解析不出来、那个地址上是另一台电脑等）。「改地址」可以手动加一个地址。
+**已配对的电脑。** laptop 的卡片显示地址、连接状态和可见 Agent 数量。在 studio 可以点「查看远端 Agent」，也可以将 laptop 发到本机的请求设为「本机确认」。
 
-![配对节点页上 laptop 的卡片：地址、上次连上的时间和路径、改地址](docs/images/paired.png)
-
-**从任意 Agent 开始。** 首页列出所有可用的 Agent，并标出它在哪台电脑上。
-
-![首页列出两台电脑上的 Agent](docs/images/start.png)
+![laptop 处于已信任、在线状态，卡片显示请求模式和「查看远端 Agent」入口](docs/images/paired.png)
 
 ## 原理
 
@@ -143,11 +146,11 @@ cargo build --release --locked -p hmesh-cli
 
 打开面板（`hmesh panel`），进入「配对节点」→「配对新电脑」：
 
-1. 在完整安装的电脑 B 上，复制「这台电脑的配对码」。直连网络里，弹窗还会显示 B 的配对窗口还剩多久。
+1. 如果两台电脑的弹窗显示「附近的电脑」，先各自展开「其他配对方式」。在完整安装的电脑 B 上，选择「本机配对码」并复制。直连网络里，弹窗还会显示 B 的配对窗口还剩多久。
 2. 在电脑 A 的同一个弹窗里粘贴，发出申请。A 会显示一个校验码。
 3. 在 B 上输入校验码，批准。A 会自己完成配对。
 
-**直连网络里，附近的电脑会列出来。** B 打开「配对新电脑」时会显示一个 6 位口令，A 的同一个弹窗里「附近的电脑」会列出 B。选中 B、输入它的口令，两台电脑就配好了，谁都不用再批准。一个口令只能试 3 次，用一次就作废；错满 3 次口令作废，配对码照样能用。访客 Wi-Fi 和一些路由器会挡住这种查找，另一个网段的电脑也听不到：在「按地址配对」里填它的 IP 或主机名和同一个口令（不带端口就用 39880），或者照旧用上面的配对码。命令行：先 `hmesh pair nearby`，再 `hmesh pair join <地址>`，它会让你输入口令。
+**直连网络里，附近的电脑会列出来。** B 打开「配对新电脑」时会显示一个 6 位口令，A 的同一个弹窗里「附近的电脑」会列出 B。选中 B、输入它的口令，两台电脑就配好了，谁都不用再批准。一个口令只能试 3 次，用一次就作废；错满 3 次口令作废，配对码照样能用。访客 Wi-Fi 和一些路由器会挡住这种查找，另一个网段的电脑也听不到：在「其他配对方式 → 按地址配对」里填它的 IP 或主机名和同一个口令（不带端口就用 39880），或者照旧用上面的配对码。命令行：先 `hmesh pair nearby`，再 `hmesh pair join <地址>`，它会让你输入口令。
 
 **经中继。** 两台电脑完全连不到对方时（都在 NAT 后面，或者公司 Wi-Fi 开了客户端隔离），在一台两边都连得到的服务器上运行中继：
 
@@ -169,8 +172,8 @@ cargo build --release --locked -p hmesh-cli
 ```
 
 1. 打开面板打印出来的链接。
-2. 在「Agents」页用「接入项目与 Agent」，给一个项目目录登记 Agent。
-3. 到「新会话」，选这个 Agent，发第一条消息。
+2. 在「Agents」页点「接入 Agent」，选择产品和默认工作项目。首次使用时点「前往添加项目」，选择本机文件夹后会返回接入向导。
+3. 在这个 Agent 的卡片上点「开会话」，在输入框下方核对执行电脑和项目，再发送第一条消息。
 
 登记 Agent 只做一次 ACP `initialize` 握手，发消息之前不会调用模型。数据在 `~/.harnessmesh`，想换目录就加 `--data-dir /absolute/path`。
 

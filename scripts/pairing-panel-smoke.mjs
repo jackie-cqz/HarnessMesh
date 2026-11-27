@@ -93,9 +93,9 @@ try{
  await pa.locator('#pair-body .confirm-actions .button').click();
  await pa.locator('#node-list .entity-card').filter({hasText:'pair-approves'}).waitFor();
  await pa.getByRole('button',{name:'查看远端 Agent',exact:true}).click();
- await pa.locator('#remote-agents').getByRole('heading',{name:'approves-agent',exact:true}).waitFor();
- await pa.getByRole('button',{name:'关闭列表',exact:true}).click();
- assert(await pa.locator('#remote-agents').isHidden(),'Remote Agent list did not close');
+ await pa.locator('#agents-view').getByRole('heading',{name:'approves-agent',exact:true}).waitFor();
+ assert(await pa.locator('nav [data-view="agents"]').getAttribute('aria-current')==='page','Peer inventory is outside the Agents directory');
+ await pa.locator('nav [data-view="nodes"]').click();
  assert(trusted(a.mesh).includes(b.card.node_id)&&trusted(b.mesh).includes(a.card.node_id),'Pairing is not trusted on both sides');
  assert(sees(a.mesh,'approves-agent')&&sees(b.mesh,'asks-agent'),'A paired computer cannot see the other side\'s Agent');
  const text=await pa.evaluate(()=>document.body.innerText);
@@ -108,10 +108,12 @@ try{
  await directPage.locator('#pair-new').click();
  await directPage.locator('.pair-window').filter({hasText:'配对窗口还剩'}).waitFor();
  assert(direct.mesh.call(['daemon','status']).pairing_window.closes_at>Date.now()/1000,'Direct pairing dialog did not open the server window');
+ await directPage.locator('#pair-other-methods summary').click();
  await directPage.getByRole('button',{name:'本机配对码',exact:true}).click();
  const directCode=await directPage.locator('#own-pair-code').textContent();
  await directPage.locator('[data-close="pair-dialog"]').click();
  await callerPage.locator('#pair-new').click();
+ await callerPage.locator('#pair-other-methods summary').click();
  await callerPage.locator('#pair-code').fill(directCode);
  assert(await callerPage.locator('#own-pair-code').count()===0,'MCP-only node exposed an inbound pairing code');
  await callerPage.locator('#pair-send').click();

@@ -139,7 +139,9 @@ function sessionItem(s,child){
 }
 function earlierRow(project,{agent,entry,title}){
   const key=`${agent.agent_id}/${entry.agent_session_id}`,row=el('button','session-row earlier');row.type='button';
-  row.append(el('span','state-dot earlier'),el('span','session-row-title',title),el('span','session-row-agent',agent.agent_name),el('span','session-row-time',entry.updated_at?ago(seconds(entry.updated_at)||0):''));
+  const product=sessionProduct({...agent,node_id:localNodeId()});
+  row.setAttribute('aria-label',title+'，'+product.label+'，'+agent.agent_name);
+  row.append(productIcon(product.kind),el('span','session-row-title',title),el('span','session-row-agent',agent.agent_name),el('span','session-row-time',entry.updated_at?ago(seconds(entry.updated_at)||0):''));
   row.title=`${agent.agent_name} 里之前的会话，点开接着聊`;
   row.disabled=proj.continuing.has(key)||!canWrite();
   row.addEventListener('click',()=>continueEarlier(project,agent,entry));
@@ -171,12 +173,13 @@ function renderProjectSessions(rows){
   const byProject=new Map(),other=[];
   for(const s of roots){const p=projectFor(s,all);if(!p)other.push(s);else if(showHidden||!p.hidden){if(!byProject.has(p.project_id))byProject.set(p.project_id,[]);byProject.get(p.project_id).push(s);}}
   const groups=[];
-  const localGroup=el('div','session-group'),head=el('div','session-group-name');
-  head.append(icon('monitor','xs'),el('span','',nodeLabel(me)));localGroup.append(head);
+  const localGroup=el('div','session-group');localGroup.append(sessionComputerHeading(me));
   if(!proj.list&&!proj.error)localGroup.append(el('div','side-note loading','正在读取项目…'));
   if(proj.error&&!proj.list)localGroup.append(el('div','side-note',`项目暂时读不到：${projectProblem(proj.error)}`));
   let shownBlocks=0;
   const count=projects.length;
+  const names=new Set(),duplicateNames=new Set();
+  for(const p of projects){if(names.has(p.name))duplicateNames.add(p.name);names.add(p.name);}
   projects.forEach((p,index)=>{
     const here=byProject.get(p.project_id)||[],selected=here.some(s=>s.session_id===conv.selected);
     const open=proj.open.get(p.project_id)??(here.length>0||selected);
@@ -184,7 +187,9 @@ function renderProjectSessions(rows){
     const earlier=earlierSessions(p.project_id,local).filter(r=>!searching||r.title.toLowerCase().includes(q));
     if(searching&&!here.length&&!earlier.length)return;
     shownBlocks++;
-    localGroup.append(projectBlock(p,{here,kids,keep,earlier,open:open||searching,searching,first:index===0,last:index===count-1}));
+    const block=projectBlock(p,{here,kids,keep,earlier,open:open||searching,searching,first:index===0,last:index===count-1});
+    block.classList.toggle('same-name',duplicateNames.has(p.name));
+    localGroup.append(block);
   });
   if(other.length){shownBlocks++;localGroup.append(projectBlock(null,{here:other,kids,keep,earlier:[],open:proj.open.get('')??true,searching}));}
   if(searching&&!shownBlocks)localGroup.append(el('div','side-empty',`这台电脑上没有标题里有「${proj.query.trim()}」的会话`));
@@ -198,7 +203,7 @@ function renderProjectSessions(rows){
   for(const s of shownRows.filter(s=>s._remote)){if(!remote.has(s.node_id))remote.set(s.node_id,[]);remote.get(s.node_id).push(s);}
   for(const [node,items]of remote){
     const tree=placeRows(items,matches);if(!tree.roots.length)continue;
-    const group=el('div','session-group'),name=el('div','session-group-name');name.append(icon('monitor','xs'),el('span','',nodeLabel(node)));group.append(name);
+    const group=el('div','session-group');group.append(sessionComputerHeading(node));
     appendTree(group,tree.roots,tree.kids,tree.keep);groups.push(group);
   }
   $('#session-list').replaceChildren(...groups);
@@ -274,7 +279,7 @@ function newInProject(p){
   const current=ready.find(r=>r.node.node_id===conv.target?.node&&r.agent.agent_id===conv.target?.agent);
   const pick=current||own||ready[0];
   if(!pick){toast('这台电脑上现在没有能用的 Agent');return;}
-  startNew(pick.node.node_id,pick.agent.agent_id,p.project_id);
+  startNew(pick.node.node_id,pick.agent.agent_id,p);
 }
 
 // ---- Menus ----
@@ -728,19 +733,28 @@ function heroProjectOptions(target){
   return {options:[{value:'',name:'Agent 自己的目录'},...shared.map(p=>({value:p.project_id,name:p.name}))],fallback:''};
 }
 function heroProject(target){
-  const o=heroProjectOptions(target);if(!o)return null;
-  const pick=conv.heroProject,chosen=pick&&pick.node===target.node.node_id&&o.options.some(x=>x.value===pick.value)?pick.value:o.fallback;
-  return {...o,chosen};
+  if(!target)return null;
+  const choices=heroProjectOptions(target),pick=conv.heroProject;
+  if(pick?.node===target.node.node_id&&choices?.options.some(item=>item.value===pick.value)){
+    return {...choices,chosen:pick.value};
+  }
+  if(pick?.node!==target.node.node_id||!pick.value)return choices&&{...choices,chosen:choices.fallback};
+  // An explicit project can be hidden, removed or unshared after it was
+  // selected. Keep it selected until another directory is explicitly chosen.
+  const missing={value:pick.value,name:(pick.name||pick.value)+'（已不可用）',disabled:true};
+  const options=choices?.options||[{value:'',name:'Agent 自己的目录'}];
+  return {options:[missing,...options],chosen:pick.value,missing:true};
 }
-function renderHeroProject(target){
-  const box=$('#hero-project'),pick=heroProject(target);
+function renderHeroProject(target,unavailable,pick){
+  const box=$('#hero-project');
   box.hidden=!pick;if(!pick){box.replaceChildren();box.dataset.key='';return;}
-  const key=JSON.stringify([target.node.node_id,target.agent.agent_id,pick.options,pick.chosen,canWrite()]);
+  const key=JSON.stringify([target.node.node_id,target.agent.agent_id,pick.options,pick.chosen,canWrite(),unavailable]);
   if(box.dataset.key===key)return;box.dataset.key=key;
   const pill=el('label','setting-pill project-pill'),select=document.createElement('select');
-  select.setAttribute('aria-label','项目');select.disabled=!canWrite();
-  for(const o of pick.options){const item=el('option','',o.name);item.value=o.value;if(o.title)item.title=o.title;item.selected=o.value===pick.chosen;select.append(item);}
-  select.addEventListener('change',()=>{conv.heroProject={node:target.node.node_id,value:select.value};renderHero();});
+  select.setAttribute('aria-label','项目');select.disabled=!canWrite()||unavailable;
+  for(const o of pick.options){const item=el('option','',o.name);item.value=o.value;if(o.title)item.title=o.title;item.disabled=!!o.disabled;select.append(item);}
+  select.value=pick.chosen;
+  select.addEventListener('change',()=>{conv.heroProject={node:target.node.node_id,value:select.value,name:select.selectedOptions[0].text};renderHero();});
   const chosen=pick.options.find(o=>o.value===pick.chosen);
   pill.title=`项目：${chosen?.name||''}${chosen?.title?`\n${chosen.title}`:''}`;
   pill.append(el('span','setting-label','项目'),select,icon('chevron-down','xs'));box.replaceChildren(pill);

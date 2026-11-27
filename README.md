@@ -1,4 +1,4 @@
-# HarnessMesh
+<h1 align="center"><img src="web/panel/brand.svg" width="32" height="32" alt="" align="absmiddle"> HarnessMesh</h1>
 
 **English** | [简体中文](README_CN.md)
 
@@ -6,9 +6,9 @@
 
 One place to work with the coding agents on all of your own computers. HarnessMesh talks to agents such as OpenCode, Claude Code, Codex, Pi and DeepSeek Harness over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP). You chat with any of them from a local web panel, whichever computer it runs on. They can also hand work to each other, across computers, through a built-in MCP server.
 
-![A session on studio: the backend agent finds the bug, asks the reviewer agent on laptop to check the fix, and applies its suggestion](docs/images/session.png)
+![On studio, backend shows the login fix and the review it received from laptop. The sidebar and composer identify backend as an OpenCode agent.](docs/images/session.png)
 
-<sub>Screenshots in this README: two computers ("studio" and "laptop") simulated on one machine, with a scripted demo agent. No model was called. The panel's interface is in Chinese.</sub>
+<sub>These screenshots show the Chinese-language panel running on two local test nodes, studio and laptop. Scripted ACP agents provide the example conversations without calling a model.</sub>
 
 ## What you get
 
@@ -22,15 +22,22 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 
 ## Screens
 
+**Choose an agent and its computer.** The **Agents** page lists backend (OpenCode) on studio and frontend (Claude Code) and reviewer (Codex) on laptop. Click **开会话** on the card for the agent you want.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/start-dark.png">
+  <img src="docs/images/start.png" alt="Agents on studio and laptop, with the product icon, computer name and start-session button on each card">
+</picture>
+
 **The other computer sees who called it.** The reviewer session on laptop shows that studio's backend agent opened it, and the call chain studio → laptop.
 
 ![The reviewer session on laptop, opened by studio's backend agent](docs/images/delegated.png)
 
-**Permission questions come back to you.** Here the frontend agent on laptop wants to run `npm install`; you answer from studio, where you opened the session.
+**Permission questions come back to you.** The frontend agent on laptop asks to run `npm install react-loading-skeleton`. Studio opened the session, so the command and the **允许一次** (allow once) and **拒绝** (reject) buttons appear there.
 
 ![A permission request from an agent on another computer](docs/images/permission.png)
 
-**Pairing.** On one computer, paste the other's pairing code. The dialog then shows a check code. On the other computer, the request appears on 配对节点 (paired computers) and in the inbox; type the check code and approve. The first computer finishes by itself.
+**Pair with a code.** On studio, open **配对新电脑 → 其他配对方式 → 粘贴对方的码** and paste laptop's pairing code. Studio displays a six-character check code. Enter it in the incoming request on laptop and click **批准**. Both computers finish pairing.
 
 | 1. Send the request | 2. Approve on the other computer |
 |---|---|
@@ -42,13 +49,9 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 |---|---|
 | ![laptop's pairing dialog showing its 6-digit passcode](docs/images/nearby-passcode.png) | ![studio's pairing dialog listing laptop nearby, with the passcode typed in](docs/images/nearby-join.png) |
 
-**Paired computers.** Each card shows where the computer is reached, and when and how it was last reached. When it cannot be reached, the card says why (a firewall in the way, a host name that does not resolve, another computer at that address, and so on). 改地址 (edit address) adds an address by hand.
+**Paired computers.** Laptop's card shows its address, connection status and visible agents. From studio you can open laptop's agent directory or require confirmation before its requests run on studio.
 
-![laptop's card on the paired computers page: its addresses, when and how it was last reached, and edit address](docs/images/paired.png)
-
-**Start from any agent.** The start page lists every ready agent, with the computer it runs on.
-
-![The start page with agents from both computers](docs/images/start.png)
+![Laptop is trusted and online. Its card shows the request policy and a button to view its remote agents.](docs/images/paired.png)
 
 ## How it works
 
@@ -143,11 +146,11 @@ An only-MCP computer needs no Tailscale at all; when setup does not find it, it 
 
 Open the panel (`hmesh panel`) and go to **配对节点 → 配对新电脑** (paired computers → pair a new computer):
 
-1. On a full computer B, copy **这台电脑的配对码** (this computer's pairing code). On a direct network the dialog also shows how long B keeps pairing open.
+1. On both computers, expand **其他配对方式** (other pairing methods) if the dialog lists nearby computers. On computer B, select **本机配对码** (this computer’s pairing code) and copy it. On a direct network the dialog also shows how long B keeps pairing open.
 2. On computer A, paste it in the same dialog and send the request. A shows a check code.
 3. On B, type the check code and approve. A finishes by itself.
 
-**On a direct network, computers nearby are listed.** While B has 配对新电脑 open, it shows a 6-digit passcode, and the same dialog on A lists B under **附近的电脑** (computers nearby). Choose B, type its passcode, and both computers are paired: nothing to approve. A passcode allows three tries and works once; after three wrong ones it ends, while the pairing code keeps working. Guest Wi-Fi and some routers block this lookup, and a computer on another subnet is not heard: type its IP address or host name under **按地址配对** (pair at an address) with the same passcode (without a port, 39880 is used), or use the pairing code above. On the command line: `hmesh pair nearby`, then `hmesh pair join <address>`, which asks for the passcode.
+**On a direct network, computers nearby are listed.** While B has 配对新电脑 open, it shows a 6-digit passcode, and the same dialog on A lists B under **附近的电脑** (computers nearby). Choose B, type its passcode, and both computers are paired: nothing to approve. A passcode allows three tries and works once; after three wrong ones it ends, while the pairing code keeps working. Guest Wi-Fi and some routers block this lookup, and a computer on another subnet is not heard: type its IP address or host name under **其他配对方式 → 按地址配对** (other pairing methods → pair at an address) with the same passcode (without a port, 39880 is used), or use the pairing code above. On the command line: `hmesh pair nearby`, then `hmesh pair join <address>`, which asks for the passcode.
 
 **Through a relay.** When two computers cannot reach each other at all (both behind NAT, or a company Wi-Fi that keeps computers apart), run a relay on a server both can reach:
 
@@ -169,8 +172,8 @@ No Tailscale needed:
 ```
 
 1. Open the link the panel prints.
-2. On **Agents**, use **接入项目与 Agent** (add a project and agent) to register an agent for a project directory.
-3. Go to **新会话** (new session), pick the agent and send your first message.
+2. On **Agents**, select **接入 Agent** (add an agent), choose the product, then select its default project. If the list is empty, use **前往添加项目** to add a local folder and return to setup.
+3. Click **开会话** (start a session) on the agent’s card. Check the computer and project beneath the composer, then send your first message.
 
 Registering an agent runs only an ACP `initialize` handshake. No model is called until you send a message. Data lives in `~/.harnessmesh`; pass `--data-dir /absolute/path` to use another directory.
 

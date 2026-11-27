@@ -62,7 +62,7 @@ try{
   await page.locator('#pair-address .button').click();
  }
  stage='refused-explained';
- await pa.locator('#pair-new').click();await pa.locator('#pair-address').waitFor();
+ await pa.locator('#pair-new').click();assert(await pa.locator('#pair-address-input').isHidden(),'Address entry should start collapsed');await pa.locator('#pair-other-methods summary').click();await pa.locator('#pair-address').waitFor();
  const closed=await freePort();
  await tryAddress(pa,`localhost:${closed}`,'123456');
  const refused=pa.locator('#pair-address .pair-message.error').filter({hasText:'连不上这台电脑'});
@@ -95,7 +95,7 @@ try{
  checks.push('relay-code-explained');
  stage='no-overflow-dialog';
  for(const [name,options] of [['dark',{colorScheme:'dark'}],['narrow',{viewport:{width:360,height:740}}]]){
-  const page=await open(aUrl,options);await page.locator('#pair-new').click();await page.locator('#pair-address').waitFor();
+  const page=await open(aUrl,options);await page.locator('#pair-new').click();await page.locator('#pair-other-methods summary').click();await page.locator('#pair-address').waitFor();
   await tryAddress(page,`localhost:${closed}`,'123456');
   await page.locator('#pair-address .pair-message.error').filter({hasText:'连不上这台电脑'}).waitFor({timeout:15000});
   assert(await fits(page),`The address row overflows (${name})`);
