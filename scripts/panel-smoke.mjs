@@ -34,6 +34,9 @@ async function checkProductArtwork(page, theme){
  const choices=page.locator('#onboard-harness');
  for(const kind of ['pi','opencode','dsh','codex','claude-code']){
   const image=choices.locator(`[data-product="${kind}"] img:visible`);
+  // The dialog animates open; on a slow runner the first image is not laid
+  // out yet when this runs, so give it a moment before counting.
+  await image.first().waitFor({state:'visible',timeout:20000}).catch(()=>{});
   assert(await image.count()===1,'Expected one visible product icon for '+kind);
   await image.evaluate(img=>img.decode());
   if(kind==='opencode'||kind==='codex'){
