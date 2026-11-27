@@ -6,9 +6,9 @@
 
 在一个地方使用你所有电脑上的编程 Agent。HarnessMesh 通过 [Agent Client Protocol](https://agentclientprotocol.com)（ACP）连接 OpenCode、Claude Code、Codex、Pi 和 DeepSeek Harness 等 Agent：在本机的网页面板里，不管 Agent 在哪台电脑上，都能直接和它对话；Agent 之间也能通过内置的 MCP 服务器跨电脑互相派活。
 
-![在 studio 上开的会话：backend 找到 bug，请 laptop 上的 reviewer 审查修复，再按它的建议改好](docs/images/session.png)
+![studio 上的 backend 展示了登录修复和 laptop 返回的审查意见。侧栏和输入框旁的 OpenCode 图标标明了执行 Agent。](docs/images/session.png)
 
-<sub>本文截图：在一台电脑上模拟两台电脑（studio 和 laptop），用的是按台词回复的演示 Agent，没有调用任何模型。</sub>
+<sub>截图来自同一台电脑上的两个测试节点 studio 和 laptop。示例对话由脚本化 ACP Agent 生成，模型调用为零。</sub>
 
 ## 能做什么
 
@@ -22,15 +22,22 @@
 
 ## 界面
 
+**选择 Agent 和执行电脑。** 打开「Agents」，可以看到 studio 上的 backend（OpenCode），以及 laptop 上的 frontend（Claude Code）和 reviewer（Codex）。在目标卡片上点「开会话」即可开始对话。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/start-dark.png">
+  <img src="docs/images/start.png" alt="Agents 目录列出 studio 和 laptop 的三个 Agent，每张卡片都有产品图标、执行电脑和「开会话」按钮">
+</picture>
+
 **被调用的电脑知道是谁在调用。** laptop 上的 reviewer 会话写明是 studio 的 backend 打开的，调用链是 studio → laptop。
 
 ![laptop 上由 studio 的 backend 打开的 reviewer 会话](docs/images/delegated.png)
 
-**权限问题回到你这里。** laptop 上的 frontend 想运行 `npm install`；会话是你在 studio 上打开的，就在 studio 上回答。
+**权限请求回到你这里。** laptop 上的 frontend 请求运行 `npm install react-loading-skeleton`。这个会话由你在 studio 打开，因此你可以在 studio 查看命令，选择「允许一次」或「拒绝」。
 
 ![另一台电脑上的 Agent 发来的权限请求](docs/images/permission.png)
 
-**配对。** 在一台电脑上粘贴对方的配对码，弹窗显示校验码；另一台电脑的「配对节点」和「工作待办」里出现这条申请，输入校验码后批准，第一台电脑会自动完成。
+**用配对码连接。** 在 studio 打开「配对新电脑 → 其他配对方式 → 粘贴对方的码」，粘贴 laptop 的配对码。studio 会显示六位校验码，在 laptop 的配对申请中输入它并点「批准」，两台电脑即完成配对。
 
 | 1. 发出申请 | 2. 在另一台电脑上批准 |
 |---|---|
@@ -42,13 +49,9 @@
 |---|---|
 | ![laptop 的配对弹窗显示 6 位口令](docs/images/nearby-passcode.png) | ![studio 的配对弹窗在附近的电脑里列出 laptop，填好口令](docs/images/nearby-join.png) |
 
-**已配对的电脑。** 卡片上写着它的地址，和上次什么时候、经哪条路连上；连不上时直接说原因（被防火墙挡了、主机名解析不出来、那个地址上是另一台电脑等）。「改地址」可以手动加一个地址。
+**已配对的电脑。** laptop 的卡片显示地址、连接状态和可见 Agent 数量。在 studio 可以点「查看远端 Agent」，也可以将 laptop 发到本机的请求设为「本机确认」。
 
-![配对节点页上 laptop 的卡片：地址、上次连上的时间和路径、改地址](docs/images/paired.png)
-
-**从任意 Agent 开始。** 首页列出所有可用的 Agent，并标出它在哪台电脑上。
-
-![首页列出两台电脑上的 Agent](docs/images/start.png)
+![laptop 处于已信任、在线状态，卡片显示请求模式和「查看远端 Agent」入口](docs/images/paired.png)
 
 ## 原理
 

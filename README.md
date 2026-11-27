@@ -6,9 +6,9 @@
 
 One place to work with the coding agents on all of your own computers. HarnessMesh talks to agents such as OpenCode, Claude Code, Codex, Pi and DeepSeek Harness over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP). You chat with any of them from a local web panel, whichever computer it runs on. They can also hand work to each other, across computers, through a built-in MCP server.
 
-![A session on studio: the backend agent finds the bug, asks the reviewer agent on laptop to check the fix, and applies its suggestion](docs/images/session.png)
+![On studio, backend shows the login fix and the review it received from laptop. The sidebar and composer identify backend as an OpenCode agent.](docs/images/session.png)
 
-<sub>Screenshots in this README: two computers ("studio" and "laptop") simulated on one machine, with a scripted demo agent. No model was called. The panel's interface is in Chinese.</sub>
+<sub>These screenshots show the Chinese-language panel running on two local test nodes, studio and laptop. Scripted ACP agents provide the example conversations without calling a model.</sub>
 
 ## What you get
 
@@ -22,15 +22,22 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 
 ## Screens
 
+**Choose an agent and its computer.** The **Agents** page lists backend (OpenCode) on studio and frontend (Claude Code) and reviewer (Codex) on laptop. Click **开会话** on the card for the agent you want.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/start-dark.png">
+  <img src="docs/images/start.png" alt="Agents on studio and laptop, with the product icon, computer name and start-session button on each card">
+</picture>
+
 **The other computer sees who called it.** The reviewer session on laptop shows that studio's backend agent opened it, and the call chain studio → laptop.
 
 ![The reviewer session on laptop, opened by studio's backend agent](docs/images/delegated.png)
 
-**Permission questions come back to you.** Here the frontend agent on laptop wants to run `npm install`; you answer from studio, where you opened the session.
+**Permission questions come back to you.** The frontend agent on laptop asks to run `npm install react-loading-skeleton`. Studio opened the session, so the command and the **允许一次** (allow once) and **拒绝** (reject) buttons appear there.
 
 ![A permission request from an agent on another computer](docs/images/permission.png)
 
-**Pairing.** On one computer, paste the other's pairing code. The dialog then shows a check code. On the other computer, the request appears on 配对节点 (paired computers) and in the inbox; type the check code and approve. The first computer finishes by itself.
+**Pair with a code.** On studio, open **配对新电脑 → 其他配对方式 → 粘贴对方的码** and paste laptop's pairing code. Studio displays a six-character check code. Enter it in the incoming request on laptop and click **批准**. Both computers finish pairing.
 
 | 1. Send the request | 2. Approve on the other computer |
 |---|---|
@@ -42,13 +49,9 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 |---|---|
 | ![laptop's pairing dialog showing its 6-digit passcode](docs/images/nearby-passcode.png) | ![studio's pairing dialog listing laptop nearby, with the passcode typed in](docs/images/nearby-join.png) |
 
-**Paired computers.** Each card shows where the computer is reached, and when and how it was last reached. When it cannot be reached, the card says why (a firewall in the way, a host name that does not resolve, another computer at that address, and so on). 改地址 (edit address) adds an address by hand.
+**Paired computers.** Laptop's card shows its address, connection status and visible agents. From studio you can open laptop's agent directory or require confirmation before its requests run on studio.
 
-![laptop's card on the paired computers page: its addresses, when and how it was last reached, and edit address](docs/images/paired.png)
-
-**Start from any agent.** The start page lists every ready agent, with the computer it runs on.
-
-![The start page with agents from both computers](docs/images/start.png)
+![Laptop is trusted and online. Its card shows the request policy and a button to view its remote agents.](docs/images/paired.png)
 
 ## How it works
 
