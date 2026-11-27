@@ -54,6 +54,14 @@ async function open(url,name){
  return page;
 }
 async function pick(page,title){await page.locator('.session-row').filter({hasText:title}).first().click();await page.locator('#conversation').waitFor();}
+// The unified panel starts sessions from the Agents page.
+async function chooseAgent(page,name,group){
+ await page.locator('nav [data-view="agents"]').click();
+ await page.locator('[data-agent-filter="all"]').click();
+ let card=page.locator('#agent-list .entity-card').filter({has:page.getByRole('heading',{name,exact:true})});
+ if(group)card=card.filter({hasText:group});
+ await card.getByRole('button',{name:'开会话',exact:true}).click();
+}
 // What a reader of the README could learn about the computer it was taken on.
 const personal=[hostname().replace(/\.local$/,''),userInfo().username].filter(s=>s&&s.length>2);
 async function shot(page,file){
@@ -83,8 +91,7 @@ try{
 
  stage='session.png';
  const ps=await open(studioUrl,'studio');
- await ps.locator('#new-session').click();
- await ps.locator('#session-agents .session-group').filter({has:ps.locator('.session-group-name',{hasText:/^studio（本机）$/})}).getByRole('button',{name:/backend/}).click();
+ await chooseAgent(ps,'backend','studio');
  await ps.locator('#hero-input').fill('登录接口偶尔返回 500，帮我查一下原因。修好后让 laptop 上的 reviewer 看一眼。');
  await ps.locator('#hero-send').click();
  await ps.locator('#conversation').waitFor();
