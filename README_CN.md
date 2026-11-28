@@ -6,9 +6,9 @@
 
 在一个地方使用你所有电脑上的编程 Agent。HarnessMesh 通过 [Agent Client Protocol](https://agentclientprotocol.com)（ACP）连接 OpenCode、Claude Code、Codex、Pi 和 DeepSeek Harness 等 Agent：在本机的网页面板里，不管 Agent 在哪台电脑上，都能直接和它对话；Agent 之间也能通过内置的 MCP 服务器跨电脑互相派活。
 
-![studio 上的 backend 展示了登录修复和 laptop 返回的审查意见。侧栏和输入框旁的 OpenCode 图标标明了执行 Agent。](docs/images/session.png)
+![studio 上的 backend（Pi Agent）展示了登录修复和 laptop 返回的审查意见。](docs/images/session.png)
 
-<sub>截图来自同一台电脑上的两个测试节点 studio 和 laptop。示例对话由脚本化 ACP Agent 生成，模型调用为零。</sub>
+<sub>截图来自同一台电脑上的两个回环测试节点 studio 和 laptop；对话由真实的 Pi 和 OpenCode Agent 调用模型完成（经本地网关）。</sub>
 
 ## 能做什么
 
@@ -22,7 +22,7 @@
 
 ## 界面
 
-**选择 Agent 和执行电脑。** 打开「Agents」，可以看到 studio 上的 backend（OpenCode），以及 laptop 上的 frontend（Claude Code）和 reviewer（Codex）。在目标卡片上点「开会话」即可开始对话。
+**选择 Agent 和执行电脑。** 打开「Agents」，可以看到 studio 上的 backend（Pi），以及 laptop 上的 frontend（OpenCode）和 reviewer（Pi）。在目标卡片上点「开会话」即可开始对话。
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/start-dark.png">

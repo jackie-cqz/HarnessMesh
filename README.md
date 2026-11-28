@@ -6,9 +6,9 @@
 
 One place to work with the coding agents on all of your own computers. HarnessMesh talks to agents such as OpenCode, Claude Code, Codex, Pi and DeepSeek Harness over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP). You chat with any of them from a local web panel, whichever computer it runs on. They can also hand work to each other, across computers, through a built-in MCP server.
 
-![On studio, backend shows the login fix and the review it received from laptop. The sidebar and composer identify backend as an OpenCode agent.](docs/images/session.png)
+![On studio, backend, a Pi agent, shows the login fix and the review it received from laptop.](docs/images/session.png)
 
-<sub>These screenshots show the Chinese-language panel running on two local test nodes, studio and laptop. Scripted ACP agents provide the example conversations without calling a model.</sub>
+<sub>These screenshots were taken on two loopback test nodes, studio and laptop, with real Pi and OpenCode agents calling models through a local gateway.</sub>
 
 ## What you get
 
@@ -22,7 +22,7 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 
 ## Screens
 
-**Choose an agent and its computer.** The **Agents** page lists backend (OpenCode) on studio and frontend (Claude Code) and reviewer (Codex) on laptop. Click **开会话** on the card for the agent you want.
+**Choose an agent and its computer.** The **Agents** page lists backend (Pi) on studio and frontend (OpenCode) and reviewer (Pi) on laptop. Click **开会话** on the card for the agent you want.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/start-dark.png">
@@ -33,7 +33,7 @@ One place to work with the coding agents on all of your own computers. HarnessMe
 
 ![The reviewer session on laptop, opened by studio's backend agent](docs/images/delegated.png)
 
-**Permission questions come back to you.** The frontend agent on laptop asks to run `npm install react-loading-skeleton`. Studio opened the session, so the command and the **允许一次** (allow once) and **拒绝** (reject) buttons appear there.
+**Permission questions come back to you.** The frontend agent (OpenCode) on laptop asks to run `npm install react-loading-skeleton`. Studio opened the session, so the command and the **允许一次** (allow once) and **拒绝** (reject) buttons appear there.
 
 ![A permission request from an agent on another computer](docs/images/permission.png)
 
