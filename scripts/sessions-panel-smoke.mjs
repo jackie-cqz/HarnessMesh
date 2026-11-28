@@ -206,9 +206,11 @@ try{
  await page.locator('#composer-send').click();
  await stream(page).getByText('Echo #2: from the panel').waitFor({timeout:30000});
  await page.locator('#conversation-meta').getByText('第 2 轮').waitFor();
- // Tool calls are collapsed rows that open to show their details.
- const tool=stream(page).locator('details.tool').first();
- await tool.locator('summary').click();assert(await tool.evaluate(d=>d.open),'tool row did not expand');
+ // A finished turn's work folds into one line that opens to show its steps.
+ const work=stream(page).locator('details.work').first();
+ assert(!await work.evaluate(d=>d.open),'finished work is not folded');
+ await work.locator(':scope > summary').click();assert(await work.evaluate(d=>d.open),'work did not expand');
+ await stream(page).locator('.step',{hasText:'编辑 notes.txt'}).first().waitFor();
  await page.screenshot({path:join(shots,'sessions-remote.png')});
  stage='switch the model between turns';
  // The agent offers its settings; the opener switches them between turns.

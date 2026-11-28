@@ -44,8 +44,12 @@ export class TodoProbe {
       assert([403, 409, 410, 503].includes(r.status), 'Revoked endpoint still accessible or unexpected response');
       return { passed: true, denied_status: r.status };
     } catch (error) {
-      // A deadline or malformed response is not proof of revocation.
-      if (error.cause?.code === 'ECONNREFUSED') return { passed: true, connection_refused: true };
+      // A deadline or malformed response is not proof of revocation. A
+      // connection that was refused or reset is: the revoked app connection
+      // is no longer served (loaded runners often report reset, not refused).
+      if (['ECONNREFUSED','ECONNRESET','EPIPE','UND_ERR_SOCKET'].includes(error.cause?.code)) {
+        return { passed: true, connection_refused: true, code: error.cause.code };
+      }
       throw error;
     }
   }

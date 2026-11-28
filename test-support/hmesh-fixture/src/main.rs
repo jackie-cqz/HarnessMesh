@@ -52,6 +52,259 @@ fn tool(session: &str, id: &str, title: &str, kind: &str, input: Value, output: 
         json!({"sessionUpdate":"tool_call_update","toolCallId":id,"status":"completed","content":[{"type":"content","content":{"type":"text","text":output}}]}),
     );
 }
+/// Tool calls as each agent family reports them over ACP, read from their
+/// adapters' sources: where command output goes, what a diff carries, what
+/// a title is. `style` is one family; `all` plays every one in turn.
+fn stream(session: &str, style: &str) -> String {
+    let call = |id: &str, fields: Value| {
+        let mut update = json!({"sessionUpdate":"tool_call","toolCallId":id,"status":"pending"});
+        update
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        self::update(session, update);
+    };
+    let done = |id: &str, fields: Value| {
+        let mut update = json!({"sessionUpdate":"tool_call_update","toolCallId":id});
+        update
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        self::update(session, update);
+    };
+    let text = |t: &str| json!([{"type":"content","content":{"type":"text","text":t}}]);
+    let plan = |states: [&str; 3]| {
+        let steps = [
+            "Find the failing test",
+            "Fix the addition",
+            "Run the tests again",
+        ];
+        let entries: Vec<Value> = steps
+            .iter()
+            .zip(states)
+            .map(|(content, status)| json!({"content":content,"priority":"medium","status":status}))
+            .collect();
+        update(session, json!({"sessionUpdate":"plan","entries":entries}));
+    };
+    let styles: Vec<&str> = if style == "all" {
+        vec![
+            "claude", "codex", "opencode", "pi", "dsh", "minimax", "kimi", "mesh", "unknown",
+        ]
+    } else {
+        vec![style]
+    };
+    for style in styles {
+        match style {
+            // Claude: hunks with locations, command output as a console fence
+            // in content text, thoughts streamed, a plan replaced as it moves.
+            "claude" => {
+                update(
+                    session,
+                    json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"The test name says addition, so start with `add`."}}),
+                );
+                plan(["in_progress", "pending", "pending"]);
+                call(
+                    "claude-read",
+                    json!({"title":"Read src/lib.rs","kind":"read","locations":[{"path":"/work/demo/src/lib.rs","line":1}],"rawInput":{"file_path":"/work/demo/src/lib.rs"}}),
+                );
+                done(
+                    "claude-read",
+                    json!({"status":"completed","content":text("```\npub fn add(a: i32, b: i32) -> i32 {\n    a - b\n}\n```")}),
+                );
+                call(
+                    "claude-grep",
+                    json!({"title":"grep \"fn add\" src","kind":"search","rawInput":{"pattern":"fn add","path":"src"}}),
+                );
+                done(
+                    "claude-grep",
+                    json!({"status":"completed","content":text("Found 1 file\nsrc/lib.rs")}),
+                );
+                plan(["completed", "in_progress", "pending"]);
+                call(
+                    "claude-edit",
+                    json!({"title":"Edit src/lib.rs","kind":"edit","locations":[{"path":"/work/demo/src/lib.rs","line":2}],"rawInput":{"file_path":"/work/demo/src/lib.rs","old_string":"a - b","new_string":"a + b"},"content":[{"type":"diff","path":"/work/demo/src/lib.rs","oldText":"pub fn add(a: i32, b: i32) -> i32 {\n    a - b\n}","newText":"pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}"}]}),
+                );
+                done("claude-edit", json!({"status":"completed"}));
+                plan(["completed", "completed", "in_progress"]);
+                call(
+                    "claude-bash",
+                    json!({"title":"`cargo test`","kind":"execute","rawInput":{"command":"cargo test","description":"Run the tests"}}),
+                );
+                done(
+                    "claude-bash",
+                    json!({"status":"completed","content":text("```console\nrunning 3 tests\ntest add_works ... ok\ntest result: ok. 3 passed\n```")}),
+                );
+                plan(["completed", "completed", "completed"]);
+            }
+            // Codex: a terminal item, output streamed in `_meta`, the exit
+            // code at the end.
+            "codex" => {
+                call(
+                    "codex-run",
+                    json!({"title":"Run cargo test","kind":"execute","rawInput":{"command":["bash","-lc","cargo test"],"cwd":"/work/demo"},"content":[{"type":"terminal","terminalId":"codex-run"}],"_meta":{"terminal_info":{"terminal_id":"codex-run","cwd":"/work/demo"}}}),
+                );
+                done(
+                    "codex-run",
+                    json!({"status":"in_progress","_meta":{"terminal_output":{"terminal_id":"codex-run","data":"running 3 tests\n"}}}),
+                );
+                done(
+                    "codex-run",
+                    json!({"_meta":{"terminal_output":{"terminal_id":"codex-run","data":"test add_works ... FAILED\n"}}}),
+                );
+                done(
+                    "codex-run",
+                    json!({"status":"failed","_meta":{"terminal_exit":{"terminal_id":"codex-run","exit_code":101,"signal":null}}}),
+                );
+                call(
+                    "codex-patch",
+                    json!({"title":"Edit src/lib.rs","kind":"edit","locations":[{"path":"/work/demo/src/lib.rs"}],"content":[{"type":"diff","path":"/work/demo/src/lib.rs","oldText":"    a - b\n","newText":"    a + b\n"}]}),
+                );
+                done("codex-patch", json!({"status":"completed"}));
+            }
+            // OpenCode: raw tool names as titles, the whole output again on
+            // every update, the final output in rawOutput.
+            "opencode" => {
+                call(
+                    "oc-bash",
+                    json!({"title":"bash","kind":"execute","rawInput":{"command":"npm test","description":"Run the tests"}}),
+                );
+                done(
+                    "oc-bash",
+                    json!({"status":"in_progress","content":text("> demo@1.0.0 test\n")}),
+                );
+                done(
+                    "oc-bash",
+                    json!({"status":"in_progress","content":text("> demo@1.0.0 test\n> node --test\n")}),
+                );
+                done(
+                    "oc-bash",
+                    json!({"status":"completed","content":text("> demo@1.0.0 test\n> node --test\n# pass 3\n"),"rawOutput":{"output":"> demo@1.0.0 test\n> node --test\n# pass 3\n","metadata":{"exit":0}}}),
+                );
+                call(
+                    "oc-edit",
+                    json!({"title":"edit","kind":"edit","rawInput":{"filePath":"/work/demo/index.js","oldString":"a - b","newString":"a + b"},"content":[{"type":"diff","path":"/work/demo/index.js","oldText":"return a - b","newText":"return a + b"}]}),
+                );
+                done("oc-edit", json!({"status":"completed"}));
+            }
+            // Pi: raw tool names, whole files as diffs (a new file has no old
+            // text), output as `_meta` deltas.
+            "pi" => {
+                call(
+                    "pi-read",
+                    json!({"title":"read","kind":"read","rawInput":{"path":"README.md"}}),
+                );
+                done(
+                    "pi-read",
+                    json!({"status":"completed","content":text("# Demo\n")}),
+                );
+                call(
+                    "pi-write",
+                    json!({"title":"write","kind":"edit","rawInput":{"path":"NOTES.md","content":"First line\nSecond line\n"},"content":[{"type":"diff","path":"/work/demo/NOTES.md","oldText":null,"newText":"First line\nSecond line\n"}]}),
+                );
+                done("pi-write", json!({"status":"completed"}));
+                call(
+                    "pi-bash",
+                    json!({"title":"bash","kind":"execute","rawInput":{"command":"ls"}}),
+                );
+                done(
+                    "pi-bash",
+                    json!({"status":"in_progress","_meta":{"terminal_output_delta":{"terminal_id":"pi-bash","data":"NOTES.md\n"}}}),
+                );
+                done(
+                    "pi-bash",
+                    json!({"status":"completed","_meta":{"terminal_output_delta":{"terminal_id":"pi-bash","data":"README.md\n"},"terminal_exit":{"terminal_id":"pi-bash","exit_code":0}}}),
+                );
+            }
+            // DeepSeek Harness: kind is always `other`, the title is the raw
+            // tool name, and only the arguments say what it does.
+            "dsh" => {
+                call(
+                    "dsh-shell",
+                    json!({"title":"run_shell","kind":"other","rawInput":{"command":"git status --short"}}),
+                );
+                done(
+                    "dsh-shell",
+                    json!({"status":"completed","content":text(" M src/lib.rs\n")}),
+                );
+                call(
+                    "dsh-read",
+                    json!({"title":"read_file","kind":"other","rawInput":{"path":"src/lib.rs"}}),
+                );
+                done(
+                    "dsh-read",
+                    json!({"status":"completed","content":text("pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n")}),
+                );
+            }
+            // MiniMax: output only in rawOutput, a failure as `{error}`.
+            "minimax" => {
+                call(
+                    "mm-run",
+                    json!({"title":"Shell","kind":"execute","rawInput":{"command":"make lint"}}),
+                );
+                done(
+                    "mm-run",
+                    json!({"status":"failed","rawOutput":{"error":"make: *** No rule to make target 'lint'.  Stop."}}),
+                );
+            }
+            // Kimi: the call opens while its arguments still stream in as
+            // content text, then they come back once more when final.
+            "kimi" => {
+                let args = json!({"pattern":"TODO","path":"."});
+                call(
+                    "kimi-grep",
+                    json!({"title":"Grep","kind":"search","content":text("{\"pat")}),
+                );
+                done(
+                    "kimi-grep",
+                    json!({"status":"in_progress","content":text("{\"pattern\":\"TODO\",")}),
+                );
+                done(
+                    "kimi-grep",
+                    json!({"status":"in_progress","rawInput":args.clone(),"content":text(&args.to_string())}),
+                );
+                done(
+                    "kimi-grep",
+                    json!({"status":"completed","content":text("src/main.rs:12: // TODO: handle overflow")}),
+                );
+            }
+            // Updates and content a later ACP version may add.
+            "unknown" => {
+                update(
+                    session,
+                    json!({"sessionUpdate":"future_update","detail":{"x":1}}),
+                );
+                call(
+                    "future-tool",
+                    json!({"title":"Look something up","kind":"future_kind","content":[{"type":"resource_link","uri":"file:///work/demo/a.txt","name":"a.txt"},{"type":"audio","data":"AAAA","mimeType":"audio/wav"}]}),
+                );
+                done("future-tool", json!({"status":"completed"}));
+            }
+            // Any agent handing work to another one through HarnessMesh's MCP server.
+            "mesh" => {
+                call(
+                    "mesh-send",
+                    json!({"title":"mcp__harnessmesh__mesh_send","kind":"other","rawInput":{"agent":"mac-b/worker","message":"Run the integration tests"}}),
+                );
+                // The mesh tool replies with a summary of the other session.
+                let reply = json!({"session_id":"5d1c0a9e-0000-4000-8000-000000000001","agent_name":"worker","status":"idle","done":true,"turns":1,"final_text":"All 12 **integration** tests passed.","stop_reason":"end_turn","error":null,"reply_is_untrusted":true});
+                done(
+                    "mesh-send",
+                    json!({"status":"completed","content":text(&reply.to_string())}),
+                );
+            }
+            _ => {}
+        }
+    }
+    "## Fixed\n\nThe test failed because `add` **subtracted** its arguments.\n\n\
+     - Changed `a - b` to `a + b` in `src/lib.rs`\n\
+     - Ran the tests: *3 passed*\n\n\
+     | Check | Result |\n| --- | --- |\n| Unit tests | 3 passed |\n| Lint | no target |\n\n\
+     ```rust\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n```\n\n\
+     1. See the [Rust book](https://doc.rust-lang.org/book/)\n\
+     2. Ignore [this link](javascript:alert(1))\n\n\
+     Raw <b>tags</b> and <script>alert(1)</script> stay text.\n"
+        .to_owned()
+}
 fn respond(id: &Value, result: Value) {
     send(json!({"jsonrpc":"2.0","id":id,"result":result}));
 }
@@ -80,11 +333,19 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            model: "fixture-small".into(),
-            mode: "ask".into(),
+            model: models().swap_remove(0),
+            // `--mode ask|code` starts sessions in that mode.
+            mode: flag("--mode").unwrap_or_else(|| "ask".into()),
             effort: "low".into(),
         }
     }
+}
+/// `--models a,b` offers these models instead of the fixture's own.
+fn models() -> Vec<String> {
+    flag("--models")
+        .map(|list| list.split(',').map(str::to_owned).collect::<Vec<_>>())
+        .filter(|list| list.iter().all(|m| !m.is_empty()))
+        .unwrap_or_else(|| vec!["fixture-small".into(), "fixture-large".into()])
 }
 impl Settings {
     /// ACP `configOptions`; the large model adds a reasoning-effort setting.
@@ -103,11 +364,11 @@ impl Settings {
             .into_iter()
             .flat_map(|models| models.keys().map(|id| format!("hmesh/{id}")))
             .collect();
-        let choices: Vec<&str> = if custom.is_empty() {
-            vec!["fixture-small", "fixture-large"]
-        } else {
-            custom.iter().map(String::as_str).collect()
-        };
+        let own = models();
+        let choices: Vec<&str> = if custom.is_empty() { &own } else { &custom }
+            .iter()
+            .map(String::as_str)
+            .collect();
         let mut options = vec![
             select("model", "Model", "model", &self.model, &choices),
             select("mode", "Mode", "mode", &self.mode, &["ask", "code"]),
@@ -280,6 +541,15 @@ fn restore(id: &str) -> Option<Vec<(String, String)>> {
 
 /// Call `mesh_send` on the first MCP server the client gave this session.
 fn delegate(server: &Value, agent: &str, message: &str) -> Result<String, String> {
+    let text = mesh_send(server, agent, message)?;
+    let value: Value = serde_json::from_str(&text).map_err(|_| text.clone())?;
+    Ok(value["final_text"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("status {}", value["status"])))
+}
+/// What `mesh_send` replies: a summary of the other session, as JSON text.
+fn mesh_send(server: &Value, agent: &str, message: &str) -> Result<String, String> {
     let command = server["command"].as_str().ok_or("no MCP server command")?;
     let args: Vec<String> = server["args"]
         .as_array()
@@ -343,11 +613,83 @@ fn delegate(server: &Value, agent: &str, message: &str) -> Result<String, String
     if result["isError"] == json!(true) {
         return Err(text);
     }
-    let value: Value = serde_json::from_str(&text).map_err(|_| text.clone())?;
-    Ok(value["final_text"]
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("status {}", value["status"])))
+    Ok(text)
+}
+
+/// Permission requests a script is waiting on, by request id.
+type Asked = std::sync::Arc<std::sync::Mutex<HashMap<String, mpsc::Sender<Option<String>>>>>;
+/// `--script FILE`: a scripted conversation, for the README screenshots.
+/// `{"turns":[{"when":"…","steps":[…]}]}`; the first turn whose `when`
+/// occurs in the prompt plays (an empty `when` matches any prompt). A step is
+/// one of:
+/// - `{"update":{…}}` an ACP session update, sent as it is;
+/// - `{"pause_ms":N}`;
+/// - `{"ask":{"toolCall":{…},"options":[…]},"answers":{"<optionId>":[steps]}}`
+///   asks for permission and plays the steps of the option chosen (`reject`
+///   when the request was cancelled or the option has no steps);
+/// - `{"delegate":{"toolCallId":"…","title":"…","agent":"…","message":"…"}}`
+///   really calls `mesh_send`, reported as a tool call whose output is the reply.
+fn load_script() -> anyhow::Result<Option<Value>> {
+    let Some(path) = flag("--script") else {
+        return Ok(None);
+    };
+    let script: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    anyhow::ensure!(script["turns"].is_array(), "{path} has no turns");
+    Ok(Some(script))
+}
+fn scripted_turn(script: &Value, prompt: &str) -> Option<Vec<Value>> {
+    script["turns"]
+        .as_array()?
+        .iter()
+        .find(|turn| prompt.contains(turn["when"].as_str().unwrap_or("")))
+        .map(|turn| turn["steps"].as_array().cloned().unwrap_or_default())
+}
+fn play(session: &str, steps: &[Value], server: Option<&Value>, asked: &Asked) {
+    for step in steps {
+        if let Some(fields) = step.get("update") {
+            update(session, fields.clone());
+        } else if let Some(ms) = step["pause_ms"].as_u64() {
+            std::thread::sleep(Duration::from_millis(ms));
+        } else if let Some(request) = step.get("ask") {
+            let key = format!(
+                "script-{}",
+                request["toolCall"]["toolCallId"].as_str().unwrap_or("ask")
+            );
+            let (answer, chosen) = mpsc::channel();
+            asked.lock().unwrap().insert(key.clone(), answer);
+            let mut params = request.clone();
+            params["sessionId"] = json!(session);
+            send(
+                json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":params}),
+            );
+            let chosen = chosen.recv().ok().flatten();
+            let answers = &step["answers"];
+            let branch = chosen
+                .as_deref()
+                .and_then(|option| answers[option].as_array())
+                .or_else(|| answers["reject"].as_array());
+            play(session, branch.map_or(&[], Vec::as_slice), server, asked);
+        } else if let Some(call) = step.get("delegate") {
+            let (agent, message) = (
+                call["agent"].as_str().unwrap_or(""),
+                call["message"].as_str().unwrap_or(""),
+            );
+            let id = call["toolCallId"].as_str().unwrap_or("delegate");
+            update(
+                session,
+                json!({"sessionUpdate":"tool_call","toolCallId":id,"title":call["title"],"kind":"other","status":"in_progress","rawInput":{"agent":agent,"message":message}}),
+            );
+            let (status, text) = match server.map(|s| mesh_send(s, agent, message)) {
+                Some(Ok(reply)) => ("completed", reply),
+                Some(Err(error)) => ("failed", error),
+                None => ("failed", "no MCP server was provided".into()),
+            };
+            update(
+                session,
+                json!({"sessionUpdate":"tool_call_update","toolCallId":id,"status":status,"content":[{"type":"content","content":{"type":"text","text":text}}]}),
+            );
+        }
+    }
 }
 
 enum Event {
@@ -364,6 +706,8 @@ struct Pending {
     session: String,
     granted: &'static str,
     denied: &'static str,
+    /// Reply with the chosen option instead of granted/denied.
+    echo: bool,
 }
 
 async fn probe_model_relay() -> anyhow::Result<Value> {
@@ -428,6 +772,8 @@ fn run_acp() -> anyhow::Result<()> {
     let mut sessions: HashMap<String, Session> = HashMap::new();
     let mut waiting: HashMap<String, Value> = HashMap::new();
     let mut permissions: HashMap<String, Pending> = HashMap::new();
+    let script = load_script()?;
+    let asked: Asked = Default::default();
     let mut next = 0u64;
     for event in inbox {
         let line = match event {
@@ -451,11 +797,23 @@ fn run_acp() -> anyhow::Result<()> {
         let params = &frame["params"];
         // Responses to our permission requests.
         if method.is_empty() {
+            if let Some(answer) = id.as_str().and_then(|k| asked.lock().unwrap().remove(k)) {
+                let chosen = frame.pointer("/result/outcome/optionId");
+                let _ = answer.send(chosen.and_then(Value::as_str).map(str::to_owned));
+                continue;
+            }
             if let Some(pending) = id.as_str().and_then(|k| permissions.remove(k)) {
                 let chosen = frame
                     .pointer("/result/outcome/optionId")
                     .and_then(Value::as_str);
-                let text = if chosen == Some("allow") {
+                let echoed;
+                let text = if pending.echo {
+                    echoed = match chosen {
+                        Some(option) => format!("Chose {option}."),
+                        None => "Cancelled.".to_owned(),
+                    };
+                    echoed.as_str()
+                } else if chosen == Some("allow") {
                     pending.granted
                 } else {
                     pending.denied
@@ -683,6 +1041,16 @@ fn run_acp() -> anyhow::Result<()> {
                 session.history.push(("user".into(), prompt.clone()));
                 let turn = session.history.iter().filter(|(r, _)| r == "user").count();
                 let cwd = session.cwd.clone();
+                if let Some(steps) = script.as_ref().and_then(|s| scripted_turn(s, &prompt)) {
+                    let server = session.mcp_servers.first().cloned();
+                    let (asked, prompt_id, session_key) =
+                        (asked.clone(), id.clone(), session_id.clone());
+                    std::thread::spawn(move || {
+                        play(&session_key, &steps, server.as_ref(), &asked);
+                        end_turn(&prompt_id);
+                    });
+                    continue;
+                }
                 let reply = |session: &mut Session, text: &str| {
                     say(&session_id, text);
                     session.history.push(("agent".into(), text.into()));
@@ -801,6 +1169,55 @@ fn run_acp() -> anyhow::Result<()> {
                                 session: session_id.clone(),
                                 granted,
                                 denied,
+                                echo: false,
+                            },
+                        );
+                    }
+                    // Every kind of option ACP has, lasting ones included.
+                    "fixture:permission-options" => {
+                        next += 1;
+                        let key = format!("perm-{next}");
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":key,"title":"Run make test","kind":"execute","status":"pending","rawInput":{"command":"make test"}}),
+                        );
+                        send(
+                            json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"toolCallId":key},"options":[
+                                {"optionId":"allow","name":"Allow once","kind":"allow_once"},
+                                {"optionId":"always","name":"Always allow make","kind":"allow_always"},
+                                {"optionId":"reject","name":"Reject","kind":"reject_once"},
+                                {"optionId":"never","name":"Never allow make","kind":"reject_always"}
+                            ]}}),
+                        );
+                        permissions.insert(
+                            key,
+                            Pending {
+                                prompt_id: id.clone(),
+                                session: session_id.clone(),
+                                granted: "",
+                                denied: "",
+                                echo: true,
+                            },
+                        );
+                    }
+                    // A request for a call the stream never showed.
+                    "fixture:permission-unseen" => {
+                        next += 1;
+                        let key = format!("perm-{next}");
+                        send(
+                            json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"toolCallId":key,"title":"Edit notes.txt","kind":"edit","locations":[{"path":"notes.txt","line":3}],"content":[{"type":"diff","path":"notes.txt","oldText":"a\n","newText":"b\n"}]},"options":[
+                                {"optionId":"allow","name":"Allow once","kind":"allow_once"},
+                                {"optionId":"reject","name":"Reject","kind":"reject_once"}
+                            ]}}),
+                        );
+                        permissions.insert(
+                            key,
+                            Pending {
+                                prompt_id: id.clone(),
+                                session: session_id.clone(),
+                                granted: "",
+                                denied: "",
+                                echo: true,
                             },
                         );
                     }
@@ -870,6 +1287,168 @@ fn run_acp() -> anyhow::Result<()> {
                                 text,
                             });
                         });
+                    }
+                    _ if prompt == "fixture:stream" || prompt.starts_with("fixture:stream ") => {
+                        let style = prompt.strip_prefix("fixture:stream ").unwrap_or("all");
+                        say(&session_id, "Let me look at the failing test.");
+                        let answer = stream(&session_id, style.trim());
+                        reply(session, &answer);
+                        end_turn(&id);
+                    }
+                    // Many large tool results: more than one page of events holds.
+                    "fixture:many-big-reads" => {
+                        let body = "let value = compute(input);\n".repeat(600);
+                        for i in 0..70 {
+                            tool(
+                                &session_id,
+                                &format!("big-{i}"),
+                                &format!("Read src/file{i}.rs"),
+                                "read",
+                                json!({"path":format!("src/file{i}.rs")}),
+                                &body,
+                            );
+                        }
+                        reply(session, "Read 70 files.");
+                        end_turn(&id);
+                    }
+                    // Arguments streamed into the call one piece at a time, the
+                    // way a write of a large file arrives from some agents.
+                    "fixture:streamed-args" => {
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":"stream-write","title":"write","kind":"edit","status":"pending","rawInput":{"path":"big.txt"}}),
+                        );
+                        let mut content = String::new();
+                        for i in 0..220 {
+                            content.push_str(&format!("line {i:04} of the file\n"));
+                            update(
+                                &session_id,
+                                json!({"sessionUpdate":"tool_call_update","toolCallId":"stream-write","status":"pending","rawInput":{"path":"big.txt","content":content}}),
+                            );
+                        }
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call_update","toolCallId":"stream-write","status":"completed"}),
+                        );
+                        reply(session, "Wrote big.txt.");
+                        end_turn(&id);
+                    }
+                    // Every update repeats the same arguments while the command
+                    // runs, for longer than the daemon holds details.
+                    "fixture:repeated-args" => {
+                        let same = json!({"rawInput":{"command":"npm test"},"locations":[{"path":"/work/demo"}]});
+                        let mut first = json!({"sessionUpdate":"tool_call","toolCallId":"repeat","title":"bash","kind":"execute","status":"pending"});
+                        first
+                            .as_object_mut()
+                            .unwrap()
+                            .extend(same.as_object().unwrap().clone());
+                        update(&session_id, first);
+                        for _ in 0..20 {
+                            let mut again = json!({"sessionUpdate":"tool_call_update","toolCallId":"repeat","status":"in_progress"});
+                            again
+                                .as_object_mut()
+                                .unwrap()
+                                .extend(same.as_object().unwrap().clone());
+                            update(&session_id, again);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call_update","toolCallId":"repeat","status":"completed","content":[{"type":"content","content":{"type":"text","text":"ok"}}]}),
+                        );
+                        reply(session, "Tests pass.");
+                        end_turn(&id);
+                    }
+                    // The whole output again at every update, growing a line at
+                    // a time, the way some agents report a running command.
+                    // `-long`: past the recorded output's limit from the start.
+                    "fixture:snapshot-output" | "fixture:snapshot-output-long" => {
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":"ticks","title":"bash","kind":"execute","status":"in_progress","rawInput":{"command":"./tick"}}),
+                        );
+                        let mut output = if prompt.ends_with("-long") {
+                            "compiling a dependency of the project\n".repeat(600)
+                        } else {
+                            String::new()
+                        };
+                        for i in 0..3 {
+                            output.push_str(&format!("tick {i:03} ok\n"));
+                            update(
+                                &session_id,
+                                json!({"sessionUpdate":"tool_call_update","toolCallId":"ticks","status":"in_progress","content":[{"type":"content","content":{"type":"text","text":output}}]}),
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(1300));
+                        }
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call_update","toolCallId":"ticks","status":"completed","content":[{"type":"content","content":{"type":"text","text":output}}]}),
+                        );
+                        reply(session, "Ticked.");
+                        end_turn(&id);
+                    }
+                    // The request describes the call more recently than the stream.
+                    "fixture:permission-newer-args" => {
+                        next += 1;
+                        let key = format!("perm-{next}");
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":key,"title":"bash","kind":"execute","status":"pending","rawInput":{"command":"git push"}}),
+                        );
+                        send(
+                            json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"toolCallId":key,"title":"bash","rawInput":{"command":"git push --force"}},"options":[
+                                {"optionId":"allow","name":"Allow once","kind":"allow_once"},
+                                {"optionId":"reject","name":"Reject","kind":"reject_once"}
+                            ]}}),
+                        );
+                        permissions.insert(
+                            key,
+                            Pending {
+                                prompt_id: id.clone(),
+                                session: session_id.clone(),
+                                granted: "",
+                                denied: "",
+                                echo: true,
+                            },
+                        );
+                    }
+                    // The call's arguments change a little just before it asks.
+                    "fixture:permission-changed-args" => {
+                        next += 1;
+                        let key = format!("perm-{next}");
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":key,"title":"bash","kind":"execute","status":"pending","rawInput":{"command":"git push"}}),
+                        );
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call_update","toolCallId":key,"status":"pending","rawInput":{"command":"git push --force origin main"}}),
+                        );
+                        send(
+                            json!({"jsonrpc":"2.0","id":key,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"toolCallId":key},"options":[
+                                {"optionId":"allow","name":"Allow once","kind":"allow_once"},
+                                {"optionId":"reject","name":"Reject","kind":"reject_once"}
+                            ]}}),
+                        );
+                        permissions.insert(
+                            key,
+                            Pending {
+                                prompt_id: id.clone(),
+                                session: session_id.clone(),
+                                granted: "",
+                                denied: "",
+                                echo: true,
+                            },
+                        );
+                    }
+                    // A command still running when the turn is looked at.
+                    "fixture:stream-running" => {
+                        stream(&session_id, "claude");
+                        update(
+                            &session_id,
+                            json!({"sessionUpdate":"tool_call","toolCallId":"long-run","title":"Run the watcher","kind":"execute","status":"in_progress","rawInput":{"command":"npm run watch"},"_meta":{"terminal_output":{"terminal_id":"long-run","data":"watching for changes…\n"}}}),
+                        );
+                        waiting.insert(session_id.clone(), id.clone());
                     }
                     _ if prompt.starts_with("fixture:echo ") => {
                         let text = format!("Echo #{turn}: {}", &prompt["fixture:echo ".len()..]);
